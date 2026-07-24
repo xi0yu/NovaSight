@@ -112,10 +112,11 @@ curl -X POST http://127.0.0.1:5174/api/license/activate \
   -d '{"key":"NOVASIGHT-TEST-MAX-ACCESS-2026"}'
 ```
 
-Operational APIs are blocked until a valid license is activated. The built-in
-test key grants `test_max` permissions only in `--dry-run`. Hardware production
-mode requires an RSA public key in `NOVASIGHT_LICENSE_PUBLIC_KEY`; there is no
-environment override that enables the test key in production. Production
+Operational APIs are blocked until a valid license is activated. Debug builds
+started with `cargo run` accept the built-in development key for both dry-run
+and real Jetson hardware operation, without license environment variables.
+Release builds require an RSA public key in `NOVASIGHT_LICENSE_PUBLIC_KEY` or
+`NOVASIGHT_LICENSE_PUBLIC_KEY_FILE` and reject the development key. Production
 licenses use signed `NS1.<payload>.<signature>` tokens with created time,
 duration, tier, and feature permissions. Rust re-verifies signed claims after
 restart, enforces feature permissions server-side, and never returns the

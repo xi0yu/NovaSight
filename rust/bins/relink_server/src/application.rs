@@ -190,11 +190,11 @@ pub async fn entry() -> ExitCode {
             eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
             return ExitCode::FAILURE;
         }
-        if let Err(error) = server::preflight_license_policy(server::DaemonMode::Production) {
+        if let Err(error) = server::preflight_license_policy(server::DaemonMode::Hardware) {
             eprintln!("{}: {error}", error.code());
             return ExitCode::FAILURE;
         }
-        if let Err(error) = server::preflight_instance_lock(server::DaemonMode::Production) {
+        if let Err(error) = server::preflight_instance_lock(server::DaemonMode::Hardware) {
             eprintln!("{}: {error}", error.code());
             return ExitCode::FAILURE;
         }
@@ -229,7 +229,12 @@ pub async fn entry() -> ExitCode {
                     novasight_core::PointerDeviceMode::Uncommissioned => "uncommissioned",
                 };
             println!(
-                "PASS mode=production config={} configured_output_enabled={} license_verifier=ready instance_guard=ready model_ingress_helper=ready motion_profile=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true pointer_adapter={} capture_not_started=true pointer_not_connected=true",
+                "PASS mode={} config={} configured_output_enabled={} license_verifier=ready instance_guard=ready model_ingress_helper=ready motion_profile=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true pointer_adapter={} capture_not_started=true pointer_not_connected=true",
+                if cfg!(debug_assertions) {
+                    "development_hardware"
+                } else {
+                    "production"
+                },
                 args.config.display(),
                 loaded.config().control.output_enabled,
                 pointer_adapter
@@ -282,7 +287,7 @@ pub async fn entry() -> ExitCode {
                 &python_package_root,
                 parser_library.clone(),
             ) {
-                Ok(dependencies) => (dependencies, server::DaemonMode::Production),
+                Ok(dependencies) => (dependencies, server::DaemonMode::Hardware),
                 Err(error) => {
                     eprintln!("PRODUCTION_RUNTIME_INVALID: {error}");
                     return ExitCode::FAILURE;

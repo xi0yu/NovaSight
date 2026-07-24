@@ -25,21 +25,22 @@ use tokio::sync::watch;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DaemonMode {
     DryRun,
-    Production,
+    Hardware,
 }
 
 impl DaemonMode {
     const fn label(self) -> &'static str {
         match self {
             Self::DryRun => "dry-run",
-            Self::Production => "production",
+            Self::Hardware if cfg!(debug_assertions) => "development-hardware",
+            Self::Hardware => "production",
         }
     }
 
     const fn hardware_output_enabled(self) -> bool {
         match self {
             Self::DryRun => false,
-            Self::Production => true,
+            Self::Hardware => true,
         }
     }
 }
@@ -184,7 +185,11 @@ fn platform_capture_probe() -> Option<Arc<dyn CaptureCapabilityProbe>> {
 }
 
 fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
-    let allow_test_key = mode == DaemonMode::DryRun;
+    // A debug `cargo run` is the supported Jetson development workflow: it may
+    // drive real hardware while using the built-in development license. Only
+    // release artifacts enforce deployment key provisioning.
+    let development_build = cfg!(debug_assertions);
+    let allow_test_key = mode == DaemonMode::DryRun || development_build;
     let inline_public_key = std::env::var("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .ok()
         .filter(|value| !value.trim().is_empty());
@@ -204,7 +209,8 @@ fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
             .transpose()?,
     };
     let policy = LicensePolicy::new(allow_test_key, public_key);
-    match policy.validate_public_key(mode.hardware_output_enabled()) {
+    let public_key_required = mode.hardware_output_enabled() && !development_build;
+    match policy.validate_public_key(public_key_required) {
         Ok(()) => Ok(policy),
         Err(LicenseError::PublicKeyMissing) => Err(DaemonRunError::LicensePublicKeyMissing),
         Err(error) => Err(DaemonRunError::LicensePublicKeyInvalid(error)),
@@ -562,7 +568,7 @@ impl ShutdownSignals {
 #[derive(Debug, Error)]
 pub(super) enum DaemonRunError {
     #[error(
-        "production mode requires NOVASIGHT_LICENSE_PUBLIC_KEY or NOVASIGHT_LICENSE_PUBLIC_KEY_FILE"
+        "release hardware mode requires NOVASIGHT_LICENSE_PUBLIC_KEY or NOVASIGHT_LICENSE_PUBLIC_KEY_FILE"
     )]
     LicensePublicKeyMissing,
     #[error("failed to read license public key {}: {source}", path.display())]

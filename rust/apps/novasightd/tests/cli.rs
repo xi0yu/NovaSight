@@ -276,23 +276,7 @@ fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
 }
 
 #[test]
-fn production_check_rejects_a_missing_license_public_key_before_platform_startup() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
-    let output = daemon_command()
-        .args(["--config", path.to_str().expect("UTF-8 path")])
-        .arg("--check")
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
-        .output()
-        .expect("run production mode");
-    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
-
-    assert!(!output.status.success());
-    assert!(stderr.contains("LICENSE_PUBLIC_KEY_MISSING"));
-}
-
-#[test]
-fn production_check_rejects_an_invalid_license_public_key() {
+fn development_hardware_check_rejects_an_explicit_invalid_license_public_key() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
     let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
@@ -309,12 +293,10 @@ fn production_check_rejects_an_invalid_license_public_key() {
 #[test]
 fn valid_production_authority_reaches_the_platform_build_boundary() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
-    let public_key =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/license-public.pem");
     let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
-        .env("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE", public_key)
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
         .output()
         .expect("run production check");
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
