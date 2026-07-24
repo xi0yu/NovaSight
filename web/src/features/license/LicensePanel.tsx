@@ -6,8 +6,13 @@ import {
   saveLicenseKey
 } from "../../api";
 import { InlineError, StatusIndicator } from "../../components/ui";
+import { reportError } from "../../lib/toast";
 import { Field } from "../shared/Field";
-import { formatEpoch, getErrorMessage } from "../shared/format";
+import { formatEpoch } from "../shared/format";
+import {
+  describeLicenseActionFailure,
+  type LicenseActionFailure
+} from "./connectionIssue";
 import { LICENSE_CACHE_KEY } from "./storage";
 
 export function LicensePanel({
@@ -19,11 +24,11 @@ export function LicensePanel({
 }) {
   const [licenseInput, setLicenseInput] = useState("");
   const [message, setMessage] = useState<string | undefined>();
-  const [error, setError] = useState<string | undefined>();
+  const [failure, setFailure] = useState<LicenseActionFailure | null>(null);
   const currentTime = new Date().toLocaleString("zh-CN", { hour12: false });
 
   const saveLicense = useCallback(async () => {
-    setError(undefined);
+    setFailure(null);
     setMessage(undefined);
     try {
       const status = await saveLicenseKey(licenseInput);
@@ -32,12 +37,19 @@ export function LicensePanel({
       setLicenseInput("");
       setMessage("卡密已激活，界面不回显明文。");
     } catch (err) {
-      setError(getErrorMessage(err));
+      const nextFailure = describeLicenseActionFailure(err, "activate");
+      setFailure(nextFailure);
+      reportError(err, {
+        source: "license-activate",
+        title: nextFailure.title,
+        publicDetail: nextFailure.message,
+        exposeStatus: false
+      });
     }
   }, [licenseInput, onLicenseChange]);
 
   const clearLicense = useCallback(async () => {
-    setError(undefined);
+    setFailure(null);
     setMessage(undefined);
     try {
       const status = await clearLicenseKey();
@@ -45,13 +57,20 @@ export function LicensePanel({
       onLicenseChange(status);
       setMessage("卡密已清除。");
     } catch (err) {
-      setError(getErrorMessage(err));
+      const nextFailure = describeLicenseActionFailure(err, "clear");
+      setFailure(nextFailure);
+      reportError(err, {
+        source: "license-clear",
+        title: nextFailure.title,
+        publicDetail: nextFailure.message,
+        exposeStatus: false
+      });
     }
   }, [onLicenseChange]);
 
   return (
     <div className="license-panel">
-      <InlineError message={error} />
+      <InlineError message={failure?.message} title={failure?.title} />
       {message ? <div className="inline-note">{message}</div> : null}
       <div className={license?.valid ? "license-hero valid" : "license-hero"}>
         <div>

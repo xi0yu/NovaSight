@@ -143,7 +143,13 @@ export function pushToastRaw(toast: Omit<Toast, "id" | "createdAt">): void {
 
 export function reportError(
   error: unknown,
-  options: { source: string; title?: string; fallback?: string }
+  options: {
+    source: string;
+    title?: string;
+    fallback?: string;
+    publicDetail?: string;
+    exposeStatus?: boolean;
+  }
 ): void {
   const normalized = normalizeError(error, {
     source: options.source,
@@ -155,9 +161,9 @@ export function reportError(
     buildToast({
       tone: normalized.severity,
       title: options.title ?? errorTitleForSource(options.source),
-      detail: normalized.message,
+      detail: options.publicDetail ?? normalized.message,
       source: normalized.source,
-      status: normalized.status
+      status: options.exposeStatus === false ? null : normalized.status
     })
   );
 }

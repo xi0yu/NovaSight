@@ -24,6 +24,10 @@ import {
   reportWebSocketRecovered
 } from "./lib/errorGuards";
 import { LicenseGate } from "./features/license/LicenseView";
+import {
+  describeLicenseConnectionIssue,
+  type LicenseConnectionIssue
+} from "./features/license/connectionIssue";
 import { LICENSE_CACHE_KEY } from "./features/license/storage";
 import { formatTime, getErrorMessage } from "./features/shared/format";
 import {
@@ -183,7 +187,7 @@ function StudioApp() {
   const runtimeFallbackAbortRef = useRef<AbortController | null>(null);
   const healthRefreshAbortRef = useRef<AbortController | null>(null);
   const [licenseLoading, setLicenseLoading] = useState(true);
-  const [licenseError, setLicenseError] = useState<string | undefined>();
+  const [licenseIssue, setLicenseIssue] = useState<LicenseConnectionIssue | null>(null);
 
   const applyRuntimeState = useCallback((runtime: RuntimeState) => {
     const receivedAt = Date.now();
@@ -229,7 +233,7 @@ function StudioApp() {
     const requestSeq = licenseRequestSeqRef.current + 1;
     licenseRequestSeqRef.current = requestSeq;
     setLicenseLoading(true);
-    setLicenseError(undefined);
+    setLicenseIssue(null);
     try {
       const cached = localStorage.getItem(LICENSE_CACHE_KEY) === "1";
       const status = await getLicenseStatus();
@@ -251,12 +255,14 @@ function StudioApp() {
         return null;
       }
       setLicense(null);
-      setLicenseError(getErrorMessage(err));
+      const issue = describeLicenseConnectionIssue(err);
+      setLicenseIssue(issue);
       localStorage.removeItem(LICENSE_CACHE_KEY);
       reportError(err, {
         source: "license",
-        title: "授权校验失败",
-        fallback: "无法连接 NovaSight 后端"
+        title: issue.title,
+        publicDetail: `${issue.description} ${issue.recovery}`,
+        exposeStatus: false
       });
       return null;
     } finally {
@@ -677,7 +683,7 @@ function StudioApp() {
       <LicenseGate
         license={license}
         loading={licenseLoading}
-        error={licenseError}
+        issue={licenseIssue}
         onRefresh={() => void loadLicense()}
         onLicenseChange={handleLicenseChange}
       />
