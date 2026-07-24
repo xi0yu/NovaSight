@@ -4,9 +4,9 @@ server:
   # Remote access belongs behind an authenticated TLS proxy.
   host: 127.0.0.1
   port: 5174
-  # Development socket stays inside the writable source-tree data directory.
+  # Development socket gets a dedicated 0750 directory under writable data.
   # Production uses /run/novasight/novasightd.sock via the systemd config.
-  control_socket: data/novasightd.sock
+  control_socket: data/control/novasightd.sock
 replay:
   enabled: true
   frame_interval_ms: 16
