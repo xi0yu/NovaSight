@@ -893,10 +893,7 @@ fn start_pipeline(
             }
             gst::PadProbeReturn::Ok
         })
-        .ok_or_else(|| {
-            capture_pad.remove_probe(capture_probe_id);
-            SessionError::ProbeInstallFailed
-        })?;
+        .ok_or(SessionError::ProbeInstallFailed)?;
 
     finish_started_pipeline(
         config,
