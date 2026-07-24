@@ -580,7 +580,7 @@ impl ConfigSchemaResponse {
                         ),
                         integer(
                             "pipeline.output_interval_ms",
-                            "输出调度间隔",
+                            "空闲／后坐力调度间隔",
                             1.0,
                             10.0,
                             Some("ms"),

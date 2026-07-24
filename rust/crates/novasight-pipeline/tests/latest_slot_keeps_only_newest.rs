@@ -1,5 +1,7 @@
+use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use novasight_pipeline::{LatestSlot, TryPublishError};
 
@@ -26,6 +28,31 @@ fn closing_a_slot_rejects_new_values_and_wakes_consumers() {
 
     assert!(slot.publish(1).is_err());
     assert!(slot.wait_take().is_none());
+}
+
+#[test]
+fn periodic_consumer_wakes_immediately_for_a_published_value() {
+    let slot = LatestSlot::new();
+    let consumer = slot.clone();
+    let (started_tx, started_rx) = sync_channel(0);
+    let (result_tx, result_rx) = sync_channel(0);
+    let worker = thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let result = consumer.wait_take_or_timeout(Duration::from_secs(1));
+        result_tx
+            .send(result.map(|value| value.map(|value| *value)))
+            .unwrap();
+    });
+
+    started_rx.recv().unwrap();
+    slot.publish(42).unwrap();
+    assert_eq!(
+        result_rx
+            .recv_timeout(Duration::from_millis(250))
+            .expect("publish must wake a periodic consumer before its idle interval"),
+        Ok(Some(42))
+    );
+    worker.join().unwrap();
 }
 
 #[test]

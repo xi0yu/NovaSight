@@ -1084,10 +1084,10 @@ impl PipelineRuntimeConfig {
                 "must be within 1..=1000 ms",
             ));
         }
-        if self.output_interval_ms == 0 {
+        if !(1..=10).contains(&self.output_interval_ms) {
             return Err(ConfigValidationError::new(
                 "pipeline.output_interval_ms",
-                "must be positive; latency targets are deployment policy, not pipeline validity",
+                "must be within 1..=10 ms; tracking commands bypass this idle/recoil cadence",
             ));
         }
         Ok(())

@@ -173,24 +173,40 @@ impl<T> LatestSlot<T> {
         self.inner.changed.notify_all();
     }
 
-    /// Wait for one scheduler interval while still waking promptly when
-    /// the slot closes. Published values remain capacity-one and are
-    /// deliberately not consumed until the interval expires.
-    pub(crate) fn wait_interval(&self, interval: Duration) -> bool {
-        let state = self
+    /// Take a newly published value immediately, or return `None` when the
+    /// interval elapses. Closing the slot interrupts the wait without polling.
+    ///
+    /// This preserves capacity-one/latest-only delivery while allowing a
+    /// periodic consumer to distinguish real work from its idle tick.
+    pub fn wait_take_or_timeout(&self, interval: Duration) -> Result<Option<Arc<T>>, SlotClosed> {
+        let mut state = self
             .inner
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.closed {
-            return false;
+        if let Some(value) = state.value.take() {
+            state.metrics.consumed = state.metrics.consumed.saturating_add(1);
+            return Ok(Some(value));
         }
-        let (state, _) = self
+        if state.closed {
+            return Err(SlotClosed);
+        }
+        let (mut state, timeout) = self
             .inner
             .changed
-            .wait_timeout_while(state, interval, |state| !state.closed)
+            .wait_timeout_while(state, interval, |state| {
+                state.value.is_none() && !state.closed
+            })
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        !state.closed
+        if let Some(value) = state.value.take() {
+            state.metrics.consumed = state.metrics.consumed.saturating_add(1);
+            return Ok(Some(value));
+        }
+        if state.closed {
+            return Err(SlotClosed);
+        }
+        debug_assert!(timeout.timed_out());
+        Ok(None)
     }
 
     pub fn metrics(&self) -> SlotMetrics {

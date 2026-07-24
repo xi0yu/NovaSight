@@ -73,8 +73,8 @@ pub struct PipelineConfig {
     /// Commands older than this many monotonic nanoseconds are dropped
     /// immediately before the device call.
     pub max_command_age_ns: u64,
-    /// Independent output scheduler cadence. Production configuration is
-    /// positive; deployment policy may impose a tighter latency target.
+    /// Idle/recoil scheduler cadence. Tracking commands bypass this interval
+    /// and wake the device lane immediately.
     pub output_interval_ms: u64,
     /// Hardware trigger polling cadence. `None` leaves trigger ownership with
     /// the control plane (recording/replay); production devices set this.
@@ -181,7 +181,7 @@ pub enum PipelineError {
     NonMonotonicGeneration { previous: u64, actual: u64 },
     #[error("pipeline ingress is busy; realtime producer must drop this batch")]
     IngressBusy,
-    #[error("output scheduler interval must be positive, got {actual_ms}")]
+    #[error("idle/recoil scheduler interval must be within 1..=10 ms, got {actual_ms}")]
     InvalidOutputInterval { actual_ms: u64 },
     #[error("trigger polling interval must be within 1..=50 ms, got {actual_ms}")]
     InvalidTriggerPollInterval { actual_ms: u64 },
@@ -791,7 +791,7 @@ impl PipelineRuntime {
         output_gate_open: bool,
         external_stop: Arc<AtomicUsize>,
     ) -> Result<(Self, PipelineIngress), PipelineError> {
-        if config.output_interval_ms == 0 {
+        if !(1..=10).contains(&config.output_interval_ms) {
             return Err(PipelineError::InvalidOutputInterval {
                 actual_ms: config.output_interval_ms,
             });
@@ -1380,7 +1380,11 @@ fn spawn_device_worker(
                 let mut last_tick_ns = None;
                 let mut recoil = TargetRelativeRecoilController::new(config.recoil)
                     .expect("pipeline validates recoil config before worker startup");
-                while input.wait_interval(interval) {
+                loop {
+                    let tracking = match input.wait_take_or_timeout(interval) {
+                        Ok(command) => command.map(|command| *command),
+                        Err(_) => break,
+                    };
                     let now_ns = clock.now().0;
                     let dt_s = last_tick_ns.map_or(interval_s, |last_tick_ns| {
                         (now_ns.saturating_sub(last_tick_ns) as f64 / 1_000_000_000.0)
@@ -1410,7 +1414,6 @@ fn spawn_device_worker(
                     });
                     shared.record_recoil(recoil_decision);
 
-                    let tracking = input.try_take().map(|command| *command);
                     let _lane = shared
                         .device_lane
                         .lock()
