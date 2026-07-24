@@ -41,24 +41,42 @@ pub(crate) struct PersistedOutputGate<'a> {
     effective_config: &'a std::sync::RwLock<AppConfig>,
     output_gate_consistent: &'a std::sync::atomic::AtomicBool,
     config: AppConfig,
+    advance_effective_revision: bool,
 }
 
 impl PersistedOutputGate<'_> {
     pub(crate) fn commit(mut self) -> ConfigUpdate {
         *self.current_guard = self.config.clone();
-        *self
-            .effective_config
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.config.clone();
-        self.effective_revision
-            .store(self.config.revision, Ordering::Release);
+        if self.advance_effective_revision {
+            *self
+                .effective_config
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.config.clone();
+            self.effective_revision
+                .store(self.config.revision, Ordering::Release);
+        } else {
+            // A fail-closed output update may be applied while unrelated
+            // desired configuration is waiting for process restart. Reflect
+            // only the live gate in the effective view; never claim that the
+            // pending device address/UUID has entered the running process.
+            self.effective_config
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .control
+                .output_enabled = false;
+        }
         self.output_gate_consistent.store(true, Ordering::Release);
         ConfigUpdate {
             config: self.config,
-            restart_required: false,
+            restart_required: !self.advance_effective_revision,
             applied: true,
             rolled_back: false,
-            message: "output gate persisted and applied to the live runtime".to_owned(),
+            message: if self.advance_effective_revision {
+                "output gate persisted and applied to the live runtime".to_owned()
+            } else {
+                "output gate disabled live; other configuration remains pending daemon restart"
+                    .to_owned()
+            },
         }
     }
 }
@@ -363,7 +381,8 @@ impl ConfigService {
         let current_guard = self.inner.current.write().await;
         let current = current_guard.clone();
         let effective_revision = self.effective_revision();
-        if current.revision != effective_revision {
+        let advance_effective_revision = current.revision == effective_revision;
+        if !advance_effective_revision && enabled {
             return Err(ConfigServiceError::RestartRequired {
                 effective_revision,
                 desired_revision: current.revision,
@@ -419,6 +438,7 @@ impl ConfigService {
             effective_config: &self.inner.effective_config,
             output_gate_consistent: &self.inner.output_gate_consistent,
             config,
+            advance_effective_revision,
         })
     }
 

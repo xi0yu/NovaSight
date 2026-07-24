@@ -10,8 +10,18 @@ function apiErrorCode(error: ApiError): string {
 
 export function getErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    if (apiErrorCode(error) === "CONFIG_REVISION_CONFLICT") {
+    const code = apiErrorCode(error);
+    if (code === "CONFIG_REVISION_CONFLICT") {
       return "配置刚刚被另一项操作更新，已保留较新的版本；请刷新后重试本次修改。";
+    }
+    if (code === "CONFIG_RESTART_REQUIRED") {
+      return "新配置已经保存，但尚未进入当前进程；请重启 novasightd 后继续。";
+    }
+    if (code === "HARDWARE_OUTPUT_DISABLED") {
+      return "当前以 dry-run 模式运行，不能连接或控制物理 kmNet 设备。";
+    }
+    if (code === "DEVICE_NOT_CONFIGURED" || code === "DEVICE_UNCOMMISSIONED" || code === "device_uncommissioned") {
+      return "kmNet 尚未完成设备委任；请先保存有效的地址、端口和 UUID。";
     }
     return error.message;
   }

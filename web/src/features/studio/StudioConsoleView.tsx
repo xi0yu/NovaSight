@@ -253,17 +253,6 @@ const KMNET_RECOMMENDED = {
   uuid: "12345678",
   monitor_port: 5001
 };
-const KMNET_RECOMMENDED_FIELD_UPDATES: ReadonlyArray<readonly [string, RuntimeConfigValue]> = [
-  ["backend", KMNET_RECOMMENDED.backend],
-  ["host", KMNET_RECOMMENDED.host],
-  ["port", KMNET_RECOMMENDED.port],
-  ["uuid", KMNET_RECOMMENDED.uuid],
-  ["monitor_port", KMNET_RECOMMENDED.monitor_port],
-  // Commission only after every identity field is valid. This keeps each
-  // independently validated field update safe and avoids a stale full-config
-  // replacement racing an earlier UI write.
-  ["auto_connect", KMNET_RECOMMENDED.auto_connect]
-];
 
 const ARTIFACT_KIND_RANK: Record<string, number> = {
   engine: 0,
@@ -1471,7 +1460,28 @@ export function StudioConsoleView({
   const kmnetRetryable = kmnetStatus.retryable === true;
   const kmnetLastError = readString(kmnetStatus.last_error, "");
   const kmnetLastDeviceError = readString(kmnetStatus.last_device_error, "");
-  const kmnetConnectionLabel = kmnetConnected
+  const desiredConfigRevision = readNumber(runtime?.config?.version, 0);
+  const effectiveConfigRevision = readNumber(runtime?.config?.effective_version, desiredConfigRevision);
+  const kmnetRestartRequired = kmnetStatus.restart_required === true
+    || runtime?.config?.restart_required === true
+    || desiredConfigRevision !== effectiveConfigRevision;
+  const kmnetConfigurationState = readString(
+    kmnetStatus.configuration_state,
+    kmnetRestartRequired ? "restart_required" : kmnetAutoConnect ? "ready" : "uncommissioned"
+  );
+  const kmnetConfigurationReady = kmnetStatus.configuration_ready === true
+    || (kmnetConfigurationState === "ready" && !kmnetRestartRequired);
+  const kmnetCanConnect = kmnetStatus.can_connect === true
+    || (kmnetConfigurationReady
+      && runtime?.running === true
+      && !kmnetRuntimeConnected
+      && !kmnetConnecting);
+  const kmnetCanDisconnect = kmnetStatus.can_disconnect === true
+    || (runtime?.running === true && kmnetRuntimeConnected);
+  const kmnetBlockedReason = readString(kmnetStatus.blocked_reason, "");
+  const kmnetConnectionLabel = kmnetRestartRequired
+    ? "配置等待重启"
+    : kmnetConnected
     ? kmnetConnectionDegraded ? "已连接，监听异常" : "已连接"
     : kmnetConnecting
       ? "连接中"
@@ -1479,9 +1489,14 @@ export function StudioConsoleView({
         ? "连接失败"
         : "未连接";
   const kmnetRuntimeConnectionLabel = runtime?.running === true
-    ? kmnetRuntimeConnected ? "已连接" : "未连接"
+    ? kmnetRestartRequired
+      ? kmnetRuntimeConnected ? "旧配置仍连接" : "等待重启"
+      : kmnetRuntimeConnected ? "已连接" : "未连接"
     : "主链未运行";
-  const kmnetDiagnosticDisabled = !kmnetDriverAvailable || runtime?.running === true || busy === "kmnet.diagnostic";
+  const kmnetDiagnosticDisabled = kmnetRestartRequired
+    || !kmnetDriverAvailable
+    || runtime?.running === true
+    || busy === "kmnet.diagnostic";
   const kmnetButtonLeft = kmnetStatus.button_left === true;
   const kmnetButtonRight = kmnetStatus.button_right === true;
   const previewEnabled = consumersConfig.preview !== false;
@@ -2626,27 +2641,35 @@ export function StudioConsoleView({
     [onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
   );
 
-  const updateConfigFields = useCallback(
+  const updateConfigSection = useCallback(
     async (
       section: string,
-      updates: ReadonlyArray<readonly [string, RuntimeConfigValue]>
+      values: Record<string, RuntimeConfigValue>
     ) => {
       const request = configWriteQueueRef.current.then(async () => {
-        let latestResult = null;
-        for (const [key, value] of updates) {
-          latestResult = await updateRuntimeConfigField(section, key, value);
-          runtimeConfigLatestRef.current = normalizeRuntimeConfig(latestResult.config);
+        const current = cloneRuntimeConfig(runtimeConfigLatestRef.current);
+        if (!current) {
+          throw new Error("尚未读取运行配置。");
         }
-        if (!latestResult) {
-          throw new Error("配置更新列表不能为空。");
+        const currentSection = asRecord(current[section]);
+        const nextSection = {
+          ...currentSection,
+          ...values
+        };
+        if (runtimeConfigValuesEqual(currentSection, nextSection)) {
+          return null;
         }
-        return latestResult;
+        current[section] = nextSection as RuntimeConfig[string];
+        return updateRuntimeConfig(current);
       });
       configWriteQueueRef.current = request.then(
         () => undefined,
         () => undefined
       );
       const result = await request;
+      if (!result) {
+        return null;
+      }
       const applied = normalizeRuntimeConfig(result.config);
       runtimeConfigLatestRef.current = applied;
       configDraftRef.current = applied;
@@ -3105,40 +3128,46 @@ export function StudioConsoleView({
     setBusy("kmnet.defaults");
     setLocalError(null);
     try {
-      const result = await updateConfigFields("hardware", KMNET_RECOMMENDED_FIELD_UPDATES);
+      const result = await updateConfigSection("hardware", KMNET_RECOMMENDED);
       setKmnetTestMessage(
-        result.restart_required
+        result?.restart_required
           ? "kmNet 参数已保存；请重启 novasightd，使新的物理设备适配器生效。"
-          : "kmNet 推荐参数已应用。"
+          : "kmNet 参数已经是推荐值。"
       );
       await onRefresh();
     } catch (err) {
       setLocalError(`kmNet 推荐参数应用失败：${getErrorMessage(err)}`);
 
       reportError(err, { source: 'studio', title: '操作失败' });
-      // A validated field batch may have committed an earlier field before a
-      // later field is rejected. Re-read the canonical revision instead of
-      // leaving the editor on its pre-transaction snapshot.
+      // An external writer may still win the optimistic revision check.
+      // Re-read the canonical revision instead of leaving the editor on its
+      // pre-transaction snapshot.
       await onRefresh();
     } finally {
       setBusy(null);
     }
-  }, [onRefresh, updateConfigFields]);
+  }, [onRefresh, updateConfigSection]);
 
   const setKmNetConnection = useCallback(async (connect: boolean) => {
     setBusy(connect ? "kmnet.connect" : "kmnet.disconnect");
     setLocalError(null);
     setKmnetTestMessage("");
+    let physicalDisconnectCompleted = false;
     try {
       if (connect && !kmnetAutoConnect) {
-        const result = await updateConfigFields("hardware", KMNET_RECOMMENDED_FIELD_UPDATES);
+        const result = await updateConfigSection("hardware", KMNET_RECOMMENDED);
         setKmnetTestMessage(
-          result.restart_required
-            ? "kmNet 已委任并保存；请重启 novasightd，然后启动主链完成连接。"
-            : "kmNet 已委任。"
+          result?.restart_required
+            ? "kmNet 配置已保存；重启 novasightd 后会自动连接。"
+            : "kmNet 已完成委任；启动主链后会自动连接。"
         );
-      } else {
-        if (!connect && outputEnabled) {
+      } else if (!connect) {
+        // Physical stop comes first. Persisting the fail-closed output gate is
+        // still attempted afterwards, but a storage error cannot keep an
+        // already requested device session alive.
+        await disconnectKmNet();
+        physicalDisconnectCompleted = true;
+        if (outputEnabled) {
           const gateResult = await updateRuntimeConfigField("control", "output_enabled", false);
           const applied = normalizeRuntimeConfig(gateResult.config);
           runtimeConfigLatestRef.current = applied;
@@ -3146,23 +3175,31 @@ export function StudioConsoleView({
           setConfigDraft(applied);
           onRuntimeConfigChange(applied);
         }
-        await (connect ? connectKmNet() : disconnectKmNet());
         setKmnetTestMessage(
-          connect
-            ? "kmNet 连接成功；若偏移输出已允许，新的实时命令现在可以发送。"
-            : "kmNet 已断开；采集、推理与目标计算继续运行，物理偏移输出已关闭。"
+          "kmNet 已断开；采集、推理与目标计算继续运行，物理偏移输出已关闭。"
         );
+      } else {
+        await connectKmNet();
+        setKmnetTestMessage("kmNet 连接成功；若偏移输出已允许，新的实时命令现在可以发送。");
       }
       await onRefresh();
     } catch (err) {
       const action = connect ? "连接" : "断开";
-      setLocalError(`kmNet ${action}失败：${getErrorMessage(err)}`);
-      reportError(err, { source: "kmnet-lifecycle", title: `kmNet ${action}失败` });
+      const detail = getErrorMessage(err);
+      setLocalError(
+        physicalDisconnectCompleted
+          ? `kmNet 已断开，但未能持久化关闭输出：${detail}`
+          : `kmNet ${action}失败：${detail}`
+      );
+      reportError(err, {
+        source: "kmnet-lifecycle",
+        title: physicalDisconnectCompleted ? "kmNet 已安全断开，配置保存失败" : `kmNet ${action}失败`
+      });
       await onRefresh();
     } finally {
       setBusy(null);
     }
-  }, [kmnetAutoConnect, onRefresh, onRuntimeConfigChange, outputEnabled, updateConfigFields]);
+  }, [kmnetAutoConnect, onRefresh, onRuntimeConfigChange, outputEnabled, updateConfigSection]);
 
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
@@ -4134,15 +4171,19 @@ export function StudioConsoleView({
               <ModuleSwitch
                 label="发送偏移控制量"
                 detail={outputEnabled
-                  ? "关闭后立即清空待发送旧命令"
+                  ? kmnetRestartRequired
+                    ? "kmNet 新配置等待 novasightd 重启；需要立即停发时请断开 kmNet"
+                    : "关闭后立即清空待发送旧命令"
+                  : kmnetRestartRequired
+                    ? "重启 novasightd 装载 kmNet 新配置后才能打开输出"
                   : !kmnetAutoConnect
-                    ? "请先在 kmNet 页面点击“委任并连接 kmNet”"
+                    ? "请先保存 kmNet 配置，并按提示重启 novasightd"
                     : !kmnetDriverAvailable
                       ? "dry-run 不允许物理输出；请以生产模式启动 novasightd"
                       : !kmnetRuntimeConnected
                         ? "请先连接 kmNet，再打开偏移输出"
                         : "开启后只发送新的实时观测"}
-                disabled={busy !== null || (!outputEnabled && (!kmnetAutoConnect || !kmnetDriverAvailable || !kmnetRuntimeConnected))}
+                disabled={busy !== null || kmnetRestartRequired || (!outputEnabled && (!kmnetAutoConnect || !kmnetDriverAvailable || !kmnetRuntimeConnected))}
                 enabled={outputEnabled}
                 optimistic={false}
                 onToggle={(enabled) => updateConfigField(
@@ -4516,10 +4557,10 @@ export function StudioConsoleView({
           ) : (
           <>
           <div className="console-metrics">
-            <Metric title="设备能力" value={kmnetConnectionLabel} small={kmnetConnected ? "ready" : kmnetConnecting ? "connecting" : kmnetRetryable ? "retry available" : "unavailable"} />
-            <Metric title="驱动状态" value={kmnetDriverAvailable ? "可用" : "不可用"} small="kmNet" />
+            <Metric title="设备能力" value={kmnetConnectionLabel} small={kmnetRestartRequired ? `运行 ${effectiveConfigRevision} · 已保存 ${desiredConfigRevision}` : kmnetConnected ? "ready" : kmnetConnecting ? "connecting" : kmnetRetryable ? "retry available" : "unavailable"} />
+            <Metric title="驱动状态" value={kmnetRestartRequired ? "等待装载" : kmnetDriverAvailable ? "可用" : "不可用"} small="kmNet" />
             <Metric title="按键监听" value={kmnetStatus.monitoring === true ? "监听中" : "未监听"} small="monitor" />
-            <Metric title="自动连接" value={kmnetAutoConnect ? "已启用" : "已关闭"} small="startup" />
+            <Metric title="自动连接" value={kmnetAutoConnect ? kmnetRestartRequired ? "重启后启用" : "已启用" : "已关闭"} small="startup" />
             <Metric title="主链接受命令" value={formatOptionalInteger(kmnetStatus.accepted_command_count)} small="device receipts" />
             <Metric title="最近接受位移" value={formatPoint(kmnetStatus.last_accepted_dx, kmnetStatus.last_accepted_dy, 0)} small="dx / dy" />
           </div>
@@ -4527,7 +4568,7 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="kmNet 控制面板" />
               <div className="kmnet-status-grid">
-                <div className={kmnetConnected ? "kmnet-status-tile good" : kmnetConnectionFailed ? "kmnet-status-tile bad" : "kmnet-status-tile idle"}>
+                <div className={kmnetRestartRequired ? "kmnet-status-tile idle" : kmnetConnected ? "kmnet-status-tile good" : kmnetConnectionFailed ? "kmnet-status-tile bad" : "kmnet-status-tile idle"}>
                   <span>连接</span>
                   <b>{kmnetConnectionLabel}</b>
                 </div>
@@ -4567,6 +4608,10 @@ export function StudioConsoleView({
                   <span>连接阶段</span>
                   <b>{readString(kmnetStatus.connection_state, NO_SAMPLE)}</b>
                 </div>
+                <div className={kmnetConfigurationReady ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
+                  <span>配置装载</span>
+                  <b>{kmnetRestartRequired ? `${effectiveConfigRevision} → ${desiredConfigRevision}` : kmnetConfigurationReady ? "已生效" : "未委任"}</b>
+                </div>
                 <div className="kmnet-status-tile">
                   <span>设备恢复次数</span>
                   <b>{formatOptionalInteger(kmnetStatus.device_recovery_count)}</b>
@@ -4580,16 +4625,20 @@ export function StudioConsoleView({
                   <b>{kmnetLastDeviceError || kmnetLastError || "无"}</b>
                 </div>
               </div>
-              {kmnetLastError || kmnetConnectionFailed || kmnetConnectionDegraded ? (
-                <div className={kmnetConnectionFailed ? "kmnet-connection-notice failed" : "kmnet-connection-notice warn"} role="status">
+              {kmnetRestartRequired || kmnetLastError || kmnetConnectionFailed || kmnetConnectionDegraded ? (
+                <div className={!kmnetRestartRequired && kmnetConnectionFailed ? "kmnet-connection-notice failed" : "kmnet-connection-notice warn"} role="status">
                   <div>
-                    <strong>{kmnetConnectionFailed ? "输出设备未连接" : kmnetConnectionDegraded ? "输出已连接，但按键监听不可用" : "最近一次输出失败"}</strong>
-                    <span>{kmnetLastError || (kmnetConnectionFailed ? "请检查地址、端口和驱动后重新连接。" : "不依赖硬件按键的控制仍可继续使用。")}</span>
+                    <strong>{kmnetRestartRequired ? "kmNet 配置已保存，等待后端装载" : kmnetConnectionFailed ? "输出设备未连接" : kmnetConnectionDegraded ? "设备连接异常，正在自动恢复" : "最近一次输出失败"}</strong>
+                    <span>{kmnetRestartRequired
+                      ? `novasightd 当前使用 revision ${effectiveConfigRevision}，已保存 revision ${desiredConfigRevision}。重启进程后才会使用新的地址和 UUID。`
+                      : kmnetLastError || (kmnetConnectionFailed ? "请检查地址、端口、UUID 和网络连通性。" : "视觉主链继续运行，物理偏移输出保持关闭。")}</span>
                   </div>
-                  {kmnetRetryable ? (
+                  {kmnetRestartRequired ? (
+                    <small>这是配置生效等待，不是 kmNet 网络连接失败；重启前不会尝试用旧设备对象连接新配置。</small>
+                  ) : kmnetRetryable ? (
                     <small>
                       {rustControlPlane
-                        ? "修改配置并保存后，重启主链以创建新的设备会话。"
+                        ? "低频设备线程会自动重试；也可以点击“立即重试连接”。"
                         : "修改配置后点击“重新连接”，无需重启主链。"}
                     </small>
                   ) : null}
@@ -4601,27 +4650,43 @@ export function StudioConsoleView({
                   aria-pressed={kmnetConnected}
                   disabled={
                     busy !== null ||
-                    (!kmnetAutoConnect && runtimeConfig === null) ||
-                    (kmnetAutoConnect && (!runtime?.running || !kmnetDriverAvailable || kmnetRuntimeConnected))
+                    kmnetRestartRequired ||
+                    (!kmnetAutoConnect
+                      ? runtimeConfig === null
+                      : !kmnetCanConnect)
                   }
                   onClick={() => void setKmNetConnection(true)}
                   type="button"
                 >
-                  {kmnetRuntimeConnected ? "kmNet 已连接" : kmnetAutoConnect ? "连接 kmNet" : "委任并连接 kmNet"}
+                  {kmnetRestartRequired
+                    ? "等待 novasightd 重启"
+                    : kmnetRuntimeConnected
+                      ? "kmNet 已连接"
+                      : kmnetConnecting
+                        ? "连接中"
+                        : kmnetConnectionDegraded
+                          ? "立即重试连接"
+                          : kmnetAutoConnect
+                            ? "连接 kmNet"
+                            : "保存 kmNet 配置"}
                 </button>
                 <button
                   className="console-button danger"
-                  disabled={busy !== null || !runtime?.running || !kmnetRuntimeConnected}
+                  disabled={busy !== null || !kmnetCanDisconnect}
                   onClick={() => void setKmNetConnection(false)}
                   type="button"
                 >
                   断开 kmNet
                 </button>
                 <span>
-                  {!kmnetDriverAvailable
+                  {kmnetRestartRequired
+                    ? "新配置尚未进入当前进程；请停止并重新运行 novasightd。"
+                    : !kmnetDriverAvailable
                     ? "当前是 dry-run 或硬件输出不可用；物理发送必须使用不带 --dry-run 的生产模式启动。"
                     : runtime?.running
-                      ? "连接操作只影响 kmNet 会话，采集、推理和目标计算保持运行。"
+                      ? kmnetBlockedReason === "already_connected"
+                        ? "设备已连接；断开只停止物理输出，采集、推理和目标计算保持运行。"
+                        : "连接操作只影响 kmNet 会话，采集、推理和目标计算保持运行。"
                       : "请先启动主链；Runtime Epoch 建立后才能控制 kmNet 会话。"}
                 </span>
               </div>
@@ -4632,7 +4697,7 @@ export function StudioConsoleView({
               <ModuleSwitch
                 label={rustControlPlane ? "主链启动时连接设备" : "后端服务启动时自动连接"}
                 detail={rustControlPlane
-                  ? "设备会话归属 Runtime Epoch；连接失败时视觉主链继续运行，并由低频设备线程自动重连"
+                  ? "修改后需要重启 novasightd；连接失败时视觉主链继续运行，并由低频设备线程自动重连"
                   : "独立于主链启动；连接失败不会阻止采集、推理和鼠标算法运行"}
                 enabled={kmnetAutoConnect}
                 onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}

@@ -185,6 +185,12 @@ pub(crate) struct ExecutorState {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Availability {
     pub available: bool,
+    pub configuration_state: &'static str,
+    pub configuration_ready: bool,
+    pub restart_required: bool,
+    pub can_connect: bool,
+    pub can_disconnect: bool,
+    pub blocked_reason: Option<&'static str>,
     pub connected: bool,
     pub runtime_connected: bool,
     pub connecting: bool,
@@ -585,6 +591,9 @@ impl CompatibilityRuntimeState {
             inference_config.is_some() && subsystem_can_run(&snapshot.subsystems.inference);
         let device_available =
             device_config.is_some() && subsystem_can_run(&snapshot.subsystems.device);
+        let config_restart_required = config
+            .zip(effective_revision)
+            .is_some_and(|(config, effective)| config.revision != effective);
         let selected_device = device_config
             .map(|device| serialized_label(&device.backend))
             .unwrap_or_else(|| "unconfigured".to_owned());
@@ -593,6 +602,12 @@ impl CompatibilityRuntimeState {
             "dry_run".to_owned(),
             Availability {
                 available: config.is_some_and(|config| config.replay.enabled),
+                configuration_state: "not_applicable",
+                configuration_ready: true,
+                restart_required: false,
+                can_connect: false,
+                can_disconnect: false,
+                blocked_reason: None,
                 connected: false,
                 runtime_connected: false,
                 connecting: false,
@@ -627,10 +642,48 @@ impl CompatibilityRuntimeState {
                 device_state,
                 SubsystemState::Ready | SubsystemState::Running
             );
+        let device_configuration_ready =
+            hardware_output_enabled && !device_uncommissioned && !config_restart_required;
+        let can_connect = device_configuration_ready
+            && running
+            && !snapshot.pipeline_metrics.device_connected
+            && device_state != SubsystemState::Starting;
+        // Disconnect is safety-monotonic and remains admissible even when a
+        // newer desired configuration is waiting for daemon restart.
+        let can_disconnect = hardware_output_enabled
+            && running
+            && snapshot.pipeline_metrics.device_connection_enabled;
+        let blocked_reason = if !hardware_output_enabled {
+            Some("hardware_output_disabled")
+        } else if config_restart_required {
+            Some("daemon_restart_required")
+        } else if device_uncommissioned {
+            Some("device_uncommissioned")
+        } else if !running {
+            Some("runtime_stopped")
+        } else if snapshot.pipeline_metrics.device_connected {
+            Some("already_connected")
+        } else if device_state == SubsystemState::Starting {
+            Some("connecting")
+        } else {
+            None
+        };
         executors.insert(
             "kmnet".to_owned(),
             Availability {
                 available: hardware_output_enabled && device_available,
+                configuration_state: if config_restart_required {
+                    "restart_required"
+                } else if device_uncommissioned {
+                    "uncommissioned"
+                } else {
+                    "ready"
+                },
+                configuration_ready: device_configuration_ready,
+                restart_required: config_restart_required,
+                can_connect,
+                can_disconnect,
+                blocked_reason,
                 connected: device_connected,
                 runtime_connected: hardware_output_enabled
                     && snapshot.pipeline_metrics.device_connected,

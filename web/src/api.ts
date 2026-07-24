@@ -9,6 +9,12 @@ export type ExecutorStatus = {
 
 export type ExecutorAvailability = {
   available: boolean;
+  configuration_state?: "not_applicable" | "uncommissioned" | "restart_required" | "ready" | (string & {});
+  configuration_ready?: boolean;
+  restart_required?: boolean;
+  can_connect?: boolean;
+  can_disconnect?: boolean;
+  blocked_reason?: string | null;
   connected?: boolean;
   runtime_connected?: boolean;
   connecting?: boolean;
@@ -453,6 +459,9 @@ export type CaptureSelectPayload = {
 
 export type RuntimeConfigSummary = {
   version: number;
+  schema_version?: number;
+  effective_version?: number;
+  restart_required?: boolean;
   source?: Record<string, unknown>;
   capture?: Record<string, unknown>;
   roi?: Record<string, unknown>;
