@@ -105,7 +105,7 @@ capture:
   width: 1920
   height: 1080
   fps: 120
-  pixel_format: MJPEG
+  pixel_format: MJPG
   roi_left: 640
   roi_top: 220
   roi_width: 640

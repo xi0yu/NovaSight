@@ -531,6 +531,13 @@ function groupCapabilities(caps: CaptureCapability[]): CapabilityChoice[] {
     });
 }
 
+function canonicalCaptureFormat(value: string): string {
+  const normalized = value.trim().toUpperCase();
+  if (normalized === "MJPEG") return "MJPG";
+  if (normalized === "YUY2") return "YUYV";
+  return normalized;
+}
+
 function choiceId(choice: CapabilityChoice): string {
   return `${choice.pixel_format}:${choice.width}x${choice.height}@${choice.fps}`;
 }
@@ -541,7 +548,8 @@ function choiceLabel(choice: CapabilityChoice): string {
 
 function choiceMatchesConfig(choice: CapabilityChoice, config: Record<string, unknown>): boolean {
   return (
-    readString(config.pixel_format, "").toUpperCase() === choice.pixel_format.toUpperCase() &&
+    canonicalCaptureFormat(readString(config.pixel_format, "")) ===
+      canonicalCaptureFormat(choice.pixel_format) &&
     readNumber(config.width, 0) === choice.width &&
     readNumber(config.height, 0) === choice.height &&
     readNumber(config.fps, 0) === choice.fps

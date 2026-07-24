@@ -69,7 +69,7 @@ pub fn select_capture_profile(
         .flat_map(|capability| {
             capability.fps_list.iter().map(move |fps| {
                 (
-                    capability.pixel_format.to_ascii_uppercase(),
+                    canonical_pixel_format(&capability.pixel_format),
                     capability.width,
                     capability.height,
                     *fps,
@@ -87,7 +87,7 @@ pub fn select_capture_profile(
         CaptureSelectionPreference::Manual => {
             let (pixel_format, width, height, fps) =
                 manual.ok_or(CaptureSelectionError::ManualFieldsRequired)?;
-            let pixel_format = pixel_format.to_ascii_uppercase();
+            let pixel_format = canonical_pixel_format(pixel_format);
             let choice = choices
                 .iter()
                 .find(|choice| **choice == (pixel_format.clone(), width, height, fps))
@@ -153,6 +153,14 @@ pub fn select_capture_profile(
         preference,
         selection_reason,
     })
+}
+
+fn canonical_pixel_format(value: &str) -> String {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "MJPEG" => "MJPG".to_owned(),
+        "YUY2" => "YUYV".to_owned(),
+        canonical => canonical.to_owned(),
+    }
 }
 
 fn high_fps_format_rank(pixel_format: &str, fps: u32) -> u8 {
@@ -256,6 +264,19 @@ mod tests {
             error,
             CaptureSelectionError::UnsupportedProfile { .. }
         ));
+    }
+
+    #[test]
+    fn manual_selection_accepts_common_v4l2_format_aliases() {
+        let selected = select_capture_profile(
+            &capabilities(),
+            CaptureSelectionPreference::Manual,
+            Some(("MJPEG", 1920, 1080, 120)),
+        )
+        .unwrap();
+
+        assert_eq!(selected.pixel_format, "MJPG");
+        assert_eq!(selected.fps, 120);
     }
 }
 
