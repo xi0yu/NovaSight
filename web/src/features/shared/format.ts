@@ -1,8 +1,19 @@
 import { ApiError, type CaptureState } from "../../api";
 
+function apiErrorCode(error: ApiError): string {
+  if (typeof error.detail !== "object" || error.detail === null) {
+    return "";
+  }
+  const detail = error.detail as Record<string, unknown>;
+  return typeof detail.code === "string" ? detail.code : "";
+}
+
 export function getErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    return `${error.status} ${error.message}`;
+    if (apiErrorCode(error) === "CONFIG_REVISION_CONFLICT") {
+      return "配置刚刚被另一项操作更新，已保留较新的版本；请刷新后重试本次修改。";
+    }
+    return error.message;
   }
   if (error instanceof Error) {
     return error.message;

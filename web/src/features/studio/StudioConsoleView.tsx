@@ -253,6 +253,17 @@ const KMNET_RECOMMENDED = {
   uuid: "12345678",
   monitor_port: 5001
 };
+const KMNET_RECOMMENDED_FIELD_UPDATES: ReadonlyArray<readonly [string, RuntimeConfigValue]> = [
+  ["backend", KMNET_RECOMMENDED.backend],
+  ["host", KMNET_RECOMMENDED.host],
+  ["port", KMNET_RECOMMENDED.port],
+  ["uuid", KMNET_RECOMMENDED.uuid],
+  ["monitor_port", KMNET_RECOMMENDED.monitor_port],
+  // Commission only after every identity field is valid. This keeps each
+  // independently validated field update safe and avoids a stale full-config
+  // replacement racing an earlier UI write.
+  ["auto_connect", KMNET_RECOMMENDED.auto_connect]
+];
 
 const ARTIFACT_KIND_RANK: Record<string, number> = {
   engine: 0,
@@ -2582,9 +2593,12 @@ export function StudioConsoleView({
           () => undefined
         );
         const result = await request;
+        const applied = normalizeRuntimeConfig(result.config);
+        // Always advance the canonical persisted revision. A newer optimistic
+        // edit may still own the visible draft, but the next queued transaction
+        // must never be built from an older revision.
+        runtimeConfigLatestRef.current = applied;
         if (writeSeq === configWriteSeqRef.current) {
-          const applied = normalizeRuntimeConfig(result.config);
-          runtimeConfigLatestRef.current = applied;
           configDraftRef.current = applied;
           setConfigDraft(applied);
           onRuntimeConfigChange(applied);
@@ -2610,6 +2624,37 @@ export function StudioConsoleView({
       }
     },
     [onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
+  );
+
+  const updateConfigFields = useCallback(
+    async (
+      section: string,
+      updates: ReadonlyArray<readonly [string, RuntimeConfigValue]>
+    ) => {
+      const request = configWriteQueueRef.current.then(async () => {
+        let latestResult = null;
+        for (const [key, value] of updates) {
+          latestResult = await updateRuntimeConfigField(section, key, value);
+          runtimeConfigLatestRef.current = normalizeRuntimeConfig(latestResult.config);
+        }
+        if (!latestResult) {
+          throw new Error("配置更新列表不能为空。");
+        }
+        return latestResult;
+      });
+      configWriteQueueRef.current = request.then(
+        () => undefined,
+        () => undefined
+      );
+      const result = await request;
+      const applied = normalizeRuntimeConfig(result.config);
+      runtimeConfigLatestRef.current = applied;
+      configDraftRef.current = applied;
+      setConfigDraft(applied);
+      onRuntimeConfigChange(applied);
+      return result;
+    },
+    [onRuntimeConfigChange]
   );
 
   const updateDetectionClassFilter = useCallback(
@@ -3057,18 +3102,10 @@ export function StudioConsoleView({
   ]);
 
   const applyKmNetRecommended = useCallback(async () => {
-    const next = cloneRuntimeConfig(runtimeConfig);
-    if (!next) {
-      return;
-    }
     setBusy("kmnet.defaults");
     setLocalError(null);
-    next.hardware = {
-      ...asRecord(next.hardware),
-      ...KMNET_RECOMMENDED
-    } as RuntimeConfig[string];
     try {
-      const result = await updateRuntimeConfig(next);
+      const result = await updateConfigFields("hardware", KMNET_RECOMMENDED_FIELD_UPDATES);
       setKmnetTestMessage(
         result.restart_required
           ? "kmNet 参数已保存；请重启 novasightd，使新的物理设备适配器生效。"
@@ -3079,10 +3116,14 @@ export function StudioConsoleView({
       setLocalError(`kmNet 推荐参数应用失败：${getErrorMessage(err)}`);
 
       reportError(err, { source: 'studio', title: '操作失败' });
+      // A validated field batch may have committed an earlier field before a
+      // later field is rejected. Re-read the canonical revision instead of
+      // leaving the editor on its pre-transaction snapshot.
+      await onRefresh();
     } finally {
       setBusy(null);
     }
-  }, [onRefresh, runtimeConfig]);
+  }, [onRefresh, updateConfigFields]);
 
   const setKmNetConnection = useCallback(async (connect: boolean) => {
     setBusy(connect ? "kmnet.connect" : "kmnet.disconnect");
@@ -3090,15 +3131,7 @@ export function StudioConsoleView({
     setKmnetTestMessage("");
     try {
       if (connect && !kmnetAutoConnect) {
-        const next = cloneRuntimeConfig(runtimeConfig);
-        if (!next) {
-          throw new Error("尚未读取运行配置。");
-        }
-        next.hardware = {
-          ...asRecord(next.hardware),
-          ...KMNET_RECOMMENDED
-        } as RuntimeConfig[string];
-        const result = await updateRuntimeConfig(next);
+        const result = await updateConfigFields("hardware", KMNET_RECOMMENDED_FIELD_UPDATES);
         setKmnetTestMessage(
           result.restart_required
             ? "kmNet 已委任并保存；请重启 novasightd，然后启动主链完成连接。"
@@ -3129,7 +3162,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [kmnetAutoConnect, onRefresh, onRuntimeConfigChange, outputEnabled, runtimeConfig]);
+  }, [kmnetAutoConnect, onRefresh, onRuntimeConfigChange, outputEnabled, updateConfigFields]);
 
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
