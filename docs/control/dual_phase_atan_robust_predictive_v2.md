@@ -82,7 +82,7 @@ e_ctrl.x = e_meas.x + safe
 e_ctrl.y = e_meas.y
 ```
 
-`lead_frames=0` provides the pure-feedback/shadow baseline. Increasing it cannot bypass confidence, absolute, relative, freshness, or X-only constraints. Frame age remains a freshness/rejection signal and is not a second hidden prediction multiplier.
+`prediction.enabled=false` is the user-facing pure-feedback switch: raw, weighted, and safe prediction offsets are all zero while target tracking and velocity observation remain active. `lead_frames` only controls look-ahead strength while prediction is enabled. Increasing it cannot bypass confidence, absolute, relative, freshness, or X-only constraints. Frame age remains a freshness/rejection signal and is not a second hidden prediction multiplier.
 
 ## Y Feedback And Recoil
 

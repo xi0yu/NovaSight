@@ -130,6 +130,7 @@ control:
         change_base_px_ms: 0.20
         change_relative: 0.75
       prediction:
+        enabled: true
         lead_frames: 1.0
         far:
           absolute_cap_px: 10.0

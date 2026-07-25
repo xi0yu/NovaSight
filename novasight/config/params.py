@@ -403,7 +403,7 @@ CONTROL_PARAM_SPECS.update(
             10.0,
             0.01,
             "frames",
-            "与平均捕获 dt 和平滑目标速度相乘；0 完全关闭位置预测。",
+            "启用位置预测后，与平均捕获 dt 和平滑目标速度相乘。",
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px",

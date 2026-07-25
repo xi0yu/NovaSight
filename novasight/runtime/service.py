@@ -3470,6 +3470,7 @@ class RuntimeService:
                     change_relative=float(source_v2.velocity.change_relative),
                 ),
                 prediction=DualPhaseRobustPredictionConfig(
+                    enabled=bool(source_v2.prediction.enabled),
                     lead_frames=float(source_v2.prediction.lead_frames),
                     far=DualPhaseRobustPredictionModeConfig(
                         absolute_cap_px=float(source_v2.prediction.far.absolute_cap_px),

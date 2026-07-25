@@ -393,6 +393,7 @@ impl ConfigSchemaResponse {
                             1_000.0,
                             None,
                         ),
+                        boolean("pipeline.prediction_enabled", "启用位置预测"),
                         float(
                             "pipeline.prediction_lead_frames",
                             "预测提前帧数",

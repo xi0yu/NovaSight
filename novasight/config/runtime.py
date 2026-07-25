@@ -231,6 +231,7 @@ def _default_dual_phase_robust_near_prediction() -> DualPhaseRobustPredictionMod
 
 @dataclass
 class DualPhaseRobustPredictionConfig:
+    enabled: bool = True
     lead_frames: float = 1.0
     far: DualPhaseRobustPredictionModeConfig = field(
         default_factory=_default_dual_phase_robust_far_prediction
@@ -1007,6 +1008,14 @@ def _migrate_dual_phase_robust_v2_namespace(
         atan["near"] = near
         config["atan"] = atan
         config["schema_version"] = 7
+
+    prediction = dict(config.get("prediction") or {})
+    if "enabled" not in prediction:
+        lead_frames = float(prediction.get("lead_frames", 1.0))
+        prediction["enabled"] = lead_frames > 0.0
+        if lead_frames <= 0.0:
+            prediction["lead_frames"] = 1.0
+    config["prediction"] = prediction
     algorithms["dual_phase_atan_robust_predictive_v2"] = config
 
 

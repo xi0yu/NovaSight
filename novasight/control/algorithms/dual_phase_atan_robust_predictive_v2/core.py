@@ -327,12 +327,17 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         prediction_config = self.config.prediction
         valid_dt = reference_dt_ms if isfinite(reference_dt_ms) and reference_dt_ms > 0.0 else 0.0
         allowed = bool(
-            estimate_available
+            prediction_config.enabled
+            and estimate_available
             and valid_dt > 0.0
             and prediction_config.lead_frames > 0.0
         )
         effective_confidence = _clamp(motion_confidence, 0.0, 1.0) if allowed else 0.0
-        raw_offset_x = filtered_velocity_x * valid_dt * prediction_config.lead_frames
+        raw_offset_x = (
+            filtered_velocity_x * valid_dt * prediction_config.lead_frames
+            if prediction_config.enabled
+            else 0.0
+        )
         weighted_offset_x = raw_offset_x * effective_confidence
         mode_config = prediction_config.far if mode is ControlMode.FAR else prediction_config.near
         allowed_cap_x = min(

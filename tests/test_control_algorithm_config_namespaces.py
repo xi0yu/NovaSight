@@ -231,7 +231,9 @@ def test_v2_migration_preserves_explicitly_disabled_prediction() -> None:
         }
     )
 
-    assert config.control.dual_phase_atan_robust_predictive_v2.prediction.lead_frames == 0.0
+    prediction = config.control.dual_phase_atan_robust_predictive_v2.prediction
+    assert prediction.enabled is False
+    assert prediction.lead_frames == 1.0
 
 
 @pytest.mark.parametrize(

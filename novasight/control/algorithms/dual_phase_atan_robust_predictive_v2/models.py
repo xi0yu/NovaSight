@@ -62,6 +62,7 @@ def _default_near_prediction() -> PredictionModeConfig:
 
 @dataclass(frozen=True, slots=True)
 class PredictionConfig:
+    enabled: bool = True
     lead_frames: float = 1.0
     far: PredictionModeConfig = field(default_factory=_default_far_prediction)
     near: PredictionModeConfig = field(default_factory=_default_near_prediction)

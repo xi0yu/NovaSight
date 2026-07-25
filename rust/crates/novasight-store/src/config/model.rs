@@ -719,6 +719,8 @@ pub struct PipelineRuntimeConfig {
     pub velocity_change_base_px_ms: f64,
     #[serde(default = "default_velocity_change_relative")]
     pub velocity_change_relative: f64,
+    #[serde(default = "default_prediction_enabled")]
+    pub prediction_enabled: bool,
     #[serde(default = "default_prediction_lead_frames")]
     pub prediction_lead_frames: f64,
     #[serde(default = "default_prediction_far_absolute_cap_px")]
@@ -806,6 +808,7 @@ impl Default for PipelineRuntimeConfig {
             velocity_spread_relative: default_velocity_spread_relative(),
             velocity_change_base_px_ms: default_velocity_change_base_px_ms(),
             velocity_change_relative: default_velocity_change_relative(),
+            prediction_enabled: default_prediction_enabled(),
             prediction_lead_frames: default_prediction_lead_frames(),
             prediction_far_absolute_cap_px: default_prediction_far_absolute_cap_px(),
             prediction_far_base_cap_px: default_prediction_far_base_cap_px(),
@@ -1278,6 +1281,10 @@ const fn default_velocity_change_base_px_ms() -> f64 {
 
 const fn default_velocity_change_relative() -> f64 {
     0.75
+}
+
+const fn default_prediction_enabled() -> bool {
+    true
 }
 
 const fn default_prediction_lead_frames() -> f64 {

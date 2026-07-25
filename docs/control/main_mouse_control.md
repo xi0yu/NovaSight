@@ -74,6 +74,7 @@ control:
         velocity_sample_count: 3
         smoothing_frames: 3.0
       prediction:
+        enabled: true
         lead_frames: 1.0
       atan:
         scale_counts: 1024.0

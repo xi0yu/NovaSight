@@ -94,6 +94,7 @@ const RUST_DUAL_PHASE_PATHS: Record<string, string> = {
   "atan.scale_counts": "atan_scale_counts",
   "atan.far.max_counts_per_update": "far_max_counts_per_update",
   "atan.near.max_counts_per_update": "near_max_counts_per_update",
+  "prediction.enabled": "prediction_enabled",
   "prediction.lead_frames": "prediction_lead_frames",
   "velocity.smoothing_frames": "velocity_smoothing_frames",
   "velocity.history_reset_gap_ms": "velocity_history_reset_gap_ms",
@@ -1397,6 +1398,7 @@ export function StudioConsoleView({
   const dualPhaseAtanScale = readNumber(rustControlPlane ? rustPipelineConfig.atan_scale_counts : dualPhaseAtanConfig.scale_counts, 1024);
   const dualPhaseFarMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.far_max_counts_per_update : dualPhaseFarConfig.max_counts_per_update, 600);
   const dualPhaseNearMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.near_max_counts_per_update : dualPhaseNearConfig.max_counts_per_update, 120);
+  const dualPhasePredictionEnabled = readBoolean(rustControlPlane ? rustPipelineConfig.prediction_enabled : dualPhasePredictionConfig.enabled, true);
   const dualPhaseLeadFrames = readNumber(rustControlPlane ? rustPipelineConfig.prediction_lead_frames : dualPhasePredictionConfig.lead_frames, 1.0);
   const dualPhaseVelocitySmoothingFrames = readNumber(rustControlPlane ? rustPipelineConfig.velocity_smoothing_frames : dualPhaseVelocityConfig.smoothing_frames, 3.0);
   const dualPhaseHistoryResetGapMs = readNumber(rustControlPlane ? rustPipelineConfig.velocity_history_reset_gap_ms : dualPhaseVelocityConfig.history_reset_gap_ms, 80.0);
@@ -4157,7 +4159,7 @@ export function StudioConsoleView({
               />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
-              <Metric title="位置预测" value={dualPhaseActive ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "不使用"} small={dualPhaseActive ? "平均 dt 前瞻" : "反馈控制"} />
+              <Metric title="位置预测" value={dualPhaseActive ? (dualPhasePredictionEnabled ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "已关闭") : "不使用"} small={dualPhaseActive && dualPhasePredictionEnabled ? "平均 dt 前瞻" : "反馈控制"} />
               <Metric title="偏移输出" value={outputEnabled ? "已允许" : "已暂停"} small={outputEnabled ? "可发送至设备" : "算法仍继续计算"} />
               <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
@@ -4853,7 +4855,8 @@ export function StudioConsoleView({
               <NumberControl label="共享 Atan 尺度 counts" detail="控制响应曲线尺度，不代表协议可发送的最大 counts。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(["atan", "scale_counts"], value)} />
               <NumberControl label="FAR 单次上限 counts" detail="稳定性保护上限；KMNet 的 signed-16 能力独立校验。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "far", "max_counts_per_update"], value)} />
               <NumberControl label="NEAR 单次上限 counts" detail="近目标单次修正上限，默认低于 FAR 以抑制过冲。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "near", "max_counts_per_update"], value)} />
-              <NumberControl label="前瞻帧数" detail="预测量 = 平滑目标速度 × 平均 capture dt × 前瞻帧数；0 完全关闭位置预测。" value={dualPhaseLeadFrames} min={0} max={10} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "lead_frames"], value)} />
+              <ModuleSwitch label="启用位置预测" detail="关闭后预测偏移严格为 0；目标跟踪、速度观测和基础 Atan 反馈继续运行。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhasePath(["prediction", "enabled"], enabled)} />
+              <NumberControl label="前瞻帧数" detail="启用预测后：预测量 = 平滑目标速度 × 平均 capture dt × 前瞻帧数。" value={dualPhaseLeadFrames} min={0.01} max={10} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "lead_frames"], value)} />
               <NumberControl label="速度平滑帧数" detail="越大越稳但转向越慢；内部仍使用真实 capture timestamp 处理变帧率。" value={dualPhaseVelocitySmoothingFrames} min={0.1} max={20} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "smoothing_frames"], value)} />
               <NumberControl label="历史中断重置 ms" value={dualPhaseHistoryResetGapMs} min={0.1} max={500} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "history_reset_gap_ms"], value)} />
               <NumberControl label="FAR 预测绝对上限 px" value={dualPhaseFarPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "far", "absolute_cap_px"], value)} />

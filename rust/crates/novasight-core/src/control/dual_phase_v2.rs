@@ -75,6 +75,7 @@ pub struct DualPhaseConfig {
     pub velocity_spread_relative: f64,
     pub velocity_change_base_px_ms: f64,
     pub velocity_change_relative: f64,
+    pub prediction_enabled: bool,
     pub prediction_lead_frames: f64,
     pub prediction_far_absolute_cap_px: f64,
     pub prediction_far_base_cap_px: f64,
@@ -110,6 +111,7 @@ impl Default for DualPhaseConfig {
             velocity_spread_relative: 0.50,
             velocity_change_base_px_ms: 0.20,
             velocity_change_relative: 0.75,
+            prediction_enabled: true,
             prediction_lead_frames: 1.0,
             prediction_far_absolute_cap_px: 10.0,
             prediction_far_base_cap_px: 1.25,
@@ -803,6 +805,7 @@ impl DualPhaseControl {
         estimate_available: bool,
     ) -> PredictionResult {
         let allowed = estimate_available
+            && self.config.prediction_enabled
             && reference_dt_ms.is_finite()
             && reference_dt_ms > 0.0
             && self.config.prediction_lead_frames > 0.0;
@@ -811,8 +814,11 @@ impl DualPhaseControl {
         } else {
             0.0
         };
-        let raw_offset =
-            filtered_velocity_x * reference_dt_ms.max(0.0) * self.config.prediction_lead_frames;
+        let raw_offset = if self.config.prediction_enabled {
+            filtered_velocity_x * reference_dt_ms.max(0.0) * self.config.prediction_lead_frames
+        } else {
+            0.0
+        };
         let (absolute_cap, base_cap, relative_cap) = match mode {
             ControlMode::Far => (
                 self.config.prediction_far_absolute_cap_px,

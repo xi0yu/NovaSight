@@ -771,6 +771,12 @@ def runtime_config_schema(config: RuntimeConfig | None = None) -> dict[str, Any]
                         "restart_required": False,
                     },
                     {
+                        "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.enabled",
+                        "label": "稳健预测控制：启用位置预测",
+                        "type": "bool",
+                        "restart_required": False,
+                    },
+                    {
                         "path": "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.lead_frames",
                         "label": "稳健预测控制：前瞻帧数",
                         "type": "float",

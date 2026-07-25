@@ -268,6 +268,7 @@ fn build_live_dependencies(
                 velocity_spread_relative: adapters.pipeline.velocity_spread_relative,
                 velocity_change_base_px_ms: adapters.pipeline.velocity_change_base_px_ms,
                 velocity_change_relative: adapters.pipeline.velocity_change_relative,
+                prediction_enabled: adapters.pipeline.prediction_enabled,
                 prediction_lead_frames: adapters.pipeline.prediction_lead_frames,
                 prediction_far_absolute_cap_px: adapters.pipeline.prediction_far_absolute_cap_px,
                 prediction_far_base_cap_px: adapters.pipeline.prediction_far_base_cap_px,

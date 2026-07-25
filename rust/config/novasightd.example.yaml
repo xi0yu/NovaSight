@@ -35,6 +35,7 @@ pipeline:
   velocity_spread_relative: 0.50
   velocity_change_base_px_ms: 0.20
   velocity_change_relative: 0.75
+  prediction_enabled: true
   prediction_lead_frames: 1.0
   prediction_far_absolute_cap_px: 10.0
   prediction_far_base_cap_px: 1.25

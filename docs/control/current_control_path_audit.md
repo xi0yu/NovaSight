@@ -47,7 +47,7 @@ The observation call replaces the single pending complete integer command and ne
 - Capture age below zero, inference completion outside `[capture, control_now]`, stale age, or generation/frame rollback blocks the whole decision. A non-increasing capture timestamp resets prediction history and uses pure measured-position feedback for that otherwise valid observation.
 - Global observation cursors survive target switches; target-local estimator/mode/quantizer state does not.
 - Motion-estimator `dt_ms` is the adjacent same-target capture timestamp difference divided by `1_000_000`.
-- Prediction uses the arithmetic mean of the three capture intervals as one reference frame, then multiplies filtered X velocity by that dt and configured `lead_frames`. Frame age only participates in stale-observation rejection.
+- When `prediction.enabled` is true, prediction uses the arithmetic mean of the three capture intervals as one reference frame, then multiplies filtered X velocity by that dt and configured `lead_frames`. Disabling prediction zeros every prediction offset without disabling tracking or velocity observation. Frame age only participates in stale-observation rejection.
 
 ## Coordinate Contract
 
