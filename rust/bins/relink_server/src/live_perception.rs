@@ -680,8 +680,15 @@ fn resolve_model_nvinfer_config(
         &model.artifact_path,
         &parser_library,
         inference.deepstream_component_id,
+        inference.confidence_threshold,
+        inference.nms_threshold,
     )?;
-    validate_nvinfer_manifest_contract(&source, manifest)?;
+    validate_nvinfer_manifest_contract(
+        &source,
+        manifest,
+        inference.confidence_threshold,
+        inference.nms_threshold,
+    )?;
     let runtime_directory =
         resolve_data_artifact(&config.paths.data_dir, Path::new("runtime/deepstream"))?;
     fs::create_dir_all(&runtime_directory).map_err(|source| LivePerceptionError::WriteNvinfer {
@@ -802,8 +809,15 @@ fn resolve_active_rust_tensorrt_config(
     )
     .map_err(|error| manifest_error(error.message()))?;
     resolve_parser_contract(&parsed.document)?;
-    let contract = resolve_rust_tensorrt_contract(&parsed.document)
-        .map_err(|error| manifest_error(error.to_string()))?;
+    let inference = config
+        .require_inference_adapter()
+        .map_err(LivePerceptionError::Config)?;
+    let contract = resolve_rust_tensorrt_contract(
+        &parsed.document,
+        inference.confidence_threshold,
+        inference.nms_threshold,
+    )
+    .map_err(|error| manifest_error(error.to_string()))?;
     let runtime_contract =
         resolve_model_rust_contract(config, &model, &parsed.document.postprocess.parser_preset)?;
     Ok((
@@ -827,7 +841,15 @@ fn resolve_model_rust_contract(
     let requested_preset = validate_parser_preset(requested_preset, manifest.output.has_objectness)
         .map_err(|error| manifest_error(error.message()))?;
     resolve_parser_contract(manifest)?;
-    resolve_rust_tensorrt_contract(manifest).map_err(|error| manifest_error(error.to_string()))?;
+    let inference = config
+        .require_inference_adapter()
+        .map_err(LivePerceptionError::Config)?;
+    resolve_rust_tensorrt_contract(
+        manifest,
+        inference.confidence_threshold,
+        inference.nms_threshold,
+    )
+    .map_err(|error| manifest_error(error.to_string()))?;
     let parser_function = match manifest
         .postprocess
         .parser
@@ -877,6 +899,8 @@ fn generate_nvinfer_config(
     engine: &Path,
     parser_library: &Path,
     component_id: i32,
+    confidence_threshold: f64,
+    nms_threshold: f64,
 ) -> Result<String, LivePerceptionError> {
     let parser = resolve_parser_contract(manifest)?;
     let network_mode = match manifest
@@ -943,8 +967,8 @@ fn generate_nvinfer_config(
         parser_value,
         parser.function,
         parser.cluster_mode,
-        manifest.postprocess.confidence_threshold,
-        manifest.postprocess.nms_iou_threshold,
+        confidence_threshold,
+        nms_threshold,
         effective_deepstream_max_detections(manifest),
     );
     let values = parse_ini_values(&source);
@@ -1369,6 +1393,8 @@ fn python_number_token(token: &[u8]) -> String {
 fn validate_nvinfer_manifest_contract(
     source: &str,
     manifest: &ModelManifest,
+    confidence_threshold: f64,
+    nms_threshold: f64,
 ) -> Result<(), LivePerceptionError> {
     let values = parse_ini_values(source);
     let parser = resolve_parser_contract(manifest)?;
@@ -1431,6 +1457,8 @@ fn validate_nvinfer_manifest_contract(
         i64::from(effective_deepstream_max_detections(manifest)),
     )?;
     validate_ini_float(&values, "net-scale-factor", manifest.input.scale_factor)?;
+    validate_ini_float(&values, "pre-cluster-threshold", confidence_threshold)?;
+    validate_ini_float(&values, "nms-iou-threshold", nms_threshold)?;
     validate_ini_string(&values, "parse-bbox-func-name", parser.function)?;
     let output_names = if manifest.output.bindings.is_empty() {
         manifest.output.name.clone()
@@ -1782,15 +1810,16 @@ mod tests {
     fn nvinfer_contract_rejects_parser_semantic_drift() {
         let manifest = canonical_manifest();
         let valid = format!(
-            "batch-size=1\nnetwork-mode=2\nnetwork-type=0\nprocess-mode=1\ninterval=0\nnum-detected-classes=80\nnet-scale-factor={:.17}\nmodel-color-format=0\nmaintain-aspect-ratio=0\nsymmetric-padding=0\noutput-tensor-meta=0\noutput-blob-names=output0\nparse-bbox-func-name=NvDsInferParseNovaSightRaw\ncluster-mode=2\ntopk=300\n",
+            "batch-size=1\nnetwork-mode=2\nnetwork-type=0\nprocess-mode=1\ninterval=0\nnum-detected-classes=80\nnet-scale-factor={:.17}\nmodel-color-format=0\nmaintain-aspect-ratio=0\nsymmetric-padding=0\noutput-tensor-meta=0\noutput-blob-names=output0\nparse-bbox-func-name=NvDsInferParseNovaSightRaw\ncluster-mode=2\npre-cluster-threshold=0.30\nnms-iou-threshold=0.50\ntopk=300\n",
             1.0 / 255.0
         );
-        validate_nvinfer_manifest_contract(&valid, &manifest).expect("canonical contract");
+        validate_nvinfer_manifest_contract(&valid, &manifest, 0.30, 0.50)
+            .expect("canonical contract");
         let drifted = valid.replace(
             "NvDsInferParseNovaSightRaw",
             "NvDsInferParseNovaSightEfficientNms",
         );
-        assert!(validate_nvinfer_manifest_contract(&drifted, &manifest).is_err());
+        assert!(validate_nvinfer_manifest_contract(&drifted, &manifest, 0.30, 0.50).is_err());
     }
 }
 

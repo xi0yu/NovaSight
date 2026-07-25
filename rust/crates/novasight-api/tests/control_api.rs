@@ -585,10 +585,12 @@ inference:
     assert_eq!(response.status(), StatusCode::OK);
     let schema: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(schema["version"], 1);
+    assert_eq!(schema["version"], 3);
     assert_eq!(schema["values"]["revision"], 4);
     assert_eq!(schema["values"]["server"]["port"], 6000);
     assert_eq!(schema["values"]["inference"]["backend"], "rust_tensor_rt");
+    assert_eq!(schema["values"]["inference"]["confidence_threshold"], 0.25);
+    assert_eq!(schema["values"]["inference"]["nms_threshold"], 0.45);
     let inference = schema["sections"]
         .as_array()
         .unwrap()

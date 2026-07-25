@@ -1070,6 +1070,10 @@ export function StudioConsoleView({
   const configuredCaptureWidth = readNumber(captureConfig.width, 0);
   const configuredCaptureHeight = readNumber(captureConfig.height, 0);
   const configuredCaptureFps = readNumber(captureConfig.fps, 0);
+  const configuredRoiLeft = readNumber(captureConfig.roi_left, 0);
+  const configuredRoiTop = readNumber(captureConfig.roi_top, 0);
+  const configuredRoiWidth = readNumber(captureConfig.roi_width, 0);
+  const configuredRoiHeight = readNumber(captureConfig.roi_height, 0);
   const roiConfig = nestedRecord(config, "roi");
   const crosshairConfig = nestedRecord(config, "crosshair");
   const limitsConfig = nestedRecord(config, "limits");
@@ -1223,7 +1227,11 @@ export function StudioConsoleView({
     choices.find((choice) => choiceId(choice) === configuredChoiceId) ??
     choices.find((choice) => choiceId(choice) === runningChoiceId) ??
     choices[0];
-  const roiSize = readNumber(roiConfig.size, 640);
+  const roiSize = rustControlPlane
+    ? configuredRoiWidth > 0 && configuredRoiHeight > 0
+      ? Math.min(configuredRoiWidth, configuredRoiHeight)
+      : 640
+    : readNumber(roiConfig.size, 640);
   const crosshairEnabled = readBoolean(crosshairConfig.enabled, false);
   const crosshairUseForControl = readBoolean(crosshairConfig.use_for_control, false);
   const crosshairSearchSize = readNumber(crosshairConfig.search_size, 96);
@@ -1243,8 +1251,12 @@ export function StudioConsoleView({
   const previewFps = readNumber(limitsConfig.stream_fps, 30);
   const sourceWidth = selectedProfile?.width ?? readNumber(inferenceTrace.source_width, 0);
   const sourceHeight = selectedProfile?.height ?? readNumber(inferenceTrace.source_height, 0);
-  const roiX = sourceWidth > 0 ? Math.max(0, Math.floor((sourceWidth - roiSize) / 2)) : 0;
-  const roiY = sourceHeight > 0 ? Math.max(0, Math.floor((sourceHeight - roiSize) / 2)) : 0;
+  const roiX = rustControlPlane
+    ? configuredRoiLeft
+    : sourceWidth > 0 ? Math.max(0, Math.floor((sourceWidth - roiSize) / 2)) : 0;
+  const roiY = rustControlPlane
+    ? configuredRoiTop
+    : sourceHeight > 0 ? Math.max(0, Math.floor((sourceHeight - roiSize) / 2)) : 0;
   const confidence = readNumber(inferenceConfig.confidence_threshold, 0.25);
   const nms = readNumber(inferenceConfig.nms_threshold, 0.45);
   const detectionProfiles = recordList(inferenceConfig.detection_class_profiles);
@@ -1464,9 +1476,9 @@ export function StudioConsoleView({
   const kmnetLastDeviceError = readString(kmnetStatus.last_device_error, "");
   const desiredConfigRevision = readNumber(runtime?.config?.version, 0);
   const effectiveConfigRevision = readNumber(runtime?.config?.effective_version, desiredConfigRevision);
-  const kmnetRestartRequired = kmnetStatus.restart_required === true
-    || runtime?.config?.restart_required === true
+  const configRestartRequired = runtime?.config?.restart_required === true
     || desiredConfigRevision !== effectiveConfigRevision;
+  const kmnetRestartRequired = kmnetStatus.restart_required === true;
   const kmnetConfigurationState = readString(
     kmnetStatus.configuration_state,
     kmnetRestartRequired ? "restart_required" : kmnetAutoConnect ? "ready" : "uncommissioned"
@@ -1521,6 +1533,41 @@ export function StudioConsoleView({
   const runtimePostprocessParser = readString(runtimePostprocess.parser, "-");
   const runtimePostprocessConfidence = readNumber(runtimePostprocess.confidence_threshold, Number.NaN);
   const runtimePostprocessNms = readNumber(runtimePostprocess.nms_threshold, Number.NaN);
+  const runtimeRoiLeft = readNumber(inferenceTrace.roi_offset_x, Number.NaN);
+  const runtimeRoiTop = readNumber(inferenceTrace.roi_offset_y, Number.NaN);
+  const runtimeRoiWidth = readNumber(inferenceTrace.roi_width, Number.NaN);
+  const runtimeRoiHeight = readNumber(inferenceTrace.roi_height, Number.NaN);
+  const runtimeRoiAvailable = runtimeMainlineRunning
+    && Number.isFinite(runtimeRoiLeft)
+    && Number.isFinite(runtimeRoiTop)
+    && Number.isFinite(runtimeRoiWidth)
+    && Number.isFinite(runtimeRoiHeight);
+  const roiSettingsApplied = runtimeRoiAvailable
+    && runtimeRoiLeft === roiX
+    && runtimeRoiTop === roiY
+    && runtimeRoiWidth === (rustControlPlane ? configuredRoiWidth : roiSize)
+    && runtimeRoiHeight === (rustControlPlane ? configuredRoiHeight : roiSize);
+  const roiApplyLabel = !runtimeRoiAvailable
+    ? "等待真实帧"
+    : roiSettingsApplied
+      ? "已生效"
+      : configRestartRequired
+        ? "已保存 · 等待重启"
+        : "运行区域不同";
+  const runtimePostprocessAvailable = runtimeMainlineRunning
+    && runtimeInference.loaded === true
+    && Number.isFinite(runtimePostprocessConfidence)
+    && Number.isFinite(runtimePostprocessNms);
+  const postprocessSettingsApplied = runtimePostprocessAvailable
+    && Math.abs(runtimePostprocessConfidence - confidence) < 0.0001
+    && Math.abs(runtimePostprocessNms - nms) < 0.0001;
+  const postprocessApplyLabel = !runtimePostprocessAvailable
+    ? "主链未装载"
+    : postprocessSettingsApplied
+      ? "已生效"
+      : configRestartRequired
+        ? "已保存 · 等待重启"
+        : "运行值不同";
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.kind === "engine" &&
@@ -2685,6 +2732,42 @@ export function StudioConsoleView({
     [onRuntimeConfigChange]
   );
 
+  const handleCenteredRoiSizeChange = useCallback(
+    async (requestedSize: number) => {
+      const size = nearestRoiSize(requestedSize);
+      if (!rustControlPlane) {
+        await updateConfigField("roi", "size", size);
+        return;
+      }
+      const width = configuredCaptureWidth > 0 ? configuredCaptureWidth : sourceWidth;
+      const height = configuredCaptureHeight > 0 ? configuredCaptureHeight : sourceHeight;
+      if (width <= 0 || height <= 0) {
+        setLocalError("请先选择采集分辨率，再修改 ROI。");
+        return;
+      }
+      if (size > width || size > height) {
+        setLocalError(`ROI ${size}x${size} 超出当前采集画面 ${width}x${height}。`);
+        return;
+      }
+      setLocalError(null);
+      await updateConfigSection("capture", {
+        roi_left: Math.floor((width - size) / 2),
+        roi_top: Math.floor((height - size) / 2),
+        roi_width: size,
+        roi_height: size
+      });
+    },
+    [
+      configuredCaptureHeight,
+      configuredCaptureWidth,
+      rustControlPlane,
+      sourceHeight,
+      sourceWidth,
+      updateConfigField,
+      updateConfigSection
+    ]
+  );
+
   const updateDetectionClassFilter = useCallback(
     async (value: string) => {
       if (rustControlPlane) {
@@ -3717,15 +3800,15 @@ export function StudioConsoleView({
                   max={640}
                   step={16}
                   digits={0}
-                  onCommit={(value) => updateConfigField("roi", "size", nearestRoiSize(value))}
+                  onCommit={handleCenteredRoiSizeChange}
                 />
                 <div className="mini-segmented roi-size-segmented" role="group" aria-label="ROI 尺寸">
                   {ROI_SIZE_CHOICES.map((size) => (
                     <button
                       className={roiSize === size ? "active" : ""}
-                      disabled={busy === "roi.size"}
+                      disabled={busy === "roi.size" || busy === "capture.roi"}
                       key={size}
-                      onClick={() => void updateConfigField("roi", "size", size)}
+                      onClick={() => void handleCenteredRoiSizeChange(size)}
                       type="button"
                     >
                       {size}
@@ -3734,7 +3817,9 @@ export function StudioConsoleView({
                 </div>
                 <div className="console-kv compact-kv">
                   <span>源画面</span><b>{sourceWidth > 0 ? `${sourceWidth}x${sourceHeight}` : NO_SAMPLE}</b>
-                  <span>ROI 区域</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}` : NO_SAMPLE}</b>
+                  <span>配置 ROI</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}, ${rustControlPlane ? `${configuredRoiWidth}x${configuredRoiHeight}` : `${roiSize}x${roiSize}`}` : NO_SAMPLE}</b>
+                  <span>运行 ROI</span><b>{runtimeRoiAvailable ? `x=${runtimeRoiLeft}, y=${runtimeRoiTop}, ${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
+                  <span>应用状态</span><b>{roiApplyLabel}</b>
                   <span>坐标系</span><b>推理 / 预览 / 控制统一 ROI</b>
                 </div>
               </div>
@@ -3815,7 +3900,7 @@ export function StudioConsoleView({
           <div className="console-grid2 inference-config-grid">
             <div className="console-card">
               <SectionTitle title="推理参数" />
-              <label>置信度阈值</label>
+              <label>配置置信度</label>
               <CommitNumberControl
                 value={confidence}
                 min={0}
@@ -3824,7 +3909,7 @@ export function StudioConsoleView({
                 digits={2}
                 onCommit={(value) => updateConfigField("inference", "confidence_threshold", value)}
               />
-              <label>NMS 阈值</label>
+              <label>配置 NMS</label>
               <CommitNumberControl
                 value={nms}
                 min={0}
@@ -3833,6 +3918,11 @@ export function StudioConsoleView({
                 digits={2}
                 onCommit={(value) => updateConfigField("inference", "nms_threshold", value)}
               />
+              <div className="console-kv compact-kv">
+                <span>运行置信度</span><b>{runtimePostprocessAvailable ? formatOptionalNumber(runtimePostprocessConfidence, 2) : NO_SAMPLE}</b>
+                <span>运行 NMS</span><b>{runtimePostprocessAvailable ? formatOptionalNumber(runtimePostprocessNms, 2) : NO_SAMPLE}</b>
+                <span>应用状态</span><b>{postprocessApplyLabel}</b>
+              </div>
               <details className="model-debug-details">
                 <summary>当前模型工程详情</summary>
                 <div className="model-debug-grid">

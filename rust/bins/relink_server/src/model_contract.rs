@@ -11,6 +11,8 @@ pub(crate) struct RustTensorRtContract {
 
 pub(crate) fn resolve_rust_tensorrt_contract(
     manifest: &ModelManifest,
+    confidence_threshold: f64,
+    nms_threshold: f64,
 ) -> Result<RustTensorRtContract, ModelContractError> {
     if !manifest
         .runtime
@@ -106,8 +108,8 @@ pub(crate) fn resolve_rust_tensorrt_contract(
     })?;
     let decoder = DetectionDecoder::new(
         decoder_contract,
-        manifest.postprocess.confidence_threshold as f32,
-        manifest.postprocess.nms_iou_threshold as f32,
+        confidence_threshold as f32,
+        nms_threshold as f32,
         max_detections,
         width,
         height,
@@ -185,7 +187,7 @@ mod tests {
 
     #[test]
     fn reuses_validated_manifest_semantics() {
-        let contract = resolve_rust_tensorrt_contract(&manifest()).unwrap();
+        let contract = resolve_rust_tensorrt_contract(&manifest(), 0.25, 0.45).unwrap();
         assert_eq!(contract.input.shape(), [1, 3, 640, 640]);
         assert_eq!(contract.input.dtype(), TensorDtype::Float32);
         assert!(format!("{:?}", contract.decoder).contains("DetectionDecoder"));
@@ -195,7 +197,7 @@ mod tests {
     fn fails_closed_for_unsupported_parser() {
         let mut manifest = manifest();
         manifest.postprocess.parser = "efficientnms".to_owned();
-        let error = resolve_rust_tensorrt_contract(&manifest).unwrap_err();
+        let error = resolve_rust_tensorrt_contract(&manifest, 0.25, 0.45).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -207,7 +209,7 @@ mod tests {
     fn rejects_preprocess_semantic_drift() {
         let mut manifest = manifest();
         manifest.input.maintain_aspect_ratio = true;
-        let error = resolve_rust_tensorrt_contract(&manifest).unwrap_err();
+        let error = resolve_rust_tensorrt_contract(&manifest, 0.25, 0.45).unwrap_err();
         assert!(error.to_string().contains("direct resize"));
     }
 }

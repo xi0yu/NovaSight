@@ -521,10 +521,15 @@ async fn compatibility_state_for_topic(
         Some(service) => Some(service.snapshot().await),
         None => None,
     };
+    let effective_config = state
+        .config
+        .as_ref()
+        .map(ConfigService::blocking_effective_snapshot);
     let effective_revision = state.config.as_ref().map(ConfigService::effective_revision);
     CompatibilityRuntimeState::for_topic(
         snapshot,
         config.as_ref(),
+        effective_config.as_ref(),
         effective_revision,
         state.hardware_output_enabled,
         state.runtime.preview_snapshot().as_ref(),

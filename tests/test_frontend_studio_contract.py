@@ -72,9 +72,7 @@ def test_roi_size_control_commits_once_instead_of_writing_on_every_change() -> N
     roi_card = _roi_card_source()
 
     assert 'onChange={(event) => void updateConfigField("roi", "size"' not in roi_card
-    assert (
-        'onCommit={(value) => updateConfigField("roi", "size", nearestRoiSize(value))}' in roi_card
-    )
+    assert "onCommit={handleCenteredRoiSizeChange}" in roi_card
     assert "ROI 模式" not in roi_card
     assert "水平偏移" not in roi_card
     assert "垂直偏移" not in roi_card
@@ -215,6 +213,17 @@ def test_parameter_page_exposes_runtime_output_gate_without_kmnet_disconnect() -
     assert 'pending ? "处理中"' in source
     assert "不会断开 KMNet" in source
     assert "关闭后立即清空待发送旧命令" in source
+
+
+def test_rust_roi_and_postprocess_editors_target_effective_runtime_fields() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert "handleCenteredRoiSizeChange" in source
+    assert 'updateConfigSection("capture"' in source
+    assert "配置置信度" in source
+    assert "配置 NMS" in source
+    assert "运行置信度" in source
+    assert "运行 NMS" in source
 
 
 def test_studio_model_catalog_can_refresh_same_version_artifacts() -> None:

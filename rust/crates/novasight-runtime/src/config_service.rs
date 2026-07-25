@@ -55,15 +55,15 @@ impl PersistedOutputGate<'_> {
             self.effective_revision
                 .store(self.config.revision, Ordering::Release);
         } else {
-            // A fail-closed output update may be applied while unrelated
-            // desired configuration is waiting for process restart. Reflect
-            // only the live gate in the effective view; never claim that the
-            // pending device address/UUID has entered the running process.
+            // An output-only update may be applied while unrelated desired
+            // configuration is waiting for process restart. Reflect only the
+            // live gate in the effective view; never claim that the pending
+            // capture/model/device settings entered the running process.
             self.effective_config
                 .write()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .control
-                .output_enabled = false;
+                .output_enabled = self.config.control.output_enabled;
         }
         self.output_gate_consistent.store(true, Ordering::Release);
         ConfigUpdate {
@@ -74,7 +74,7 @@ impl PersistedOutputGate<'_> {
             message: if self.advance_effective_revision {
                 "output gate persisted and applied to the live runtime".to_owned()
             } else {
-                "output gate disabled live; other configuration remains pending daemon restart"
+                "output gate applied live; other configuration remains pending daemon restart"
                     .to_owned()
             },
         }
@@ -383,10 +383,21 @@ impl ConfigService {
         let effective_revision = self.effective_revision();
         let advance_effective_revision = current.revision == effective_revision;
         if !advance_effective_revision && enabled {
-            return Err(ConfigServiceError::RestartRequired {
-                effective_revision,
-                desired_revision: current.revision,
-            });
+            let effective = self
+                .inner
+                .effective_config
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let desired_device = serde_yaml::to_value(current.device.as_ref())
+                .map_err(ConfigServiceError::SerializeFieldValue)?;
+            let effective_device = serde_yaml::to_value(effective.device.as_ref())
+                .map_err(ConfigServiceError::SerializeFieldValue)?;
+            if desired_device != effective_device {
+                return Err(ConfigServiceError::RestartRequired {
+                    effective_revision,
+                    desired_revision: current.revision,
+                });
+            }
         }
         let expected_revision = update.expected_revision.unwrap_or(current.revision);
         if expected_revision != current.revision {
@@ -733,6 +744,63 @@ mod tests {
         let update = caller.await.unwrap().unwrap();
         assert!(!update.config.control.output_enabled);
         assert_eq!(service.effective_revision(), 1);
+
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn output_can_reopen_while_unrelated_configuration_awaits_restart() {
+        let directory = TestConfigDirectory::new();
+        let path = directory.0.join("novasight.yaml");
+        fs::write(
+            &path,
+            "revision: 0\ncontrol:\n  output_enabled: true\nhardware:\n  auto_connect: true\n  backend: native_udp\n  host: 127.0.0.1\n  port: 8888\n  uuid: A1B2C3D4\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n",
+        )
+        .unwrap();
+        let initial = YamlConfigRepository::load(&path).unwrap();
+        let service = ConfigService::new(&path, initial);
+        let (supervisor, runtime) =
+            RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_output_enabled(true));
+        runtime.start().await.unwrap();
+
+        service
+            .update_field(ConfigFieldUpdate {
+                section: "replay".to_owned(),
+                key: "frame_interval_ms".to_owned(),
+                value: Value::from(24),
+                expected_revision: Some(0),
+            })
+            .await
+            .unwrap();
+        assert_eq!(service.effective_revision(), 0);
+
+        service
+            .update_output_gate(
+                &runtime,
+                ConfigFieldUpdate {
+                    expected_revision: Some(1),
+                    ..output_update(false)
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+
+        let reopened = service
+            .update_output_gate(
+                &runtime,
+                ConfigFieldUpdate {
+                    expected_revision: Some(2),
+                    ..output_update(true)
+                },
+            )
+            .await
+            .unwrap();
+        assert!(reopened.restart_required);
+        assert!(reopened.applied);
+        assert!(runtime.snapshot().pipeline_metrics.output_gate_open);
+        assert_eq!(service.effective_revision(), 0);
 
         runtime.shutdown_daemon().await.unwrap();
         supervisor.join().await.unwrap();

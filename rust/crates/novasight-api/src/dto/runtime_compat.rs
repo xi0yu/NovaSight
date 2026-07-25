@@ -279,6 +279,13 @@ pub(crate) struct InferenceState {
     pub preview_sequence: u64,
     pub preview_reason: String,
     pub preview_transport: Option<String>,
+    pub postprocess: Option<PostprocessState>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct PostprocessState {
+    pub confidence_threshold: f64,
+    pub nms_threshold: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -509,6 +516,7 @@ impl CompatibilityRuntimeState {
         Self::build(
             snapshot,
             config,
+            config,
             effective_revision,
             hardware_output_enabled,
             preview,
@@ -520,6 +528,7 @@ impl CompatibilityRuntimeState {
     pub fn for_topic(
         snapshot: &RuntimeSnapshot,
         config: Option<&AppConfig>,
+        effective_config: Option<&AppConfig>,
         effective_revision: Option<u64>,
         hardware_output_enabled: bool,
         preview: Option<&PreviewSnapshot>,
@@ -529,6 +538,7 @@ impl CompatibilityRuntimeState {
         Self::build(
             snapshot,
             config,
+            effective_config,
             effective_revision,
             hardware_output_enabled,
             preview,
@@ -540,14 +550,16 @@ impl CompatibilityRuntimeState {
     fn build(
         snapshot: &RuntimeSnapshot,
         config: Option<&AppConfig>,
+        effective_config: Option<&AppConfig>,
         effective_revision: Option<u64>,
         hardware_output_enabled: bool,
         preview: Option<&PreviewSnapshot>,
         crosshair: Option<&CrosshairSnapshot>,
         include_detection_items: bool,
     ) -> Self {
-        let capture_config = config.and_then(|config| config.capture.as_ref());
-        let inference_config = config.and_then(|config| config.inference.as_ref());
+        let runtime_config = effective_config.or(config);
+        let capture_config = runtime_config.and_then(|config| config.capture.as_ref());
+        let inference_config = runtime_config.and_then(|config| config.inference.as_ref());
         let model_input = snapshot
             .model
             .input_width
@@ -559,7 +571,7 @@ impl CompatibilityRuntimeState {
                     .as_ref()
                     .and_then(|active| parse_nchw_dimensions(&active.version.input_shape))
             });
-        let device_config = config.and_then(|config| config.device.as_ref());
+        let device_config = runtime_config.and_then(|config| config.device.as_ref());
         let dual_phase = snapshot.pipeline_metrics.dual_phase;
         let target_selection = &snapshot.pipeline_metrics.target_selection;
         let has_target_sample = snapshot.pipeline_metrics.targeting_batches > 0;
@@ -596,6 +608,10 @@ impl CompatibilityRuntimeState {
         let config_restart_required = config
             .zip(effective_revision)
             .is_some_and(|(config, effective)| config.revision != effective);
+        let hardware_restart_required = config_restart_required
+            && serde_json::to_value(config.and_then(|config| config.device.as_ref())).ok()
+                != serde_json::to_value(runtime_config.and_then(|config| config.device.as_ref()))
+                    .ok();
         let selected_device = device_config
             .map(|device| serialized_label(&device.backend))
             .unwrap_or_else(|| "unconfigured".to_owned());
@@ -645,7 +661,7 @@ impl CompatibilityRuntimeState {
                 SubsystemState::Ready | SubsystemState::Running
             );
         let device_configuration_ready =
-            hardware_output_enabled && !device_uncommissioned && !config_restart_required;
+            hardware_output_enabled && !device_uncommissioned && !hardware_restart_required;
         let can_connect = device_configuration_ready
             && running
             && !snapshot.pipeline_metrics.device_connected
@@ -657,7 +673,7 @@ impl CompatibilityRuntimeState {
             && snapshot.pipeline_metrics.device_connection_enabled;
         let blocked_reason = if !hardware_output_enabled {
             Some("hardware_output_disabled")
-        } else if config_restart_required {
+        } else if hardware_restart_required {
             Some("daemon_restart_required")
         } else if device_uncommissioned {
             Some("device_uncommissioned")
@@ -674,7 +690,7 @@ impl CompatibilityRuntimeState {
             "kmnet".to_owned(),
             Availability {
                 available: hardware_output_enabled && device_available,
-                configuration_state: if config_restart_required {
+                configuration_state: if hardware_restart_required {
                     "restart_required"
                 } else if device_uncommissioned {
                     "uncommissioned"
@@ -682,7 +698,7 @@ impl CompatibilityRuntimeState {
                     "ready"
                 },
                 configuration_ready: device_configuration_ready,
-                restart_required: config_restart_required,
+                restart_required: hardware_restart_required,
                 can_connect,
                 can_disconnect,
                 blocked_reason,
@@ -854,6 +870,10 @@ impl CompatibilityRuntimeState {
                     .map(|preview| preview.reason.clone())
                     .unwrap_or_else(|| "hardware preview is unavailable".to_owned()),
                 preview_transport: preview.map(|preview| preview.transport.clone()),
+                postprocess: inference_config.map(|inference| PostprocessState {
+                    confidence_threshold: inference.confidence_threshold,
+                    nms_threshold: inference.nms_threshold,
+                }),
             },
             config: ConfigSummary {
                 version: config.map_or(0, |config| config.revision),

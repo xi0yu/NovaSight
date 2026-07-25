@@ -1557,9 +1557,9 @@ pub struct InferenceConfig {
     pub require_gpu: bool,
     #[serde(default)]
     pub allow_cpu_fallback: bool,
-    #[serde(default = "default_confidence_threshold", skip_serializing)]
+    #[serde(default = "default_confidence_threshold")]
     pub confidence_threshold: f64,
-    #[serde(default = "default_nms_threshold", skip_serializing)]
+    #[serde(default = "default_nms_threshold")]
     pub nms_threshold: f64,
     #[serde(default = "default_inference_deadline_ms")]
     /// Zero disables this additional deadline; runtime freshness still applies.
