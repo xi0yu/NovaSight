@@ -1207,7 +1207,11 @@ fn spawn_targeting_worker(
                     if shared.vision_telemetry_due(batch.stamp().captured_at.0) {
                         shared.record_vision(&batch, &selection);
                     }
-                    let track_confidence = selection.target_identity_confidence.unwrap_or(0.0);
+                    let track_confidence = if selection.target_state_valid {
+                        selection.target_identity_confidence.unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
                     let (
                         target_id,
                         aim_x,

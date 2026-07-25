@@ -41,20 +41,10 @@ impl Drop for TempDirectory {
 }
 
 #[test]
-fn tracked_project_example_requires_commissioning_without_dropping_legacy_sections() {
+fn tracked_project_example_preserves_commissioned_hardware_and_legacy_sections() {
     let project_config =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/novasight.example.yaml");
-    let error = YamlConfigRepository::load(&project_config).unwrap_err();
-    assert!(error.to_string().contains("hardware.uuid"));
-
-    let directory = TempDirectory::new();
-    let commissioned = directory.join("commissioned.yaml");
-    let document = fs::read_to_string(project_config)
-        .unwrap()
-        .replace("uuid: \"12345678\"", "uuid: \"A1B2C3D4\"");
-    fs::write(&commissioned, document).unwrap();
-
-    let config = YamlConfigRepository::load(commissioned).unwrap();
+    let config = YamlConfigRepository::load(project_config).unwrap();
 
     assert_eq!(config.server.port, 5174);
     let capture = config.capture.as_ref().unwrap();
@@ -65,6 +55,7 @@ fn tracked_project_example_requires_commissioning_without_dropping_legacy_sectio
     assert_eq!(inference.backend, InferenceBackend::DeepstreamNvinfer);
     assert!(inference.require_gpu);
     assert!(config.device.as_ref().unwrap().auto_connect);
+    assert_eq!(config.device.as_ref().unwrap().uuid, "12345678");
     assert!(config.require_production_adapters().is_err());
     assert!(config.legacy.contains_key("source"));
 }
@@ -76,18 +67,15 @@ fn loads_the_complete_rust_owned_example() {
 
     let config = YamlConfigRepository::load(example).unwrap();
 
-    assert_eq!(config.schema_version, 2);
+    assert_eq!(config.schema_version, 3);
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
-    assert_eq!(
-        config.server.control_socket,
-        Path::new("/run/novasight/novasightd.sock")
-    );
+    assert_eq!(config.server.control_socket, Path::new("@novasightd-dev"));
     assert!(config.replay.enabled);
     assert_eq!(config.replay.frame_interval_ms, 16);
     assert!(!config.replay.output_gate_open);
-    assert!(!config.control.output_enabled);
+    assert!(config.control.output_enabled);
     let adapters = config.require_production_adapters().unwrap();
     assert_eq!(adapters.capture.appsink_max_buffers, 1);
     assert_eq!(adapters.inference.deepstream_component_id, 1);
@@ -96,9 +84,9 @@ fn loads_the_complete_rust_owned_example() {
         adapters.inference.deepstream_parser_library,
         Path::new("auto")
     );
-    assert!(!adapters.device.auto_connect);
-    assert!(adapters.device.host.is_empty());
-    assert!(adapters.device.uuid.is_empty());
+    assert!(adapters.device.auto_connect);
+    assert_eq!(adapters.device.host, "192.168.2.188");
+    assert_eq!(adapters.device.uuid, "12345678");
     assert_eq!(adapters.device.send_timeout_ms, 25);
     assert_eq!(adapters.pipeline.freshness_threshold_ms, 55.0);
     assert_eq!(adapters.pipeline.max_command_age_ms, 55);
@@ -114,7 +102,8 @@ fn production_output_cannot_open_before_hardware_is_commissioned() {
     let path = directory.join("unsafe-output.yaml");
     let document = fs::read_to_string(source)
         .unwrap()
-        .replace("output_enabled: false", "output_enabled: true");
+        .replace("output_enabled: false", "output_enabled: true")
+        .replace("auto_connect: true", "auto_connect: false");
     fs::write(&path, document).unwrap();
 
     let error = YamlConfigRepository::load(path).unwrap_err();
@@ -254,7 +243,7 @@ fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
 
     let config = YamlConfigRepository::load(path).unwrap();
 
-    assert_eq!(config.schema_version, 2);
+    assert_eq!(config.schema_version, 3);
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
@@ -278,41 +267,41 @@ fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
 }
 
 #[test]
-fn schema_one_high_authority_control_profile_migrates_to_stable_feedback() {
+fn schema_two_mistaken_low_authority_profile_restores_historical_defaults() {
     let directory = TempDirectory::new();
     let path = directory.join("legacy-control.yaml");
     fs::write(
         &path,
-        r#"schema_version: 1
+        r#"schema_version: 2
 pipeline:
-  atan_scale_counts: 1024.0
-  far_kp: 0.90
-  far_max_counts_per_update: 600.0
-  near_kp: 0.30
-  near_max_counts_per_update: 120.0
+  atan_scale_counts: 256.0
+  far_kp: 0.45
+  far_max_counts_per_update: 127.0
+  near_kp: 0.22
+  near_max_counts_per_update: 72.0
 "#,
     )
     .unwrap();
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 2);
-    assert_eq!(config.pipeline.atan_scale_counts, 256.0);
-    assert_eq!(config.pipeline.far_kp, 0.45);
-    assert_eq!(config.pipeline.far_max_counts_per_update, 127.0);
-    assert_eq!(config.pipeline.near_kp, 0.22);
-    assert_eq!(config.pipeline.near_max_counts_per_update, 72.0);
+    assert_eq!(config.schema_version, 3);
+    assert_eq!(config.pipeline.atan_scale_counts, 1024.0);
+    assert_eq!(config.pipeline.far_kp, 0.90);
+    assert_eq!(config.pipeline.far_max_counts_per_update, 600.0);
+    assert_eq!(config.pipeline.near_kp, 0.30);
+    assert_eq!(config.pipeline.near_max_counts_per_update, 120.0);
 
     YamlConfigRepository::new(&path)
         .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["schema_version"], 2);
-    assert_eq!(persisted["pipeline"]["atan_scale_counts"], 256.0);
-    assert_eq!(persisted["pipeline"]["far_kp"], 0.45);
-    assert_eq!(persisted["pipeline"]["far_max_counts_per_update"], 127.0);
-    assert_eq!(persisted["pipeline"]["near_kp"], 0.22);
-    assert_eq!(persisted["pipeline"]["near_max_counts_per_update"], 72.0);
+    assert_eq!(persisted["schema_version"], 3);
+    assert_eq!(persisted["pipeline"]["atan_scale_counts"], 1024.0);
+    assert_eq!(persisted["pipeline"]["far_kp"], 0.90);
+    assert_eq!(persisted["pipeline"]["far_max_counts_per_update"], 600.0);
+    assert_eq!(persisted["pipeline"]["near_kp"], 0.30);
+    assert_eq!(persisted["pipeline"]["near_max_counts_per_update"], 120.0);
 }
 
 #[test]
@@ -874,7 +863,7 @@ fn document_replacement_uses_revision_guard_and_preserves_unsubmitted_extensions
         .replace_document(replacement, 5)
         .unwrap();
 
-    assert_eq!(saved.schema_version, 2);
+    assert_eq!(saved.schema_version, 3);
     assert_eq!(saved.revision, 6);
     assert_eq!(saved.server.port, 7000);
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();

@@ -418,7 +418,7 @@ CONTROL_PARAM_SPECS.update(
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.scale_counts": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.scale_counts",
             "稳健预测控制 Atan 共享尺度",
-            256.0,
+            1024.0,
             0.1,
             10000.0,
             0.1,
@@ -428,7 +428,7 @@ CONTROL_PARAM_SPECS.update(
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp",
             "稳健预测控制远距离跟进强度",
-            0.45,
+            0.90,
             0.001,
             0.999,
             0.001,
@@ -438,7 +438,7 @@ CONTROL_PARAM_SPECS.update(
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp",
             "稳健预测控制近距离跟随强度",
-            0.22,
+            0.30,
             0.001,
             0.999,
             0.001,

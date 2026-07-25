@@ -450,13 +450,6 @@ impl ConfigSchemaResponse {
                             Some("count"),
                         ),
                         float(
-                            "pipeline.target_debounce_distance_px",
-                            "目标锁定防抖距离",
-                            0.000_001,
-                            100_000.0,
-                            Some("px"),
-                        ),
-                        float(
                             "pipeline.target_fov_radius_px",
                             "目标选择半径",
                             0.000_001,

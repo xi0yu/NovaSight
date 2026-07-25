@@ -329,6 +329,10 @@ pub struct TargetSelection {
     pub target_class_id: Option<u32>,
     pub target_detection_confidence: Option<f32>,
     pub target_identity_confidence: Option<f64>,
+    /// Whether the tracker state is safe to feed into motion prediction.
+    /// Identity can remain stable while a low-confidence Kalman estimate
+    /// deliberately falls back to the latest observed aim point.
+    pub target_state_valid: bool,
     /// The selected identity was created or restored on this observation.
     pub target_rebuilt: bool,
     /// Control aim point. Association continues to use the geometric center.
@@ -357,6 +361,7 @@ impl TargetSelection {
             target_class_id: None,
             target_detection_confidence: None,
             target_identity_confidence: None,
+            target_state_valid: false,
             target_rebuilt: false,
             target_aim_x: None,
             target_aim_y: None,
@@ -379,10 +384,6 @@ impl TargetSelection {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TargetingConfig {
-    /// Maximum frame-to-frame jump in pixels for a head candidate to
-    /// keep the previous lock. Past this window the lock falls back
-    /// to the next best class-1 candidate.
-    pub debounce_distance_px: f64,
     /// Confidence threshold for admitting a detection into targeting.
     pub min_confidence: f32,
     /// Number of consecutive missed frames before a track is dropped.
@@ -420,7 +421,6 @@ pub struct TargetingConfig {
 impl Default for TargetingConfig {
     fn default() -> Self {
         Self {
-            debounce_distance_px: 64.0,
             min_confidence: 0.5,
             track_max_age: DEFAULT_TRACK_MAX_AGE,
             track_max_lost_age_ms: DEFAULT_TRACK_MAX_LOST_AGE_MS,
@@ -569,6 +569,7 @@ impl TargetingCore {
                 target_class_id: None,
                 target_detection_confidence: None,
                 target_identity_confidence: None,
+                target_state_valid: false,
                 target_rebuilt: false,
                 target_aim_x: None,
                 target_aim_y: None,
@@ -588,7 +589,11 @@ impl TargetingCore {
 
         for track in &mut self.tracks {
             track.age_frames = track.age_frames.saturating_add(1);
-            if track.kalman.predict(captured_at_ns, self.config.kalman) {
+            if track.kalman.predict(
+                captured_at_ns,
+                self.config.kalman,
+                track.identity_confidence,
+            ) {
                 (track.center_x, track.center_y) = track.kalman.position();
             } else {
                 track.center_x = track.observed_aim_x;
@@ -616,7 +621,13 @@ impl TargetingCore {
                 if prior.state == TrackState::Lost {
                     remember_track_id(&mut rebuilt_ids, prior.id);
                 }
-                let filtered_valid = prior.kalman.update(aim.0, aim.1, self.config.kalman);
+                let filtered_valid = prior.kalman.update(
+                    aim.0,
+                    aim.1,
+                    captured_at_ns,
+                    self.config.kalman,
+                    identity_confidence,
+                );
                 let filtered = prior.kalman.position();
                 prior.object_id = det.object_id();
                 prior.class_id = det.class_id();
@@ -681,7 +692,7 @@ impl TargetingCore {
                     confirmed,
                     missed_frames: 0,
                     lost_since_ns: None,
-                    kalman: KalmanState::new(aim.0, aim.1, captured_at_ns, self.config.kalman),
+                    kalman: KalmanState::new(aim.0, aim.1, captured_at_ns, self.config.kalman, 1.0),
                 }
             };
             updated.push(track);
@@ -752,7 +763,7 @@ impl TargetingCore {
                         observation_center,
                         &self.config,
                     ))
-                    .then_with(|| right.object_id.cmp(&left.object_id))
+                    .then_with(|| right.id.cmp(&left.id))
                     .then_with(|| right_index.cmp(left_index))
             })
             .map(|(index, _)| index)
@@ -831,6 +842,7 @@ impl TargetingCore {
             target_class_id: Some(track.class_id),
             target_detection_confidence: Some(track.confidence),
             target_identity_confidence: Some(track.identity_confidence),
+            target_state_valid: track.kalman.prediction_valid(),
             target_rebuilt: has_track_id(&rebuilt_ids, track.id),
             target_aim_x: Some(aim_x),
             target_aim_y: Some(aim_y),
@@ -851,7 +863,11 @@ impl TargetingCore {
     fn miss_locked_target(&mut self, captured_at_ns: u64) {
         for track in &mut self.tracks {
             track.age_frames = track.age_frames.saturating_add(1);
-            if track.kalman.predict(captured_at_ns, self.config.kalman) {
+            if track.kalman.predict(
+                captured_at_ns,
+                self.config.kalman,
+                track.identity_confidence,
+            ) {
                 (track.center_x, track.center_y) = track.kalman.position();
             }
             track.missed_frames = track.missed_frames.saturating_add(1);
@@ -895,15 +911,7 @@ fn target_score(
         observation_center.0,
         observation_center.1,
     );
-    let distance = if locked.is_some_and(|locked| {
-        locked.id == track.id
-            && euclidean(
-                locked.center_x,
-                locked.center_y,
-                track.center_x,
-                track.center_y,
-            ) <= config.debounce_distance_px
-    }) {
+    let distance = if locked.is_some_and(|locked| locked.id == track.id) {
         raw_distance * (1.0 - config.sticky_bias.clamp(0.0, 0.9))
     } else {
         raw_distance
@@ -957,7 +965,17 @@ fn association_edge(
         return None;
     }
     let aim = detection_aim(detection, config);
-    let nis = track.kalman.measurement_nis(aim.0, aim.1, config.kalman);
+    let nis = if track.kalman.prediction_valid() {
+        track.kalman.measurement_nis(aim.0, aim.1, config.kalman)
+    } else {
+        track.kalman.measurement_nis_from_position(
+            aim.0,
+            aim.1,
+            track.observed_aim_x,
+            track.observed_aim_y,
+            config.kalman,
+        )
+    };
     if !nis.is_finite() || nis > config.kalman.nis_hard_reject {
         return None;
     }
@@ -1020,12 +1038,15 @@ fn track_detection_iou(track: &Track, detection: &Detection) -> f64 {
 }
 
 fn detection_aim(detection: &Detection, config: &TargetingConfig) -> (f64, f64) {
-    let ratio = config
+    let raw_ratio = config
         .class_aim_y_ratios
         .get(&detection.class_id())
         .copied()
-        .unwrap_or(config.aim_y_ratio)
-        .clamp(0.0, 1.0);
+        .unwrap_or(config.aim_y_ratio);
+    // Python's public aim-point contract stores ratios at two decimal places.
+    // Normalize at the Rust domain boundary as well so targeting, preview and
+    // control cannot disagree over a hand-edited higher-precision value.
+    let ratio = (raw_ratio.clamp(0.0, 1.0) * 100.0).round() / 100.0;
     (
         detection.center_x(),
         f64::from(detection.y()) + f64::from(detection.height()) * ratio,

@@ -487,13 +487,13 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     robust = cfg.control.dual_phase_atan_robust_predictive_v2
     assert robust.velocity.history_size == 4
     assert robust.velocity.velocity_sample_count == 3
-    assert robust.schema_version == 6
+    assert robust.schema_version == 7
     assert robust.mode.near_threshold_px == pytest.approx(12.0)
     assert robust.velocity.smoothing_frames == pytest.approx(3.0)
     assert robust.prediction.lead_frames == pytest.approx(1.0)
-    assert robust.atan.scale_counts == pytest.approx(256.0)
-    assert robust.atan.far.kp == pytest.approx(0.45)
-    assert robust.atan.near.kp == pytest.approx(0.22)
+    assert robust.atan.scale_counts == pytest.approx(1024.0)
+    assert robust.atan.far.kp == pytest.approx(0.90)
+    assert robust.atan.near.kp == pytest.approx(0.30)
     assert not hasattr(robust, "aim")
     assert cfg.control.calibrated_angular.fov_x_deg == 105
     assert cfg.control.calibrated_angular.counts_per_360_x == 9980

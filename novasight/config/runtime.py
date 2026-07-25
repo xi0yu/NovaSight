@@ -248,21 +248,21 @@ class DualPhaseRobustAtanModeConfig:
 
 def _default_dual_phase_robust_far_atan() -> DualPhaseRobustAtanModeConfig:
     return DualPhaseRobustAtanModeConfig(
-        kp=0.45,
-        max_counts_per_update=127.0,
+        kp=0.90,
+        max_counts_per_update=600.0,
     )
 
 
 def _default_dual_phase_robust_near_atan() -> DualPhaseRobustAtanModeConfig:
     return DualPhaseRobustAtanModeConfig(
-        kp=0.22,
-        max_counts_per_update=72.0,
+        kp=0.30,
+        max_counts_per_update=120.0,
     )
 
 
 @dataclass
 class DualPhaseRobustAtanConfig:
-    scale_counts: float = 256.0
+    scale_counts: float = 1024.0
     far: DualPhaseRobustAtanModeConfig = field(default_factory=_default_dual_phase_robust_far_atan)
     near: DualPhaseRobustAtanModeConfig = field(
         default_factory=_default_dual_phase_robust_near_atan
@@ -271,7 +271,7 @@ class DualPhaseRobustAtanConfig:
 
 @dataclass
 class DualPhaseAtanRobustPredictiveV2Config:
-    schema_version: int = 6
+    schema_version: int = 7
     freshness_threshold_ms: float = 55.0
     projection: DualPhaseProjectionConfig = field(default_factory=DualPhaseProjectionConfig)
     mode: DualPhaseRobustModeSelectorConfig = field(
@@ -984,26 +984,29 @@ def _migrate_dual_phase_robust_v2_namespace(
         config["schema_version"] = 5
 
     if int(config.get("schema_version", 5)) <= 5:
+        config["schema_version"] = 6
+
+    if int(config.get("schema_version", 6)) <= 6:
         atan = dict(config.get("atan") or {})
         far = dict(atan.get("far") or {})
         near = dict(atan.get("near") or {})
-        legacy_high_authority_profile = (
-            float(atan.get("scale_counts", 256.0)) == 1024.0
-            and float(far.get("kp", 0.45)) == 0.90
-            and float(far.get("max_counts_per_update", 127.0)) == 600.0
-            and float(near.get("kp", 0.22)) == 0.30
-            and float(near.get("max_counts_per_update", 72.0)) == 120.0
+        mistaken_low_authority_profile = (
+            float(atan.get("scale_counts", 1024.0)) == 256.0
+            and float(far.get("kp", 0.90)) == 0.45
+            and float(far.get("max_counts_per_update", 600.0)) == 127.0
+            and float(near.get("kp", 0.30)) == 0.22
+            and float(near.get("max_counts_per_update", 120.0)) == 72.0
         )
-        if legacy_high_authority_profile:
-            atan["scale_counts"] = 256.0
-            far["kp"] = 0.45
-            far["max_counts_per_update"] = 127.0
-            near["kp"] = 0.22
-            near["max_counts_per_update"] = 72.0
+        if mistaken_low_authority_profile:
+            atan["scale_counts"] = 1024.0
+            far["kp"] = 0.90
+            far["max_counts_per_update"] = 600.0
+            near["kp"] = 0.30
+            near["max_counts_per_update"] = 120.0
         atan["far"] = far
         atan["near"] = near
         config["atan"] = atan
-        config["schema_version"] = 6
+        config["schema_version"] = 7
     algorithms["dual_phase_atan_robust_predictive_v2"] = config
 
 
@@ -1145,8 +1148,8 @@ def _validate_dual_phase_robust_v2_algorithm(
             raise ValueError(f"runtime config key '{prefix}.{name}' must be finite")
         return numeric
 
-    if int(cfg.schema_version) != 6:
-        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 6")
+    if int(cfg.schema_version) != 7:
+        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 7")
     freshness_ms = finite("freshness_threshold_ms", cfg.freshness_threshold_ms)
     if freshness_ms <= 0.0:
         raise ValueError(f"runtime config key '{prefix}.freshness_threshold_ms' must be > 0")

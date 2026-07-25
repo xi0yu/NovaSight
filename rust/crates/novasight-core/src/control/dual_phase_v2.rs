@@ -99,11 +99,11 @@ impl Default for DualPhaseConfig {
             projection_fov_x_deg: 105.0,
             projection_counts_per_360: 9_980.0,
             projection_invert_y: false,
-            atan_scale_counts: 256.0,
-            far_kp: 0.45,
-            far_max_counts_per_update: 127.0,
-            near_kp: 0.22,
-            near_max_counts_per_update: 72.0,
+            atan_scale_counts: 1_024.0,
+            far_kp: 0.90,
+            far_max_counts_per_update: 600.0,
+            near_kp: 0.30,
+            near_max_counts_per_update: 120.0,
             velocity_smoothing_frames: 3.0,
             velocity_history_reset_gap_ms: 80.0,
             velocity_spread_base_px_ms: 0.12,
@@ -545,6 +545,7 @@ impl DualPhaseControl {
     pub fn release_trigger(&mut self) {
         self.quantizer_x.reset();
         self.quantizer_y.reset();
+        self.humanized_motion.reset();
     }
 
     /// Clear target-relative state while preserving observation sequence
@@ -605,6 +606,7 @@ impl DualPhaseControl {
             .is_some_and(|prev| observation.capture_ts_ns <= prev);
         if capture_timestamp_discontinuity {
             self.velocity_x.reset(self.target_id);
+            self.measured_error_history_valid = false;
         }
 
         if self
@@ -687,8 +689,8 @@ impl DualPhaseControl {
                 base_y,
                 full_x,
                 full_y,
-                error_x_px: filtered_error_x,
-                error_y_px: filtered_error_y,
+                error_x_px: error_x,
+                error_y_px: error_y,
                 target_width_px,
                 target_id: observation.target_id,
                 trigger_active: observation.trigger_active,
@@ -924,7 +926,7 @@ impl DualPhaseControl {
 }
 
 fn crossed_center(previous: f64, current: f64) -> bool {
-    (previous < 0.0 && current >= 0.0) || (previous > 0.0 && current <= 0.0)
+    previous.is_finite() && current.is_finite() && previous * current < 0.0
 }
 
 #[cfg(test)]

@@ -112,6 +112,77 @@ fn pipeline_runtime_drives_phase2_algorithms_and_device_on_owned_threads() {
 }
 
 #[test]
+fn smooth_detection_motion_keeps_one_identity_through_control_and_device_output() {
+    let epoch = RuntimeEpoch(71);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let daemon_clock: Arc<dyn Clock> = clock.clone();
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            ..PipelineConfig::default()
+        },
+        daemon_clock,
+        pointer,
+    )
+    .expect("pipeline starts");
+    ingress.set_trigger_active(true);
+
+    for (index, x) in [340.0_f32, 356.0, 372.0, 388.0, 404.0]
+        .into_iter()
+        .enumerate()
+    {
+        let generation = index as u64 + 1;
+        let captured_at_ns = 1_000_000_000 + index as u64 * 8_333_333;
+        clock.0.store(captured_at_ns + 8_000_000, Ordering::Release);
+        ingress
+            .submit(
+                DetectionBatch::new(
+                    FrameStamp::new(epoch, generation, captured_at_ns),
+                    640,
+                    640,
+                    vec![Detection::new(generation, 0, x, 300.0, 40.0, 40.0, 0.95).unwrap()],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while (runtime.metrics().targeting_batches < generation
+            || device.receipts().len() < generation as usize)
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(runtime.metrics().targeting_batches, generation);
+        assert_eq!(device.receipts().len(), generation as usize);
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().len() < 5 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let receipts = device.receipts();
+    assert_eq!(receipts.len(), 5);
+    assert!(
+        receipts.iter().all(|receipt| receipt.target_object_id == 1),
+        "normal visual motion must not rebuild identity and reset downstream control state: {receipts:?}"
+    );
+    assert_eq!(
+        runtime
+            .metrics()
+            .target_selection
+            .target_track_id
+            .unwrap()
+            .0,
+        1
+    );
+
+    runtime.shutdown().expect("workers join");
+}
+
+#[test]
 fn detection_telemetry_is_bounded_without_dropping_the_runtime_batch() {
     let epoch = RuntimeEpoch(8);
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));

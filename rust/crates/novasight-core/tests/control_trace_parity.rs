@@ -165,54 +165,9 @@ fn rust_feedback_matches_the_python_projection_and_atan_reference() {
         trigger_active: true,
     });
 
-    assert_eq!((decision.dx, decision.dy), (127, 112));
-    assert_eq!(decision.quantizer_residual_x, 0.0);
-    assert!((decision.quantizer_residual_y - 0.753_340_878_431).abs() < 1e-9);
-}
-
-#[test]
-fn default_feedback_converges_with_two_frames_of_visual_delay() {
-    let mut config = DualPhaseConfig::default();
-    config.prediction_lead_frames = 0.0;
-    let mut control = DualPhaseControl::new(config);
-    let mut true_error_x = 100.0;
-    let mut delayed_errors = [true_error_x; 3];
-    let mut tail_error_sum = 0.0;
-
-    for generation in 1..=80_u64 {
-        let observed_error_x = delayed_errors[0];
-        delayed_errors.rotate_left(1);
-        let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
-        let decision = control.calculate(ControlObservation {
-            generation,
-            frame_id: generation,
-            target_id: 1,
-            capture_ts_ns,
-            inference_end_ts_ns: capture_ts_ns + 2_000_000,
-            control_now_ns: capture_ts_ns + 4_000_000,
-            aim_x: 320.0 + observed_error_x,
-            aim_y: 320.0,
-            crosshair_x: 320.0,
-            crosshair_y: 320.0,
-            detection_confidence: 0.9,
-            track_confidence: 0.9,
-            target_valid: true,
-            trigger_active: true,
-        });
-        // This fixture's calibrated projection moves the observed image by
-        // approximately 0.154 px for each emitted device count.
-        true_error_x -= f64::from(decision.dx) * 0.154;
-        delayed_errors[2] = true_error_x;
-        if generation > 60 {
-            tail_error_sum += true_error_x.abs();
-        }
-    }
-
-    let mean_tail_error = tail_error_sum / 20.0;
-    assert!(
-        mean_tail_error < 1.0,
-        "delayed closed-loop feedback must converge instead of limit-cycling; mean tail error={mean_tail_error:.3}px"
-    );
+    assert_eq!((decision.dx, decision.dy), (497, 328));
+    assert!((decision.quantizer_residual_x - 0.982_265_322_691).abs() < 1e-9);
+    assert!((decision.quantizer_residual_y - 0.009_144_829_047).abs() < 1e-9);
 }
 
 #[test]

@@ -735,8 +735,6 @@ pub struct PipelineRuntimeConfig {
     pub prediction_near_relative_cap: f64,
     #[serde(default = "default_residual_cap")]
     pub residual_cap: f64,
-    #[serde(default = "default_target_debounce_distance_px")]
-    pub target_debounce_distance_px: f64,
     #[serde(default = "default_target_fov_radius_px")]
     pub target_fov_radius_px: f64,
     #[serde(default = "default_target_min_confidence")]
@@ -816,7 +814,6 @@ impl Default for PipelineRuntimeConfig {
             prediction_near_base_cap_px: default_prediction_near_base_cap_px(),
             prediction_near_relative_cap: default_prediction_near_relative_cap(),
             residual_cap: default_residual_cap(),
-            target_debounce_distance_px: default_target_debounce_distance_px(),
             target_fov_radius_px: default_target_fov_radius_px(),
             target_min_confidence: default_target_min_confidence(),
             target_track_max_age: default_target_track_max_age(),
@@ -964,12 +961,6 @@ impl PipelineRuntimeConfig {
             validate_finite_range(field, value, 0.0, 100_000.0)?;
         }
         validate_finite_range("pipeline.residual_cap", self.residual_cap, 0.0, 1.0)?;
-        validate_finite_range(
-            "pipeline.target_debounce_distance_px",
-            self.target_debounce_distance_px,
-            0.000_001,
-            100_000.0,
-        )?;
         validate_finite_range(
             "pipeline.target_fov_radius_px",
             self.target_fov_radius_px,
@@ -1246,23 +1237,23 @@ const fn default_projection_counts_per_360() -> f64 {
 }
 
 const fn default_atan_scale_counts() -> f64 {
-    256.0
+    1_024.0
 }
 
 const fn default_far_kp() -> f64 {
-    0.45
+    0.90
 }
 
 const fn default_far_max_counts_per_update() -> f64 {
-    127.0
+    600.0
 }
 
 const fn default_near_kp() -> f64 {
-    0.22
+    0.30
 }
 
 const fn default_near_max_counts_per_update() -> f64 {
-    72.0
+    120.0
 }
 
 const fn default_velocity_smoothing_frames() -> f64 {
@@ -1319,10 +1310,6 @@ const fn default_prediction_near_relative_cap() -> f64 {
 
 const fn default_residual_cap() -> f64 {
     1.0
-}
-
-const fn default_target_debounce_distance_px() -> f64 {
-    64.0
 }
 
 const fn default_target_fov_radius_px() -> f64 {
@@ -1980,7 +1967,7 @@ impl Default for PathConfig {
 }
 
 const fn default_schema_version() -> u32 {
-    2
+    3
 }
 
 fn default_server_host() -> String {

@@ -217,7 +217,6 @@ fn build_live_dependencies(
         device,
         PipelineConfig {
             targeting: TargetingConfig {
-                debounce_distance_px: adapters.pipeline.target_debounce_distance_px,
                 target_fov_radius_px: adapters.pipeline.target_fov_radius_px,
                 min_confidence: adapters.pipeline.target_min_confidence,
                 track_max_age: adapters.pipeline.target_track_max_age,

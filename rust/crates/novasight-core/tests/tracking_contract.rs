@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use novasight_core::perception::types::Detection;
-use novasight_core::tracking::{LockReason, TargetingConfig, TargetingCore};
+use novasight_core::tracking::{KalmanConfig, LockReason, TargetingConfig, TargetingCore};
 use serde_json::Value;
 
 const OBSERVATION_CENTER: (f64, f64) = (320.0, 320.0);
@@ -143,6 +143,102 @@ fn detection_reacquired_inside_grace_keeps_the_same_track_id() {
 }
 
 #[test]
+fn smooth_visual_motion_keeps_identity_and_does_not_rebuild_control_state() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
+    let mut stable_track_id = None;
+
+    for (frame, x) in [240.0_f32, 256.0, 272.0, 288.0, 304.0]
+        .into_iter()
+        .enumerate()
+    {
+        let detection =
+            Detection::new(frame as u64, 0, x, 240.0, 80.0, 160.0, 0.9).expect("moving target");
+        let selected = core.select_at(
+            &[detection],
+            OBSERVATION_CENTER,
+            1_000_000_000 + frame as u64 * 8_333_333,
+        );
+        let track_id = selected.target_track_id.expect("selected track");
+        if let Some(expected) = stable_track_id {
+            assert_eq!(track_id, expected, "frame {frame} rebuilt target identity");
+            assert!(
+                !selected.target_rebuilt,
+                "frame {frame} unnecessarily resets controller history"
+            );
+        } else {
+            stable_track_id = Some(track_id);
+        }
+    }
+}
+
+#[test]
+fn sticky_lock_is_not_disabled_by_an_unrelated_pixel_debounce_threshold() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        class_priority: Vec::new(),
+        selection_class_weight: 0.0,
+        selection_distance_weight: 1.0,
+        sticky_bias: 0.90,
+        switch_min_preference_advantage: 0.0,
+        switch_min_continuity_score: 0.0,
+        switch_delay_ms: 0.0,
+        kalman: KalmanConfig {
+            nis_threshold: 1_000_000.0,
+            nis_hard_reject: 1_000_000.0,
+            min_prediction_confidence: 0.0,
+            ..KalmanConfig::default()
+        },
+        ..TargetingConfig::default()
+    });
+    let initial = [
+        Detection::new(10, 0, 280.0, 280.0, 80.0, 100.0, 0.9).expect("locked"),
+        Detection::new(20, 1, 360.0, 280.0, 80.0, 100.0, 0.9).expect("challenger"),
+    ];
+    assert!(
+        core.select_at(&initial, OBSERVATION_CENTER, 1_000_000_000)
+            .target_track_id
+            .is_none()
+    );
+    let locked = core.select_at(&initial, OBSERVATION_CENTER, 1_010_000_000);
+    let locked_track = locked.target_track_id.expect("confirmed lock");
+
+    let moved = [
+        Detection::new(11, 0, 350.0, 280.0, 80.0, 100.0, 0.9).expect("locked moved"),
+        Detection::new(21, 1, 300.0, 280.0, 80.0, 100.0, 0.9).expect("challenger close"),
+    ];
+    let selected = core.select_at(&moved, OBSERVATION_CENTER, 1_020_000_000);
+
+    assert_eq!(selected.target_track_id, Some(locked_track));
+    assert_eq!(selected.target_class_id, Some(0));
+}
+
+#[test]
+fn equal_scores_tie_break_by_stable_track_id_not_frame_local_object_id() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        class_priority: Vec::new(),
+        selection_class_weight: 0.0,
+        selection_distance_weight: 1.0,
+        sticky_bias: 0.0,
+        ..TargetingConfig::default()
+    });
+    let first = [
+        Detection::new(10, 0, 270.0, 280.0, 80.0, 100.0, 0.9).expect("left"),
+        Detection::new(20, 1, 290.0, 280.0, 80.0, 100.0, 0.9).expect("right"),
+    ];
+    core.select_at(&first, OBSERVATION_CENTER, 1_000_000_000);
+    let confirmed = core.select_at(&first, OBSERVATION_CENTER, 1_010_000_000);
+    let stable_track = confirmed.target_track_id.expect("stable tie winner");
+
+    let reordered_ids = [
+        Detection::new(99, 0, 270.0, 280.0, 80.0, 100.0, 0.9).expect("left"),
+        Detection::new(1, 1, 290.0, 280.0, 80.0, 100.0, 0.9).expect("right"),
+    ];
+    let selected = core.select_at(&reordered_ids, OBSERVATION_CENTER, 1_020_000_000);
+
+    assert_eq!(selected.target_track_id, Some(stable_track));
+    assert_eq!(selected.target_class_id, Some(0));
+}
+
+#[test]
 fn reset_clears_state_and_history() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
@@ -244,7 +340,7 @@ fn target_fov_radius_is_a_real_radial_admission_gate() {
 #[test]
 fn control_aim_point_is_separate_from_association_center_and_supports_class_override() {
     let mut class_ratios = BTreeMap::new();
-    class_ratios.insert(1, 0.30);
+    class_ratios.insert(1, 0.304);
     let mut core = TargetingCore::new(TargetingConfig {
         aim_y_ratio: 0.22,
         class_aim_y_ratios: class_ratios,
@@ -274,11 +370,8 @@ fn extreme_aspect_ratio_is_rejected_before_association() {
 }
 
 #[test]
-fn head_movement_under_debounce_keeps_lock_with_held_by_debounce_reason() {
-    let mut core = TargetingCore::new(TargetingConfig {
-        debounce_distance_px: 64.0,
-        ..TargetingConfig::default()
-    });
+fn head_movement_keeps_the_same_stable_lock() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let frame1 = vec![Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.9).expect("d1")];
     let first = core.select(&frame1, OBSERVATION_CENTER);
     assert_eq!(first.lock_reason, Some(LockReason::PreferredClass));

@@ -12,10 +12,15 @@ pub struct KalmanConfig {
     pub measurement_noise_x: f64,
     pub measurement_noise_y: f64,
     pub max_predict_dt_ms: f64,
+    pub max_predict_missing_ms: f64,
+    pub max_predict_steps: u32,
     pub nis_threshold: f64,
     pub nis_hard_reject: f64,
     pub max_position_sigma_px: f64,
     pub max_covariance_trace: f64,
+    pub min_identity_confidence: f64,
+    pub min_prediction_confidence: f64,
+    pub prediction_decay_tau_ms: f64,
 }
 
 impl Default for KalmanConfig {
@@ -25,10 +30,15 @@ impl Default for KalmanConfig {
             measurement_noise_x: 16.0,
             measurement_noise_y: 16.0,
             max_predict_dt_ms: 35.0,
+            max_predict_missing_ms: 80.0,
+            max_predict_steps: 5,
             nis_threshold: 9.21,
             nis_hard_reject: 16.0,
             max_position_sigma_px: 45.0,
             max_covariance_trace: 5_000.0,
+            min_identity_confidence: 0.70,
+            min_prediction_confidence: 0.35,
+            prediction_decay_tau_ms: 45.0,
         }
     }
 }
@@ -38,6 +48,10 @@ pub(super) struct KalmanState {
     state: [f64; 4],
     covariance: [[f64; 4]; 4],
     state_ts_ns: u64,
+    last_measurement_ts_ns: u64,
+    last_nis: f64,
+    prediction_steps: u32,
+    estimate_valid: bool,
     initialized: bool,
 }
 
@@ -47,33 +61,58 @@ impl Default for KalmanState {
             state: [0.0; 4],
             covariance: [[0.0; 4]; 4],
             state_ts_ns: 0,
+            last_measurement_ts_ns: 0,
+            last_nis: 0.0,
+            prediction_steps: 0,
+            estimate_valid: false,
             initialized: false,
         }
     }
 }
 
 impl KalmanState {
-    pub(super) fn new(x: f64, y: f64, ts_ns: u64, config: KalmanConfig) -> Self {
+    pub(super) fn new(
+        x: f64,
+        y: f64,
+        ts_ns: u64,
+        config: KalmanConfig,
+        identity_confidence: f64,
+    ) -> Self {
         let mut covariance = [[0.0; 4]; 4];
         covariance[0][0] = config.measurement_noise_x.max(1.0);
         covariance[1][1] = config.measurement_noise_y.max(1.0);
         covariance[2][2] = 1_000.0;
         covariance[3][3] = 1_000.0;
-        Self {
+        let mut state = Self {
             state: [x, y, 0.0, 0.0],
             covariance,
             state_ts_ns: ts_ns,
+            last_measurement_ts_ns: ts_ns,
+            last_nis: 0.0,
+            prediction_steps: 0,
+            estimate_valid: false,
             initialized: true,
-        }
+        };
+        state.estimate_valid = state.computed_valid(config, identity_confidence);
+        state
     }
 
     pub(super) fn position(&self) -> (f64, f64) {
         (self.state[0], self.state[1])
     }
 
-    pub(super) fn predict(&mut self, ts_ns: u64, config: KalmanConfig) -> bool {
+    pub(super) fn prediction_valid(&self) -> bool {
+        self.estimate_valid
+    }
+
+    pub(super) fn predict(
+        &mut self,
+        ts_ns: u64,
+        config: KalmanConfig,
+        identity_confidence: f64,
+    ) -> bool {
         if !self.initialized || ts_ns <= self.state_ts_ns {
-            return self.valid(config);
+            return self.estimate_valid;
         }
         let raw_dt = ts_ns.saturating_sub(self.state_ts_ns) as f64 / 1_000_000_000.0;
         let dt = raw_dt.min(config.max_predict_dt_ms.max(1.0) / 1_000.0);
@@ -81,7 +120,9 @@ impl KalmanState {
         self.state = state;
         self.covariance = covariance;
         self.state_ts_ns = ts_ns;
-        self.valid(config)
+        self.prediction_steps = self.prediction_steps.saturating_add(1);
+        self.estimate_valid = self.computed_valid(config, identity_confidence);
+        self.estimate_valid
     }
 
     pub(super) fn measurement_nis(&self, x: f64, y: f64, config: KalmanConfig) -> f64 {
@@ -92,7 +133,29 @@ impl KalmanState {
         mahalanobis_2d(x - self.state[0], y - self.state[1], s00, s01, s10, s11)
     }
 
-    pub(super) fn update(&mut self, x: f64, y: f64, config: KalmanConfig) -> bool {
+    pub(super) fn measurement_nis_from_position(
+        &self,
+        x: f64,
+        y: f64,
+        reference_x: f64,
+        reference_y: f64,
+        config: KalmanConfig,
+    ) -> f64 {
+        let s00 = self.covariance[0][0] + config.measurement_noise_x.max(1e-6);
+        let s01 = self.covariance[0][1];
+        let s10 = self.covariance[1][0];
+        let s11 = self.covariance[1][1] + config.measurement_noise_y.max(1e-6);
+        mahalanobis_2d(x - reference_x, y - reference_y, s00, s01, s10, s11)
+    }
+
+    pub(super) fn update(
+        &mut self,
+        x: f64,
+        y: f64,
+        ts_ns: u64,
+        config: KalmanConfig,
+        identity_confidence: f64,
+    ) -> bool {
         let r00 = config.measurement_noise_x.max(1e-6);
         let r11 = config.measurement_noise_y.max(1e-6);
         let s00 = self.covariance[0][0] + r00;
@@ -100,8 +163,13 @@ impl KalmanState {
         let s10 = self.covariance[1][0];
         let s11 = self.covariance[1][1] + r11;
         let nis = mahalanobis_2d(x - self.state[0], y - self.state[1], s00, s01, s10, s11);
+        if !nis.is_finite() || nis > config.nis_hard_reject {
+            *self = Self::new(x, y, ts_ns, config, identity_confidence);
+            return self.estimate_valid;
+        }
         let Some(inverse) = inverse_2x2(s00, s01, s10, s11) else {
-            return false;
+            *self = Self::new(x, y, ts_ns, config, identity_confidence);
+            return self.estimate_valid;
         };
         let innovation = [x - self.state[0], y - self.state[1]];
         let mut gain = [[0.0; 2]; 4];
@@ -122,7 +190,12 @@ impl KalmanState {
                     - gain[row][1] * previous[1][column]
             })
         });
-        self.valid(config) && nis.is_finite() && nis <= config.nis_threshold
+        self.state_ts_ns = ts_ns;
+        self.last_measurement_ts_ns = ts_ns;
+        self.last_nis = nis;
+        self.prediction_steps = 0;
+        self.estimate_valid = self.computed_valid(config, identity_confidence);
+        self.estimate_valid
     }
 
     fn predicted(&self, dt: f64, config: KalmanConfig) -> ([f64; 4], [[f64; 4]; 4]) {
@@ -162,16 +235,31 @@ impl KalmanState {
         (state, covariance)
     }
 
-    fn valid(&self, config: KalmanConfig) -> bool {
+    fn computed_valid(&self, config: KalmanConfig, identity_confidence: f64) -> bool {
         let covariance_trace = (0..4)
             .map(|index| self.covariance[index][index])
             .sum::<f64>();
         let sigma = ((self.covariance[0][0] + self.covariance[1][1]).max(0.0) * 0.5).sqrt();
+        let missing_ms = self.state_ts_ns.saturating_sub(self.last_measurement_ts_ns) as f64 / 1e6;
+        let covariance_confidence =
+            (1.0 - sigma / config.max_position_sigma_px.max(1e-6)).clamp(0.0, 1.0);
+        let residual_confidence =
+            (1.0 - self.last_nis.max(0.0) / config.nis_threshold.max(1e-6)).clamp(0.0, 1.0);
+        let missing_decay = (-missing_ms / config.prediction_decay_tau_ms.max(1e-6)).exp();
+        let prediction_confidence = identity_confidence.clamp(0.0, 1.0)
+            * covariance_confidence
+            * residual_confidence
+            * missing_decay;
         self.state.iter().all(|value| value.is_finite())
             && covariance_trace.is_finite()
             && covariance_trace <= config.max_covariance_trace
             && sigma.is_finite()
             && sigma <= config.max_position_sigma_px
+            && missing_ms <= config.max_predict_missing_ms
+            && self.prediction_steps <= config.max_predict_steps
+            && identity_confidence >= config.min_identity_confidence
+            && self.last_nis <= config.nis_threshold
+            && prediction_confidence >= config.min_prediction_confidence
     }
 }
 

@@ -368,36 +368,38 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 }
 
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
-    if config.schema_version >= 2 {
+    if config.schema_version >= 3 {
         return;
     }
 
-    // Schema 1 shipped a high-authority tuple after confusing kmNet's
-    // protocol range with a suitable closed-loop response. Migrate only that
-    // exact generated profile; individually tuned values remain untouched.
+    // Schema 2 was briefly published with a low-authority tuple based on an
+    // uncalibrated synthetic plant. Restore only that exact generated profile;
+    // historical schema-1 values and individually tuned values remain intact.
+    let schema_version = config.schema_version;
     let pipeline = &mut config.pipeline;
-    let migrated_high_authority_profile = pipeline.atan_scale_counts == 1_024.0
-        && pipeline.far_kp == 0.90
-        && pipeline.far_max_counts_per_update == 600.0
-        && pipeline.near_kp == 0.30
-        && pipeline.near_max_counts_per_update == 120.0;
-    if migrated_high_authority_profile {
-        pipeline.atan_scale_counts = 256.0;
-        pipeline.far_kp = 0.45;
-        pipeline.far_max_counts_per_update = 127.0;
-        pipeline.near_kp = 0.22;
-        pipeline.near_max_counts_per_update = 72.0;
+    let migrated_mistaken_low_profile = schema_version == 2
+        && pipeline.atan_scale_counts == 256.0
+        && pipeline.far_kp == 0.45
+        && pipeline.far_max_counts_per_update == 127.0
+        && pipeline.near_kp == 0.22
+        && pipeline.near_max_counts_per_update == 72.0;
+    if migrated_mistaken_low_profile {
+        pipeline.atan_scale_counts = 1_024.0;
+        pipeline.far_kp = 0.90;
+        pipeline.far_max_counts_per_update = 600.0;
+        pipeline.near_kp = 0.30;
+        pipeline.near_max_counts_per_update = 120.0;
     }
-    config.schema_version = 2;
+    config.schema_version = 3;
 
     let Value::Mapping(root) = document else {
         return;
     };
     root.insert(
         Value::String("schema_version".to_owned()),
-        Value::Number(2_u64.into()),
+        Value::Number(3_u64.into()),
     );
-    if !migrated_high_authority_profile {
+    if !migrated_mistaken_low_profile {
         return;
     }
     let pipeline = root
@@ -407,11 +409,11 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         return;
     };
     for (key, value) in [
-        ("atan_scale_counts", 256.0),
-        ("far_kp", 0.45),
-        ("far_max_counts_per_update", 127.0),
-        ("near_kp", 0.22),
-        ("near_max_counts_per_update", 72.0),
+        ("atan_scale_counts", 1_024.0),
+        ("far_kp", 0.90),
+        ("far_max_counts_per_update", 600.0),
+        ("near_kp", 0.30),
+        ("near_max_counts_per_update", 120.0),
     ] {
         pipeline.insert(
             Value::String(key.to_owned()),
@@ -449,7 +451,6 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "prediction_near_base_cap_px",
             "prediction_near_relative_cap",
             "residual_cap",
-            "target_debounce_distance_px",
             "target_fov_radius_px",
             "target_min_confidence",
             "target_track_max_age",
