@@ -76,14 +76,14 @@ class AtanModeConfig:
 
 def _default_far_atan() -> AtanModeConfig:
     return AtanModeConfig(
-        kp=0.45,
+        kp=0.22,
         max_counts_per_update=127.0,
     )
 
 
 def _default_near_atan() -> AtanModeConfig:
     return AtanModeConfig(
-        kp=0.22,
+        kp=0.20,
         max_counts_per_update=72.0,
     )
 

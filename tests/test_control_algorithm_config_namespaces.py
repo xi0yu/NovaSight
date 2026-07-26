@@ -139,7 +139,7 @@ def test_v2_schema_two_migrates_to_single_threshold_and_shared_scale() -> None:
     )
 
     robust = config.control.dual_phase_atan_robust_predictive_v2
-    assert robust.schema_version == 9
+    assert robust.schema_version == 10
     assert robust.mode.near_threshold_px == 13.0
     assert robust.atan.scale_counts == 280.0
 
@@ -164,7 +164,7 @@ def test_v2_schema_three_time_prediction_migrates_to_frame_units() -> None:
     )
 
     robust = config.control.dual_phase_atan_robust_predictive_v2
-    assert robust.schema_version == 9
+    assert robust.schema_version == 10
     assert robust.velocity.smoothing_frames == pytest.approx(3.0)
     assert robust.prediction.lead_frames == pytest.approx(1.5)
 
@@ -203,18 +203,40 @@ def test_v2_schema_seven_repairs_only_the_aggressive_generated_profile() -> None
         }
     ).control.dual_phase_atan_robust_predictive_v2
 
-    assert migrated.schema_version == 9
+    assert migrated.schema_version == 10
     assert migrated.atan.scale_counts == 256.0
-    assert migrated.atan.far.kp == 0.45
+    assert migrated.atan.far.kp == 0.22
     assert migrated.atan.far.max_counts_per_update == 127.0
-    assert migrated.atan.near.kp == 0.22
+    assert migrated.atan.near.kp == 0.20
     assert migrated.atan.near.max_counts_per_update == 72.0
-    assert customized.schema_version == 9
+    assert customized.schema_version == 10
     assert customized.atan.scale_counts == 480.0
     assert customized.atan.far.kp == 0.70
     assert customized.atan.far.max_counts_per_update == 420.0
     assert customized.atan.near.kp == 0.25
     assert customized.atan.near.max_counts_per_update == 90.0
+
+
+def test_v2_schema_nine_repairs_only_the_generated_delay_unstable_far_gain() -> None:
+    migrated = parse_runtime_config(
+        {
+            "control": {
+                "algorithms": {
+                    "dual_phase_atan_robust_predictive_v2": {
+                        "schema_version": 9,
+                        "atan": {
+                            "scale_counts": 256.0,
+                            "far": {"kp": 0.45, "max_counts_per_update": 127.0},
+                            "near": {"kp": 0.22, "max_counts_per_update": 72.0},
+                        },
+                    }
+                }
+            }
+        }
+    ).control.dual_phase_atan_robust_predictive_v2
+    assert migrated.schema_version == 10
+    assert migrated.atan.far.kp == 0.22
+    assert migrated.atan.near.kp == 0.20
 
 
 def test_v2_migration_preserves_explicitly_disabled_prediction() -> None:

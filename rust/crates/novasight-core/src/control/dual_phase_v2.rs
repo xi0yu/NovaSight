@@ -15,9 +15,10 @@
 //!   emit-eligible decision. Triggers and target validity gate the
 //!   state machine; stale or non-monotonic observations are rejected
 //!   with a typed `BlockReason`.
-//! * `quantizer_residual` carries the fractional count past the
-//!   integer boundary so the next call can absorb sub-count motion
-//!   without losing precision.
+//! * `quantizer_residual` carries fractional demand until it becomes one
+//!   actionable device count. Once the full geometric correction is within
+//!   half a count, the current integer position is already the nearest point
+//!   the device can represent and that axis settles instead of limit-cycling.
 
 use std::collections::VecDeque;
 
@@ -25,6 +26,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::control::humanized_motion::{HumanizedMotionTelemetry, MotionProfile};
 use crate::error::AppError;
+
+/// Integer mouse output cannot represent a correction smaller than one count.
+/// At half a count or less the current integer position is the nearest
+/// representable point, so retaining residual would only create a +/-1 cycle.
+const HALF_DEVICE_COUNT: f64 = 0.5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ControlMode {
@@ -48,7 +54,7 @@ pub enum BlockReason {
     GeometryInvalid,
     /// Trigger not held; no command is emitted this step.
     TriggerInactive,
-    /// Filtered position fell outside the configured dead-zone.
+    /// No device count is actionable at the current position.
     DeadZone,
     /// Demand converted to a count out of signed 32-bit range.
     DemandOutOfRange,
@@ -100,9 +106,9 @@ impl Default for DualPhaseConfig {
             projection_counts_per_360: 9_980.0,
             projection_invert_y: false,
             atan_scale_counts: 256.0,
-            far_kp: 0.45,
+            far_kp: 0.22,
             far_max_counts_per_update: 127.0,
-            near_kp: 0.22,
+            near_kp: 0.20,
             near_max_counts_per_update: 72.0,
             velocity_smoothing_frames: 3.0,
             velocity_history_reset_gap_ms: 80.0,
@@ -672,12 +678,21 @@ impl DualPhaseControl {
         let predicted_offset_y = 0.0;
         let filtered_error_x = error_x + predicted_offset_x;
         let filtered_error_y = error_y + predicted_offset_y;
-        let Some((base_x, base_y, full_x, full_y, max_counts_per_axis)) =
+        let Some((mut base_x, mut base_y, full_x, full_y, max_counts_per_axis)) =
             self.project_demand(filtered_error_x, filtered_error_y, mode)
         else {
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::GeometryInvalid);
         };
+
+        if full_x.abs() <= HALF_DEVICE_COUNT {
+            self.quantizer_x.reset();
+            base_x = 0.0;
+        }
+        if full_y.abs() <= HALF_DEVICE_COUNT {
+            self.quantizer_y.reset();
+            base_y = 0.0;
+        }
 
         let maximum = f64::from(max_counts_per_axis);
         let demand_x = base_x.clamp(-maximum, maximum);

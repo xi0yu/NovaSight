@@ -368,7 +368,7 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 }
 
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
-    if config.schema_version >= 5 {
+    if config.schema_version >= 6 {
         return;
     }
 
@@ -390,20 +390,33 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         pipeline.near_kp = 0.22;
         pipeline.near_max_counts_per_update = 72.0;
     }
+    // Schema 5's generated FAR gain converged eventually, but its regression
+    // ignored the acquisition transient. With two frames of visual feedback
+    // delay it overshot a new 100 px target by about 20 px. Repair only the
+    // exact generated tuple so individually tuned profiles stay untouched.
+    let migrated_delay_unstable_far_gain = pipeline.atan_scale_counts == 256.0
+        && pipeline.far_kp == 0.45
+        && pipeline.far_max_counts_per_update == 127.0
+        && pipeline.near_kp == 0.22
+        && pipeline.near_max_counts_per_update == 72.0;
+    if migrated_delay_unstable_far_gain {
+        pipeline.far_kp = 0.22;
+        pipeline.near_kp = 0.20;
+    }
     // Stage one of the control audit intentionally removes motion prediction
     // from the production mouse path. Existing configurations are migrated to
     // the same explicit non-predictive contract instead of silently retaining
     // a previously enabled predictor.
     pipeline.prediction_enabled = false;
     config.control.humanized_motion.enabled = false;
-    config.schema_version = 5;
+    config.schema_version = 6;
 
     let Value::Mapping(root) = document else {
         return;
     };
     root.insert(
         Value::String("schema_version".to_owned()),
-        Value::Number(5_u64.into()),
+        Value::Number(6_u64.into()),
     );
     let pipeline = root
         .entry(Value::String("pipeline".to_owned()))
@@ -415,12 +428,20 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         Value::String("prediction_enabled".to_owned()),
         Value::Bool(false),
     );
+    if migrated_delay_unstable_far_gain {
+        for (key, value) in [("far_kp", 0.22), ("near_kp", 0.20)] {
+            pipeline.insert(
+                Value::String(key.to_owned()),
+                serde_yaml::to_value(value).expect("finite control migration value"),
+            );
+        }
+    }
     if migrated_aggressive_profile {
         for (key, value) in [
             ("atan_scale_counts", 256.0),
-            ("far_kp", 0.45),
+            ("far_kp", 0.22),
             ("far_max_counts_per_update", 127.0),
-            ("near_kp", 0.22),
+            ("near_kp", 0.20),
             ("near_max_counts_per_update", 72.0),
         ] {
             pipeline.insert(

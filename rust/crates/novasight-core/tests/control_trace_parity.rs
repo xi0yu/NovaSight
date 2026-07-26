@@ -175,19 +175,24 @@ fn rust_feedback_matches_the_python_projection_and_atan_reference() {
         trigger_active: true,
     });
 
-    assert_eq!((decision.dx, decision.dy), (127, 112));
-    assert_eq!(decision.quantizer_residual_x, 0.0);
-    assert!((decision.quantizer_residual_y - 0.753_340_878_431).abs() < 1e-9);
+    assert_eq!((decision.dx, decision.dy), (66, 55));
+    assert!((decision.quantizer_residual_x - 0.229_251_794_113).abs() < 1e-9);
+    assert!((decision.quantizer_residual_y - 0.123_855_540_566).abs() < 1e-9);
 }
 
 #[test]
 fn default_feedback_converges_with_two_frames_of_visual_delay() {
     let mut config = DualPhaseConfig::default();
     config.prediction_enabled = false;
+    let focal_x =
+        (config.source_width as f64 * 0.5) / (config.projection_fov_x_deg.to_radians() * 0.5).tan();
+    let observation_px_per_count =
+        focal_x * (std::f64::consts::TAU / config.projection_counts_per_360).tan();
     let mut control = DualPhaseControl::new(config);
     let mut true_error_x = 100.0;
     let mut delayed_errors = [true_error_x; 3];
     let mut tail_error_sum = 0.0;
+    let mut worst_overshoot_px = 0.0_f64;
 
     for generation in 1..=80_u64 {
         let observed_error_x = delayed_errors[0];
@@ -209,9 +214,8 @@ fn default_feedback_converges_with_two_frames_of_visual_delay() {
             target_valid: true,
             trigger_active: true,
         });
-        // The calibrated projection moves the observed image by approximately
-        // 0.154 px for each emitted device count.
-        true_error_x -= f64::from(decision.dx) * 0.154;
+        true_error_x -= f64::from(decision.dx) * observation_px_per_count;
+        worst_overshoot_px = worst_overshoot_px.max((-true_error_x).max(0.0));
         delayed_errors[2] = true_error_x;
         if generation > 60 {
             tail_error_sum += true_error_x.abs();
@@ -222,6 +226,55 @@ fn default_feedback_converges_with_two_frames_of_visual_delay() {
     assert!(
         mean_tail_error < 1.0,
         "delayed closed-loop feedback must converge instead of limit-cycling; mean tail error={mean_tail_error:.3}px"
+    );
+    assert!(
+        worst_overshoot_px < 2.0,
+        "new-target acquisition must not hide a large transient behind eventual convergence; worst overshoot={worst_overshoot_px:.3}px"
+    );
+}
+
+#[test]
+fn sub_count_arrival_becomes_quiet_instead_of_limit_cycling() {
+    let config = DualPhaseConfig::default();
+    let focal_x =
+        (config.source_width as f64 * 0.5) / (config.projection_fov_x_deg.to_radians() * 0.5).tan();
+    let observation_px_per_count =
+        focal_x * (std::f64::consts::TAU / config.projection_counts_per_360).tan();
+    let mut control = DualPhaseControl::new(config);
+    let mut true_error_x = 100.0;
+    let mut delayed_errors = [true_error_x; 3];
+    let mut tail_nonzero_commands = 0;
+
+    for generation in 1..=240_u64 {
+        let observed_error_x = delayed_errors[0];
+        delayed_errors.rotate_left(1);
+        let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
+        let decision = control.calculate(ControlObservation {
+            generation,
+            frame_id: generation,
+            target_id: 1,
+            capture_ts_ns,
+            inference_end_ts_ns: capture_ts_ns + 2_000_000,
+            control_now_ns: capture_ts_ns + 4_000_000,
+            aim_x: 320.0 + observed_error_x,
+            aim_y: 320.0,
+            crosshair_x: 320.0,
+            crosshair_y: 320.0,
+            detection_confidence: 1.0,
+            track_confidence: 1.0,
+            target_valid: true,
+            trigger_active: true,
+        });
+        true_error_x -= f64::from(decision.dx) * observation_px_per_count;
+        delayed_errors[2] = true_error_x;
+        if generation > 160 && decision.dx != 0 {
+            tail_nonzero_commands += 1;
+        }
+    }
+
+    assert_eq!(
+        tail_nonzero_commands, 0,
+        "a target inside half of one physical count must settle without periodic +/-1 commands"
     );
 }
 

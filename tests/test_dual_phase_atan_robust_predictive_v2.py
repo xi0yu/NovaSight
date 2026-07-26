@@ -284,8 +284,8 @@ def test_defaults_preserve_the_verified_python_control_profile() -> None:
     assert config.prediction.far.absolute_cap_px == 10.0
     assert config.prediction.near.absolute_cap_px == 3.0
     assert config.atan.scale_counts == 256.0
-    assert config.atan.far.kp == 0.45
-    assert config.atan.near.kp == 0.22
+    assert config.atan.far.kp == 0.22
+    assert config.atan.near.kp == 0.20
     assert config.atan.far.max_counts_per_update == 127.0
     assert config.atan.near.max_counts_per_update == 72.0
 
@@ -400,6 +400,35 @@ def test_target_switch_clears_velocity_and_fractional_counts() -> None:
     assert switched.telemetry["quantizer_residual_x"] == pytest.approx(
         fresh.telemetry["quantizer_residual_x"]
     )
+
+
+def test_physical_half_count_boundary_settles_but_actionable_residual_emits() -> None:
+    config = DualPhaseAtanRobustPredictiveV2Config()
+    focal_x = 1920.0 * 0.5 / math.tan(math.radians(config.projection.fov_x_deg) * 0.5)
+    counts_per_rad = config.projection.counts_per_360 / math.tau
+
+    def error_px_for_full_counts(full_counts: float) -> float:
+        source_error_x = math.tan(full_counts / counts_per_rad) * focal_x
+        return source_error_x * 320.0 / 640.0
+
+    settled = DualPhaseAtanRobustPredictiveV2Algorithm(config)
+    settled_decisions = [
+        settled.calculate(
+            _observation(generation=generation, error_x=error_px_for_full_counts(0.49))
+        )
+        for generation in range(1, 25)
+    ]
+    assert all(decision.dx == 0 for decision in settled_decisions)
+    assert all(decision.telemetry["quantizer_residual_x"] == 0.0 for decision in settled_decisions)
+
+    actionable = DualPhaseAtanRobustPredictiveV2Algorithm(config)
+    actionable_decisions = [
+        actionable.calculate(
+            _observation(generation=generation, error_x=error_px_for_full_counts(0.51))
+        )
+        for generation in range(1, 25)
+    ]
+    assert any(decision.dx == 1 for decision in actionable_decisions)
 
 
 def test_history_gap_restarts_window_from_current_measurement() -> None:

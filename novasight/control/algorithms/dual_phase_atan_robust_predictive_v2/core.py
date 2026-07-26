@@ -14,6 +14,8 @@ from .models import (
 )
 from .motion_history import RobustVelocityEstimator
 
+_HALF_DEVICE_COUNT = 0.5
+
 
 class DualPhaseAtanRobustPredictiveV2Algorithm:
     algorithm_id = ALGORITHM_ID
@@ -178,6 +180,15 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         atan_mode = self.config.atan.far if mode is ControlMode.FAR else self.config.atan.near
         demand_x = _atan_demand(full_counts_x, atan_mode, self.config.atan.scale_counts)
         feedback_demand_y = _atan_demand(full_counts_y, atan_mode, self.config.atan.scale_counts)
+        # Below half a physical count, the current integer device position is
+        # already the nearest representable point. Carrying residual here would
+        # periodically emit +/-1 and create a limit cycle around the aim point.
+        if abs(full_counts_x) <= _HALF_DEVICE_COUNT:
+            self._quantizer_x.reset()
+            demand_x = 0.0
+        if abs(full_counts_y) <= _HALF_DEVICE_COUNT:
+            self._quantizer_y.reset()
+            feedback_demand_y = 0.0
         humanized_debug = {
             "humanized_motion_enabled": False,
             "humanized_motion_reason": "atan_only_production_path",

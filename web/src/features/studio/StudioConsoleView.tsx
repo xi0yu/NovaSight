@@ -1395,8 +1395,8 @@ export function StudioConsoleView({
   const dualPhaseFovX = readNumber(rustControlPlane ? rustPipelineConfig.projection_fov_x_deg : dualPhaseProjectionConfig.fov_x_deg, 105);
   const dualPhaseCountsPer360 = readNumber(rustControlPlane ? rustPipelineConfig.projection_counts_per_360 : dualPhaseProjectionConfig.counts_per_360, 9980);
   const dualPhaseNearThreshold = readNumber(rustControlPlane ? rustPipelineConfig.near_threshold_px : dualPhaseModeConfig.near_threshold_px, 12);
-  const dualPhaseFarKp = readNumber(rustControlPlane ? rustPipelineConfig.far_kp : dualPhaseFarConfig.kp, 0.45);
-  const dualPhaseNearKp = readNumber(rustControlPlane ? rustPipelineConfig.near_kp : dualPhaseNearConfig.kp, 0.22);
+  const dualPhaseFarKp = readNumber(rustControlPlane ? rustPipelineConfig.far_kp : dualPhaseFarConfig.kp, 0.22);
+  const dualPhaseNearKp = readNumber(rustControlPlane ? rustPipelineConfig.near_kp : dualPhaseNearConfig.kp, 0.20);
   const dualPhaseAtanScale = readNumber(rustControlPlane ? rustPipelineConfig.atan_scale_counts : dualPhaseAtanConfig.scale_counts, 256);
   const dualPhaseFarMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.far_max_counts_per_update : dualPhaseFarConfig.max_counts_per_update, 127);
   const dualPhaseNearMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.near_max_counts_per_update : dualPhaseNearConfig.max_counts_per_update, 72);
@@ -1409,7 +1409,7 @@ export function StudioConsoleView({
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
   const recoilStartupRampMs = readNumber(recoilConfig.startup_ms, 35);
   const recoilBaseRate = readNumber(recoilConfig.base_rate_counts_s, 0);
-  const triggerMode = rustControlPlane ? "hardware" : readString(controlConfig.trigger_mode, "always");
+  const triggerMode = readString(controlConfig.trigger_mode, "always");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
@@ -4396,7 +4396,7 @@ export function StudioConsoleView({
                 </div>
                 <p className="console-section-note">{activeControlAlgorithm.description}</p>
                 <label>触发方式</label>
-                <select disabled={rustControlPlane} value={triggerMode} onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}>
+                <select value={triggerMode} onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}>
                   <option value="hardware">kmNet 硬件按键触发</option>
                   <option value="always">检测到目标后自动控制</option>
                 </select>

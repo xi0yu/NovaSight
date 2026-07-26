@@ -96,6 +96,15 @@ def test_studio_exposes_only_deepstream_runtime_backend() -> None:
     assert 'label: "NVMM latest"' not in source
 
 
+def test_rust_trigger_mode_uses_persisted_config_instead_of_hardcoded_hardware() -> None:
+    source = STUDIO_CONSOLE.read_text(encoding="utf-8")
+
+    assert 'const triggerMode = readString(controlConfig.trigger_mode, "always");' in source
+    assert 'rustControlPlane ? "hardware"' not in source
+    assert '<select disabled={rustControlPlane} value={triggerMode}' not in source
+    assert '<select value={triggerMode}' in source
+
+
 def test_runtime_status_does_not_treat_informational_reason_as_failure() -> None:
     source = RUNTIME_STATUS.read_text(encoding="utf-8")
 

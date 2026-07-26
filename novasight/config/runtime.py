@@ -249,14 +249,14 @@ class DualPhaseRobustAtanModeConfig:
 
 def _default_dual_phase_robust_far_atan() -> DualPhaseRobustAtanModeConfig:
     return DualPhaseRobustAtanModeConfig(
-        kp=0.45,
+        kp=0.22,
         max_counts_per_update=127.0,
     )
 
 
 def _default_dual_phase_robust_near_atan() -> DualPhaseRobustAtanModeConfig:
     return DualPhaseRobustAtanModeConfig(
-        kp=0.22,
+        kp=0.20,
         max_counts_per_update=72.0,
     )
 
@@ -272,7 +272,7 @@ class DualPhaseRobustAtanConfig:
 
 @dataclass
 class DualPhaseAtanRobustPredictiveV2Config:
-    schema_version: int = 9
+    schema_version: int = 10
     freshness_threshold_ms: float = 55.0
     projection: DualPhaseProjectionConfig = field(default_factory=DualPhaseProjectionConfig)
     mode: DualPhaseRobustModeSelectorConfig = field(
@@ -1018,6 +1018,25 @@ def _migrate_dual_phase_robust_v2_namespace(
         config["prediction"] = prediction
         config["schema_version"] = 9
 
+    if int(config.get("schema_version", 9)) <= 9:
+        atan = dict(config.get("atan") or {})
+        far = dict(atan.get("far") or {})
+        near = dict(atan.get("near") or {})
+        delay_unstable_profile = (
+            float(atan.get("scale_counts", 256.0)) == 256.0
+            and float(far.get("kp", 0.45)) == 0.45
+            and float(far.get("max_counts_per_update", 127.0)) == 127.0
+            and float(near.get("kp", 0.22)) == 0.22
+            and float(near.get("max_counts_per_update", 72.0)) == 72.0
+        )
+        if delay_unstable_profile:
+            far["kp"] = 0.22
+            near["kp"] = 0.20
+        atan["far"] = far
+        atan["near"] = near
+        config["atan"] = atan
+        config["schema_version"] = 10
+
     prediction = dict(config.get("prediction") or {})
     if "enabled" not in prediction:
         prediction["enabled"] = False
@@ -1163,8 +1182,8 @@ def _validate_dual_phase_robust_v2_algorithm(
             raise ValueError(f"runtime config key '{prefix}.{name}' must be finite")
         return numeric
 
-    if int(cfg.schema_version) != 9:
-        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 9")
+    if int(cfg.schema_version) != 10:
+        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 10")
     if cfg.prediction.enabled:
         raise ValueError(
             f"runtime config key '{prefix}.prediction.enabled' must be false "

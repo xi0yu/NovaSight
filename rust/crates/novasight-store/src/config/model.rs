@@ -1186,7 +1186,7 @@ const fn default_atan_scale_counts() -> f64 {
 }
 
 const fn default_far_kp() -> f64 {
-    0.45
+    0.22
 }
 
 const fn default_far_max_counts_per_update() -> f64 {
@@ -1194,7 +1194,7 @@ const fn default_far_max_counts_per_update() -> f64 {
 }
 
 const fn default_near_kp() -> f64 {
-    0.22
+    0.20
 }
 
 const fn default_near_max_counts_per_update() -> f64 {
@@ -1916,7 +1916,7 @@ impl Default for PathConfig {
 }
 
 const fn default_schema_version() -> u32 {
-    5
+    6
 }
 
 fn default_server_host() -> String {
