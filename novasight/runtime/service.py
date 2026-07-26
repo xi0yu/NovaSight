@@ -766,8 +766,7 @@ class RuntimeService:
         )
         if mode == DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2:
             chain = (
-                "MeasuredAim->FAR/NEAR->FourPointMedianVelocity->AdaptiveEMA"
-                "->BoundedXPrediction->ProjectionAngle->FullCounts->CountsAtan"
+                "MeasuredAim->FAR/NEAR->ProjectionAngle->FullCounts->CountsAtan"
                 f"->IntegerQuantizer->{delivery_stage}->kmNet"
             )
         elif is_dual_phase:

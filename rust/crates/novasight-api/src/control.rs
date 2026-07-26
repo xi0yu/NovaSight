@@ -735,30 +735,16 @@ async fn motion_profiles(
 }
 
 async fn activate_motion_profile(
-    State(state): State<ControlState>,
-    AxumPath(profile_id): AxumPath<String>,
+    State(_state): State<ControlState>,
+    AxumPath(_profile_id): AxumPath<String>,
 ) -> Result<Json<ActivatedMotionProfile>, ControlApiError> {
-    let _lifecycle_guard = state.lifecycle_lock.lock().await;
-    let profile = run_motion_operation(state.runtime.clone(), move |runtime| {
-        runtime.motion_profile(&profile_id)
-    })
-    .await?;
-    let revision = persist_motion_profile_selection(&state, true, &profile.profile_id).await?;
-    let runtime = state
-        .runtime
-        .activate_loaded_motion_profile(profile.clone())?;
-    commit_motion_profile_selection(&state, revision).await?;
-    Ok(Json(ActivatedMotionProfile { profile, runtime }))
+    Err(ControlApiError::AtanOnlyMotionDisabled)
 }
 
 async fn activate_builtin_motion(
-    State(state): State<ControlState>,
+    State(_state): State<ControlState>,
 ) -> Result<Json<novasight_runtime::MotionProfileStatus>, ControlApiError> {
-    let _lifecycle_guard = state.lifecycle_lock.lock().await;
-    let revision = persist_motion_profile_selection(&state, true, "builtin").await?;
-    let status = state.runtime.activate_builtin_motion()?;
-    commit_motion_profile_selection(&state, revision).await?;
-    Ok(Json(status))
+    Err(ControlApiError::AtanOnlyMotionDisabled)
 }
 
 async fn disable_motion_profile(
@@ -1446,6 +1432,7 @@ enum ControlApiError {
     CaptureProbeUnavailable,
     CaptureSelection(CaptureSelectionError),
     CaptureSelectionRequiresStoppedRuntime,
+    AtanOnlyMotionDisabled,
     MotionTask(tokio::task::JoinError),
 }
 
@@ -1535,6 +1522,12 @@ impl IntoResponse for ControlApiError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "HARDWARE_OUTPUT_DISABLED",
                 "physical kmNet is unavailable because novasightd was started with --dry-run; restart without --dry-run to use production hardware"
+                    .to_owned(),
+            ),
+            Self::AtanOnlyMotionDisabled => (
+                StatusCode::CONFLICT,
+                "ATAN_ONLY_MOTION_DISABLED",
+                "humanized motion is disabled while the production controller is atan-only"
                     .to_owned(),
             ),
             Self::DeviceNotConfigured => (
@@ -2037,7 +2030,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn motion_routes_train_persist_and_hot_activate_the_control_profile() {
+    async fn motion_routes_train_but_reject_activation_in_atan_only_mode() {
         let root = std::env::temp_dir().join(format!(
             "novasight-motion-api-{}-{}",
             std::process::id(),
@@ -2137,14 +2130,15 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(hub.active().unwrap().profile_id, profile_id);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "ATAN_ONLY_MOTION_DISABLED");
+        assert!(hub.active().is_none());
         let persisted = YamlConfigRepository::load(&config_path).unwrap();
-        assert!(persisted.control.humanized_motion.enabled);
-        assert_eq!(
-            persisted.control.humanized_motion.active_profile,
-            profile_id
-        );
+        assert!(!persisted.control.humanized_motion.enabled);
         assert_eq!(config.effective_revision(), persisted.revision);
 
         let response = router
@@ -2160,8 +2154,7 @@ mod tests {
             .await
             .unwrap();
         let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(status["trajectory_source"], "trained");
-        assert_eq!(status["active_profile"], profile_id);
+        assert_eq!(status["enabled"], false);
 
         let response = router
             .clone()
@@ -2172,10 +2165,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
         let persisted = YamlConfigRepository::load(&config_path).unwrap();
-        assert!(persisted.control.humanized_motion.enabled);
-        assert_eq!(persisted.control.humanized_motion.active_profile, "builtin");
+        assert!(!persisted.control.humanized_motion.enabled);
         assert_eq!(config.effective_revision(), persisted.revision);
 
         let response = router
@@ -2192,26 +2184,6 @@ mod tests {
         assert!(!persisted.control.humanized_motion.enabled);
         assert!(persisted.control.humanized_motion.active_profile.is_empty());
         assert_eq!(config.effective_revision(), persisted.revision);
-        assert!(hub.active().is_none());
-
-        config
-            .update_field(ConfigFieldUpdate {
-                section: "pipeline".to_owned(),
-                key: "freshness_threshold_ms".to_owned(),
-                value: serde_json::json!(40.0),
-                expected_revision: Some(persisted.revision),
-            })
-            .await
-            .unwrap();
-        let response = router
-            .oneshot(
-                Request::post("/api/motion/runtime/builtin/activate")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
         assert!(hub.active().is_none());
 
         runtime.shutdown_daemon().await.unwrap();

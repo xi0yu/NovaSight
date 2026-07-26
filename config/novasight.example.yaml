@@ -112,7 +112,7 @@ control:
       max_step_x_counts: 50.0
       max_step_y_counts: 40.0
     dual_phase_atan_robust_predictive_v2:
-      schema_version: 8
+      schema_version: 9
       freshness_threshold_ms: 55.0
       projection:
         fov_x_deg: 105.0
@@ -120,26 +120,8 @@ control:
         invert_y: false
       mode:
         near_threshold_px: 12.0
-      velocity:
-        history_size: 4
-        velocity_sample_count: 3
-        smoothing_frames: 3.0
-        history_reset_gap_ms: 80.0
-        spread_base_px_ms: 0.12
-        spread_relative: 0.50
-        change_base_px_ms: 0.20
-        change_relative: 0.75
       prediction:
-        enabled: true
-        lead_frames: 1.0
-        far:
-          absolute_cap_px: 10.0
-          base_cap_px: 1.25
-          relative_cap: 0.30
-        near:
-          absolute_cap_px: 3.0
-          base_cap_px: 0.75
-          relative_cap: 0.20
+        enabled: false
       atan:
         scale_counts: 256.0
         far:

@@ -190,6 +190,7 @@ def test_prediction_uses_average_dt_times_lead_frames_and_cannot_bypass_cap() ->
     config = replace(
         defaults,
         prediction=PredictionConfig(
+            enabled=True,
             lead_frames=2.0,
             far=PredictionModeConfig(
                 absolute_cap_px=3.0,
@@ -217,20 +218,18 @@ def test_prediction_uses_average_dt_times_lead_frames_and_cannot_bypass_cap() ->
     assert decision.telemetry["error_ctrl_x"] == pytest.approx(54.6)
 
 
-def test_prediction_disabled_is_pure_feedback_while_velocity_runs_in_shadow() -> None:
-    defaults = DualPhaseAtanRobustPredictiveV2Config()
-    config = replace(
-        defaults,
-        prediction=replace(defaults.prediction, lead_frames=0.0),
+def test_default_atan_path_skips_prediction_and_velocity_history() -> None:
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        DualPhaseAtanRobustPredictiveV2Config()
     )
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(config)
     decision = None
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         decision = algorithm.calculate(_observation(generation=generation, error_x=error_x))
 
     assert decision is not None
-    assert decision.telemetry["history_position_count"] == 4
-    assert decision.telemetry["filtered_velocity"] == pytest.approx(0.4)
+    assert decision.telemetry["history_position_count"] == 0
+    assert decision.telemetry["filtered_velocity"] == 0.0
+    assert decision.telemetry["prediction_lead_frames"] == 0.0
     assert decision.telemetry["prediction_allowed"] is False
     assert decision.telemetry["prediction_safe_offset_x"] == 0.0
     assert decision.telemetry["error_ctrl_x"] == decision.telemetry["error_meas_x"]
@@ -238,7 +237,10 @@ def test_prediction_disabled_is_pure_feedback_while_velocity_runs_in_shadow() ->
 
 
 def test_track_identity_confidence_scales_prediction_to_zero() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        replace(defaults, prediction=replace(defaults.prediction, enabled=True))
+    )
     decision = None
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         decision = algorithm.calculate(
@@ -276,6 +278,7 @@ def test_real_measurement_error_drives_single_threshold_far_near_selection() -> 
 def test_defaults_preserve_the_verified_python_control_profile() -> None:
     config = DualPhaseAtanRobustPredictiveV2Config()
 
+    assert config.prediction.enabled is False
     assert config.velocity.smoothing_frames == 3.0
     assert config.prediction.lead_frames == 1.0
     assert config.prediction.far.absolute_cap_px == 10.0
@@ -306,7 +309,7 @@ def test_far_controller_can_use_kmnet_counts_above_legacy_hid8_limit() -> None:
     assert decision.dx <= 600
 
 
-def test_humanized_layer_cannot_bypass_far_axis_limit() -> None:
+def test_atan_only_path_ignores_humanized_profile() -> None:
     defaults = DualPhaseAtanRobustPredictiveV2Config()
     axis_limit = 12.0
     profile = {
@@ -340,7 +343,8 @@ def test_humanized_layer_cannot_bypass_far_axis_limit() -> None:
         )
     )
 
-    assert decision.telemetry["humanized_motion_enabled"] is True
+    assert decision.telemetry["humanized_motion_enabled"] is False
+    assert decision.telemetry["humanized_motion_reason"] == "atan_only_production_path"
     assert abs(decision.dx) <= axis_limit
     assert abs(decision.dy) <= axis_limit
     assert abs(decision.telemetry["float_demand_x"]) <= axis_limit
@@ -375,13 +379,15 @@ def test_projection_atan_and_control_atan_are_separate_unit_steps() -> None:
 
 
 def test_target_switch_clears_velocity_and_fractional_counts() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    predictive = replace(defaults, prediction=replace(defaults.prediction, enabled=True))
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(predictive)
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         algorithm.calculate(_observation(generation=generation, error_x=error_x))
 
     switched = algorithm.calculate(_observation(generation=5, target_id=8, error_x=-40.0))
     fresh = DualPhaseAtanRobustPredictiveV2Algorithm(
-        DualPhaseAtanRobustPredictiveV2Config()
+        predictive
     ).calculate(_observation(generation=5, target_id=8, error_x=-40.0))
 
     assert switched.telemetry["mode"] == ControlMode.FAR.value
@@ -397,7 +403,10 @@ def test_target_switch_clears_velocity_and_fractional_counts() -> None:
 
 
 def test_history_gap_restarts_window_from_current_measurement() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        replace(defaults, prediction=replace(defaults.prediction, enabled=True))
+    )
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         algorithm.calculate(_observation(generation=generation, error_x=error_x))
 
@@ -417,7 +426,10 @@ def test_history_gap_restarts_window_from_current_measurement() -> None:
 
 
 def test_coordinate_space_change_resets_same_target_history() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        replace(defaults, prediction=replace(defaults.prediction, enabled=True))
+    )
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         algorithm.calculate(_observation(generation=generation, error_x=error_x))
 
@@ -433,7 +445,10 @@ def test_coordinate_space_change_resets_same_target_history() -> None:
 
 
 def test_tracker_rebuild_resets_same_id_history() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        replace(defaults, prediction=replace(defaults.prediction, enabled=True))
+    )
     for generation, error_x in enumerate((40.0, 44.0, 48.0, 52.0), start=1):
         algorithm.calculate(_observation(generation=generation, error_x=error_x))
 
@@ -452,7 +467,10 @@ def test_tracker_rebuild_resets_same_id_history() -> None:
 
 
 def test_capture_timestamp_regression_uses_feedback_and_starts_a_new_epoch() -> None:
-    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(DualPhaseAtanRobustPredictiveV2Config())
+    defaults = DualPhaseAtanRobustPredictiveV2Config()
+    algorithm = DualPhaseAtanRobustPredictiveV2Algorithm(
+        replace(defaults, prediction=replace(defaults.prediction, enabled=True))
+    )
     algorithm.calculate(
         _observation(
             generation=1,
@@ -515,6 +533,7 @@ def test_frame_lead_prediction_reduces_closed_loop_lag_against_feedback_baseline
                 defaults,
                 prediction=replace(
                     defaults.prediction,
+                    enabled=lead_frames > 0.0,
                     lead_frames=lead_frames,
                 ),
             )

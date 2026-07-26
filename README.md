@@ -398,11 +398,13 @@ cancel overshoot. The same immutable runtime snapshot publishes recoil state,
 gate, rate, emitted counts, residual, observation age, and source generation to
 the Studio.
 
-The same snapshot carries the complete Rust dual-phase decision used by the
-device lane: observed and predicted error, robust velocity window, confidence,
-prediction caps, full correction counts, shaped floating-point demand, integer
-command, and quantizer residual. Studio and CLI diagnostics therefore inspect
-the actual daemon decision rather than recomputing display-only values.
+The same snapshot carries the Rust dual-phase decision used by the device lane:
+measured/control error, FAR/NEAR phase, full correction counts, Atan
+floating-point demand, integer command, quantizer residual and block reason.
+Prediction and humanized trajectory shaping are disabled in the current
+production controller; legacy zero-valued fields remain wire-compatible but
+are not presented as live measurements. Studio and CLI diagnostics inspect the
+actual daemon decision rather than recomputing display-only values.
 
 ### Legacy CPU-bridge diagnostics
 

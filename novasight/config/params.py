@@ -377,7 +377,7 @@ CONTROL_PARAM_SPECS.update(
     {
         "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.fov_x_deg": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.fov_x_deg",
-            "稳健预测控制水平 FOVX",
+            "双阶段 Atan 控制水平 FOVX",
             105.0,
             30.0,
             179.0,
@@ -387,7 +387,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.counts_per_360": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.projection.counts_per_360",
-            "稳健预测控制每圈 counts",
+            "双阶段 Atan 控制每圈 counts",
             9980.0,
             1.0,
             100000.0,
@@ -395,19 +395,9 @@ CONTROL_PARAM_SPECS.update(
             "counts",
             "设备旋转一整圈所需的标定 counts。",
         ),
-        "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.lead_frames": _spec(
-            "control.algorithms.dual_phase_atan_robust_predictive_v2.prediction.lead_frames",
-            "稳健预测控制前瞻帧数",
-            1.0,
-            0.0,
-            10.0,
-            0.01,
-            "frames",
-            "启用位置预测后，与平均捕获 dt 和平滑目标速度相乘。",
-        ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.mode.near_threshold_px",
-            "稳健预测控制 NEAR 阈值",
+            "双阶段 Atan 控制 NEAR 阈值",
             12.0,
             0.0,
             1000.0,
@@ -417,7 +407,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.scale_counts": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.scale_counts",
-            "稳健预测控制 Atan 共享尺度",
+            "双阶段 Atan 控制 Atan 共享尺度",
             1024.0,
             0.1,
             10000.0,
@@ -427,7 +417,7 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.far.kp",
-            "稳健预测控制远距离跟进强度",
+            "双阶段 Atan 控制远距离跟进强度",
             0.90,
             0.001,
             0.999,
@@ -437,23 +427,13 @@ CONTROL_PARAM_SPECS.update(
         ),
         "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp": _spec(
             "control.algorithms.dual_phase_atan_robust_predictive_v2.atan.near.kp",
-            "稳健预测控制近距离跟随强度",
+            "双阶段 Atan 控制近距离跟随强度",
             0.30,
             0.001,
             0.999,
             0.001,
             "ratio",
             "NEAR 阶段无死区小幅持续修正增益。",
-        ),
-        "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_frames": _spec(
-            "control.algorithms.dual_phase_atan_robust_predictive_v2.velocity.smoothing_frames",
-            "稳健预测控制速度平滑帧数",
-            3.0,
-            0.1,
-            20.0,
-            0.1,
-            "frames",
-            "速度 EMA 的等效帧窗口；内部仍按真实捕获 dt 处理丢帧和抖动。",
         ),
     }
 )

@@ -368,7 +368,7 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 }
 
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
-    if config.schema_version >= 4 {
+    if config.schema_version >= 5 {
         return;
     }
 
@@ -390,35 +390,55 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         pipeline.near_kp = 0.22;
         pipeline.near_max_counts_per_update = 72.0;
     }
-    config.schema_version = 4;
+    // Stage one of the control audit intentionally removes motion prediction
+    // from the production mouse path. Existing configurations are migrated to
+    // the same explicit non-predictive contract instead of silently retaining
+    // a previously enabled predictor.
+    pipeline.prediction_enabled = false;
+    config.control.humanized_motion.enabled = false;
+    config.schema_version = 5;
 
     let Value::Mapping(root) = document else {
         return;
     };
     root.insert(
         Value::String("schema_version".to_owned()),
-        Value::Number(4_u64.into()),
+        Value::Number(5_u64.into()),
     );
-    if !migrated_aggressive_profile {
-        return;
-    }
     let pipeline = root
         .entry(Value::String("pipeline".to_owned()))
         .or_insert_with(|| Value::Mapping(Default::default()));
     let Value::Mapping(pipeline) = pipeline else {
         return;
     };
-    for (key, value) in [
-        ("atan_scale_counts", 256.0),
-        ("far_kp", 0.45),
-        ("far_max_counts_per_update", 127.0),
-        ("near_kp", 0.22),
-        ("near_max_counts_per_update", 72.0),
-    ] {
-        pipeline.insert(
-            Value::String(key.to_owned()),
-            serde_yaml::to_value(value).expect("finite control migration value"),
-        );
+    pipeline.insert(
+        Value::String("prediction_enabled".to_owned()),
+        Value::Bool(false),
+    );
+    if migrated_aggressive_profile {
+        for (key, value) in [
+            ("atan_scale_counts", 256.0),
+            ("far_kp", 0.45),
+            ("far_max_counts_per_update", 127.0),
+            ("near_kp", 0.22),
+            ("near_max_counts_per_update", 72.0),
+        ] {
+            pipeline.insert(
+                Value::String(key.to_owned()),
+                serde_yaml::to_value(value).expect("finite control migration value"),
+            );
+        }
+    }
+    let control = root
+        .entry(Value::String("control".to_owned()))
+        .or_insert_with(|| Value::Mapping(Default::default()));
+    if let Value::Mapping(control) = control {
+        let humanized = control
+            .entry(Value::String("humanized_motion".to_owned()))
+            .or_insert_with(|| Value::Mapping(Default::default()));
+        if let Value::Mapping(humanized) = humanized {
+            humanized.insert(Value::String("enabled".to_owned()), Value::Bool(false));
+        }
     }
 }
 
@@ -437,19 +457,7 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "far_max_counts_per_update",
             "near_kp",
             "near_max_counts_per_update",
-            "velocity_smoothing_frames",
-            "velocity_history_reset_gap_ms",
-            "velocity_spread_base_px_ms",
-            "velocity_spread_relative",
-            "velocity_change_base_px_ms",
-            "velocity_change_relative",
-            "prediction_lead_frames",
-            "prediction_far_absolute_cap_px",
-            "prediction_far_base_cap_px",
-            "prediction_far_relative_cap",
-            "prediction_near_absolute_cap_px",
-            "prediction_near_base_cap_px",
-            "prediction_near_relative_cap",
+            "prediction_enabled",
             "residual_cap",
             "target_fov_radius_px",
             "target_min_confidence",

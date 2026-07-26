@@ -61,12 +61,12 @@ _ALGORITHM_DEFINITIONS = (
     ),
     AlgorithmDefinition(
         algorithm_id=DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2,
-        product_name="稳健预测控制",
-        product_description="在精确角度标定上增加同目标短窗稳健运动预测。",
+        product_name="双阶段 Atan 控制",
+        product_description="仅使用当前观测误差、角度投影和 Atan 响应曲线。",
         capabilities=AlgorithmCapabilities(
             requires_calibration=True,
             supports_scheduler=True,
-            supports_prediction=True,
+            supports_prediction=False,
             scheduler_policy=SchedulerPolicy.LATEST_REPLACE,
             scheduler_policy_ready=True,
         ),

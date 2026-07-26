@@ -80,8 +80,8 @@ const CONTROL_ALGORITHM_OPTIONS = [
   },
   {
     id: "dual_phase_atan_robust_predictive_v2",
-    label: "稳健预测控制",
-    description: "在精确标定上增加同目标短窗受限预测。"
+    label: "双阶段 Atan 控制",
+    description: "仅使用当前观测误差、角度投影和 Atan 响应曲线。"
   }
 ] as const;
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
@@ -94,12 +94,6 @@ const RUST_DUAL_PHASE_PATHS: Record<string, string> = {
   "atan.scale_counts": "atan_scale_counts",
   "atan.far.max_counts_per_update": "far_max_counts_per_update",
   "atan.near.max_counts_per_update": "near_max_counts_per_update",
-  "prediction.enabled": "prediction_enabled",
-  "prediction.lead_frames": "prediction_lead_frames",
-  "velocity.smoothing_frames": "velocity_smoothing_frames",
-  "velocity.history_reset_gap_ms": "velocity_history_reset_gap_ms",
-  "prediction.far.absolute_cap_px": "prediction_far_absolute_cap_px",
-  "prediction.near.absolute_cap_px": "prediction_near_absolute_cap_px"
 };
 const ModelManagerDialog = lazy(() =>
   import("../models/ModelManagerDialog").then((module) => ({
@@ -192,7 +186,7 @@ const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
   },
   {
     title: "激活鼠标算法",
-    caption: "确认目标选择、跟踪、预测与鼠标算法已开始消费 DetectionBatch；输出设备不影响本步骤。"
+    caption: "确认目标选择、跟踪与 Atan 鼠标算法已开始消费 DetectionBatch；输出设备不影响本步骤。"
   }
 ];
 
@@ -1345,10 +1339,6 @@ export function StudioConsoleView({
   const dualPhaseAtanConfig = nestedRecord(dualPhaseConfig, "atan");
   const dualPhaseFarConfig = nestedRecord(dualPhaseAtanConfig, "far");
   const dualPhaseNearConfig = nestedRecord(dualPhaseAtanConfig, "near");
-  const dualPhaseVelocityConfig = nestedRecord(dualPhaseConfig, "velocity");
-  const dualPhasePredictionConfig = nestedRecord(dualPhaseConfig, "prediction");
-  const dualPhasePredictionFarConfig = nestedRecord(dualPhasePredictionConfig, "far");
-  const dualPhasePredictionNearConfig = nestedRecord(dualPhasePredictionConfig, "near");
   const sharedControlConfig = nestedRecord(controlConfig, "shared");
   const rawAimRoleRatios = nestedRecord(aimConfig, "role_y_ratios");
   const aimRoleRatios: AimRoleRatios = {
@@ -1410,12 +1400,6 @@ export function StudioConsoleView({
   const dualPhaseAtanScale = readNumber(rustControlPlane ? rustPipelineConfig.atan_scale_counts : dualPhaseAtanConfig.scale_counts, 256);
   const dualPhaseFarMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.far_max_counts_per_update : dualPhaseFarConfig.max_counts_per_update, 127);
   const dualPhaseNearMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.near_max_counts_per_update : dualPhaseNearConfig.max_counts_per_update, 72);
-  const dualPhasePredictionEnabled = readBoolean(rustControlPlane ? rustPipelineConfig.prediction_enabled : dualPhasePredictionConfig.enabled, true);
-  const dualPhaseLeadFrames = readNumber(rustControlPlane ? rustPipelineConfig.prediction_lead_frames : dualPhasePredictionConfig.lead_frames, 1.0);
-  const dualPhaseVelocitySmoothingFrames = readNumber(rustControlPlane ? rustPipelineConfig.velocity_smoothing_frames : dualPhaseVelocityConfig.smoothing_frames, 3.0);
-  const dualPhaseHistoryResetGapMs = readNumber(rustControlPlane ? rustPipelineConfig.velocity_history_reset_gap_ms : dualPhaseVelocityConfig.history_reset_gap_ms, 80.0);
-  const dualPhaseFarPredictionCap = readNumber(rustControlPlane ? rustPipelineConfig.prediction_far_absolute_cap_px : dualPhasePredictionFarConfig.absolute_cap_px, 10.0);
-  const dualPhaseNearPredictionCap = readNumber(rustControlPlane ? rustPipelineConfig.prediction_near_absolute_cap_px : dualPhasePredictionNearConfig.absolute_cap_px, 3.0);
   const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
   const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
@@ -2528,7 +2512,7 @@ export function StudioConsoleView({
         const state = await waitForRuntimeEvidence(
           "激活鼠标算法",
           (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
-          "runtime 尚未消费 DetectionBatch，目标选择、跟踪、预测与鼠标算法没有输入。"
+          "runtime 尚未消费 DetectionBatch，目标选择、跟踪与 Atan 鼠标算法没有输入。"
         );
         const status = getRuntimeMainlineStatus(state);
         setLaunchProgressDetail(`${status.readinessLabel}：${status.readinessDetail}`);
@@ -4063,7 +4047,7 @@ export function StudioConsoleView({
             <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
             <Metric title="控制更新率" value={formatOptionalNumber(controlObservationFps)} small="每秒有效观测" />
             <Metric title="当前 Track" value={formatOptionalInteger(controlTrackId)} small={activeRuntimeClassLabel || "target"} />
-            <Metric title="预测误差" value={formatOptionalNumber(predictedErrorDistancePx)} small="px" />
+            <Metric title="控制误差" value={formatOptionalNumber(predictedErrorDistancePx)} small="px" />
             <Metric title="最近设备接受" value={hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE} small="与当前样本独立" />
           </div>
           <div className="console-grid2 diagnostic-grid" data-layer="control">
@@ -4126,23 +4110,15 @@ export function StudioConsoleView({
               ) : null}
             </div>
             <div className="console-card">
-              <SectionTitle title="瞄准点与预测" />
+              <SectionTitle title="瞄准点" />
               <div className="console-kv">
                 <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                 <span>类别配置 / 瞄点类型</span><b>{`${readString(controlPipeline.active_class_profile, activeDetectionProfile)} / ${readString(controlPipeline.effective_aim_role, "other")}`}</b>
                 <span>aim_y_ratio</span><b>{formatOptionalNumber(control.aim_y_ratio ?? rawAimDebug.y_ratio, 2)}</b>
                 {dualPhaseActive ? (
                   <>
-                    <span>短窗位置数</span><b>{formatOptionalInteger(controlPipeline.history_position_count)}</b>
-                    <span>三段速度 px/ms</span><b>{`${formatOptionalNumber(controlPipeline.velocity_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_3, 3)}`}</b>
-                    <span>中位 / EMA 速度</span><b>{formatPoint(controlPipeline.median_velocity, controlPipeline.filtered_velocity, 3, "px/ms")}</b>
-                    <span>速度离散度</span><b>{formatOptionalNumber(controlPipeline.velocity_spread, 3, "px/ms")}</b>
-                    <span>运动可信度</span><b>{formatPercent(controlPipeline.motion_confidence)}</b>
-                    <span>平均帧间隔</span><b>{formatOptionalNumber(controlPipeline.reference_dt_ms, 2, "ms")}</b>
-                    <span>前瞻帧数</span><b>{formatOptionalNumber(controlPipeline.prediction_lead_frames, 2, " 帧")}</b>
-                    <span>原始 / 安全预测</span><b>{formatPoint(controlPipeline.prediction_raw_offset_x, controlPipeline.prediction_safe_offset_x, 2, "px")}</b>
-                    <span>预测允许上限</span><b>{formatOptionalNumber(controlPipeline.prediction_allowed_cap_x, 2, "px")}</b>
-                    <span>预测后瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                    <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                    <span>位置预测</span><b>已从生产控制主链关闭</b>
                   </>
                 ) : (
                   <>
@@ -4157,9 +4133,9 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>屏幕中心</span><b>{formatPoint(controlCenterX, controlCenterY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                 <span>observed error px</span><b>{formatPoint(controlPipeline.observed_error_x_px, controlPipeline.observed_error_y_px, 2, "px")}</b>
-                <span>predicted error px</span><b>{formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px")}</b>
+                <span>control error px</span><b>{formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px")}</b>
                 <span>observed error rad</span><b>{formatPoint(controlPipeline.observed_error_x_rad, controlPipeline.observed_error_y_rad, 6, "rad")}</b>
-                <span>predicted error rad</span><b>{formatPoint(controlPipeline.predicted_error_x_rad, controlPipeline.predicted_error_y_rad, 6, "rad")}</b>
+                <span>control error rad</span><b>{formatPoint(controlPipeline.predicted_error_x_rad, controlPipeline.predicted_error_y_rad, 6, "rad")}</b>
                 <span>误差距离</span><b>{formatOptionalNumber(predictedErrorDistancePx, 2, "px")}</b>
                 <span>控制 dt</span><b>{controlMeasurementDtS === null ? NO_SAMPLE : `${(controlMeasurementDtS * 1000).toFixed(3)} ms`}</b>
                 <span>焦距 X / Y</span><b>{formatPoint(controlPipeline.focal_x_px, controlPipeline.focal_y_px, 2, "px")}</b>
@@ -4249,7 +4225,7 @@ export function StudioConsoleView({
               />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
-              <Metric title="位置预测" value={dualPhaseActive ? (dualPhasePredictionEnabled ? `${dualPhaseLeadFrames.toFixed(2)} 帧` : "已关闭") : "不使用"} small={dualPhaseActive && dualPhasePredictionEnabled ? "平均 dt 前瞻" : "反馈控制"} />
+              <Metric title="位置预测" value={dualPhaseActive ? "已关闭" : "不使用"} small="Atan 基础反馈" />
               <Metric title="偏移输出" value={outputEnabled ? "已允许" : "已暂停"} small={outputEnabled ? "可发送至设备" : "算法仍继续计算"} />
               <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
@@ -4290,26 +4266,18 @@ export function StudioConsoleView({
                 )}
               />
             </div>
-            <div className={motionProfileRuntime?.enabled ? "console-card motion-control-mode-card human" : motionProfileRuntime === null ? "console-card motion-control-mode-card loading" : "console-card motion-control-mode-card static"}>
+            <div className="console-card motion-control-mode-card static">
               <div className="motion-control-mode-copy">
-                <span className="class-config-eyebrow">控制触发后的轨迹整形</span>
-                <h3>{motionProfileRuntime === null ? "正在读取控制轨迹" : motionProfileRuntime.enabled ? "拟人轨迹算法" : "静态控制算法"}</h3>
-                <p>
-                  {motionProfileRuntime === null
-                    ? "正在从后端确认当前运行内存使用的轨迹来源。"
-                    : motionProfileRuntime.enabled
-                    ? motionTrajectorySource === "builtin"
-                      ? "无需训练画像：直接使用内置钟形速度、轻量贝塞尔路径和末端闭环。关闭后立即恢复静态控制参数。"
-                      : "训练画像只覆盖运行内存中的轨迹节奏；关闭后立即恢复配置文件中的控制参数。"
-                    : "使用参数页中已经调整好的固定控制算法；拟人轨迹并非运行前提。"}
-                </p>
+                <span className="class-config-eyebrow">生产算法隔离</span>
+                <h3>双阶段 Atan 基础反馈</h3>
+                <p>位置预测与拟人轨迹整形均已关闭；设备输出只由当前测量误差、投影、Atan、限幅和量化产生。</p>
               </div>
               <div className="motion-control-mode-actions">
                 <div className="motion-mode-segmented" role="group" aria-label="控制轨迹来源">
                   <button
-                    aria-pressed={motionProfileRuntime?.enabled !== true}
-                    className={motionProfileRuntime?.enabled ? "" : "active"}
-                    disabled={motionProfileBusy || motionProfileRuntime === null}
+                    aria-pressed={true}
+                    className="active"
+                    disabled
                     onClick={() => void setMotionControlMode(false)}
                     type="button"
                   >
@@ -4317,9 +4285,9 @@ export function StudioConsoleView({
                     静态控制算法
                   </button>
                   <button
-                    aria-pressed={motionProfileRuntime?.enabled === true}
-                    className={motionProfileRuntime?.enabled ? "active" : ""}
-                    disabled={motionProfileBusy || motionProfileRuntime === null}
+                    aria-pressed={false}
+                    className=""
+                    disabled
                     onClick={() => void setMotionControlMode(true)}
                     type="button"
                   >
@@ -4331,7 +4299,7 @@ export function StudioConsoleView({
                   <label htmlFor="motion-profile-select">轨迹来源</label>
                   <select
                     id="motion-profile-select"
-                    disabled={motionProfileBusy}
+                    disabled
                     onChange={(event) => void selectMotionProfile(event.target.value)}
                     value={selectedMotionProfileId}
                   >
@@ -4342,20 +4310,14 @@ export function StudioConsoleView({
                       </option>
                     ))}
                   </select>
-                  <button className="console-button" onClick={openMotionProfileStudio} type="button">
+                  <button className="console-button" disabled onClick={openMotionProfileStudio} type="button">
                     {motionProfiles.length === 0 ? "去训练画像" : "管理与训练"}
                   </button>
                 </div>
                 <small className="motion-control-memory-note">
-                  {motionProfileBusy
-                    ? "正在切换运行内存…"
-                    : motionProfileRuntime?.enabled
-                      ? motionTrajectorySource === "builtin"
-                        ? "运行中：内置钟形速度 + 贝塞尔空间轨迹（无需训练样本）"
-                        : `运行中：${motionProfileRuntime.profile_name || motionProfileRuntime.active_profile} · ${motionProfileRuntime.sample_count} 条样本`
-                      : "当前使用静态控制算法；文件配置不会被修改。"}
+                  当前生产主链不会加载或应用轨迹画像。
                 </small>
-                <div className="motion-profile-runtime-tuning">
+                <div className="motion-profile-runtime-tuning" hidden>
                   <ModuleSwitch label="空间贝塞尔轨迹" detail="控制画像的侧向空间路径；关闭后仍保留真人速度节奏和末端闭环。" enabled={humanizedSpatialCurveEnabled} onToggle={(enabled) => updateHumanized("spatial_curve_enabled", enabled)} />
                   <div className="control-grid compact">
                     <NumberControl label="侧向弯曲倍率" value={humanizedValue("side_scale", 1)} min={0} max={4} step={0.05} onCommit={(value) => updateHumanized("side_scale", value)} />
@@ -4363,7 +4325,7 @@ export function StudioConsoleView({
                     <NumberControl label="末端闭环增益" value={humanizedValue("terminal_feedback_gain", 0.35)} min={0.05} max={2} step={0.05} onCommit={(value) => updateHumanized("terminal_feedback_gain", value)} />
                   </div>
                 </div>
-                <details className="control-advanced-disclosure">
+                <details className="control-advanced-disclosure" hidden>
                   <summary>轨迹运行说明与高级策略</summary>
                   <div className="control-grid compact">
                     <NumberControl label="最大侧偏比例" value={humanizedValue("max_side_ratio", 0.1)} min={0} max={0.25} step={0.005} onCommit={(value) => updateHumanized("max_side_ratio", value)} />
@@ -4487,13 +4449,13 @@ export function StudioConsoleView({
 
               <div className="console-card">
                 <SectionTitle title={`控制算法 · ${controlModeLabel}`} />
-                <p className="console-section-note">日常使用只需选择算法；投影、增益、限幅和预测属于工程调校参数。</p>
+                <p className="console-section-note">当前生产主链仅使用投影、增益、Atan 响应曲线和单次限幅。</p>
                 <div className="advanced-settings-summary">
                   {dualPhaseActive ? (
                     <>
                       <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
                       <div><span>FAR / NEAR Kp</span><b>{dualPhaseFarKp.toFixed(3)} / {dualPhaseNearKp.toFixed(3)}</b></div>
-                      <div><span>预测前瞻</span><b>{dualPhaseLeadFrames.toFixed(2)} 帧</b></div>
+                      <div><span>位置预测</span><b>已关闭</b></div>
                     </>
                   ) : controlMode === "calibrated_angular" ? (
                     <>
@@ -4924,7 +4886,7 @@ export function StudioConsoleView({
       {wideThemeGallery ? <ThemeGallery /> : null}
 
       <AdvancedSettingsDialog
-        description="这些参数决定投影、响应曲线、限幅与预测行为。日常使用无需频繁调整。"
+        description="这些参数只决定投影、Atan 响应曲线与单次限幅。"
         dirty={configDialogDirty}
         eyebrow="参数设置 / 控制算法"
         footerNote={`当前算法：${controlModeLabel}`}
@@ -4945,12 +4907,6 @@ export function StudioConsoleView({
               <NumberControl label="共享 Atan 尺度 counts" detail="控制响应曲线尺度，不代表协议可发送的最大 counts。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(["atan", "scale_counts"], value)} />
               <NumberControl label="FAR 单次上限 counts" detail="稳定性保护上限；KMNet 的 signed-16 能力独立校验。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "far", "max_counts_per_update"], value)} />
               <NumberControl label="NEAR 单次上限 counts" detail="近目标单次修正上限，默认低于 FAR 以抑制过冲。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "near", "max_counts_per_update"], value)} />
-              <ModuleSwitch label="启用位置预测" detail="关闭后预测偏移严格为 0；目标跟踪、速度观测和基础 Atan 反馈继续运行。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhasePath(["prediction", "enabled"], enabled)} />
-              <NumberControl label="前瞻帧数" detail="启用预测后：预测量 = 平滑目标速度 × 平均 capture dt × 前瞻帧数。" value={dualPhaseLeadFrames} min={0.01} max={10} step={0.01} onCommit={(value) => updateDualPhasePath(["prediction", "lead_frames"], value)} />
-              <NumberControl label="速度平滑帧数" detail="越大越稳但转向越慢；内部仍使用真实 capture timestamp 处理变帧率。" value={dualPhaseVelocitySmoothingFrames} min={0.1} max={20} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "smoothing_frames"], value)} />
-              <NumberControl label="历史中断重置 ms" value={dualPhaseHistoryResetGapMs} min={0.1} max={500} step={0.1} onCommit={(value) => updateDualPhasePath(["velocity", "history_reset_gap_ms"], value)} />
-              <NumberControl label="FAR 预测绝对上限 px" value={dualPhaseFarPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "far", "absolute_cap_px"], value)} />
-              <NumberControl label="NEAR 预测绝对上限 px" value={dualPhaseNearPredictionCap} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "near", "absolute_cap_px"], value)} />
             </>
           ) : controlMode === "calibrated_angular" ? (
             <>
@@ -5014,7 +4970,7 @@ export function StudioConsoleView({
         </div>
         <div className="advanced-settings-divider">
           <span>{rustControlPlane ? "Rust Tracker" : "Kalman 估计器"}</span>
-          <small>{rustControlPlane ? "Rust 主链使用有界关联与稳健速度短窗；不读取旧 Python Kalman 参数。" : dualPhaseActive ? "当前算法仍使用 Tracker 的 Kalman 位置估计。" : "调整过程噪声与观测噪声。"}</small>
+          <small>{rustControlPlane ? "Rust 主链使用有界关联保持目标身份；Atan 输出只读取当前测量误差。" : dualPhaseActive ? "当前算法仍使用 Tracker 的 Kalman 位置估计。" : "调整过程噪声与观测噪声。"}</small>
         </div>
         {!rustControlPlane ? (
           <div className="advanced-settings-grid two-column">

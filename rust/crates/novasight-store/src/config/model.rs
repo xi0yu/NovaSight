@@ -425,6 +425,12 @@ impl Default for HumanizedMotionConfig {
 
 impl HumanizedMotionConfig {
     fn validate(&self) -> Result<(), ConfigValidationError> {
+        if self.enabled {
+            return Err(ConfigValidationError::new(
+                "control.humanized_motion.enabled",
+                "must be false while the production controller is atan-only",
+            ));
+        }
         for (field, value, lower, upper) in [
             (
                 "control.humanized_motion.side_scale",
@@ -849,6 +855,12 @@ impl Default for PipelineRuntimeConfig {
 
 impl PipelineRuntimeConfig {
     fn validate(&self) -> Result<(), ConfigValidationError> {
+        if self.prediction_enabled {
+            return Err(ConfigValidationError::new(
+                "pipeline.prediction_enabled",
+                "must be false while the production controller is atan-only",
+            ));
+        }
         validate_finite_range(
             "pipeline.freshness_threshold_ms",
             self.freshness_threshold_ms,
@@ -893,76 +905,6 @@ impl PipelineRuntimeConfig {
             1.0,
             f64::from(i16::MAX),
         )?;
-        validate_finite_range(
-            "pipeline.velocity_smoothing_frames",
-            self.velocity_smoothing_frames,
-            0.000_001,
-            1_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.velocity_history_reset_gap_ms",
-            self.velocity_history_reset_gap_ms,
-            0.000_001,
-            10_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.velocity_spread_base_px_ms",
-            self.velocity_spread_base_px_ms,
-            0.000_001,
-            10_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.velocity_spread_relative",
-            self.velocity_spread_relative,
-            0.0,
-            1_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.velocity_change_base_px_ms",
-            self.velocity_change_base_px_ms,
-            0.000_001,
-            10_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.velocity_change_relative",
-            self.velocity_change_relative,
-            0.0,
-            1_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.prediction_lead_frames",
-            self.prediction_lead_frames,
-            0.0,
-            10.0,
-        )?;
-        for (field, value) in [
-            (
-                "pipeline.prediction_far_absolute_cap_px",
-                self.prediction_far_absolute_cap_px,
-            ),
-            (
-                "pipeline.prediction_far_base_cap_px",
-                self.prediction_far_base_cap_px,
-            ),
-            (
-                "pipeline.prediction_far_relative_cap",
-                self.prediction_far_relative_cap,
-            ),
-            (
-                "pipeline.prediction_near_absolute_cap_px",
-                self.prediction_near_absolute_cap_px,
-            ),
-            (
-                "pipeline.prediction_near_base_cap_px",
-                self.prediction_near_base_cap_px,
-            ),
-            (
-                "pipeline.prediction_near_relative_cap",
-                self.prediction_near_relative_cap,
-            ),
-        ] {
-            validate_finite_range(field, value, 0.0, 100_000.0)?;
-        }
         validate_finite_range("pipeline.residual_cap", self.residual_cap, 0.0, 1.0)?;
         validate_finite_range(
             "pipeline.target_fov_radius_px",
@@ -1284,7 +1226,7 @@ const fn default_velocity_change_relative() -> f64 {
 }
 
 const fn default_prediction_enabled() -> bool {
-    true
+    false
 }
 
 const fn default_prediction_lead_frames() -> f64 {
@@ -1974,7 +1916,7 @@ impl Default for PathConfig {
 }
 
 const fn default_schema_version() -> u32 {
-    4
+    5
 }
 
 fn default_server_host() -> String {

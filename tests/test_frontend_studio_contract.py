@@ -445,7 +445,7 @@ def test_studio_diagnostics_separate_capture_inference_and_control_layers() -> N
     assert 'data-layer="control"' in control_page
     for title in (
         "目标选择",
-        "瞄准点与预测",
+        "瞄准点",
         "误差与角度",
         "控制器输出",
     ):
@@ -542,14 +542,15 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     assert 'id: "calibrated_angular"' in studio
     assert 'label: "精确角度控制"' in studio
     assert 'id: "dual_phase_atan_robust_predictive_v2"' in studio
-    assert 'label: "稳健预测控制"' in studio
+    assert 'label: "双阶段 Atan 控制"' in studio
     assert 'updateConfigField("control", "active_algorithm", algorithm.id)' in studio
     assert "dual_phase_atan_predictive_v1" not in studio
     assert "ttbox_pid_atan" not in studio
     assert 'label="NEAR 阈值 px"' in studio
     assert 'label="共享 Atan 尺度 counts"' in studio
-    assert 'label="前瞻帧数"' in studio
-    assert 'label="速度平滑帧数"' in studio
+    assert 'label="前瞻帧数"' not in studio
+    assert 'label="速度平滑帧数"' not in studio
+    assert 'label="启用位置预测"' not in studio
     assert 'title="独立 Y 轴压枪 · 所有控制算法"' in studio
     assert 'updateControlGroupField("recoil", "enabled", enabled)' in studio
     assert 'updateControlGroupField("recoil", "base_rate_counts_s", value)' in studio
@@ -574,7 +575,7 @@ def test_studio_routes_rust_control_edits_to_typed_pipeline_fields() -> None:
 
     assert '"projection.fov_x_deg": "projection_fov_x_deg"' in studio
     assert '"atan.far.kp": "far_kp"' in studio
-    assert '"prediction.lead_frames": "prediction_lead_frames"' in studio
+    assert '"prediction.lead_frames": "prediction_lead_frames"' not in studio
     assert 'await updateConfigField("pipeline", rustField, value)' in studio
     assert 'await updateConfigField("pipeline", pipelineKey, value)' in studio
     assert 'rustPipelineConfig.target_selection_class_weight' in studio
@@ -589,7 +590,7 @@ def test_studio_routes_rust_control_edits_to_typed_pipeline_fields() -> None:
     assert "rustPipelineConfig.target_class_filter" in studio
     assert 'updateConfigField("pipeline", "target_class_filter", value)' in studio
     assert 'Rust 主链直接使用 daemon 缓存的 kmNet 硬件按键状态' in studio
-    assert 'Rust 主链使用有界关联与稳健速度短窗' in studio
+    assert 'Rust 主链使用有界关联保持目标身份；Atan 输出只读取当前测量误差。' in studio
     assert 'min={rustControlPlane ? 1024 : 0}' in studio
     assert 'max={rustControlPlane ? 49151 : 65535}' in studio
     assert '"主链启动时连接设备"' in studio

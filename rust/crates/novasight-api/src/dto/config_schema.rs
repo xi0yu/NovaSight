@@ -147,85 +147,6 @@ impl ConfigSchemaResponse {
                     ],
                 ),
                 section(
-                    "control.humanized_motion",
-                    "拟人轨迹",
-                    vec![
-                        boolean("control.humanized_motion.enabled", "启动时启用拟人轨迹"),
-                        string("control.humanized_motion.active_profile", "启动画像 ID"),
-                        boolean(
-                            "control.humanized_motion.spatial_curve_enabled",
-                            "启用二维侧偏曲线",
-                        ),
-                        float(
-                            "control.humanized_motion.side_scale",
-                            "侧偏倍率",
-                            0.0,
-                            4.0,
-                            None,
-                        ),
-                        float(
-                            "control.humanized_motion.max_side_ratio",
-                            "最大侧偏比例",
-                            0.0,
-                            1.0,
-                            None,
-                        ),
-                        float(
-                            "control.humanized_motion.near_fade_start_px",
-                            "近目标侧偏淡出",
-                            0.0,
-                            5_000.0,
-                            Some("px"),
-                        ),
-                        float(
-                            "control.humanized_motion.micro_bypass_px",
-                            "微调直通距离",
-                            0.0,
-                            1_000.0,
-                            Some("px"),
-                        ),
-                        float(
-                            "control.humanized_motion.dynamic_rebase_ratio",
-                            "动态重规划阈值",
-                            0.05,
-                            1.0,
-                            None,
-                        ),
-                        boolean(
-                            "control.humanized_motion.minimum_jerk_fallback",
-                            "允许 minimum-jerk 回退",
-                        ),
-                        float(
-                            "control.humanized_motion.terminal_feedback_gain",
-                            "末端闭环增益",
-                            0.0,
-                            2.0,
-                            None,
-                        ),
-                        float(
-                            "control.humanized_motion.builtin_fitts_a_ms",
-                            "内置 Fitts 截距",
-                            0.0,
-                            1_000.0,
-                            Some("ms"),
-                        ),
-                        float(
-                            "control.humanized_motion.builtin_fitts_b_ms",
-                            "内置 Fitts 斜率",
-                            1.0,
-                            1_000.0,
-                            Some("ms"),
-                        ),
-                        float(
-                            "control.humanized_motion.builtin_side_ratio",
-                            "内置侧偏比例",
-                            -0.15,
-                            0.15,
-                            None,
-                        ),
-                    ],
-                ),
-                section(
                     "control.recoil",
                     "独立压枪",
                     vec![
@@ -350,98 +271,6 @@ impl ConfigSchemaResponse {
                             1.0,
                             i16::MAX as f64,
                             Some("count"),
-                        ),
-                        float(
-                            "pipeline.velocity_smoothing_frames",
-                            "速度 EMA 平滑帧数",
-                            0.000_001,
-                            1_000.0,
-                            Some("frame"),
-                        ),
-                        float(
-                            "pipeline.velocity_history_reset_gap_ms",
-                            "速度历史重置间隔",
-                            0.000_001,
-                            10_000.0,
-                            Some("ms"),
-                        ),
-                        float(
-                            "pipeline.velocity_spread_base_px_ms",
-                            "速度离散基础尺度",
-                            0.000_001,
-                            10_000.0,
-                            Some("px/ms"),
-                        ),
-                        float(
-                            "pipeline.velocity_spread_relative",
-                            "速度离散相对尺度",
-                            0.0,
-                            1_000.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.velocity_change_base_px_ms",
-                            "速度变化基础尺度",
-                            0.000_001,
-                            10_000.0,
-                            Some("px/ms"),
-                        ),
-                        float(
-                            "pipeline.velocity_change_relative",
-                            "速度变化相对尺度",
-                            0.0,
-                            1_000.0,
-                            None,
-                        ),
-                        boolean("pipeline.prediction_enabled", "启用位置预测"),
-                        float(
-                            "pipeline.prediction_lead_frames",
-                            "预测提前帧数",
-                            0.0,
-                            10.0,
-                            Some("frame"),
-                        ),
-                        float(
-                            "pipeline.prediction_far_absolute_cap_px",
-                            "远目标预测绝对上限",
-                            0.0,
-                            100_000.0,
-                            Some("px"),
-                        ),
-                        float(
-                            "pipeline.prediction_far_base_cap_px",
-                            "远目标预测基础上限",
-                            0.0,
-                            100_000.0,
-                            Some("px"),
-                        ),
-                        float(
-                            "pipeline.prediction_far_relative_cap",
-                            "远目标预测相对上限",
-                            0.0,
-                            100_000.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.prediction_near_absolute_cap_px",
-                            "近目标预测绝对上限",
-                            0.0,
-                            100_000.0,
-                            Some("px"),
-                        ),
-                        float(
-                            "pipeline.prediction_near_base_cap_px",
-                            "近目标预测基础上限",
-                            0.0,
-                            100_000.0,
-                            Some("px"),
-                        ),
-                        float(
-                            "pipeline.prediction_near_relative_cap",
-                            "近目标预测相对上限",
-                            0.0,
-                            100_000.0,
-                            None,
                         ),
                         float(
                             "pipeline.residual_cap",
@@ -889,7 +718,7 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 1);
+        assert_eq!(value["version"], 5);
         assert_eq!(value["values"]["server"]["port"], 5174);
         assert_eq!(value["values"]["pipeline"]["max_command_age_ms"], 55);
         assert_eq!(value["values"]["inference"], Value::Null);

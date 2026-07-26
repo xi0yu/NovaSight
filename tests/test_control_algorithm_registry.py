@@ -47,10 +47,10 @@ def test_supported_control_algorithms_have_product_names_and_capabilities() -> N
     assert calibrated.capabilities.scheduler_policy_ready is True
 
     robust = algorithm_definition(DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2)
-    assert robust.product_name == "稳健预测控制"
+    assert robust.product_name == "双阶段 Atan 控制"
     assert robust.capabilities.requires_calibration is True
     assert robust.capabilities.supports_scheduler is True
-    assert robust.capabilities.supports_prediction is True
+    assert robust.capabilities.supports_prediction is False
     assert robust.capabilities.scheduler_policy is SchedulerPolicy.LATEST_REPLACE
     assert robust.capabilities.scheduler_policy_ready is True
 
@@ -160,7 +160,7 @@ def test_runtime_schema_exposes_separate_algorithm_sections_and_product_labels()
     assert selector["option_labels"] == {
         UNIVERSAL_SATURATED: "通用控制",
         CALIBRATED_ANGULAR: "精确角度控制",
-        DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2: "稳健预测控制",
+        DUAL_PHASE_ATAN_ROBUST_PREDICTIVE_V2: "双阶段 Atan 控制",
     }
 
     robust_paths = {
@@ -213,7 +213,7 @@ def test_studio_uses_product_names_for_three_exclusive_algorithm_pages() -> None
 
     assert 'label: "通用控制"' in source
     assert 'label: "精确角度控制"' in source
-    assert 'label: "稳健预测控制"' in source
+    assert 'label: "双阶段 Atan 控制"' in source
     assert 'aria-label="控制模式"' in source
     assert 'className="mini-segmented control-algorithm-segmented"' in source
     assert "精确双阶段稳健预测 v2" not in source

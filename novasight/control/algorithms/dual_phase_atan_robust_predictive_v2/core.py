@@ -3,8 +3,6 @@ from __future__ import annotations
 from math import atan, hypot, isfinite, pi, tan, trunc
 
 from novasight.control.output import MAX_ABS_MOUSE_MOVE_COUNT
-from novasight.control.humanized_motion import HumanizedMotionGenerator, HumanizedMotionInput
-
 from .models import (
     ALGORITHM_ID,
     AtanModeConfig,
@@ -30,7 +28,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         self._geometry_signature: tuple[int, ...] | None = None
         self._quantizer_x = _AxisQuantizer()
         self._quantizer_y = _AxisQuantizer()
-        self._humanized_motion = HumanizedMotionGenerator(config.humanized_profile)
         self._velocity_x = RobustVelocityEstimator(config.velocity)
         self._previous_error_meas_x = 0.0
         self._previous_error_meas_y = 0.0
@@ -47,7 +44,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         self._target_id = None
         self._quantizer_x.reset()
         self._quantizer_y.reset()
-        self._humanized_motion.reset()
         self._velocity_x.reset()
         self._previous_error_meas_x = 0.0
         self._previous_error_meas_y = 0.0
@@ -58,7 +54,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
 
         self._quantizer_x.reset()
         self._quantizer_y.reset()
-        self._humanized_motion.reset()
 
     def calculate(
         self,
@@ -147,7 +142,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         )
 
         estimate = None
-        if not capture_timestamp_discontinuity:
+        if not capture_timestamp_discontinuity and self.config.prediction.enabled:
             estimate = self._velocity_x.update(
                 target_id=observation.target_id,
                 aim_x=observation.aim_x,
@@ -183,28 +178,10 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         atan_mode = self.config.atan.far if mode is ControlMode.FAR else self.config.atan.near
         demand_x = _atan_demand(full_counts_x, atan_mode, self.config.atan.scale_counts)
         feedback_demand_y = _atan_demand(full_counts_y, atan_mode, self.config.atan.scale_counts)
-        humanized = self._humanized_motion.apply(HumanizedMotionInput(
-            base_x=demand_x,
-            base_y=feedback_demand_y,
-            full_x=full_counts_x,
-            full_y=full_counts_y,
-            error_x_px=error_meas_x,
-            error_y_px=error_meas_y,
-            target_width_px=max(1.0, observation.bbox_x2 - observation.bbox_x1),
-            target_id=observation.target_id,
-            trigger_active=observation.trigger_active,
-            control_time_ms=max(0.0, observation.control_now_ns / 1_000_000.0),
-        ))
-        # Humanized shaping runs after Atan feedback, but it must not bypass
-        # the active FAR/NEAR authority limit.  Keep both axes inside the same
-        # per-observation contract before residual quantization.
-        demand_x = _clamp(
-            humanized.x,
-            -atan_mode.max_counts_per_update,
-            atan_mode.max_counts_per_update,
-        )
-        feedback_demand_y = humanized.y
-        humanized_debug = humanized.telemetry
+        humanized_debug = {
+            "humanized_motion_enabled": False,
+            "humanized_motion_reason": "atan_only_production_path",
+        }
         demand_y = _clamp(
             feedback_demand_y,
             -atan_mode.max_counts_per_update,
@@ -325,6 +302,17 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         estimate_available: bool,
     ) -> PredictionResult:
         prediction_config = self.config.prediction
+        if not prediction_config.enabled:
+            return PredictionResult(
+                reference_dt_ms=0.0,
+                lead_frames=0.0,
+                raw_offset_x=0.0,
+                weighted_offset_x=0.0,
+                safe_offset_x=0.0,
+                allowed_cap_x=0.0,
+                motion_confidence=0.0,
+                allowed=False,
+            )
         valid_dt = reference_dt_ms if isfinite(reference_dt_ms) and reference_dt_ms > 0.0 else 0.0
         allowed = bool(
             prediction_config.enabled
@@ -351,7 +339,7 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         )
         return PredictionResult(
             reference_dt_ms=valid_dt,
-            lead_frames=prediction_config.lead_frames,
+            lead_frames=(prediction_config.lead_frames if prediction_config.enabled else 0.0),
             raw_offset_x=raw_offset_x,
             weighted_offset_x=weighted_offset_x,
             safe_offset_x=safe_offset_x,

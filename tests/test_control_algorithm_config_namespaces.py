@@ -139,7 +139,7 @@ def test_v2_schema_two_migrates_to_single_threshold_and_shared_scale() -> None:
     )
 
     robust = config.control.dual_phase_atan_robust_predictive_v2
-    assert robust.schema_version == 8
+    assert robust.schema_version == 9
     assert robust.mode.near_threshold_px == 13.0
     assert robust.atan.scale_counts == 280.0
 
@@ -164,7 +164,7 @@ def test_v2_schema_three_time_prediction_migrates_to_frame_units() -> None:
     )
 
     robust = config.control.dual_phase_atan_robust_predictive_v2
-    assert robust.schema_version == 8
+    assert robust.schema_version == 9
     assert robust.velocity.smoothing_frames == pytest.approx(3.0)
     assert robust.prediction.lead_frames == pytest.approx(1.5)
 
@@ -203,13 +203,13 @@ def test_v2_schema_seven_repairs_only_the_aggressive_generated_profile() -> None
         }
     ).control.dual_phase_atan_robust_predictive_v2
 
-    assert migrated.schema_version == 8
+    assert migrated.schema_version == 9
     assert migrated.atan.scale_counts == 256.0
     assert migrated.atan.far.kp == 0.45
     assert migrated.atan.far.max_counts_per_update == 127.0
     assert migrated.atan.near.kp == 0.22
     assert migrated.atan.near.max_counts_per_update == 72.0
-    assert customized.schema_version == 8
+    assert customized.schema_version == 9
     assert customized.atan.scale_counts == 480.0
     assert customized.atan.far.kp == 0.70
     assert customized.atan.far.max_counts_per_update == 420.0
@@ -233,28 +233,20 @@ def test_v2_migration_preserves_explicitly_disabled_prediction() -> None:
 
     prediction = config.control.dual_phase_atan_robust_predictive_v2.prediction
     assert prediction.enabled is False
-    assert prediction.lead_frames == 1.0
+    assert prediction.lead_frames == 0.0
 
 
-@pytest.mark.parametrize(
-    ("payload", "message"),
-    [
-        ({"velocity": {"history_size": 3}}, "history_size=4"),
-        ({"velocity": {"velocity_sample_count": 2}}, "velocity_sample_count=3"),
-        ({"prediction": {"lead_frames": 10.1}}, "lead_frames"),
-    ],
-)
-def test_robust_v2_rejects_values_that_change_the_frozen_algorithm(
-    payload: dict,
-    message: str,
-) -> None:
-    with pytest.raises(ValueError, match=message):
+def test_robust_v2_rejects_enabling_prediction() -> None:
+    with pytest.raises(ValueError, match="prediction.enabled.*must be false"):
         parse_runtime_config(
             {
                 "control": {
                     "active_algorithm": "dual_phase_atan_robust_predictive_v2",
                     "algorithms": {
-                        "dual_phase_atan_robust_predictive_v2": payload,
+                        "dual_phase_atan_robust_predictive_v2": {
+                            "schema_version": 9,
+                            "prediction": {"enabled": True},
+                        },
                     },
                 }
             }

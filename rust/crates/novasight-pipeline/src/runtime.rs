@@ -722,7 +722,6 @@ struct TargetedObservation {
     detection_confidence: f64,
     track_confidence: f64,
     track_rebuilt: bool,
-    target_width_px: f64,
     inference_end_ns: u64,
 }
 
@@ -1217,7 +1216,7 @@ fn spawn_targeting_worker(
                         aim_x,
                         aim_y,
                         detection_confidence,
-                        target_width_px,
+                        _target_width_px,
                         target_height_px,
                     ) = match (
                         selection.target_object_id,
@@ -1291,7 +1290,6 @@ fn spawn_targeting_worker(
                         detection_confidence,
                         track_confidence,
                         track_rebuilt: selection.target_rebuilt,
-                        target_width_px,
                         inference_end_ns: now,
                     };
                     if output.publish(observation).is_err() {
@@ -1324,7 +1322,7 @@ fn spawn_control_worker(
     shared: Arc<SharedState>,
     clock: Arc<dyn Clock>,
     config: ControlWorkerConfig,
-    motion_profiles: Option<MotionProfileHub>,
+    _motion_profiles: Option<MotionProfileHub>,
 ) -> Result<JoinHandle<()>, PipelineError> {
     thread::Builder::new()
         .name("novasight-control".to_owned())
@@ -1356,16 +1354,10 @@ fn spawn_control_worker(
                         target_valid: target.target_id.is_some(),
                         trigger_active,
                     };
-                    let active_profile =
-                        motion_profiles.as_ref().and_then(MotionProfileHub::active);
                     if target.track_rebuilt {
                         control.reset_target_state();
                     }
-                    let decision = control.calculate_with_profile(
-                        observation,
-                        active_profile.as_deref(),
-                        target.target_width_px,
-                    );
+                    let decision = control.calculate(observation);
                     shared.record_dual_phase(decision);
                     shared.record_humanized_motion(decision.humanized_motion);
                     shared

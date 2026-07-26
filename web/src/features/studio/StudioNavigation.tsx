@@ -81,7 +81,7 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
   control: {
     group: "运行工作台",
     title: "控制",
-    description: "观察目标选择、预测、控制量和设备发送是否形成稳定闭环。"
+    description: "观察目标选择、Atan 控制量和设备发送是否形成稳定闭环。"
   },
   params: {
     group: "配置管理",

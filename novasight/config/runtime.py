@@ -231,7 +231,7 @@ def _default_dual_phase_robust_near_prediction() -> DualPhaseRobustPredictionMod
 
 @dataclass
 class DualPhaseRobustPredictionConfig:
-    enabled: bool = True
+    enabled: bool = False
     lead_frames: float = 1.0
     far: DualPhaseRobustPredictionModeConfig = field(
         default_factory=_default_dual_phase_robust_far_prediction
@@ -272,7 +272,7 @@ class DualPhaseRobustAtanConfig:
 
 @dataclass
 class DualPhaseAtanRobustPredictiveV2Config:
-    schema_version: int = 8
+    schema_version: int = 9
     freshness_threshold_ms: float = 55.0
     projection: DualPhaseProjectionConfig = field(default_factory=DualPhaseProjectionConfig)
     mode: DualPhaseRobustModeSelectorConfig = field(
@@ -1012,12 +1012,15 @@ def _migrate_dual_phase_robust_v2_namespace(
         config["atan"] = atan
         config["schema_version"] = 8
 
+    if int(config.get("schema_version", 8)) <= 8:
+        prediction = dict(config.get("prediction") or {})
+        prediction["enabled"] = False
+        config["prediction"] = prediction
+        config["schema_version"] = 9
+
     prediction = dict(config.get("prediction") or {})
     if "enabled" not in prediction:
-        lead_frames = float(prediction.get("lead_frames", 1.0))
-        prediction["enabled"] = lead_frames > 0.0
-        if lead_frames <= 0.0:
-            prediction["lead_frames"] = 1.0
+        prediction["enabled"] = False
     config["prediction"] = prediction
     algorithms["dual_phase_atan_robust_predictive_v2"] = config
 
@@ -1160,8 +1163,13 @@ def _validate_dual_phase_robust_v2_algorithm(
             raise ValueError(f"runtime config key '{prefix}.{name}' must be finite")
         return numeric
 
-    if int(cfg.schema_version) != 8:
-        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 8")
+    if int(cfg.schema_version) != 9:
+        raise ValueError(f"runtime config key '{prefix}.schema_version' must be 9")
+    if cfg.prediction.enabled:
+        raise ValueError(
+            f"runtime config key '{prefix}.prediction.enabled' must be false "
+            "while the production controller is atan-only"
+        )
     freshness_ms = finite("freshness_threshold_ms", cfg.freshness_threshold_ms)
     if freshness_ms <= 0.0:
         raise ValueError(f"runtime config key '{prefix}.freshness_threshold_ms' must be > 0")
@@ -1175,43 +1183,6 @@ def _validate_dual_phase_robust_v2_algorithm(
     near_threshold = finite("mode.near_threshold_px", cfg.mode.near_threshold_px)
     if near_threshold < 0.0:
         raise ValueError(f"runtime config key '{prefix}.mode.near_threshold_px' must be >= 0")
-
-    velocity = cfg.velocity
-    if velocity.history_size != 4 or velocity.velocity_sample_count != 3:
-        raise ValueError(
-            f"runtime config key '{prefix}.velocity' requires "
-            "history_size=4 and velocity_sample_count=3"
-        )
-    for key in (
-        "smoothing_frames",
-        "history_reset_gap_ms",
-        "spread_base_px_ms",
-        "change_base_px_ms",
-    ):
-        if finite(f"velocity.{key}", getattr(velocity, key)) <= 0.0:
-            raise ValueError(f"runtime config key '{prefix}.velocity.{key}' must be > 0")
-    for key in ("spread_relative", "change_relative"):
-        if finite(f"velocity.{key}", getattr(velocity, key)) < 0.0:
-            raise ValueError(f"runtime config key '{prefix}.velocity.{key}' must be >= 0")
-
-    prediction = cfg.prediction
-    lead_frames = finite("prediction.lead_frames", prediction.lead_frames)
-    if not 0.0 <= lead_frames <= 10.0:
-        raise ValueError(f"runtime config key '{prefix}.prediction.lead_frames' must be in [0, 10]")
-    for mode_name, mode_cfg in (("far", prediction.far), ("near", prediction.near)):
-        for key in ("absolute_cap_px", "base_cap_px", "relative_cap"):
-            if finite(f"prediction.{mode_name}.{key}", getattr(mode_cfg, key)) < 0.0:
-                raise ValueError(
-                    f"runtime config key '{prefix}.prediction.{mode_name}.{key}' must be >= 0"
-                )
-    if (
-        prediction.near.absolute_cap_px > prediction.far.absolute_cap_px
-        or prediction.near.base_cap_px > prediction.far.base_cap_px
-        or prediction.near.relative_cap > prediction.far.relative_cap
-    ):
-        raise ValueError(
-            f"runtime config key '{prefix}.prediction' requires NEAR limits <= FAR limits"
-        )
 
     far = cfg.atan.far
     near = cfg.atan.near

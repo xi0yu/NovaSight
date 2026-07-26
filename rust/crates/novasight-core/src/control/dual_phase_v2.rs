@@ -1,10 +1,11 @@
-//! Rust-owned dual-phase atan feedback with robust X-axis prediction.
+//! Rust-owned dual-phase atan feedback controller.
 //!
 //! This implements the production semantics of
 //! ``novasight.control.algorithms.dual_phase_atan_robust_predictive_v2``:
-//! four positions produce three segment velocities, the segment median is
-//! smoothed by a capture-time-aware EMA, and a confidence-weighted prediction
-//! is bounded independently for FAR and NEAR modes.
+//! the measured error is projected into device counts and compressed by the
+//! FAR/NEAR atan response. Motion-prediction types remain compatibility
+//! machinery, but production configuration disables them and skips estimator
+//! work.
 //!
 //! * `dx`/`dy` are integer mouse counts the device should emit. We do
 //!   not promise 1:1 floating-point parity with the Python telemetry;
@@ -22,9 +23,7 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
-use crate::control::humanized_motion::{
-    HumanizedMotionGenerator, HumanizedMotionInput, HumanizedMotionTelemetry, MotionProfile,
-};
+use crate::control::humanized_motion::{HumanizedMotionTelemetry, MotionProfile};
 use crate::error::AppError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -111,7 +110,7 @@ impl Default for DualPhaseConfig {
             velocity_spread_relative: 0.50,
             velocity_change_base_px_ms: 0.20,
             velocity_change_relative: 0.75,
-            prediction_enabled: true,
+            prediction_enabled: false,
             prediction_lead_frames: 1.0,
             prediction_far_absolute_cap_px: 10.0,
             prediction_far_base_cap_px: 1.25,
@@ -509,7 +508,6 @@ pub struct DualPhaseControl {
     previous_error_y: f64,
     measured_error_history_valid: bool,
     velocity_x: RobustVelocityEstimator,
-    humanized_motion: HumanizedMotionGenerator,
 }
 
 impl DualPhaseControl {
@@ -526,7 +524,6 @@ impl DualPhaseControl {
             previous_error_y: 0.0,
             measured_error_history_valid: false,
             velocity_x: RobustVelocityEstimator::new(config),
-            humanized_motion: HumanizedMotionGenerator::default(),
         }
     }
 
@@ -541,13 +538,11 @@ impl DualPhaseControl {
         self.previous_error_y = 0.0;
         self.measured_error_history_valid = false;
         self.velocity_x.reset(None);
-        self.humanized_motion.reset();
     }
 
     pub fn release_trigger(&mut self) {
         self.quantizer_x.reset();
         self.quantizer_y.reset();
-        self.humanized_motion.reset();
     }
 
     /// Clear target-relative state while preserving observation sequence
@@ -555,7 +550,6 @@ impl DualPhaseControl {
     pub fn reset_target_state(&mut self) {
         self.release_trigger();
         self.velocity_x.reset(None);
-        self.humanized_motion.reset();
         self.target_id = None;
         self.previous_error_x = 0.0;
         self.previous_error_y = 0.0;
@@ -566,16 +560,13 @@ impl DualPhaseControl {
         self.calculate_with_profile(observation, None, 1.0)
     }
 
-    /// Calculate against the currently active immutable motion profile.
-    ///
-    /// The profile shapes floating-point demand before quantization. The
-    /// existing per-axis mode limit is then applied again, so a trained curve
-    /// cannot bypass the controller's safety envelope.
+    /// Compatibility entrypoint for callers that still own motion profiles.
+    /// Production Atan-only control intentionally ignores profile shaping.
     pub fn calculate_with_profile(
         &mut self,
         observation: ControlObservation,
-        profile: Option<&MotionProfile>,
-        target_width_px: f64,
+        _profile: Option<&MotionProfile>,
+        _target_width_px: f64,
     ) -> ControlDecision {
         let frame_age_ns = observation.control_now_ns as i128 - observation.capture_ts_ns as i128;
         let inference_end_ns = observation.inference_end_ts_ns as i128;
@@ -650,7 +641,7 @@ impl DualPhaseControl {
         } else {
             ControlMode::Far
         };
-        let estimate = if capture_timestamp_discontinuity {
+        let estimate = if capture_timestamp_discontinuity || !self.config.prediction_enabled {
             None
         } else {
             self.velocity_x.update(
@@ -664,14 +655,18 @@ impl DualPhaseControl {
         let velocity_x = estimate.map_or(0.0, |value| value.filtered_velocity);
         let motion_confidence = estimate.map_or(0.0, |value| value.motion_confidence);
         let reference_dt_ms = estimate.map_or(0.0, |value| value.reference_dt_ms);
-        let prediction = self.predict_offset(
-            mode,
-            error_x,
-            velocity_x,
-            motion_confidence,
-            reference_dt_ms,
-            estimate.is_some(),
-        );
+        let prediction = if self.config.prediction_enabled {
+            self.predict_offset(
+                mode,
+                error_x,
+                velocity_x,
+                motion_confidence,
+                reference_dt_ms,
+                estimate.is_some(),
+            )
+        } else {
+            PredictionResult::default()
+        };
         let predicted_offset_x = prediction.safe_offset_x;
         // The authoritative Python robust predictor intentionally predicts X only.
         let predicted_offset_y = 0.0;
@@ -684,24 +679,9 @@ impl DualPhaseControl {
             return ControlDecision::blocked(BlockReason::GeometryInvalid);
         };
 
-        let shaped = self.humanized_motion.apply(
-            profile,
-            HumanizedMotionInput {
-                base_x,
-                base_y,
-                full_x,
-                full_y,
-                error_x_px: error_x,
-                error_y_px: error_y,
-                target_width_px,
-                target_id: observation.target_id,
-                trigger_active: observation.trigger_active,
-                control_time_ms: observation.control_now_ns as f64 / 1_000_000.0,
-            },
-        );
         let maximum = f64::from(max_counts_per_axis);
-        let demand_x = shaped.x.clamp(-maximum, maximum);
-        let demand_y = shaped.y.clamp(-maximum, maximum);
+        let demand_x = base_x.clamp(-maximum, maximum);
+        let demand_y = base_y.clamp(-maximum, maximum);
 
         let (dx, dy, block_reason) = if observation.trigger_active {
             let dx = match self.quantizer_x.quantize(
@@ -778,7 +758,11 @@ impl DualPhaseControl {
             velocity_spread: estimate.map(|value| value.spread),
             measurement_dt_ms: estimate.map(|value| value.measurement_dt_ms),
             reference_dt_ms,
-            prediction_lead_frames: self.config.prediction_lead_frames,
+            prediction_lead_frames: if self.config.prediction_enabled {
+                self.config.prediction_lead_frames
+            } else {
+                0.0
+            },
             prediction_raw_offset_x: prediction.raw_offset_x,
             prediction_weighted_offset_x: prediction.weighted_offset_x,
             prediction_allowed_cap_x: prediction.allowed_cap_x,
@@ -791,7 +775,7 @@ impl DualPhaseControl {
             full_error_counts_y: full_y,
             float_demand_x: demand_x,
             float_demand_y: demand_y,
-            humanized_motion: shaped.telemetry,
+            humanized_motion: HumanizedMotionTelemetry::default(),
         }
     }
 
@@ -843,6 +827,9 @@ impl DualPhaseControl {
     }
 
     fn prediction_config_valid(&self) -> bool {
+        if !self.config.prediction_enabled {
+            return true;
+        }
         self.config.velocity_smoothing_frames.is_finite()
             && self.config.velocity_smoothing_frames > 0.0
             && self.config.velocity_history_reset_gap_ms.is_finite()
@@ -1017,6 +1004,7 @@ mod tests {
     #[test]
     fn confidence_weighted_prediction_matches_python_far_cap() {
         let config = DualPhaseConfig {
+            prediction_enabled: true,
             prediction_lead_frames: 2.0,
             prediction_far_absolute_cap_px: 3.0,
             prediction_far_base_cap_px: 0.0,
@@ -1063,7 +1051,10 @@ mod tests {
 
     #[test]
     fn track_confidence_zero_suppresses_prediction_without_hiding_velocity() {
-        let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+        let mut control = DualPhaseControl::new(DualPhaseConfig {
+            prediction_enabled: true,
+            ..DualPhaseConfig::default()
+        });
         let mut decision = None;
         for (index, error_x) in [40.0, 44.0, 48.0, 52.0].into_iter().enumerate() {
             let generation = index as u64 + 1;
@@ -1094,7 +1085,10 @@ mod tests {
 
     #[test]
     fn trigger_release_clears_output_residual_but_keeps_motion_history_hot() {
-        let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+        let mut control = DualPhaseControl::new(DualPhaseConfig {
+            prediction_enabled: true,
+            ..DualPhaseConfig::default()
+        });
         let mut decision = None;
         for (index, error_x) in [40.0, 44.0, 48.0, 52.0].into_iter().enumerate() {
             let generation = index as u64 + 1;
