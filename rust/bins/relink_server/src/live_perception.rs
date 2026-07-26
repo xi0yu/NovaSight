@@ -262,6 +262,7 @@ fn build_live_dependencies(
                 far_max_counts_per_update: adapters.pipeline.far_max_counts_per_update,
                 near_kp: adapters.pipeline.near_kp,
                 near_max_counts_per_update: adapters.pipeline.near_max_counts_per_update,
+                arrival_radius_counts: adapters.pipeline.arrival_radius_counts,
                 velocity_smoothing_frames: adapters.pipeline.velocity_smoothing_frames,
                 velocity_history_reset_gap_ms: adapters.pipeline.velocity_history_reset_gap_ms,
                 velocity_spread_base_px_ms: adapters.pipeline.velocity_spread_base_px_ms,
@@ -285,6 +286,9 @@ fn build_live_dependencies(
             },
             max_command_age_ns: adapters.pipeline.max_command_age_ms * 1_000_000,
             output_interval_ms: adapters.pipeline.output_interval_ms,
+            actuation_feedback_delay_ns: (adapters.pipeline.actuation_feedback_delay_ms
+                * 1_000_000.0)
+                .round() as u64,
             trigger_poll_interval_ms,
             trigger_mode: match config.control.trigger_mode {
                 novasight_store::config::TriggerMode::Always => PipelineTriggerMode::Always,

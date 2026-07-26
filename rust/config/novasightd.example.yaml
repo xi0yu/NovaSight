@@ -29,6 +29,8 @@ pipeline:
   far_max_counts_per_update: 127.0
   near_kp: 0.20
   near_max_counts_per_update: 72.0
+  # FOV 投影后的每轴到位半径。进入 3 counts 后清空残差，退出阈值自动扩大以抑制抖动。
+  arrival_radius_counts: 3.0
   prediction_enabled: false
   residual_cap: 1.0
   target_fov_radius_px: 180.0
@@ -54,6 +56,8 @@ pipeline:
   candidate_max_aspect_ratio: 6.0
   max_command_age_ms: 55
   output_interval_ms: 4
+  # 成功发送后，等待设备运动有机会反映到采集帧；实际门控还会加一帧测量周期。
+  actuation_feedback_delay_ms: 4.0
 control:
   output_enabled: true
   # always: 有效目标即可输出；hardware: 仅在设备按钮按下时输出。

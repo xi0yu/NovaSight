@@ -8,7 +8,8 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use novasight_core::control::dual_phase_v2::{
-    ControlDecision as DualPhaseDecision, ControlObservation, DualPhaseConfig, DualPhaseControl,
+    ActuationFeedback, ControlDecision as DualPhaseDecision, ControlObservation, DualPhaseConfig,
+    DualPhaseControl,
 };
 use novasight_core::control::humanized_motion::HumanizedMotionTelemetry;
 use novasight_core::control::recoil::{
@@ -89,6 +90,8 @@ pub struct PipelineConfig {
     /// Python-compatible activation policy. `Always` still respects the
     /// output gate, device connection, freshness, and target-validity guards.
     pub trigger_mode: TriggerMode,
+    /// Minimum device-to-capture visibility delay after a successful move.
+    pub actuation_feedback_delay_ns: u64,
     /// Optional vision-verified control origin. The hub owns its template and
     /// observation state; targeting only performs a cheap resolved-point read.
     pub crosshair: Option<CrosshairHub>,
@@ -113,6 +116,7 @@ struct ControlWorkerConfig {
     epoch: RuntimeEpoch,
     control: DualPhaseConfig,
     trigger_mode: TriggerMode,
+    actuation_feedback_delay_ns: u64,
 }
 
 impl Default for PipelineConfig {
@@ -125,6 +129,7 @@ impl Default for PipelineConfig {
             output_interval_ms: 4,
             trigger_poll_interval_ms: None,
             trigger_mode: TriggerMode::Always,
+            actuation_feedback_delay_ns: 4_000_000,
             crosshair: None,
             motion_profiles: None,
             recoil: RecoilConfig::default(),
@@ -204,6 +209,8 @@ pub enum PipelineError {
     InvalidOutputInterval { actual_ms: u64 },
     #[error("trigger polling interval must be within 1..=50 ms, got {actual_ms}")]
     InvalidTriggerPollInterval { actual_ms: u64 },
+    #[error("actuation feedback delay must be within 0..=100 ms, got {actual_ns} ns")]
+    InvalidActuationFeedbackDelay { actual_ns: u64 },
     #[error("invalid recoil configuration: {message}")]
     InvalidRecoilConfig { message: &'static str },
     #[error("pointer device connection failed: {0}")]
@@ -335,6 +342,8 @@ struct SharedState {
     device_connection_enabled: AtomicBool,
     external_stop: Arc<AtomicUsize>,
     last_vision_telemetry_at_ns: AtomicU64,
+    latest_successful_send_x_ts_ns: AtomicU64,
+    latest_successful_send_y_ts_ns: AtomicU64,
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
@@ -374,6 +383,8 @@ impl SharedState {
             device_connection_enabled: AtomicBool::new(true),
             external_stop,
             last_vision_telemetry_at_ns: AtomicU64::new(0),
+            latest_successful_send_x_ts_ns: AtomicU64::new(0),
+            latest_successful_send_y_ts_ns: AtomicU64::new(0),
             device_lane: Mutex::new(()),
             event_tx,
             metrics,
@@ -450,7 +461,15 @@ impl SharedState {
         true
     }
 
-    fn record_device_receipt(&self, receipt: DeviceReceipt) {
+    fn record_device_receipt(&self, receipt: DeviceReceipt, accepted_at_ns: u64) {
+        if receipt.delta_x_counts != 0 {
+            self.latest_successful_send_x_ts_ns
+                .store(accepted_at_ns, Ordering::Release);
+        }
+        if receipt.delta_y_counts != 0 {
+            self.latest_successful_send_y_ts_ns
+                .store(accepted_at_ns, Ordering::Release);
+        }
         self.metrics.last_device_receipt.store(receipt);
     }
 
@@ -820,6 +839,11 @@ impl PipelineRuntime {
         {
             return Err(PipelineError::InvalidTriggerPollInterval { actual_ms });
         }
+        if config.actuation_feedback_delay_ns > 100_000_000 {
+            return Err(PipelineError::InvalidActuationFeedbackDelay {
+                actual_ns: config.actuation_feedback_delay_ns,
+            });
+        }
         config
             .recoil
             .validate()
@@ -869,6 +893,7 @@ impl PipelineRuntime {
                 epoch: config.epoch,
                 control: config.control,
                 trigger_mode: config.trigger_mode,
+                actuation_feedback_delay_ns: config.actuation_feedback_delay_ns,
             },
             config.motion_profiles.clone(),
         ) {
@@ -1330,6 +1355,7 @@ fn spawn_control_worker(
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "control", || {
                 let mut control = DualPhaseControl::new(config.control);
+                let mut previous_capture_ts_ns = None;
                 while let Some(target) = input.wait_take() {
                     if shared.status() != PipelineStatus::Running {
                         break;
@@ -1356,8 +1382,40 @@ fn spawn_control_worker(
                     };
                     if target.track_rebuilt {
                         control.reset_target_state();
+                        previous_capture_ts_ns = None;
                     }
-                    let decision = control.calculate(observation);
+                    let measurement_guard_ns = previous_capture_ts_ns
+                        .map(|previous: u64| {
+                            target
+                                .stamp
+                                .captured_at
+                                .0
+                                .saturating_sub(previous)
+                                .min(50_000_000)
+                        })
+                        .unwrap_or(0);
+                    previous_capture_ts_ns = Some(target.stamp.captured_at.0);
+                    let visible_after_delay_ns = config
+                        .actuation_feedback_delay_ns
+                        .saturating_add(measurement_guard_ns);
+                    let pending_for_axis = |accepted_at_ns: u64| {
+                        accepted_at_ns != 0
+                            && target.stamp.captured_at.0
+                                <= accepted_at_ns.saturating_add(visible_after_delay_ns)
+                    };
+                    let feedback = ActuationFeedback {
+                        pending_x: pending_for_axis(
+                            shared
+                                .latest_successful_send_x_ts_ns
+                                .load(Ordering::Acquire),
+                        ),
+                        pending_y: pending_for_axis(
+                            shared
+                                .latest_successful_send_y_ts_ns
+                                .load(Ordering::Acquire),
+                        ),
+                    };
+                    let decision = control.calculate_with_feedback(observation, feedback);
                     shared.record_dual_phase(decision);
                     shared.record_humanized_motion(decision.humanized_motion);
                     shared
@@ -1531,7 +1589,7 @@ fn spawn_device_worker(
                     match device.send(command) {
                         Ok(receipt) => {
                             shared.record_device_success();
-                            shared.record_device_receipt(receipt);
+                            shared.record_device_receipt(receipt, clock.now().0);
                         }
                         Err(error) => {
                             shared.record_device_error(&error);

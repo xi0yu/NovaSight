@@ -94,6 +94,7 @@ const RUST_DUAL_PHASE_PATHS: Record<string, string> = {
   "atan.scale_counts": "atan_scale_counts",
   "atan.far.max_counts_per_update": "far_max_counts_per_update",
   "atan.near.max_counts_per_update": "near_max_counts_per_update",
+  "arrival.radius_counts": "arrival_radius_counts",
 };
 const ModelManagerDialog = lazy(() =>
   import("../models/ModelManagerDialog").then((module) => ({
@@ -1400,6 +1401,8 @@ export function StudioConsoleView({
   const dualPhaseAtanScale = readNumber(rustControlPlane ? rustPipelineConfig.atan_scale_counts : dualPhaseAtanConfig.scale_counts, 256);
   const dualPhaseFarMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.far_max_counts_per_update : dualPhaseFarConfig.max_counts_per_update, 127);
   const dualPhaseNearMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.near_max_counts_per_update : dualPhaseNearConfig.max_counts_per_update, 72);
+  const dualPhaseArrivalRadiusCounts = readNumber(rustPipelineConfig.arrival_radius_counts, 3);
+  const actuationFeedbackDelayMs = readNumber(rustPipelineConfig.actuation_feedback_delay_ms, 4);
   const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
   const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
   const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
@@ -4153,6 +4156,9 @@ export function StudioConsoleView({
                     <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
                     <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
                     <span>量化余量</span><b>{formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts")}</b>
+                    <span>到位区（进入 / 退出）</span><b>{formatPoint(controlPipeline.arrival_enter_counts, controlPipeline.arrival_exit_counts, 2, "counts")}</b>
+                    <span>每轴到位</span><b>{`${readBoolean(controlPipeline.arrival_settled_x, false) ? "X 已到位" : "X 调整中"} / ${readBoolean(controlPipeline.arrival_settled_y, false) ? "Y 已到位" : "Y 调整中"}`}</b>
+                    <span>视觉反馈门控</span><b>{readBoolean(controlPipeline.actuation_pending_x, false) || readBoolean(controlPipeline.actuation_pending_y, false) ? "等待新画面" : "允许闭环更新"}</b>
                   </>
                 ) : (
                   <>
@@ -4907,6 +4913,12 @@ export function StudioConsoleView({
               <NumberControl label="共享 Atan 尺度 counts" detail="控制响应曲线尺度，不代表协议可发送的最大 counts。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(["atan", "scale_counts"], value)} />
               <NumberControl label="FAR 单次上限 counts" detail="稳定性保护上限；KMNet 的 signed-16 能力独立校验。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "far", "max_counts_per_update"], value)} />
               <NumberControl label="NEAR 单次上限 counts" detail="近目标单次修正上限，默认低于 FAR 以抑制过冲。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "near", "max_counts_per_update"], value)} />
+              {rustControlPlane ? (
+                <>
+                  <NumberControl label="到位半径 counts" detail="误差先按 ROI、FOV 和每圈 counts 投影。每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞，避免目标附近 ±1 往返。" value={dualPhaseArrivalRadiusCounts} min={0.5} max={100} step={0.5} onCommit={(value) => updateDualPhasePath(["arrival", "radius_counts"], value)} />
+                  <NumberControl label="设备反馈等待 ms" detail="设备成功移动后额外等待的最小视觉反馈时间；运行时还会自动加一帧实测采集周期，避免同一旧画面重复驱动。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateControlOrPipelineField("actuation_feedback_delay_ms", "actuation_feedback_delay_ms", value)} />
+                </>
+              ) : null}
             </>
           ) : controlMode === "calibrated_angular" ? (
             <>

@@ -6,7 +6,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use image::{Rgb, RgbImage, codecs::jpeg::JpegEncoder};
-use novasight_core::control::humanized_motion::{HumanizedMotionPhase, HumanizedSpeedCurveSource};
 use novasight_core::control::recoil::{RecoilConfig, RecoilState};
 use novasight_core::{
     Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, RecordingPointerDevice,
@@ -112,6 +111,79 @@ fn pipeline_runtime_drives_phase2_algorithms_and_device_on_owned_threads() {
 }
 
 #[test]
+fn control_waits_until_a_successful_device_move_can_be_visible_in_capture() {
+    let epoch = RuntimeEpoch(72);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let daemon_clock: Arc<dyn Clock> = clock.clone();
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            ..PipelineConfig::default()
+        },
+        daemon_clock,
+        pointer,
+    )
+    .expect("pipeline starts");
+    ingress.set_trigger_active(true);
+
+    let batch = |generation, captured_at_ns| {
+        DetectionBatch::new(
+            FrameStamp::new(epoch, generation, captured_at_ns),
+            640,
+            640,
+            vec![Detection::new(generation, 0, 380.0, 300.0, 40.0, 40.0, 0.95).unwrap()],
+        )
+        .unwrap()
+    };
+    ingress.submit(batch(1, 1_000_000_000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(device.receipts().len(), 1);
+
+    // This frame was captured before the first accepted movement and cannot
+    // possibly contain its visual result. It must not authorize a duplicate.
+    clock.0.store(1_012_000_000, Ordering::Release);
+    ingress.submit(batch(2, 1_004_000_000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.metrics().control_decisions < 2 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    thread::sleep(Duration::from_millis(10));
+    assert_eq!(
+        device.receipts().len(),
+        1,
+        "a frame captured before the previous move became visible must not emit again"
+    );
+
+    // The first later sample also establishes the current measurement cadence.
+    // Once a subsequent frame is newer than send + delay + cadence, control
+    // must resume instead of turning the feedback gate into a permanent latch.
+    clock.0.store(1_038_000_000, Ordering::Release);
+    ingress.submit(batch(3, 1_030_000_000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.metrics().control_decisions < 3 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    clock.0.store(1_047_000_000, Ordering::Release);
+    ingress.submit(batch(4, 1_039_000_000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().len() < 2 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        device.receipts().len(),
+        2,
+        "control must resume once a captured frame can contain the successful move"
+    );
+
+    runtime.shutdown().unwrap();
+}
+
+#[test]
 fn smooth_detection_motion_keeps_one_identity_through_control_and_device_output() {
     let epoch = RuntimeEpoch(71);
     let clock = Arc::new(ManualClock::new(1_008_000_000));
@@ -149,25 +221,21 @@ fn smooth_detection_motion_keeps_one_identity_through_control_and_device_output(
             .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(1);
-        while (runtime.metrics().targeting_batches < generation
-            || device.receipts().len() < generation as usize)
-            && Instant::now() < deadline
-        {
+        while runtime.metrics().targeting_batches < generation && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(runtime.metrics().targeting_batches, generation);
-        assert_eq!(device.receipts().len(), generation as usize);
     }
 
     let deadline = Instant::now() + Duration::from_secs(1);
-    while device.receipts().len() < 5 && Instant::now() < deadline {
+    while device.receipts().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
     let receipts = device.receipts();
-    assert_eq!(receipts.len(), 5);
+    assert!(!receipts.is_empty());
     assert!(
         receipts.iter().all(|receipt| receipt.target_object_id == 1),
-        "normal visual motion must not rebuild identity and reset downstream control state: {receipts:?}"
+        "feedback gating may intentionally skip visually unconfirmed frames, but normal motion must keep one downstream identity: {receipts:?}"
     );
     assert_eq!(
         runtime
@@ -380,7 +448,7 @@ fn vision_verified_crosshair_changes_the_real_control_origin() {
 }
 
 #[test]
-fn hot_active_motion_profile_shapes_the_real_device_command_lane() {
+fn legacy_motion_profile_does_not_delay_the_atan_only_device_lane() {
     let epoch = RuntimeEpoch(13);
     let clock = Arc::new(ManualClock::new(1_008_000_000));
     let daemon_clock: Arc<dyn Clock> = clock.clone();
@@ -410,16 +478,16 @@ fn hot_active_motion_profile_shapes_the_real_device_command_lane() {
         .unwrap()
     };
     ingress.submit(batch(1, 1_000_000_000)).unwrap();
-    thread::sleep(Duration::from_millis(20));
-    assert!(
-        device.receipts().is_empty(),
-        "the first observation establishes the trajectory instead of emitting the static jump"
-    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(device.receipts().len(), 1);
 
     clock.0.store(1_038_000_000, Ordering::Release);
     ingress.submit(batch(2, 1_030_000_000)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(1);
-    while device.receipts().is_empty() && Instant::now() < deadline {
+    while runtime.metrics().control_decisions < 2 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
     let receipts = device.receipts();
@@ -427,14 +495,7 @@ fn hot_active_motion_profile_shapes_the_real_device_command_lane() {
     assert!(receipts[0].delta_x_counts > 0);
     assert!(receipts[0].delta_x_counts < 600);
     let telemetry = runtime.metrics().humanized_motion;
-    assert!(telemetry.enabled);
-    assert_eq!(telemetry.phase, Some(HumanizedMotionPhase::Acceleration));
-    assert_eq!(
-        telemetry.speed_curve_source,
-        Some(HumanizedSpeedCurveSource::MinimumJerk)
-    );
-    assert!(telemetry.progress > 0.0);
-    assert!(telemetry.planned_duration_ms >= 35.0);
+    assert!(!telemetry.enabled);
     ingress.set_trigger_active(false);
     assert!(!runtime.metrics().humanized_motion.enabled);
     runtime.shutdown().unwrap();

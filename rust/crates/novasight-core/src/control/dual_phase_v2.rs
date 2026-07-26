@@ -31,6 +31,8 @@ use crate::error::AppError;
 /// At half a count or less the current integer position is the nearest
 /// representable point, so retaining residual would only create a +/-1 cycle.
 const HALF_DEVICE_COUNT: f64 = 0.5;
+const ARRIVAL_CONFIRM_NS: u64 = 8_000_000;
+const ARRIVAL_CONFIRM_SAMPLES: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ControlMode {
@@ -56,6 +58,10 @@ pub enum BlockReason {
     TriggerInactive,
     /// No device count is actionable at the current position.
     DeadZone,
+    /// The target is inside the FOV-projected arrival region.
+    AimSettled,
+    /// A successful device movement is not yet observable by this frame.
+    ActuationFeedbackPending,
     /// Demand converted to a count out of signed 32-bit range.
     DemandOutOfRange,
     /// The algorithm produced an emit-eligible decision; no block.
@@ -74,6 +80,8 @@ pub struct DualPhaseConfig {
     pub far_max_counts_per_update: f64,
     pub near_kp: f64,
     pub near_max_counts_per_update: f64,
+    /// Half-size of the per-axis arrival box in projected device counts.
+    pub arrival_radius_counts: f64,
     pub velocity_smoothing_frames: f64,
     pub velocity_history_reset_gap_ms: f64,
     pub velocity_spread_base_px_ms: f64,
@@ -110,6 +118,7 @@ impl Default for DualPhaseConfig {
             far_max_counts_per_update: 127.0,
             near_kp: 0.20,
             near_max_counts_per_update: 72.0,
+            arrival_radius_counts: 3.0,
             velocity_smoothing_frames: 3.0,
             velocity_history_reset_gap_ms: 80.0,
             velocity_spread_base_px_ms: 0.12,
@@ -150,6 +159,12 @@ pub struct ControlObservation {
     pub track_confidence: f64,
     pub target_valid: bool,
     pub trigger_active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ActuationFeedback {
+    pub pending_x: bool,
+    pub pending_y: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -199,6 +214,14 @@ pub struct ControlDecision {
     pub full_error_counts_y: f64,
     pub float_demand_x: f64,
     pub float_demand_y: f64,
+    pub arrival_settled_x: bool,
+    pub arrival_settled_y: bool,
+    pub arrival_hold_x: bool,
+    pub arrival_hold_y: bool,
+    pub arrival_enter_counts: f64,
+    pub arrival_exit_counts: f64,
+    pub actuation_pending_x: bool,
+    pub actuation_pending_y: bool,
     pub humanized_motion: HumanizedMotionTelemetry,
 }
 
@@ -250,6 +273,14 @@ impl ControlDecision {
             full_error_counts_y: 0.0,
             float_demand_x: 0.0,
             float_demand_y: 0.0,
+            arrival_settled_x: false,
+            arrival_settled_y: false,
+            arrival_hold_x: false,
+            arrival_hold_y: false,
+            arrival_enter_counts: 0.0,
+            arrival_exit_counts: 0.0,
+            actuation_pending_x: false,
+            actuation_pending_y: false,
             humanized_motion: HumanizedMotionTelemetry::default(),
         }
     }
@@ -500,6 +531,66 @@ impl Quantizer {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct AxisArrivalState {
+    settled: bool,
+    arrival_since_ns: Option<u64>,
+    arrival_samples: u8,
+    departure_since_ns: Option<u64>,
+    departure_samples: u8,
+}
+
+impl AxisArrivalState {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn hold(&mut self, full_error_counts: f64, capture_ts_ns: u64, enter_counts: f64) -> bool {
+        let absolute = full_error_counts.abs();
+        let exit_counts = (enter_counts * 1.5).max(enter_counts + HALF_DEVICE_COUNT);
+        let hard_exit_counts = exit_counts * 2.0;
+
+        if self.settled {
+            self.arrival_since_ns = None;
+            self.arrival_samples = 0;
+            if absolute <= exit_counts {
+                self.departure_since_ns = None;
+                self.departure_samples = 0;
+                return true;
+            }
+            if absolute >= hard_exit_counts {
+                self.reset();
+                return false;
+            }
+            let since = *self.departure_since_ns.get_or_insert(capture_ts_ns);
+            self.departure_samples = self.departure_samples.saturating_add(1);
+            if self.departure_samples >= ARRIVAL_CONFIRM_SAMPLES
+                && capture_ts_ns.saturating_sub(since) >= ARRIVAL_CONFIRM_NS
+            {
+                self.reset();
+                return false;
+            }
+            return true;
+        }
+
+        self.departure_since_ns = None;
+        self.departure_samples = 0;
+        if absolute <= enter_counts {
+            let since = *self.arrival_since_ns.get_or_insert(capture_ts_ns);
+            self.arrival_samples = self.arrival_samples.saturating_add(1);
+            if self.arrival_samples >= ARRIVAL_CONFIRM_SAMPLES
+                && capture_ts_ns.saturating_sub(since) >= ARRIVAL_CONFIRM_NS
+            {
+                self.settled = true;
+            }
+            return true;
+        }
+        self.arrival_since_ns = None;
+        self.arrival_samples = 0;
+        false
+    }
+}
+
 /// reach into a stale decision.
 #[derive(Clone, Debug)]
 pub struct DualPhaseControl {
@@ -514,6 +605,8 @@ pub struct DualPhaseControl {
     previous_error_y: f64,
     measured_error_history_valid: bool,
     velocity_x: RobustVelocityEstimator,
+    arrival_x: AxisArrivalState,
+    arrival_y: AxisArrivalState,
 }
 
 impl DualPhaseControl {
@@ -530,6 +623,8 @@ impl DualPhaseControl {
             previous_error_y: 0.0,
             measured_error_history_valid: false,
             velocity_x: RobustVelocityEstimator::new(config),
+            arrival_x: AxisArrivalState::default(),
+            arrival_y: AxisArrivalState::default(),
         }
     }
 
@@ -544,11 +639,15 @@ impl DualPhaseControl {
         self.previous_error_y = 0.0;
         self.measured_error_history_valid = false;
         self.velocity_x.reset(None);
+        self.arrival_x.reset();
+        self.arrival_y.reset();
     }
 
     pub fn release_trigger(&mut self) {
         self.quantizer_x.reset();
         self.quantizer_y.reset();
+        self.arrival_x.reset();
+        self.arrival_y.reset();
     }
 
     /// Clear target-relative state while preserving observation sequence
@@ -563,7 +662,15 @@ impl DualPhaseControl {
     }
 
     pub fn calculate(&mut self, observation: ControlObservation) -> ControlDecision {
-        self.calculate_with_profile(observation, None, 1.0)
+        self.calculate_with_feedback(observation, ActuationFeedback::default())
+    }
+
+    pub fn calculate_with_feedback(
+        &mut self,
+        observation: ControlObservation,
+        feedback: ActuationFeedback,
+    ) -> ControlDecision {
+        self.calculate_internal(observation, feedback)
     }
 
     /// Compatibility entrypoint for callers that still own motion profiles.
@@ -573,6 +680,14 @@ impl DualPhaseControl {
         observation: ControlObservation,
         _profile: Option<&MotionProfile>,
         _target_width_px: f64,
+    ) -> ControlDecision {
+        self.calculate_internal(observation, ActuationFeedback::default())
+    }
+
+    fn calculate_internal(
+        &mut self,
+        observation: ControlObservation,
+        feedback: ActuationFeedback,
     ) -> ControlDecision {
         let frame_age_ns = observation.control_now_ns as i128 - observation.capture_ts_ns as i128;
         let inference_end_ns = observation.inference_end_ts_ns as i128;
@@ -685,11 +800,23 @@ impl DualPhaseControl {
             return ControlDecision::blocked(BlockReason::GeometryInvalid);
         };
 
-        if full_x.abs() <= HALF_DEVICE_COUNT {
+        let arrival_enter_counts = self.config.arrival_radius_counts.max(HALF_DEVICE_COUNT);
+        let arrival_exit_counts =
+            (arrival_enter_counts * 1.5).max(arrival_enter_counts + HALF_DEVICE_COUNT);
+        let arrival_hold_x = feedback.pending_x
+            || self
+                .arrival_x
+                .hold(full_x, observation.capture_ts_ns, arrival_enter_counts);
+        let arrival_hold_y = feedback.pending_y
+            || self
+                .arrival_y
+                .hold(full_y, observation.capture_ts_ns, arrival_enter_counts);
+
+        if arrival_hold_x || full_x.abs() <= HALF_DEVICE_COUNT {
             self.quantizer_x.reset();
             base_x = 0.0;
         }
-        if full_y.abs() <= HALF_DEVICE_COUNT {
+        if arrival_hold_y || full_y.abs() <= HALF_DEVICE_COUNT {
             self.quantizer_y.reset();
             base_y = 0.0;
         }
@@ -721,7 +848,11 @@ impl DualPhaseControl {
                     return ControlDecision::blocked(BlockReason::DemandOutOfRange);
                 }
             };
-            let reason = if dx == 0 && dy == 0 {
+            let reason = if dx == 0 && dy == 0 && (feedback.pending_x || feedback.pending_y) {
+                BlockReason::ActuationFeedbackPending
+            } else if dx == 0 && dy == 0 && (arrival_hold_x || arrival_hold_y) {
+                BlockReason::AimSettled
+            } else if dx == 0 && dy == 0 {
                 BlockReason::DeadZone
             } else {
                 BlockReason::None
@@ -790,6 +921,14 @@ impl DualPhaseControl {
             full_error_counts_y: full_y,
             float_demand_x: demand_x,
             float_demand_y: demand_y,
+            arrival_settled_x: self.arrival_x.settled,
+            arrival_settled_y: self.arrival_y.settled,
+            arrival_hold_x,
+            arrival_hold_y,
+            arrival_enter_counts,
+            arrival_exit_counts,
+            actuation_pending_x: feedback.pending_x,
+            actuation_pending_y: feedback.pending_y,
             humanized_motion: HumanizedMotionTelemetry::default(),
         }
     }
@@ -842,6 +981,11 @@ impl DualPhaseControl {
     }
 
     fn prediction_config_valid(&self) -> bool {
+        if !self.config.arrival_radius_counts.is_finite()
+            || self.config.arrival_radius_counts < HALF_DEVICE_COUNT
+        {
+            return false;
+        }
         if !self.config.prediction_enabled {
             return true;
         }
@@ -940,8 +1084,34 @@ fn crossed_center(previous: f64, current: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ControlObservation, DualPhaseConfig, DualPhaseControl, Quantizer, RobustVelocityEstimator,
+        AxisArrivalState, ControlObservation, DualPhaseConfig, DualPhaseControl, Quantizer,
+        RobustVelocityEstimator,
     };
+
+    #[test]
+    fn arrival_state_uses_hysteresis_but_never_traps_a_real_departure() {
+        let mut state = AxisArrivalState::default();
+        let enter = 3.0;
+
+        assert!(state.hold(2.9, 1_000_000_000, enter));
+        assert!(state.hold(2.8, 1_009_000_000, enter));
+        assert!(state.settled);
+
+        // Between the 3-count enter threshold and 4.5-count exit threshold,
+        // detector chatter remains settled.
+        assert!(state.hold(4.4, 1_018_000_000, enter));
+        // A modest departure is confirmed over time instead of reacting to a
+        // single noisy sample.
+        assert!(state.hold(5.0, 1_027_000_000, enter));
+        assert!(!state.hold(5.0, 1_036_000_000, enter));
+
+        // A large displacement bypasses confirmation immediately, so the
+        // dead zone cannot retain a genuinely moved/new target.
+        state.hold(2.0, 1_045_000_000, enter);
+        state.hold(2.0, 1_054_000_000, enter);
+        assert!(state.settled);
+        assert!(!state.hold(9.1, 1_055_000_000, enter));
+    }
 
     #[test]
     fn quantizer_truncates_whole_counts_and_carries_only_fractional_residual() {

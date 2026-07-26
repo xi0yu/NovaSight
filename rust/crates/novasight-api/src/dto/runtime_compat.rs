@@ -477,6 +477,14 @@ pub(crate) struct ControlPipelineState {
     pub integer_command_y: Option<i32>,
     pub quantizer_residual_x: Option<f64>,
     pub quantizer_residual_y: Option<f64>,
+    pub arrival_settled_x: Option<bool>,
+    pub arrival_settled_y: Option<bool>,
+    pub arrival_hold_x: Option<bool>,
+    pub arrival_hold_y: Option<bool>,
+    pub arrival_enter_counts: Option<f64>,
+    pub arrival_exit_counts: Option<f64>,
+    pub actuation_pending_x: Option<bool>,
+    pub actuation_pending_y: Option<bool>,
     pub block_reason: Option<&'static str>,
     pub humanized_motion_enabled: bool,
     pub humanized_motion_reason: HumanizedMotionReason,
@@ -1043,6 +1051,18 @@ impl CompatibilityRuntimeState {
                             .then_some(dual_phase.quantizer_residual_x),
                         quantizer_residual_y: control_sample
                             .then_some(dual_phase.quantizer_residual_y),
+                        arrival_settled_x: control_sample.then_some(dual_phase.arrival_settled_x),
+                        arrival_settled_y: control_sample.then_some(dual_phase.arrival_settled_y),
+                        arrival_hold_x: control_sample.then_some(dual_phase.arrival_hold_x),
+                        arrival_hold_y: control_sample.then_some(dual_phase.arrival_hold_y),
+                        arrival_enter_counts: control_sample
+                            .then_some(dual_phase.arrival_enter_counts),
+                        arrival_exit_counts: control_sample
+                            .then_some(dual_phase.arrival_exit_counts),
+                        actuation_pending_x: control_sample
+                            .then_some(dual_phase.actuation_pending_x),
+                        actuation_pending_y: control_sample
+                            .then_some(dual_phase.actuation_pending_y),
                         block_reason: control_reason,
                         humanized_motion_enabled: snapshot
                             .pipeline_metrics
@@ -1246,6 +1266,8 @@ const fn block_reason_label(reason: BlockReason) -> &'static str {
         BlockReason::GeometryInvalid => "GEOMETRY_INVALID",
         BlockReason::TriggerInactive => "TRIGGER_INACTIVE",
         BlockReason::DeadZone => "DEAD_ZONE",
+        BlockReason::AimSettled => "AIM_SETTLED",
+        BlockReason::ActuationFeedbackPending => "ACTUATION_FEEDBACK_PENDING",
         BlockReason::DemandOutOfRange => "DEMAND_OUT_OF_RANGE",
         BlockReason::None => "",
     }
@@ -1373,6 +1395,11 @@ mod tests {
             float_demand_y: -2.9,
             quantizer_residual_x: 0.4,
             quantizer_residual_y: -0.1,
+            arrival_settled_x: true,
+            arrival_hold_x: true,
+            arrival_enter_counts: 3.0,
+            arrival_exit_counts: 4.5,
+            actuation_pending_y: true,
             ..ControlDecision::default()
         };
         snapshot.pipeline_metrics.humanized_motion = HumanizedMotionTelemetry {
@@ -1471,6 +1498,11 @@ mod tests {
         assert_eq!(pipeline["prediction_safe_offset_x"], 1.6);
         assert_eq!(pipeline["integer_command_x"], 12);
         assert_eq!(pipeline["quantizer_residual_y"], -0.1);
+        assert_eq!(pipeline["arrival_settled_x"], true);
+        assert_eq!(pipeline["arrival_hold_x"], true);
+        assert_eq!(pipeline["arrival_enter_counts"], 3.0);
+        assert_eq!(pipeline["arrival_exit_counts"], 4.5);
+        assert_eq!(pipeline["actuation_pending_y"], true);
         assert_eq!(pipeline["block_reason"], "");
         assert_eq!(pipeline["humanized_motion_enabled"], true);
         assert_eq!(pipeline["humanized_motion_reason"], "active");

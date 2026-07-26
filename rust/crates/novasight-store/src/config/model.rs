@@ -713,6 +713,8 @@ pub struct PipelineRuntimeConfig {
     pub near_kp: f64,
     #[serde(default = "default_near_max_counts_per_update")]
     pub near_max_counts_per_update: f64,
+    #[serde(default = "default_arrival_radius_counts")]
+    pub arrival_radius_counts: f64,
     #[serde(default = "default_velocity_smoothing_frames")]
     pub velocity_smoothing_frames: f64,
     #[serde(default = "default_velocity_history_reset_gap_ms")]
@@ -789,6 +791,8 @@ pub struct PipelineRuntimeConfig {
     pub max_command_age_ms: u64,
     #[serde(default = "default_output_interval_ms")]
     pub output_interval_ms: u64,
+    #[serde(default = "default_actuation_feedback_delay_ms")]
+    pub actuation_feedback_delay_ms: f64,
     #[serde(skip)]
     pub(crate) production_fields_explicit: bool,
     #[serde(default, flatten)]
@@ -808,6 +812,7 @@ impl Default for PipelineRuntimeConfig {
             far_max_counts_per_update: default_far_max_counts_per_update(),
             near_kp: default_near_kp(),
             near_max_counts_per_update: default_near_max_counts_per_update(),
+            arrival_radius_counts: default_arrival_radius_counts(),
             velocity_smoothing_frames: default_velocity_smoothing_frames(),
             velocity_history_reset_gap_ms: default_velocity_history_reset_gap_ms(),
             velocity_spread_base_px_ms: default_velocity_spread_base_px_ms(),
@@ -847,6 +852,7 @@ impl Default for PipelineRuntimeConfig {
             candidate_max_aspect_ratio: default_candidate_max_aspect_ratio(),
             max_command_age_ms: default_max_command_age_ms(),
             output_interval_ms: default_output_interval_ms(),
+            actuation_feedback_delay_ms: default_actuation_feedback_delay_ms(),
             production_fields_explicit: false,
             legacy: BTreeMap::new(),
         }
@@ -904,6 +910,12 @@ impl PipelineRuntimeConfig {
             self.near_max_counts_per_update,
             1.0,
             f64::from(i16::MAX),
+        )?;
+        validate_finite_range(
+            "pipeline.arrival_radius_counts",
+            self.arrival_radius_counts,
+            0.5,
+            1_000.0,
         )?;
         validate_finite_range("pipeline.residual_cap", self.residual_cap, 0.0, 1.0)?;
         validate_finite_range(
@@ -1047,6 +1059,12 @@ impl PipelineRuntimeConfig {
                 "must be within 1..=10 ms; tracking commands bypass this idle/recoil cadence",
             ));
         }
+        validate_finite_range(
+            "pipeline.actuation_feedback_delay_ms",
+            self.actuation_feedback_delay_ms,
+            0.0,
+            100.0,
+        )?;
         Ok(())
     }
 }
@@ -1201,6 +1219,10 @@ const fn default_near_max_counts_per_update() -> f64 {
     72.0
 }
 
+const fn default_arrival_radius_counts() -> f64 {
+    3.0
+}
+
 const fn default_velocity_smoothing_frames() -> f64 {
     3.0
 }
@@ -1346,6 +1368,10 @@ const fn default_max_command_age_ms() -> u64 {
 
 const fn default_output_interval_ms() -> u64 {
     4
+}
+
+const fn default_actuation_feedback_delay_ms() -> f64 {
+    4.0
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

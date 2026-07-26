@@ -273,6 +273,13 @@ impl ConfigSchemaResponse {
                             Some("count"),
                         ),
                         float(
+                            "pipeline.arrival_radius_counts",
+                            "FOV 投影后的到位半径",
+                            0.5,
+                            1_000.0,
+                            Some("count"),
+                        ),
+                        float(
                             "pipeline.residual_cap",
                             "量化残差上限",
                             0.0,
@@ -420,6 +427,13 @@ impl ConfigSchemaResponse {
                             "空闲／后坐力调度间隔",
                             1.0,
                             10.0,
+                            Some("ms"),
+                        ),
+                        float(
+                            "pipeline.actuation_feedback_delay_ms",
+                            "设备移动的最小视觉反馈等待",
+                            0.0,
+                            100.0,
                             Some("ms"),
                         ),
                     ],
@@ -718,9 +732,14 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 5);
+        assert_eq!(value["version"], 6);
         assert_eq!(value["values"]["server"]["port"], 5174);
         assert_eq!(value["values"]["pipeline"]["max_command_age_ms"], 55);
+        assert_eq!(value["values"]["pipeline"]["arrival_radius_counts"], 3.0);
+        assert_eq!(
+            value["values"]["pipeline"]["actuation_feedback_delay_ms"],
+            4.0
+        );
         assert_eq!(value["values"]["inference"], Value::Null);
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
             section["id"] == "inference"

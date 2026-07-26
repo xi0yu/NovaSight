@@ -279,6 +279,46 @@ fn sub_count_arrival_becomes_quiet_instead_of_limit_cycling() {
 }
 
 #[test]
+fn aim_region_rejects_persistent_subpixel_detector_chatter() {
+    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let errors = [0.4_f64; 4]
+        .into_iter()
+        .chain([-0.4_f64; 4])
+        .cycle()
+        .take(32);
+    let mut emitted = Vec::new();
+
+    for (index, error_x) in errors.enumerate() {
+        let generation = index as u64 + 1;
+        let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
+        let decision = control.calculate(ControlObservation {
+            generation,
+            frame_id: generation,
+            target_id: 1,
+            capture_ts_ns,
+            inference_end_ts_ns: capture_ts_ns + 2_000_000,
+            control_now_ns: capture_ts_ns + 4_000_000,
+            aim_x: 320.0 + error_x,
+            aim_y: 320.0,
+            crosshair_x: 320.0,
+            crosshair_y: 320.0,
+            detection_confidence: 1.0,
+            track_confidence: 1.0,
+            target_valid: true,
+            trigger_active: true,
+        });
+        if decision.dx != 0 {
+            emitted.push(decision.dx);
+        }
+    }
+
+    assert!(
+        emitted.is_empty(),
+        "subpixel detector drift inside the aim region must not emit alternating device counts: {emitted:?}"
+    );
+}
+
+#[test]
 fn second_observation_waits_for_complete_robust_velocity_window() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let first = ControlObservation {
