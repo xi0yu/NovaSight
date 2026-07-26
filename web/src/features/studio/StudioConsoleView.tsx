@@ -1405,11 +1405,11 @@ export function StudioConsoleView({
   const dualPhaseFovX = readNumber(rustControlPlane ? rustPipelineConfig.projection_fov_x_deg : dualPhaseProjectionConfig.fov_x_deg, 105);
   const dualPhaseCountsPer360 = readNumber(rustControlPlane ? rustPipelineConfig.projection_counts_per_360 : dualPhaseProjectionConfig.counts_per_360, 9980);
   const dualPhaseNearThreshold = readNumber(rustControlPlane ? rustPipelineConfig.near_threshold_px : dualPhaseModeConfig.near_threshold_px, 12);
-  const dualPhaseFarKp = readNumber(rustControlPlane ? rustPipelineConfig.far_kp : dualPhaseFarConfig.kp, 0.90);
-  const dualPhaseNearKp = readNumber(rustControlPlane ? rustPipelineConfig.near_kp : dualPhaseNearConfig.kp, 0.30);
-  const dualPhaseAtanScale = readNumber(rustControlPlane ? rustPipelineConfig.atan_scale_counts : dualPhaseAtanConfig.scale_counts, 1024);
-  const dualPhaseFarMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.far_max_counts_per_update : dualPhaseFarConfig.max_counts_per_update, 600);
-  const dualPhaseNearMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.near_max_counts_per_update : dualPhaseNearConfig.max_counts_per_update, 120);
+  const dualPhaseFarKp = readNumber(rustControlPlane ? rustPipelineConfig.far_kp : dualPhaseFarConfig.kp, 0.45);
+  const dualPhaseNearKp = readNumber(rustControlPlane ? rustPipelineConfig.near_kp : dualPhaseNearConfig.kp, 0.22);
+  const dualPhaseAtanScale = readNumber(rustControlPlane ? rustPipelineConfig.atan_scale_counts : dualPhaseAtanConfig.scale_counts, 256);
+  const dualPhaseFarMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.far_max_counts_per_update : dualPhaseFarConfig.max_counts_per_update, 127);
+  const dualPhaseNearMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.near_max_counts_per_update : dualPhaseNearConfig.max_counts_per_update, 72);
   const dualPhasePredictionEnabled = readBoolean(rustControlPlane ? rustPipelineConfig.prediction_enabled : dualPhasePredictionConfig.enabled, true);
   const dualPhaseLeadFrames = readNumber(rustControlPlane ? rustPipelineConfig.prediction_lead_frames : dualPhasePredictionConfig.lead_frames, 1.0);
   const dualPhaseVelocitySmoothingFrames = readNumber(rustControlPlane ? rustPipelineConfig.velocity_smoothing_frames : dualPhaseVelocityConfig.smoothing_frames, 3.0);

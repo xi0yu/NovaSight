@@ -585,7 +585,7 @@ inference:
     assert_eq!(response.status(), StatusCode::OK);
     let schema: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(schema["version"], 3);
+    assert_eq!(schema["version"], 4);
     assert_eq!(schema["values"]["revision"], 4);
     assert_eq!(schema["values"]["server"]["port"], 6000);
     assert_eq!(schema["values"]["inference"]["backend"], "rust_tensor_rt");

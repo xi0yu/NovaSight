@@ -67,7 +67,7 @@ fn loads_the_complete_rust_owned_example() {
 
     let config = YamlConfigRepository::load(example).unwrap();
 
-    assert_eq!(config.schema_version, 3);
+    assert_eq!(config.schema_version, 4);
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
@@ -243,7 +243,7 @@ fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
 
     let config = YamlConfigRepository::load(path).unwrap();
 
-    assert_eq!(config.schema_version, 3);
+    assert_eq!(config.schema_version, 4);
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
@@ -267,41 +267,41 @@ fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
 }
 
 #[test]
-fn schema_two_mistaken_low_authority_profile_restores_historical_defaults() {
+fn schema_three_aggressive_profile_restores_delay_stable_defaults() {
     let directory = TempDirectory::new();
     let path = directory.join("legacy-control.yaml");
     fs::write(
         &path,
-        r#"schema_version: 2
+        r#"schema_version: 3
 pipeline:
-  atan_scale_counts: 256.0
-  far_kp: 0.45
-  far_max_counts_per_update: 127.0
-  near_kp: 0.22
-  near_max_counts_per_update: 72.0
+  atan_scale_counts: 1024.0
+  far_kp: 0.90
+  far_max_counts_per_update: 600.0
+  near_kp: 0.30
+  near_max_counts_per_update: 120.0
 "#,
     )
     .unwrap();
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 3);
-    assert_eq!(config.pipeline.atan_scale_counts, 1024.0);
-    assert_eq!(config.pipeline.far_kp, 0.90);
-    assert_eq!(config.pipeline.far_max_counts_per_update, 600.0);
-    assert_eq!(config.pipeline.near_kp, 0.30);
-    assert_eq!(config.pipeline.near_max_counts_per_update, 120.0);
+    assert_eq!(config.schema_version, 4);
+    assert_eq!(config.pipeline.atan_scale_counts, 256.0);
+    assert_eq!(config.pipeline.far_kp, 0.45);
+    assert_eq!(config.pipeline.far_max_counts_per_update, 127.0);
+    assert_eq!(config.pipeline.near_kp, 0.22);
+    assert_eq!(config.pipeline.near_max_counts_per_update, 72.0);
 
     YamlConfigRepository::new(&path)
         .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["schema_version"], 3);
-    assert_eq!(persisted["pipeline"]["atan_scale_counts"], 1024.0);
-    assert_eq!(persisted["pipeline"]["far_kp"], 0.90);
-    assert_eq!(persisted["pipeline"]["far_max_counts_per_update"], 600.0);
-    assert_eq!(persisted["pipeline"]["near_kp"], 0.30);
-    assert_eq!(persisted["pipeline"]["near_max_counts_per_update"], 120.0);
+    assert_eq!(persisted["schema_version"], 4);
+    assert_eq!(persisted["pipeline"]["atan_scale_counts"], 256.0);
+    assert_eq!(persisted["pipeline"]["far_kp"], 0.45);
+    assert_eq!(persisted["pipeline"]["far_max_counts_per_update"], 127.0);
+    assert_eq!(persisted["pipeline"]["near_kp"], 0.22);
+    assert_eq!(persisted["pipeline"]["near_max_counts_per_update"], 72.0);
 }
 
 #[test]
@@ -863,7 +863,7 @@ fn document_replacement_uses_revision_guard_and_preserves_unsubmitted_extensions
         .replace_document(replacement, 5)
         .unwrap();
 
-    assert_eq!(saved.schema_version, 3);
+    assert_eq!(saved.schema_version, 4);
     assert_eq!(saved.revision, 6);
     assert_eq!(saved.server.port, 7000);
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();

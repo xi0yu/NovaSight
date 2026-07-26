@@ -280,11 +280,11 @@ def test_defaults_preserve_the_verified_python_control_profile() -> None:
     assert config.prediction.lead_frames == 1.0
     assert config.prediction.far.absolute_cap_px == 10.0
     assert config.prediction.near.absolute_cap_px == 3.0
-    assert config.atan.scale_counts == 1024.0
-    assert config.atan.far.kp == 0.90
-    assert config.atan.near.kp == 0.30
-    assert config.atan.far.max_counts_per_update == 600.0
-    assert config.atan.near.max_counts_per_update == 120.0
+    assert config.atan.scale_counts == 256.0
+    assert config.atan.far.kp == 0.45
+    assert config.atan.near.kp == 0.22
+    assert config.atan.far.max_counts_per_update == 127.0
+    assert config.atan.near.max_counts_per_update == 72.0
 
 
 def test_far_controller_can_use_kmnet_counts_above_legacy_hid8_limit() -> None:

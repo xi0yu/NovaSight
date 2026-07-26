@@ -1240,23 +1240,23 @@ const fn default_projection_counts_per_360() -> f64 {
 }
 
 const fn default_atan_scale_counts() -> f64 {
-    1_024.0
+    256.0
 }
 
 const fn default_far_kp() -> f64 {
-    0.90
+    0.45
 }
 
 const fn default_far_max_counts_per_update() -> f64 {
-    600.0
+    127.0
 }
 
 const fn default_near_kp() -> f64 {
-    0.30
+    0.22
 }
 
 const fn default_near_max_counts_per_update() -> f64 {
-    120.0
+    72.0
 }
 
 const fn default_velocity_smoothing_frames() -> f64 {
@@ -1974,7 +1974,7 @@ impl Default for PathConfig {
 }
 
 const fn default_schema_version() -> u32 {
-    3
+    4
 }
 
 fn default_server_host() -> String {
