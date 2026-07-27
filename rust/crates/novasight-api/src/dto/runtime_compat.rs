@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use novasight_core::control::dual_phase_v2::{BlockReason, ControlMode};
-use novasight_core::control::humanized_motion::{
+use novasight_core::controller::recoil::{RecoilBlockReason, RecoilState};
+use novasight_core::controller::{BlockReason, ControlMode};
+use novasight_core::output::humanized_motion::{
     HumanizedMotionPhase, HumanizedMotionReason, HumanizedSpatialCurveSource,
     HumanizedSpeedCurveSource,
 };
-use novasight_core::control::recoil::{RecoilBlockReason, RecoilState};
 use novasight_core::tracking::{LockReason, TargetSelection};
 use novasight_runtime::{
     AppConfig, CrosshairSnapshot, DetectionTelemetryItem, PipelineState, PreviewSnapshot,
@@ -1345,12 +1345,12 @@ fn serialized_label(value: &impl Serialize) -> String {
 #[cfg(test)]
 mod tests {
     use novasight_core::Generation;
-    use novasight_core::control::dual_phase_v2::{BlockReason, ControlDecision, ControlMode};
-    use novasight_core::control::humanized_motion::{
+    use novasight_core::controller::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
+    use novasight_core::controller::{BlockReason, ControlDecision, ControlMode};
+    use novasight_core::output::humanized_motion::{
         HumanizedMotionPhase, HumanizedMotionReason, HumanizedMotionTelemetry,
         HumanizedSpatialCurveSource, HumanizedSpeedCurveSource,
     };
-    use novasight_core::control::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
     use novasight_core::tracking::{LockReason, TargetSelection, TrackId};
     use novasight_pipeline::DetectionTelemetryItem;
     use novasight_runtime::{

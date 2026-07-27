@@ -680,7 +680,7 @@ struct TrainMotionProfileRequest {
 
 #[derive(Debug, Serialize)]
 struct ActivatedMotionProfile {
-    profile: novasight_core::control::humanized_motion::MotionProfile,
+    profile: novasight_core::output::humanized_motion::MotionProfile,
     runtime: novasight_runtime::MotionProfileStatus,
 }
 
@@ -718,7 +718,7 @@ async fn add_motion_sample(
 async fn train_motion_profile(
     State(state): State<ControlState>,
     Json(request): Json<TrainMotionProfileRequest>,
-) -> Result<Json<novasight_core::control::humanized_motion::MotionProfile>, ControlApiError> {
+) -> Result<Json<novasight_core::output::humanized_motion::MotionProfile>, ControlApiError> {
     run_motion_operation(state.runtime, move |runtime| {
         runtime.train_motion_profile(&request.session_id, &request.name)
     })
@@ -728,7 +728,7 @@ async fn train_motion_profile(
 
 async fn motion_profiles(
     State(state): State<ControlState>,
-) -> Result<Json<Vec<novasight_core::control::humanized_motion::MotionProfile>>, ControlApiError> {
+) -> Result<Json<Vec<novasight_core::output::humanized_motion::MotionProfile>>, ControlApiError> {
     run_motion_operation(state.runtime, |runtime| runtime.motion_profiles())
         .await
         .map(Json)

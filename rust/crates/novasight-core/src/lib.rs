@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod capture;
-pub mod control;
+pub mod controller;
 pub mod error;
 pub mod freshness;
 pub mod geometry;
@@ -18,7 +18,7 @@ pub use capture::{
     CaptureSelectionError, CaptureSelectionPreference, SelectedCaptureProfile,
     select_capture_profile, select_capture_profile_for_formats,
 };
-pub use control::{ControlDecision, ProportionalReplayControl};
+pub use controller::replay::{ControlDecision, ProportionalReplayControl};
 pub use error::AppError;
 pub use output::{
     DeviceCommand, DeviceReceipt, RecordingPointerDevice, UncommissionedPointerDevice,

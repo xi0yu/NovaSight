@@ -9,8 +9,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use novasight_core::control::humanized_motion::MotionRuntimeParameters;
-use novasight_core::control::recoil::RecoilConfig;
+use novasight_core::controller::recoil::RecoilConfig;
+use novasight_core::output::humanized_motion::MotionRuntimeParameters;
 use novasight_pipeline::MotionProfileHub;
 use novasight_runtime::{
     ConfigService, LoadedApplication, OfflineModelJobRunner, RuntimeDependencies,

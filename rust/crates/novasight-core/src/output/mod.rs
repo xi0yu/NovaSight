@@ -2,6 +2,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+pub mod humanized_motion;
 pub mod latest_command;
 pub mod quantizer;
 

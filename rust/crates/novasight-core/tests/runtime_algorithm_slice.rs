@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use novasight_core::control::dual_phase_v2::{
+use novasight_core::controller::{
     BlockReason, ControlMode, ControlObservation, DualPhaseConfig, DualPhaseControl,
 };
 use novasight_core::freshness::{FreshnessPolicy, evaluate as freshness_evaluate};

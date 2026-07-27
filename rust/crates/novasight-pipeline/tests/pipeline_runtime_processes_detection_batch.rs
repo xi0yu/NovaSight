@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use image::{Rgb, RgbImage, codecs::jpeg::JpegEncoder};
-use novasight_core::control::recoil::{RecoilConfig, RecoilState};
+use novasight_core::controller::recoil::{RecoilConfig, RecoilState};
 use novasight_core::{
     Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, RecordingPointerDevice,
     RuntimeEpoch,

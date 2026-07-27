@@ -7,15 +7,15 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use novasight_core::control::dual_phase_v2::{
-    ActuationFeedback, ControlDecision as DualPhaseDecision, ControlObservation, DualPhaseConfig,
-    DualPhaseControl,
-};
-use novasight_core::control::humanized_motion::HumanizedMotionTelemetry;
-use novasight_core::control::recoil::{
+use novasight_core::controller::recoil::{
     RecoilConfig, RecoilDecision, RecoilInput, TargetRelativeRecoilController,
     mix_tracking_and_recoil,
 };
+use novasight_core::controller::{
+    ActuationFeedback, ControlDecision as DualPhaseDecision, ControlObservation, DualPhaseConfig,
+    DualPhaseControl,
+};
+use novasight_core::output::humanized_motion::HumanizedMotionTelemetry;
 use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore};
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, PointerDevice, RuntimeEpoch,

@@ -1,4 +1,4 @@
-//! Rust-owned dual-phase atan feedback controller.
+//! Two-phase Atan feedback controller for the selected target.
 //!
 //! The measured error is projected into device counts and compressed by the
 //! FAR/NEAR atan response. Optional two-axis target prediction is owned by the
@@ -16,8 +16,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::control::humanized_motion::{HumanizedMotionTelemetry, MotionProfile};
 use crate::error::AppError;
+use crate::output::humanized_motion::{HumanizedMotionTelemetry, MotionProfile};
 use crate::prediction::{
     FocusTargetObservation, PredictionRange, SingleTargetPredictionConfig, SingleTargetPredictor,
 };

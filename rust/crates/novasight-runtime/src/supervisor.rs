@@ -11,8 +11,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use novasight_core::control::humanized_motion::MotionProfile;
-use novasight_core::control::recoil::RecoilConfig;
+use novasight_core::controller::recoil::RecoilConfig;
+use novasight_core::output::humanized_motion::MotionProfile;
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, MonotonicNanos, PointerDevice,
     PointerDeviceMode, RecordingPointerDevice, RuntimeEpoch,

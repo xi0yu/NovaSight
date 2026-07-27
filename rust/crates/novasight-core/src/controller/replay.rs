@@ -1,8 +1,6 @@
-use serde::Serialize;
+//! Deterministic replay-only controller used by fixtures and offline checks.
 
-pub mod dual_phase_v2;
-pub mod humanized_motion;
-pub mod recoil;
+use serde::Serialize;
 
 use crate::{AppError, DetectionBatch, DeviceCommand, FrameStamp, MonotonicNanos, SelectedTarget};
 

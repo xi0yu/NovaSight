@@ -1,3 +1,5 @@
+//! Target-relative recoil controller and tracking/recoil mixer.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

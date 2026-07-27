@@ -1,3 +1,5 @@
+//! Optional target-relative output shaping profiles and telemetry.
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

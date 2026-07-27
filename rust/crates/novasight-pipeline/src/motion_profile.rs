@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use novasight_core::control::humanized_motion::{MotionProfile, MotionRuntimeParameters};
+use novasight_core::output::humanized_motion::{MotionProfile, MotionRuntimeParameters};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug)]

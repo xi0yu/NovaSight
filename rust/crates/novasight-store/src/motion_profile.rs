@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use novasight_core::control::humanized_motion::{
+use novasight_core::output::humanized_motion::{
     DistanceProfile, MotionProfile, MotionRuntimeParameters, MotionTiming, SideCurve,
 };
 use serde::{Deserialize, Serialize};

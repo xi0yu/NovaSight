@@ -13,7 +13,7 @@
 //!   `release_trigger()` discards fractional counts but keeps the
 use std::path::{Path, PathBuf};
 
-use novasight_core::control::dual_phase_v2::{
+use novasight_core::controller::{
     BlockReason, ControlDecision, ControlMode, ControlObservation, DualPhaseConfig,
     DualPhaseControl,
 };

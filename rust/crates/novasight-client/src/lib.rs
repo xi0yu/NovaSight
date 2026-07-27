@@ -15,7 +15,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, client::conn::http1};
 use hyper_util::rt::TokioIo;
-pub use novasight_core::control::humanized_motion::MotionProfile;
+pub use novasight_core::output::humanized_motion::MotionProfile;
 use novasight_core::{CaptureCapabilities, CaptureSelectionPreference, DeviceReceipt};
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigUpdate, CrosshairSnapshot, ModelIngressResult,

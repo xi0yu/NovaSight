@@ -9,9 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use novasight_core::control::dual_phase_v2::{
-    ControlObservation, DualPhaseConfig, DualPhaseControl,
-};
+use novasight_core::controller::{ControlObservation, DualPhaseConfig, DualPhaseControl};
 use novasight_core::freshness::{FreshnessPolicy, evaluate as freshness_evaluate};
 use novasight_core::output::quantizer::{PerAxisQuantizer, QuantizerConfig};
 use novasight_core::perception::types::Detection;

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use novasight_core::control::dual_phase_v2::DualPhaseConfig;
+use novasight_core::controller::DualPhaseConfig;
 use novasight_core::tracking::TargetingConfig;
 use novasight_core::{
     CaptureCapabilityProbe, CaptureSelectionPreference, Clock,
