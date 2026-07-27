@@ -65,8 +65,11 @@ fn target_switch_loss_fixture_matches_targeting_core() {
     let mut core = TargetingCore::new(TargetingConfig::default());
 
     let first_detections = detections_from_value(&records[0]["detections"]);
+    let first_captured_at_ns = records[0]["frame"]["captured_at_ns"]
+        .as_u64()
+        .expect("captured_at_ns");
     assert!(
-        core.select(&first_detections, OBSERVATION_CENTER)
+        core.select_at(&first_detections, OBSERVATION_CENTER, first_captured_at_ns)
             .target_object_id
             .is_none(),
         "multiple fresh candidates require a confirming observation"
@@ -74,27 +77,29 @@ fn target_switch_loss_fixture_matches_targeting_core() {
 
     for record in &records {
         let detections = detections_from_value(&record["detections"]);
-        let selection = core.select(&detections, OBSERVATION_CENTER);
+        let captured_at_ns = record["frame"]["captured_at_ns"]
+            .as_u64()
+            .expect("captured_at_ns");
+        let selection = core.select_at(&detections, OBSERVATION_CENTER, captured_at_ns);
         let expected = &record["expected_target"];
-        let expected_object_id = expected["object_id"].as_u64().expect("object_id");
-        let expected_class_id = expected["class_id"].as_u64().expect("class_id") as u32;
-        let expected_reason =
-            reason_from_str(expected["lock_reason"].as_str().expect("lock_reason"));
+        let expected_object_id = expected["object_id"].as_u64();
+        let expected_class_id = expected["class_id"].as_u64().map(|value| value as u32);
+        let expected_reason = expected["lock_reason"].as_str().map(reason_from_str);
         assert_eq!(
             selection.target_object_id,
-            Some(expected_object_id),
+            expected_object_id,
             "object_id for {label}",
             label = record["label"]
         );
         assert_eq!(
             selection.target_class_id,
-            Some(expected_class_id),
+            expected_class_id,
             "class_id for {label}",
             label = record["label"]
         );
         assert_eq!(
             selection.lock_reason,
-            Some(expected_reason),
+            expected_reason,
             "lock_reason for {label}",
             label = record["label"]
         );
@@ -539,7 +544,7 @@ fn scale_jump_and_expired_capture_gap_allocate_new_identities() {
 }
 
 #[test]
-fn temporarily_missing_challenger_keeps_identity_within_frame_grace() {
+fn missing_locked_target_does_not_promote_a_different_class_during_grace() {
     let mut core = TargetingCore::new(TargetingConfig {
         track_max_age: 2,
         ..TargetingConfig::default()
@@ -554,11 +559,86 @@ fn temporarily_missing_challenger_keeps_identity_within_frame_grace() {
     let challenger =
         Detection::new(12, 1, 380.0, 270.0, 80.0, 100.0, 0.9).expect("challenger returns");
     let selection = core.select(&[challenger], OBSERVATION_CENTER);
+    assert_eq!(selection.target_track_id, None);
     assert_eq!(
-        selection.target_track_id,
-        Some(novasight_core::tracking::TrackId(2))
+        core.locked().map(|track| track.id),
+        Some(novasight_core::tracking::TrackId(1))
     );
-    assert!(selection.target_identity_confidence.expect("continuity") > 0.9);
+}
+
+#[test]
+fn temporarily_missing_locked_target_does_not_immediately_switch_to_challenger() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        track_max_age: 2,
+        track_max_lost_age_ms: 120.0,
+        ..TargetingConfig::default()
+    });
+    let both_visible = [
+        Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("locked"),
+        Detection::new(2, 0, 380.0, 270.0, 80.0, 100.0, 0.9).expect("challenger"),
+    ];
+    assert!(
+        core.select_at(&both_visible, OBSERVATION_CENTER, 1_000_000_000)
+            .target_track_id
+            .is_none()
+    );
+    let locked = core.select_at(&both_visible, OBSERVATION_CENTER, 1_010_000_000);
+    let locked_track = locked.target_track_id.expect("confirmed lock");
+
+    let challenger_only =
+        Detection::new(12, 0, 380.0, 270.0, 80.0, 100.0, 0.9).expect("challenger only");
+    let missing = core.select_at(&[challenger_only], OBSERVATION_CENTER, 1_020_000_000);
+
+    assert_eq!(
+        missing.target_track_id, None,
+        "one missed observation must pause output instead of changing targets"
+    );
+    assert_eq!(
+        core.locked().map(|track| track.id),
+        Some(locked_track),
+        "the lost-track grace period must retain lock ownership"
+    );
+
+    let both_returned = [
+        Detection::new(21, 0, 282.0, 270.0, 80.0, 100.0, 0.9).expect("locked returned"),
+        Detection::new(22, 0, 380.0, 270.0, 80.0, 100.0, 0.9).expect("challenger"),
+    ];
+    let reacquired = core.select_at(&both_returned, OBSERVATION_CENTER, 1_030_000_000);
+    assert_eq!(reacquired.target_track_id, Some(locked_track));
+    assert_eq!(reacquired.target_object_id, Some(21));
+    assert!(reacquired.target_rebuilt);
+}
+
+#[test]
+fn locked_target_loss_grace_uses_capture_time_instead_of_inference_frame_count() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        track_max_age: 2,
+        track_max_lost_age_ms: 120.0,
+        ..TargetingConfig::default()
+    });
+    let both_visible = [
+        Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("locked"),
+        Detection::new(2, 0, 380.0, 270.0, 80.0, 100.0, 0.9).expect("challenger"),
+    ];
+    core.select_at(&both_visible, OBSERVATION_CENTER, 1_000_000_000);
+    let locked = core.select_at(&both_visible, OBSERVATION_CENTER, 1_008_333_333);
+    let locked_track = locked.target_track_id.expect("confirmed lock");
+    let challenger_only =
+        Detection::new(12, 0, 380.0, 270.0, 80.0, 100.0, 0.9).expect("challenger only");
+
+    for timestamp in [1_016_666_666, 1_024_999_999, 1_033_333_332, 1_041_666_665] {
+        let selection = core.select_at(
+            std::slice::from_ref(&challenger_only),
+            OBSERVATION_CENTER,
+            timestamp,
+        );
+        assert_eq!(selection.target_track_id, None);
+        assert_eq!(core.locked().map(|track| track.id), Some(locked_track));
+    }
+
+    let expired = core.select_at(&[challenger_only], OBSERVATION_CENTER, 1_140_000_000);
+    assert_ne!(expired.target_track_id, Some(locked_track));
+    assert!(expired.target_track_id.is_some());
 }
 
 #[test]

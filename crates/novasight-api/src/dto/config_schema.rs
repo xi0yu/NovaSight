@@ -338,7 +338,7 @@ impl ConfigSchemaResponse {
                         ),
                         integer(
                             "pipeline.target_track_max_age",
-                            "目标最大丢失帧数",
+                            "无时间戳回放漏检上限",
                             1.0,
                             120.0,
                             Some("frame"),

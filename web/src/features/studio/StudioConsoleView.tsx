@@ -1256,6 +1256,7 @@ export function StudioConsoleView({
   const trackerPositionCostWeight = readNumber(rustControlPlane ? rustPipelineConfig.tracker_position_cost_weight : controlConfig.tracker_position_cost_weight, 0.75);
   const trackerIouCostWeight = readNumber(rustControlPlane ? rustPipelineConfig.tracker_iou_cost_weight : controlConfig.tracker_iou_cost_weight, 0.25);
   const trackerMaxMissedFrames = readNumber(rustControlPlane ? rustPipelineConfig.target_track_max_age : controlConfig.tracker_max_missed_frames, 2);
+  const targetLostGraceMs = readNumber(rustPipelineConfig.target_track_max_lost_age_ms, 120);
   const targetSwitchPreferenceAdvantage = readNumber(rustControlPlane ? rustPipelineConfig.target_switch_min_preference_advantage : controlConfig.target_switch_min_preference_advantage, 0.08);
   const targetSwitchContinuityScore = readNumber(rustControlPlane ? rustPipelineConfig.target_switch_min_continuity_score : controlConfig.target_switch_min_continuity_score, 0.7);
   const targetSwitchDelayMs = readNumber(rustControlPlane ? rustPipelineConfig.target_switch_delay_ms : controlConfig.target_switch_delay_ms, 50);
@@ -4679,7 +4680,11 @@ export function StudioConsoleView({
           <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updateControlOrPipelineField("tracker_max_match_distance", "tracker_max_match_distance", value)} />
           <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateControlOrPipelineField("tracker_position_cost_weight", "tracker_position_cost_weight", value)} />
           <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateControlOrPipelineField("tracker_iou_cost_weight", "tracker_iou_cost_weight", value)} />
-          <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateControlOrPipelineField("tracker_max_missed_frames", "target_track_max_age", Math.round(value))} />
+          {rustControlPlane ? (
+            <NumberControl label="目标丢失保持 ms" detail="锁定目标短暂漏检时暂停输出并保留原身份；超过该时间后才允许其他目标接管。" value={targetLostGraceMs} min={1} max={1000} step={1} onCommit={(value) => updateControlOrPipelineField("tracker_max_missed_frames", "target_track_max_lost_age_ms", value)} />
+          ) : (
+            <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateControlOrPipelineField("tracker_max_missed_frames", "target_track_max_age", Math.round(value))} />
+          )}
         </div>
         <div className="advanced-settings-divider">
           <span>{rustControlPlane ? "Rust Tracker" : "Kalman 估计器"}</span>

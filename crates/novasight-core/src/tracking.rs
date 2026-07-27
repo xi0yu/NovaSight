@@ -14,10 +14,9 @@
 //!   bounding-box IoU, and scale.
 //! * no unbounded growth. History is bounded by `BoundedHistory` and
 //!   `TargetingCore::reset` is the only way to clear it.
-//! * lost tracks never produce a control target. After a configurable
-//!   number of missed frames the locked track is dropped and the
-//!   selection returns `target_object_id = None` until a fresh
-//!   candidate re-acquires the lock.
+//! * lost tracks never produce a control target. Production retention uses
+//!   monotonic capture time so different inference FPS values get the same
+//!   grace period; frame count remains only as a timestamp-free replay fallback.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -34,7 +33,7 @@ use kalman::KalmanState;
 /// track. Past this bound, the oldest entry is dropped.
 pub const DEFAULT_HISTORY_LIMIT: usize = 32;
 
-/// Maximum age (in frames) before a non-matched track is marked lost.
+/// Timestamp-free replay fallback for expiring a non-matched track.
 pub const DEFAULT_TRACK_MAX_AGE: u64 = 2;
 pub const DEFAULT_TRACK_MAX_LOST_AGE_MS: f64 = 120.0;
 const TRACK_CONFIRM_HITS: u64 = 2;
@@ -386,9 +385,11 @@ impl TargetSelection {
 pub struct TargetingConfig {
     /// Confidence threshold for admitting a detection into targeting.
     pub min_confidence: f32,
-    /// Number of consecutive missed frames before a track is dropped.
+    /// Timestamp-free replay fallback for dropping a lost track. Production
+    /// observations use `track_max_lost_age_ms` instead.
     pub track_max_age: u64,
-    /// Wall-clock bound for retaining a lost identity, independent of FPS.
+    /// Production wall-clock bound for retaining a lost identity, independent
+    /// of capture and inference FPS.
     pub track_max_lost_age_ms: f64,
     /// Radial admission gate around the declared observation center.
     pub target_fov_radius_px: f64,
@@ -710,11 +711,8 @@ impl TargetingCore {
             .filter_map(|mut track| {
                 track.state = TrackState::Lost;
                 track.missed_frames = track.missed_frames.saturating_add(1);
-                let lost_since = *track.lost_since_ns.get_or_insert(captured_at_ns);
-                let lost_age_ms = captured_at_ns.saturating_sub(lost_since) as f64 / 1e6;
-                (track.missed_frames <= self.config.track_max_age
-                    && lost_age_ms <= self.config.track_max_lost_age_ms)
-                    .then_some(track)
+                track.lost_since_ns.get_or_insert(captured_at_ns);
+                track_within_loss_grace(&track, captured_at_ns, &self.config).then_some(track)
             })
             .take(MAX_ACTIVE_TRACKS.saturating_sub(updated.len()))
             .collect::<Vec<_>>();
@@ -728,10 +726,18 @@ impl TargetingCore {
         }
         let current_indices = &current_indices[..current_count];
         self.lost_count = retained.len() as u64;
-        if current_indices.is_empty() {
+        let retained_lock = self
+            .locked
+            .as_ref()
+            .and_then(|locked| retained.iter().find(|track| track.id == locked.id).cloned());
+        // A temporary miss is not a switch opportunity. Keep the identity for
+        // reacquisition, but emit no target so control stops until a real
+        // observation of the same track returns or the grace period expires.
+        if current_indices.is_empty() || retained_lock.is_some() {
             self.pending_switch = None;
             self.tracks = updated;
             self.tracks.append(&mut retained);
+            self.locked = retained_lock;
             return TargetSelection {
                 candidates,
                 inside_fov: admissible.len(),
@@ -874,19 +880,24 @@ impl TargetingCore {
             track.state = TrackState::Lost;
             track.lost_since_ns.get_or_insert(captured_at_ns);
         }
-        self.tracks.retain(|track| {
-            let lost_age_ms = track.lost_since_ns.map_or(0.0, |lost_since| {
-                captured_at_ns.saturating_sub(lost_since) as f64 / 1e6
-            });
-            track.missed_frames <= self.config.track_max_age
-                && lost_age_ms <= self.config.track_max_lost_age_ms
-        });
+        self.tracks
+            .retain(|track| track_within_loss_grace(track, captured_at_ns, &self.config));
         self.lost_count = self.tracks.len() as u64;
         self.locked = self
             .locked
             .as_ref()
             .and_then(|locked| self.tracks.iter().find(|track| track.id == locked.id))
             .cloned();
+    }
+}
+
+fn track_within_loss_grace(track: &Track, captured_at_ns: u64, config: &TargetingConfig) -> bool {
+    match track.lost_since_ns {
+        Some(lost_since_ns) if captured_at_ns > 0 && lost_since_ns > 0 => {
+            let lost_age_ms = captured_at_ns.saturating_sub(lost_since_ns) as f64 / 1e6;
+            lost_age_ms <= config.track_max_lost_age_ms
+        }
+        _ => track.missed_frames <= config.track_max_age,
     }
 }
 
