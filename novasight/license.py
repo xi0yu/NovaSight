@@ -10,18 +10,6 @@ from pathlib import Path
 from typing import Any
 
 
-TEST_MAX_LICENSE_KEY = "NOVASIGHT-TEST-MAX-ACCESS-2026"
-ALL_FEATURES = [
-    "capture",
-    "runtime",
-    "models",
-    "tensorrt",
-    "hardware_control",
-    "config_read",
-    "config_write",
-]
-
-
 @dataclass(frozen=True)
 class LicenseStatus:
     configured: bool
@@ -103,19 +91,6 @@ def _parse_signed_license(key: str) -> LicensePayload:
     )
 
 
-def _payload_for_key(key: str) -> LicensePayload:
-    if key == TEST_MAX_LICENSE_KEY:
-        return LicensePayload(
-            license_id="test-max-access",
-            tier="test_max",
-            created_at=1_783_036_800.0,  # 2026-07-02T00:00:00Z
-            duration_value=10,
-            duration_unit="years",
-            features=ALL_FEATURES.copy(),
-        )
-    return _parse_signed_license(key)
-
-
 class LicenseStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -152,7 +127,7 @@ class LicenseStore:
         stripped = key.strip()
         if len(stripped) < 8:
             raise ValueError("license key must be at least 8 characters")
-        payload = _payload_for_key(stripped)
+        payload = _parse_signed_license(stripped)
         activated_at = _now()
         # Duration is bound to the signed issuance timestamp. Starting it at
         # activation would let the same offline token reset its lifetime after

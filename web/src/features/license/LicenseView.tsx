@@ -32,7 +32,7 @@ export function LicenseGate({
           </span>
           <div>
             <h1>NovaSight</h1>
-            <p>{serviceUnavailable ? "连接本机服务后进入 Jetson 实时视觉工作台" : "完成本机授权后进入 Jetson 实时视觉工作台"}</p>
+            <p>{serviceUnavailable ? "连接本机服务后进入 Jetson 实时视觉工作台" : "申请临时授权后进入 Jetson 实时视觉工作台"}</p>
           </div>
           <ThemeToggle />
         </div>
@@ -58,7 +58,7 @@ export function LicenseGate({
             </span>
             <div>
               <h2>正在连接 NovaSight 后端</h2>
-              <p>正在读取本机服务与授权状态，确认结果前不会显示卡密输入。</p>
+              <p>正在读取本机服务与授权状态，请稍候。</p>
             </div>
           </section>
         ) : (
@@ -77,7 +77,7 @@ export function LicenseGate({
 export function LicenseView({ license, onLicenseChange }: LicenseProps) {
   return (
     <div className="view-grid">
-      <Panel title="卡密管理" eyebrow="本机授权">
+      <Panel title="授权管理" eyebrow="本机授权">
         <LicensePanel license={license} onLicenseChange={onLicenseChange} />
       </Panel>
     </div>

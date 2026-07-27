@@ -1156,10 +1156,11 @@ mod tests {
 
         assert_eq!(engine.contract().input().dimensions(), [1, 3, 256, 256]);
         assert_eq!(engine.contract().selected_profile(), 0);
-        let outputs = engine.probe_zero().unwrap();
-        assert_eq!(outputs.iter().next().unwrap().dimensions(), [1, 1, 6]);
+        {
+            let outputs = engine.probe_zero().unwrap();
+            assert_eq!(outputs.iter().next().unwrap().dimensions(), [1, 1, 6]);
+        }
 
-        drop(outputs);
         drop(engine);
         assert_eq!(*abi.destroyed.lock().unwrap(), 1);
     }

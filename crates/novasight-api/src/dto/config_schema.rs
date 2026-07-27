@@ -751,7 +751,7 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 6);
+        assert_eq!(value["version"], 7);
         assert_eq!(value["values"]["server"]["port"], 5174);
         assert_eq!(value["values"]["pipeline"]["max_command_age_ms"], 55);
         assert_eq!(value["values"]["pipeline"]["arrival_radius_counts"], 3.0);

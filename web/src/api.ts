@@ -555,6 +555,11 @@ export type LicenseStatus = {
   message: string;
 };
 
+export type TemporaryLicenseResponse = {
+  granted: boolean;
+  status: LicenseStatus;
+};
+
 export class ApiError extends Error {
   readonly status: number;
   readonly detail: unknown;
@@ -594,6 +599,7 @@ export const API_PATHS = {
   modelJobsList: "/api/models/jobs/list",
   license: "/api/license",
   licenseActivate: "/api/license/activate",
+  licenseTemporary: "/api/license/temporary",
   statusWs: "/ws/status"
 } as const;
 
@@ -1054,6 +1060,16 @@ export function getLicenseStatus(): Promise<LicenseStatus> {
     undefined,
     { timeoutMs: STANDARD_READ_TIMEOUT_MS }
   );
+}
+
+export function requestTemporaryLicense(): Promise<TemporaryLicenseResponse> {
+  return requestJson<TemporaryLicenseResponse>(API_PATHS.licenseTemporary, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({})
+  });
 }
 
 export function saveLicenseKey(key: string): Promise<LicenseStatus> {

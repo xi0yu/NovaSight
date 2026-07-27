@@ -123,7 +123,7 @@ async fn kmnet_buttons_projects_daemon_owned_trigger_cache() {
 }
 
 #[tokio::test]
-async fn versioned_config_api_persists_revisioned_fields_without_hot_apply_claims() {
+async fn versioned_config_api_preserves_pending_restart_while_hot_applying_output_gate() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");
     fs::write(
@@ -170,10 +170,14 @@ async fn versioned_config_api_persists_revisioned_fields_without_hot_apply_claim
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let error: Value =
+    assert_eq!(response.status(), StatusCode::OK);
+    let update: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(error["code"], "CONFIG_RESTART_REQUIRED");
+    assert_eq!(update["config"]["revision"], 4);
+    assert_eq!(update["config"]["control"]["output_enabled"], false);
+    assert_eq!(update["restart_required"], true);
+    assert_eq!(update["applied"], true);
+    assert_eq!(update["rolled_back"], false);
 
     let response = app
         .oneshot(
@@ -186,8 +190,9 @@ async fn versioned_config_api_persists_revisioned_fields_without_hot_apply_claim
         .unwrap();
     let body: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(body["revision"], 3);
+    assert_eq!(body["revision"], 4);
     assert_eq!(body["server"]["port"], 6000);
+    assert_eq!(body["control"]["output_enabled"], false);
 
     shutdown(supervisor, &runtime).await;
 }
@@ -585,7 +590,7 @@ inference:
     assert_eq!(response.status(), StatusCode::OK);
     let schema: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(schema["version"], 5);
+    assert_eq!(schema["version"], 7);
     assert_eq!(schema["values"]["revision"], 4);
     assert_eq!(schema["values"]["server"]["port"], 6000);
     assert_eq!(
@@ -1087,10 +1092,10 @@ async fn kmnet_diagnostics_are_real_supervisor_commands_and_never_dry_run_claims
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let error: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(error["code"], "DEVICE_LIFECYCLE_MANAGED_BY_RUNTIME");
+    assert_eq!(error["code"], "pipeline_unavailable");
 
     runtime.start().await.unwrap();
     let response = production.oneshot(request()).await.unwrap();

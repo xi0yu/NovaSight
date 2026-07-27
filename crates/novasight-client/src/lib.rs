@@ -81,19 +81,36 @@ pub struct ExecutorStatus {
     pub last_error: Option<Value>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
 pub struct ExecutorAvailability {
     pub available: bool,
+    pub configuration_state: String,
+    pub configuration_ready: bool,
+    pub restart_required: bool,
+    pub can_connect: bool,
+    pub can_disconnect: bool,
+    pub blocked_reason: Option<String>,
     pub connected: bool,
+    pub runtime_connected: bool,
     pub connecting: bool,
     pub monitoring: bool,
+    pub buttons_available: bool,
+    pub button_left: bool,
+    pub button_right: bool,
     pub connection_state: String,
     pub retryable: bool,
     pub last_error: Option<String>,
     pub managed_by_runtime: bool,
-    pub move_count: u64,
-    pub last_dx: Option<i32>,
-    pub last_dy: Option<i32>,
+    pub accepted_command_count: u64,
+    pub last_accepted_dx: Option<i32>,
+    pub last_accepted_dy: Option<i32>,
+    pub diagnostic_move_count: u64,
+    pub last_diagnostic_dx: Option<i32>,
+    pub last_diagnostic_dy: Option<i32>,
+    pub device_error_count: u64,
+    pub device_recovery_count: u64,
+    pub last_device_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

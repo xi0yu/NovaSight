@@ -17,6 +17,9 @@ use novasight_runtime::{
 use novasight_store::config::YamlConfigRepository;
 use novasight_store::license::{FileLicenseRepository, LicensePolicy, LicenseStatus};
 
+const LICENSE_PUBLIC_KEY: &str = include_str!("../../../testdata/license-public.pem");
+const SIGNED_LICENSE: &str = include_str!("../../../testdata/license-signed.key");
+
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_novasightctl")
 }
@@ -200,8 +203,11 @@ async fn license_commands_bootstrap_through_a_key_file_and_the_real_repository()
     let socket = SocketPath::new();
     let license_path = socket.0.with_extension("license.json");
     let key_path = socket.0.with_extension("license.key");
-    std::fs::write(&key_path, "NOVASIGHT-TEST-MAX-ACCESS-2026\n").unwrap();
-    let repository = FileLicenseRepository::new(&license_path, LicensePolicy::new(true, None));
+    std::fs::write(&key_path, SIGNED_LICENSE).unwrap();
+    let repository = FileLicenseRepository::new(
+        &license_path,
+        LicensePolicy::new(false, Some(LICENSE_PUBLIC_KEY.to_owned())),
+    );
     let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
     let app = build_control_router_with_control_plane(
@@ -254,7 +260,7 @@ async fn license_commands_bootstrap_through_a_key_file_and_the_real_repository()
     assert!(
         !std::fs::read_to_string(&license_path)
             .unwrap()
-            .contains("NOVASIGHT-TEST-MAX-ACCESS-2026")
+            .contains(SIGNED_LICENSE.trim())
     );
 
     let socket_path = socket.0.clone();
@@ -323,9 +329,14 @@ async fn device_commands_use_the_supervisor_owned_diagnostic_path() {
         tokio::task::spawn_blocking(move || run_cli_args(&socket_path, &["device", "status"]))
             .await
             .unwrap();
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
     let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
-    assert_eq!(status["executors"]["kmnet"]["move_count"], 1);
-    assert_eq!(status["executors"]["kmnet"]["last_dx"], 5);
+    assert_eq!(status["executors"]["kmnet"]["diagnostic_move_count"], 1);
+    assert_eq!(status["executors"]["kmnet"]["last_diagnostic_dx"], 5);
 
     runtime.start().await.unwrap();
     runtime.set_trigger_active(true).await.unwrap();

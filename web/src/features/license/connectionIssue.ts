@@ -26,7 +26,7 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
       return {
         kind: "service-error",
         title: "授权存储暂时不可用",
-        description: "novasightd 在线，但授权文件或锁文件目前无法读取；这不是卡密校验失败。",
+        description: "novasightd 在线，但授权文件或锁文件目前无法读取；这不是临时授权被拒绝。",
         recovery: "请检查配置中的 paths.license 及其父目录权限，然后重新读取授权状态。"
       };
     }
@@ -34,7 +34,7 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
       return {
         kind: "service-error",
         title: "授权验证器尚未配置完成",
-        description: "novasightd 在线，但生产授权公钥缺失或格式无效；这不是当前卡密被拒绝。",
+        description: "novasightd 在线，但生产授权公钥缺失或格式无效；这不是当前临时授权被拒绝。",
         recovery: "请修复 NOVASIGHT_LICENSE_PUBLIC_KEY 配置并重启 novasightd。"
       };
     }
@@ -50,7 +50,7 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
       return {
         kind: "timeout",
         title: "NovaSight 后端响应超时",
-        description: "本机服务没有在预期时间内返回授权状态，这不代表卡密无效。",
+        description: "本机服务没有在预期时间内返回授权状态，这不代表授权申请失败。",
         recovery: "请确认 Jetson 负载正常且 novasightd 仍在运行，然后重新连接。"
       };
     }
@@ -82,7 +82,7 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
 
 export function describeLicenseActionFailure(
   error: unknown,
-  action: "activate" | "clear"
+  action: "temporary" | "activate" | "clear"
 ): LicenseActionFailure {
   if (error instanceof ApiError) {
     if (error.status === 404 || error.status === 405 || error.status === 408) {
@@ -90,15 +90,22 @@ export function describeLicenseActionFailure(
       return { title: issue.title, message: `${issue.description} ${issue.recovery}` };
     }
     if (error.status >= 400 && error.status < 500) {
-      return action === "activate"
-        ? {
-            title: "授权码未通过校验",
-            message: "请检查授权码是否完整、是否过期，以及是否适用于当前设备。"
-          }
-        : {
-            title: "授权清除未完成",
-            message: "当前授权状态无法变更，请刷新状态后再试。"
-          };
+      if (action === "temporary") {
+        return {
+          title: "临时授权暂不可用",
+          message: "当前后端没有批准临时授权，请确认正在运行 Debug 测试版本后重试。"
+        };
+      }
+      if (action === "activate") {
+        return {
+          title: "正式授权未通过校验",
+          message: "请检查授权凭证是否完整、是否过期，以及是否适用于当前版本。"
+        };
+      }
+      return {
+        title: "授权退出未完成",
+        message: "当前授权状态无法变更，请刷新状态后再试。"
+      };
     }
   }
 

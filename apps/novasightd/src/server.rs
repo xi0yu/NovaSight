@@ -186,10 +186,10 @@ fn platform_capture_probe() -> Option<Arc<dyn CaptureCapabilityProbe>> {
 
 fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
     // A debug `cargo run` is the supported Jetson development workflow: it may
-    // drive real hardware while using the built-in development license. Only
-    // release artifacts enforce deployment key provisioning.
+    // request a short-lived local grant without a shared secret. Only release
+    // artifacts enforce deployment key provisioning.
     let development_build = cfg!(debug_assertions);
-    let allow_test_key = mode == DaemonMode::DryRun || development_build;
+    let allow_temporary_grant = development_build;
     let inline_public_key = std::env::var("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .ok()
         .filter(|value| !value.trim().is_empty());
@@ -208,7 +208,7 @@ fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
             })
             .transpose()?,
     };
-    let policy = LicensePolicy::new(allow_test_key, public_key);
+    let policy = LicensePolicy::new(allow_temporary_grant, public_key);
     let public_key_required = mode.hardware_output_enabled() && !development_build;
     match policy.validate_public_key(public_key_required) {
         Ok(()) => Ok(policy),
@@ -867,8 +867,8 @@ mod tests {
             LicensePolicy::new(true, None),
         );
         repository
-            .activate("NOVASIGHT-TEST-MAX-ACCESS-2026")
-            .expect("activate test license");
+            .grant_temporary()
+            .expect("grant temporary license");
         let (supervisor, runtime) = novasight_runtime::RuntimeSupervisor::spawn_recording();
         runtime.start().await.expect("start licensed pipeline");
         let (shutdown_tx, shutdown_rx) = watch::channel(false);

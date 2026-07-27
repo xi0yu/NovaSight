@@ -248,13 +248,15 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
     let (status, blocked) = unix_http_request(&control_socket, "GET", "/api/v1/status");
     assert_eq!(status, 401);
     assert!(blocked.contains("license required"));
-    let (status, activated) = unix_http_json_request(
+    let (status, activated) = unix_http_request_with_body(
         &control_socket,
         "POST",
-        "/api/license/activate",
-        r#"{"key":"NOVASIGHT-TEST-MAX-ACCESS-2026"}"#,
+        "/api/license/temporary",
+        "{}",
+        Some("application/json"),
     );
     assert_eq!(status, 200);
+    assert!(activated.contains("\"granted\":true"));
     assert!(activated.contains("\"valid\":true"));
     let (status, initial) = unix_http_request(&control_socket, "GET", "/api/v1/status");
     assert_eq!(status, 200);
@@ -284,11 +286,6 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
 #[cfg(unix)]
 fn unix_http_request(socket: &Path, method: &str, path: &str) -> (u16, String) {
     unix_http_request_with_body(socket, method, path, "", None)
-}
-
-#[cfg(unix)]
-fn unix_http_json_request(socket: &Path, method: &str, path: &str, body: &str) -> (u16, String) {
-    unix_http_request_with_body(socket, method, path, body, Some("application/json"))
 }
 
 #[cfg(unix)]

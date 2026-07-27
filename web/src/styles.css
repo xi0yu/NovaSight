@@ -1147,6 +1147,69 @@ tbody tr:hover {
   gap: 8px;
 }
 
+.temporary-license-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-inner);
+  background: var(--bg-subtle);
+}
+
+.temporary-license-action > div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.temporary-license-action strong {
+  color: var(--text-primary);
+  font-size: 0.88rem;
+}
+
+.temporary-license-action span {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.temporary-license-action .button {
+  flex: 0 0 auto;
+}
+
+.signed-license-action {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-inner);
+  background: var(--surface-2);
+}
+
+.signed-license-action > div:first-child {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.signed-license-action strong {
+  color: var(--text-primary);
+  font-size: 0.88rem;
+}
+
+.signed-license-action span {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.signed-license-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-3);
+}
+
 .license-hero {
   display: flex;
   align-items: flex-start;
@@ -1196,6 +1259,17 @@ tbody tr:hover {
   font-size: 0.78rem;
   font-weight: 700;
   box-shadow: 0 0 0 1px var(--border-subtle);
+}
+
+@media (max-width: 640px) {
+  .temporary-license-action {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .signed-license-controls {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (prefers-reduced-motion: no-preference) {

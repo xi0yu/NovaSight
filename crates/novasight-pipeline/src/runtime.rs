@@ -516,7 +516,6 @@ impl SharedState {
     }
 
     fn record_device_error(&self, error: &novasight_core::AppError) {
-        self.device_connected.store(false, Ordering::Release);
         if matches!(
             error,
             novasight_core::AppError::PointerDevice {
@@ -524,6 +523,7 @@ impl SharedState {
                 ..
             }
         ) {
+            self.device_connected.store(false, Ordering::Release);
             return;
         }
         self.metrics
@@ -534,10 +534,13 @@ impl SharedState {
             .last_device_error
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.to_string());
+        // Publish the externally visible disconnect only after its diagnostic
+        // fields are complete. Snapshot readers that observe `false` through
+        // the acquire load can then always explain the degraded state.
+        self.device_connected.store(false, Ordering::Release);
     }
 
     fn record_device_error_message(&self, message: impl Into<String>) {
-        self.device_connected.store(false, Ordering::Release);
         self.metrics
             .device_error_count
             .fetch_add(1, Ordering::Relaxed);
@@ -546,6 +549,7 @@ impl SharedState {
             .last_device_error
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message.into());
+        self.device_connected.store(false, Ordering::Release);
     }
 
     fn record_manual_device_disconnect(&self) {

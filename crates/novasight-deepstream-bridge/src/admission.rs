@@ -280,8 +280,6 @@ pub enum AdmissionError {
     ClockMappingUnderflow { age_ns: u64, monotonic_now_ns: u64 },
     #[error("DeepStream snapshot declares {actual} detections; maximum is {maximum}")]
     DetectionCount { actual: u32, maximum: usize },
-    #[error("DeepStream omitted {omitted} detections because the snapshot was truncated")]
-    Truncated { omitted: u32 },
     #[error("DeepStream frame contained {count} invalid object metadata entries")]
     InvalidObjectMetadata { count: u32 },
     #[error(
@@ -318,7 +316,6 @@ impl AdmissionError {
             Self::FramePtsInFuture { .. } => "deepstream_frame_pts_future",
             Self::ClockMappingUnderflow { .. } => "deepstream_clock_mapping_invalid",
             Self::DetectionCount { .. } => "deepstream_detection_count_invalid",
-            Self::Truncated { .. } => "deepstream_detections_truncated",
             Self::InvalidObjectMetadata { .. } => "deepstream_object_metadata_invalid",
             Self::UnexpectedCaptureMetadata { .. } => "deepstream_capture_objects_unexpected",
             Self::NegativeClassId { .. } => "deepstream_class_id_invalid",

@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use novasight_store::license::{FileLicenseRepository, LicensePolicy};
 
-const TEST_KEY: &str = "NOVASIGHT-TEST-MAX-ACCESS-2026";
 const PUBLIC_KEY: &str = include_str!("../../../testdata/license-public.pem");
 const SIGNED_KEY: &str = include_str!("../../../testdata/license-signed.key");
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -30,25 +29,24 @@ impl Drop for TestDirectory {
 }
 
 #[test]
-fn activation_persists_no_plaintext_and_round_trips_verified_status() {
+fn temporary_grant_persists_and_round_trips_verified_status() {
     let directory = TestDirectory::new();
     let path = directory.0.join("license.json");
     let policy = LicensePolicy::new(true, None);
     let repository = FileLicenseRepository::new(&path, policy.clone());
 
-    let activated = repository.activate(TEST_KEY).unwrap();
+    let activated = repository.grant_temporary().unwrap();
 
     assert!(activated.configured);
     assert!(activated.valid);
-    assert_eq!(activated.tier, "test_max");
-    assert_eq!(activated.license_id, "test-max-access");
+    assert_eq!(activated.tier, "temporary");
+    assert!(activated.license_id.starts_with("temporary-development-"));
     assert!(activated.features.contains(&"hardware_control".to_owned()));
     assert!(activated.activated_at.is_some());
     assert!(activated.expires_at.is_some());
     let document = fs::read_to_string(&path).unwrap();
-    assert!(!document.contains(TEST_KEY));
     assert!(document.contains("key_hash"));
-    assert!(document.contains("built_in_test"));
+    assert!(document.contains("temporary_development"));
     let python_compatible: serde_json::Value = serde_json::from_str(&document).unwrap();
     assert_eq!(
         python_compatible["fingerprint"].as_str(),
@@ -59,6 +57,9 @@ fn activation_persists_no_plaintext_and_round_trips_verified_status() {
         activated.expires_at
     );
 
+    let repeated = repository.grant_temporary().unwrap();
+    assert_eq!(repeated, activated);
+
     let reopened = FileLicenseRepository::new(path, policy).status().unwrap();
     assert_eq!(reopened, activated);
 }
@@ -67,7 +68,7 @@ fn activation_persists_no_plaintext_and_round_trips_verified_status() {
 fn signed_license_is_reverified_after_restart_and_rejects_disk_claim_tampering() {
     let directory = TestDirectory::new();
     let path = directory.0.join("license.json");
-    let policy = LicensePolicy::new(false, Some(PUBLIC_KEY.to_owned()));
+    let policy = LicensePolicy::new(true, Some(PUBLIC_KEY.to_owned()));
     let repository = FileLicenseRepository::new(&path, policy.clone());
 
     let activated = repository.activate(SIGNED_KEY).unwrap();
@@ -83,6 +84,10 @@ fn signed_license_is_reverified_after_restart_and_rejects_disk_claim_tampering()
             .unwrap(),
         activated
     );
+    assert!(matches!(
+        repository.grant_temporary(),
+        Err(novasight_store::license::LicenseError::TemporaryGrantWouldReplaceActiveLicense)
+    ));
 
     let mut document: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();

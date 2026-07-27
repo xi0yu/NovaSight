@@ -155,7 +155,7 @@ fn assigns_frame_local_candidate_identity_to_primary_detector_objects() {
 }
 
 #[test]
-fn rejects_incomplete_ambiguous_or_lossy_vendor_metadata() {
+fn rejects_incomplete_or_invalid_vendor_metadata() {
     for (snapshot, expected) in [
         (
             {
@@ -168,15 +168,6 @@ fn rejects_incomplete_ambiguous_or_lossy_vendor_metadata() {
         (
             {
                 let mut value = valid_snapshot();
-                value.flags |= FRAME_DETECTIONS_TRUNCATED;
-                value.truncated_count = 2;
-                value
-            },
-            AdmissionError::Truncated { omitted: 2 },
-        ),
-        (
-            {
-                let mut value = valid_snapshot();
                 value.invalid_object_count = 1;
                 value
             },
@@ -185,6 +176,18 @@ fn rejects_incomplete_ambiguous_or_lossy_vendor_metadata() {
     ] {
         assert_eq!(admit_snapshot(&snapshot, context()), Err(expected));
     }
+}
+
+#[test]
+fn admits_retained_detections_and_reports_vendor_truncation() {
+    let mut snapshot = valid_snapshot();
+    snapshot.flags |= FRAME_DETECTIONS_TRUNCATED;
+    snapshot.truncated_count = 2;
+
+    let admitted = admit_snapshot(&snapshot, context()).expect("admit retained detections");
+
+    assert_eq!(admitted.batch().detections().len(), 1);
+    assert_eq!(admitted.truncated_detections(), 2);
 }
 
 #[test]

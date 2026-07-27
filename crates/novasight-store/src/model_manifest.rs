@@ -185,7 +185,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decoder_matches_python_defaults() {
+    fn decoder_matches_runtime_defaults() {
         let manifest: ModelManifest = serde_json::from_str(
             r#"{
                 "model_id":"detector",
@@ -195,7 +195,7 @@ mod tests {
                 "output":{"name":"output0","shape":[1,84,8400],"dtype":"float32"}
             }"#,
         )
-        .expect("Python-compatible manifest");
+        .expect("valid runtime manifest");
 
         assert_eq!(manifest.schema_version, 1);
         assert_eq!(manifest.runtime.backend, "custom_tensorrt");
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(manifest.input.layout, "NCHW");
         assert_eq!(manifest.output.layout, "NCHW");
         assert!(manifest.output.scores_are_sigmoid);
-        assert_eq!(manifest.postprocess.max_detections, 300);
+        assert_eq!(manifest.postprocess.max_detections, 256);
     }
 
     #[test]

@@ -19,7 +19,7 @@
 - Test: `tests/test_runtime_api.py`
 
 - [x] Add structured license status fields: configured, valid, tier, features, created_at, activated_at, expires_at, duration.
-- [x] Accept `NOVASIGHT-TEST-MAX-ACCESS-2026` as a max-permission test key.
+- [x] Retire the shared fixed test key; Rust debug builds now issue short-lived grants through `POST /api/license/temporary`.
 - [x] Add middleware that returns 401 for protected API and websocket paths when no valid license exists.
 - [x] Keep `/healthz`, `/api/license`, `/api/license/activate`, and `/api/config/schema` open.
 

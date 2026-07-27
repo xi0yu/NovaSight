@@ -794,12 +794,18 @@ mod tests {
         let shutdown_started = Instant::now();
         device.disconnect().unwrap();
         assert!(shutdown_started.elapsed() < Duration::from_millis(250));
+        let reconnect_error = device
+            .trigger_active()
+            .expect_err("button polling after disconnect must attempt a fresh connection");
         assert!(
-            device
-                .trigger_active()
-                .unwrap_err()
-                .to_string()
-                .contains("not connected")
+            matches!(
+                reconnect_error,
+                AppError::PointerDevice {
+                    code: "driver_timeout" | "driver_protocol_failed",
+                    ..
+                }
+            ),
+            "automatic reconnect must report the real transport failure: {reconnect_error}"
         );
     }
 }

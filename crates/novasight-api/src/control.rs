@@ -130,6 +130,7 @@ pub fn build_control_router_with_platform_queries(
                 .delete(clear_license),
         )
         .route("/api/license/activate", post(activate_license))
+        .route("/api/license/temporary", post(grant_temporary_license))
         .route("/api/runtime/state", get(legacy_status))
         .route("/api/runtime/start", post(legacy_start))
         .route("/api/runtime/stop", post(legacy_stop))
@@ -230,6 +231,15 @@ struct LicenseActivationRequest {
     key: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct TemporaryLicenseRequest {}
+
+#[derive(Debug, Serialize)]
+struct TemporaryLicenseResponse {
+    granted: bool,
+    status: LicenseStatus,
+}
+
 async fn license_status(
     State(state): State<ControlState>,
 ) -> Result<Json<LicenseStatus>, ControlApiError> {
@@ -263,6 +273,54 @@ async fn activate_license(
     );
     stop_if_license_disallows_runtime(&state, &status).await?;
     Ok(Json(status))
+}
+
+async fn grant_temporary_license(
+    State(state): State<ControlState>,
+    Json(_request): Json<TemporaryLicenseRequest>,
+) -> Result<Json<TemporaryLicenseResponse>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let license = state
+        .license
+        .as_ref()
+        .ok_or(ControlApiError::LicenseUnavailable)?;
+    let (granted, status) = tokio::task::spawn_blocking({
+        let repository = license.clone();
+        move || match repository.grant_temporary() {
+            Ok(status) => Ok((true, status)),
+            Err(error)
+                if matches!(
+                    error,
+                    LicenseError::TemporaryGrantDisabled
+                        | LicenseError::TemporaryGrantWouldReplaceActiveLicense
+                ) =>
+            {
+                let mut status = repository.status()?;
+                status.message = error.to_string();
+                Ok((false, status))
+            }
+            Err(error) => Err(error),
+        }
+    })
+    .await
+    .map_err(ControlApiError::LicenseTask)?
+    .map_err(ControlApiError::License)?;
+    if granted {
+        tracing::info!(
+            tier = %status.tier,
+            expires_at = status.expires_at,
+            "temporary license request granted"
+        );
+    } else {
+        tracing::warn!(
+            configured = status.configured,
+            valid = status.valid,
+            reason = %status.message,
+            "temporary license request rejected"
+        );
+    }
+    stop_if_license_disallows_runtime(&state, &status).await?;
+    Ok(Json(TemporaryLicenseResponse { granted, status }))
 }
 
 async fn clear_license(
@@ -412,8 +470,9 @@ fn is_runtime_start(method: &Method, path: &str) -> bool {
 fn is_license_open_path(method: &Method, path: &str) -> bool {
     *method == Method::OPTIONS
         || path == "/healthz"
-        || (path == "/api/license" && matches!(*method, Method::GET | Method::PUT))
+        || (path == "/api/license" && matches!(*method, Method::GET | Method::PUT | Method::DELETE))
         || (path == "/api/license/activate" && *method == Method::POST)
+        || (path == "/api/license/temporary" && *method == Method::POST)
         || path == "/ws/status"
         || path == "/api/config/schema"
         || (*method == Method::POST

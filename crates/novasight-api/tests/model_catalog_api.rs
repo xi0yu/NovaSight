@@ -459,8 +459,8 @@ async fn publish_while_stopped_preflights_and_commits_without_starting_runtime()
     assert_eq!(body["deployment"]["artifact_id"], 1);
     assert_eq!(body["report"]["applied"], true);
     assert_eq!(body["report"]["rolled_back"], false);
-    assert_eq!(body["inference"]["selected"], "deepstream_nvinfer");
-    assert_eq!(body["report"]["backend"], "deepstream_nvinfer");
+    assert_eq!(body["inference"]["selected"], "unconfigured");
+    assert_eq!(body["report"]["backend"], "unconfigured");
     assert_eq!(
         runtime.snapshot().pipeline.state,
         novasight_runtime::PipelineState::Stopped

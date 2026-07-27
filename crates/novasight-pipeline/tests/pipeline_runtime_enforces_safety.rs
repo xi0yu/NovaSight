@@ -376,7 +376,8 @@ fn external_stop_signal_blocks_device_output_even_after_gate_open() {
 #[test]
 fn paused_output_keeps_control_hot_and_reopen_requires_a_new_generation() {
     let epoch = RuntimeEpoch(34);
-    let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
+    let clock = Arc::new(FixedClock::new(1_008_000_000));
+    let daemon_clock: Arc<dyn Clock> = clock.clone();
     let device = Arc::new(RecordingPointerDevice::default());
     let pointer: Arc<dyn PointerDevice> = device.clone();
     let (mut runtime, ingress) = PipelineRuntime::start(
@@ -384,12 +385,21 @@ fn paused_output_keeps_control_hot_and_reopen_requires_a_new_generation() {
             epoch,
             ..PipelineConfig::default()
         },
-        clock,
+        daemon_clock,
         pointer,
     )
     .unwrap();
+    let timed_batch = |generation, captured_at_ns| {
+        DetectionBatch::new(
+            FrameStamp::new(epoch, generation, captured_at_ns),
+            640,
+            640,
+            vec![Detection::new(41, 0, 380.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection")],
+        )
+        .expect("valid batch")
+    };
     ingress.set_trigger_active(true);
-    ingress.submit(batch(epoch, 1)).unwrap();
+    ingress.submit(timed_batch(1, 1_000_000_000)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(1);
     while device.receipts().is_empty() && Instant::now() < deadline {
         thread::yield_now();
@@ -402,7 +412,8 @@ fn paused_output_keeps_control_hot_and_reopen_requires_a_new_generation() {
         ingress.trigger_active(),
         "pausing output must not stop control calculation"
     );
-    ingress.submit(batch(epoch, 2)).unwrap();
+    clock.0.store(1_012_000_000, Ordering::Release);
+    ingress.submit(timed_batch(2, 1_004_000_000)).unwrap();
     thread::sleep(Duration::from_millis(20));
     assert_eq!(device.receipts().len(), 1);
 
@@ -413,14 +424,26 @@ fn paused_output_keeps_control_hot_and_reopen_requires_a_new_generation() {
         1,
         "a command calculated while paused must not leak after resume"
     );
-    ingress.submit(batch(epoch, 3)).unwrap();
+    // The first post-resume sample establishes the current measurement
+    // cadence. Its capture still predates the point where the previous device
+    // move could be visible, so feedback gating must reject it as well.
+    clock.0.store(1_038_000_000, Ordering::Release);
+    ingress.submit(timed_batch(3, 1_030_000_000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.metrics().control_decisions < 3 && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(device.receipts().len(), 1);
+
+    clock.0.store(1_047_000_000, Ordering::Release);
+    ingress.submit(timed_batch(4, 1_039_000_000)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(1);
     while device.receipts().len() == 1 && Instant::now() < deadline {
         thread::yield_now();
     }
     let receipts = device.receipts();
     assert_eq!(receipts.len(), 2);
-    assert_eq!(receipts[1].generation, 3);
+    assert_eq!(receipts[1].generation, 4);
     runtime.shutdown().unwrap();
 }
 

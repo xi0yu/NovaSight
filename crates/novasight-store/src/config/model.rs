@@ -1990,7 +1990,14 @@ mod tests {
         );
         assert!(parse_target_class_filter("").is_err());
         assert!(parse_target_class_filter("0,0").is_err());
-        assert!(parse_target_class_filter("256").is_err());
+        assert_eq!(
+            parse_target_class_filter("256")
+                .unwrap()
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![256]
+        );
     }
 
     #[test]

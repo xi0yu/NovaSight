@@ -11,7 +11,6 @@ use novasight_store::license::{FileLicenseRepository, LicensePolicy};
 use serde_json::Value;
 use tower::ServiceExt;
 
-const TEST_KEY: &str = "NOVASIGHT-TEST-MAX-ACCESS-2026";
 const PUBLIC_KEY: &str = include_str!("../../../testdata/license-public.pem");
 const SIGNED_KEY: &str = include_str!("../../../testdata/license-signed.key");
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -74,8 +73,9 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
     assert_eq!(body["configured"], false);
     assert_eq!(body["valid"], false);
 
-    let (status, _) = json_response(app.clone(), "DELETE", "/api/license", Body::empty()).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = json_response(app.clone(), "DELETE", "/api/license", Body::empty()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["configured"], false);
 
     let cors_response = app
         .clone()
@@ -109,14 +109,15 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
 
     let (status, body) = json_response(
         app.clone(),
-        "PUT",
-        "/api/license",
-        Body::from(format!(r#"{{"key":"{TEST_KEY}"}}"#)),
+        "POST",
+        "/api/license/temporary",
+        Body::from("{}"),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["valid"], true);
-    assert_eq!(body["tier"], "test_max");
+    assert_eq!(body["granted"], true);
+    assert_eq!(body["status"]["valid"], true);
+    assert_eq!(body["status"]["tier"], "temporary");
 
     let (status, body) =
         json_response(app.clone(), "POST", "/api/runtime/start", Body::empty()).await;
@@ -132,6 +133,33 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["running"], false);
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
+
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+}
+
+#[tokio::test]
+async fn temporary_license_policy_rejection_is_an_explicit_business_response() {
+    let directory = TestDirectory::new();
+    let license = FileLicenseRepository::new(
+        directory.0.join("license.json"),
+        LicensePolicy::new(false, None),
+    );
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app =
+        build_control_router_with_control_plane(runtime.clone(), None, license, None, false, None);
+
+    let (status, body) =
+        json_response(app, "POST", "/api/license/temporary", Body::from("{}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["granted"], false);
+    assert_eq!(body["status"]["valid"], false);
+    assert!(
+        body["status"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("disabled by policy")
+    );
 
     runtime.shutdown_daemon().await.unwrap();
     supervisor.join().await.unwrap();

@@ -17,8 +17,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-const TEST_LICENSE_KEY: &str = "NOVASIGHT-TEST-MAX-ACCESS-2026";
-const TEST_LICENSE_CREATED_AT: f64 = 1_783_036_800.0;
+const TEMPORARY_LICENSE_DURATION_DAYS: u64 = 1;
+const TEMPORARY_LICENSE_ID_PREFIX: &str = "temporary-development";
+const TEMPORARY_LICENSE_TIER: &str = "temporary";
 const SECONDS_PER_YEAR: f64 = 365.0 * 24.0 * 60.0 * 60.0;
 const ALL_FEATURES: [&str; 7] = [
     "capture",
@@ -30,17 +31,18 @@ const ALL_FEATURES: [&str; 7] = [
     "config_write",
 ];
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+static NEXT_TEMPORARY_LICENSE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct LicensePolicy {
-    allow_test_keys: bool,
+    allow_temporary_grants: bool,
     public_key_pem: Option<String>,
 }
 
 impl LicensePolicy {
-    pub fn new(allow_test_keys: bool, public_key_pem: Option<String>) -> Self {
+    pub fn new(allow_temporary_grants: bool, public_key_pem: Option<String>) -> Self {
         Self {
-            allow_test_keys,
+            allow_temporary_grants,
             public_key_pem,
         }
     }
@@ -140,55 +142,77 @@ impl FileLicenseRepository {
         }
         let _lock = self.lock(true)?;
         let now = now_seconds()?;
-        let document = if key == TEST_LICENSE_KEY {
-            if !self.policy.allow_test_keys {
-                return Err(LicenseError::TestKeyDisabled);
+        let (claims, payload, signature) = verify_signed_key(
+            key,
+            self.policy
+                .public_key_pem
+                .as_deref()
+                .ok_or(LicenseError::PublicKeyMissing)?,
+        )?;
+        let key_hash = sha256_hex(key.as_bytes());
+        let expires_at = expiration(
+            claims.created_at,
+            claims.duration.value,
+            &claims.duration.unit,
+        )?;
+        let document = PersistedLicense {
+            schema_version: 2,
+            fingerprint: key_hash.chars().take(12).collect(),
+            key_hash,
+            license_id: claims.license_id,
+            tier: claims.tier,
+            features: claims.features,
+            created_at: claims.created_at,
+            activated_at: now,
+            duration_value: claims.duration.value,
+            duration_unit: claims.duration.unit,
+            expires_at,
+            updated_at: now,
+            verification: Verification::RsaPkcs1v15Sha256 { payload, signature },
+        };
+        self.write_document(&document)?;
+        self.status_from_document(document, now)
+    }
+
+    /// Persist a short-lived development grant without accepting a shared
+    /// secret. The daemon policy exposes this only in debug builds.
+    pub fn grant_temporary(&self) -> Result<LicenseStatus, LicenseError> {
+        if !self.policy.allow_temporary_grants {
+            return Err(LicenseError::TemporaryGrantDisabled);
+        }
+        let _lock = self.lock(true)?;
+        let now = now_seconds()?;
+        let current = self.read_status(now)?;
+        if current.valid {
+            if current.tier == TEMPORARY_LICENSE_TIER
+                && current
+                    .license_id
+                    .starts_with(&format!("{TEMPORARY_LICENSE_ID_PREFIX}-"))
+            {
+                return Ok(current);
             }
-            let key_hash = sha256_hex(key.as_bytes());
-            PersistedLicense {
-                schema_version: 2,
-                fingerprint: key_hash.chars().take(12).collect(),
-                key_hash,
-                license_id: "test-max-access".to_owned(),
-                tier: "test_max".to_owned(),
-                features: ALL_FEATURES.iter().map(ToString::to_string).collect(),
-                created_at: TEST_LICENSE_CREATED_AT,
-                activated_at: now,
-                duration_value: 10,
-                duration_unit: "years".to_owned(),
-                expires_at: expiration(TEST_LICENSE_CREATED_AT, 10, "years")?,
-                updated_at: now,
-                verification: Verification::BuiltInTest,
-            }
-        } else {
-            let (claims, payload, signature) = verify_signed_key(
-                key,
-                self.policy
-                    .public_key_pem
-                    .as_deref()
-                    .ok_or(LicenseError::PublicKeyMissing)?,
-            )?;
-            let key_hash = sha256_hex(key.as_bytes());
-            let expires_at = expiration(
-                claims.created_at,
-                claims.duration.value,
-                &claims.duration.unit,
-            )?;
-            PersistedLicense {
-                schema_version: 2,
-                fingerprint: key_hash.chars().take(12).collect(),
-                key_hash,
-                license_id: claims.license_id,
-                tier: claims.tier,
-                features: claims.features,
-                created_at: claims.created_at,
-                activated_at: now,
-                duration_value: claims.duration.value,
-                duration_unit: claims.duration.unit,
-                expires_at,
-                updated_at: now,
-                verification: Verification::RsaPkcs1v15Sha256 { payload, signature },
-            }
+            return Err(LicenseError::TemporaryGrantWouldReplaceActiveLicense);
+        }
+        let sequence = NEXT_TEMPORARY_LICENSE.fetch_add(1, Ordering::Relaxed);
+        let license_id = format!(
+            "{TEMPORARY_LICENSE_ID_PREFIX}-{}-{sequence}",
+            (now * 1000.0).round() as u64
+        );
+        let key_hash = temporary_grant_hash(&license_id, now);
+        let document = PersistedLicense {
+            schema_version: 2,
+            fingerprint: key_hash.chars().take(12).collect(),
+            key_hash,
+            license_id,
+            tier: TEMPORARY_LICENSE_TIER.to_owned(),
+            features: ALL_FEATURES.iter().map(ToString::to_string).collect(),
+            created_at: now,
+            activated_at: now,
+            duration_value: TEMPORARY_LICENSE_DURATION_DAYS,
+            duration_unit: "days".to_owned(),
+            expires_at: expiration(now, TEMPORARY_LICENSE_DURATION_DAYS, "days")?,
+            updated_at: now,
+            verification: Verification::TemporaryDevelopment,
         };
         self.write_document(&document)?;
         self.status_from_document(document, now)
@@ -253,25 +277,32 @@ impl FileLicenseRepository {
             return Err(LicenseError::UnsupportedSchema(document.schema_version));
         }
         match &document.verification {
-            Verification::BuiltInTest if self.policy.allow_test_keys => {
-                if document.key_hash != sha256_hex(TEST_LICENSE_KEY.as_bytes())
-                    || document.license_id != "test-max-access"
-                    || document.tier != "test_max"
+            Verification::TemporaryDevelopment if self.policy.allow_temporary_grants => {
+                if document.key_hash
+                    != temporary_grant_hash(&document.license_id, document.created_at)
+                    || !document
+                        .license_id
+                        .starts_with(&format!("{TEMPORARY_LICENSE_ID_PREFIX}-"))
+                    || document.tier != TEMPORARY_LICENSE_TIER
                     || document.features
                         != ALL_FEATURES
                             .iter()
                             .map(ToString::to_string)
                             .collect::<Vec<_>>()
-                    || document.created_at != TEST_LICENSE_CREATED_AT
-                    || document.duration_value != 10
-                    || document.duration_unit != "years"
+                    || document.activated_at != document.created_at
+                    || document.updated_at != document.created_at
+                    || document.created_at > now
+                    || document.duration_value != TEMPORARY_LICENSE_DURATION_DAYS
+                    || document.duration_unit != "days"
                 {
                     return Err(LicenseError::VerificationFailed(
-                        "built-in test license claims were modified".to_owned(),
+                        "temporary development license claims were modified".to_owned(),
                     ));
                 }
             }
-            Verification::BuiltInTest => return Err(LicenseError::TestKeyDisabled),
+            Verification::TemporaryDevelopment => {
+                return Err(LicenseError::TemporaryGrantDisabled);
+            }
             Verification::RsaPkcs1v15Sha256 { payload, signature } => {
                 let key = format!("NS1.{payload}.{signature}");
                 let (claims, _, _) = verify_signed_key(
@@ -464,8 +495,12 @@ impl LegacyLicense {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Verification {
-    BuiltInTest,
+    TemporaryDevelopment,
     RsaPkcs1v15Sha256 { payload: String, signature: String },
+}
+
+fn temporary_grant_hash(license_id: &str, created_at: f64) -> String {
+    sha256_hex(format!("{license_id}:{}", created_at.to_bits()).as_bytes())
 }
 
 #[derive(Debug, Deserialize)]
@@ -619,8 +654,10 @@ fn sync_parent(path: &Path) -> Result<(), LicenseError> {
 pub enum LicenseError {
     #[error("invalid license key: {0}")]
     InvalidKey(String),
-    #[error("built-in test licenses are disabled by policy")]
-    TestKeyDisabled,
+    #[error("temporary licenses are disabled by policy")]
+    TemporaryGrantDisabled,
+    #[error("an active signed license must be cleared before requesting a temporary license")]
+    TemporaryGrantWouldReplaceActiveLicense,
     #[error("NOVASIGHT_LICENSE_PUBLIC_KEY is required for signed licenses")]
     PublicKeyMissing,
     #[error("configured license public key is invalid: {0}")]
@@ -656,7 +693,8 @@ impl LicenseError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::InvalidKey(_) => "LICENSE_KEY_INVALID",
-            Self::TestKeyDisabled => "LICENSE_TEST_KEY_DISABLED",
+            Self::TemporaryGrantDisabled => "LICENSE_TEMPORARY_DISABLED",
+            Self::TemporaryGrantWouldReplaceActiveLicense => "LICENSE_ACTIVE_CREDENTIAL_PRESENT",
             Self::PublicKeyMissing => "LICENSE_PUBLIC_KEY_MISSING",
             Self::PublicKeyInvalid(_) => "LICENSE_PUBLIC_KEY_INVALID",
             Self::VerificationFailed(_) => "LICENSE_VERIFICATION_FAILED",
@@ -673,7 +711,8 @@ impl LicenseError {
         matches!(
             self,
             Self::InvalidKey(_)
-                | Self::TestKeyDisabled
+                | Self::TemporaryGrantDisabled
+                | Self::TemporaryGrantWouldReplaceActiveLicense
                 | Self::VerificationFailed(_)
                 | Self::UnsupportedDuration(_)
         )
@@ -695,7 +734,7 @@ impl LicenseError {
         matches!(
             self,
             Self::InvalidKey(_)
-                | Self::TestKeyDisabled
+                | Self::TemporaryGrantDisabled
                 | Self::VerificationFailed(_)
                 | Self::UnsupportedDuration(_)
                 | Self::UnsupportedSchema(_)

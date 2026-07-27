@@ -11,7 +11,7 @@ use novasight_core::{
 };
 use novasight_pipeline::{
     PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionMetrics, PerceptionSession,
-    PipelineConfig, PipelineIngress, PipelineStatus,
+    PipelineConfig, PipelineIngress, PipelineStatus, TriggerMode,
 };
 use novasight_runtime::{PipelineState, RuntimeDependencies, RuntimeErrorKind, RuntimeSupervisor};
 
@@ -326,6 +326,7 @@ async fn recoverable_device_outage_is_degraded_until_hardware_recovers() {
         pointer,
         PipelineConfig {
             trigger_poll_interval_ms: Some(1),
+            trigger_mode: TriggerMode::Hardware,
             ..PipelineConfig::default()
         },
     );
