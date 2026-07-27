@@ -416,7 +416,7 @@ fn model_ingress_refuses_to_mutate_a_deployed_artifact() {
         catalog.commit_model_ingress(ModelIngressCatalogUpdate {
             artifact_id: 6,
             status: "pending".to_owned(),
-            checksum: sibling_checksum,
+            checksum: sibling_checksum.clone(),
             classes: Some(vec!["changed".to_owned()]),
             input_shape: Some("1x3x320x320".to_owned()),
         }),
@@ -425,6 +425,17 @@ fn model_ingress_refuses_to_mutate_a_deployed_artifact() {
             deployed_artifact_id: 3
         })
     ));
+
+    let safe_sibling_update = catalog
+        .commit_model_ingress(ModelIngressCatalogUpdate {
+            artifact_id: 6,
+            status: "pending".to_owned(),
+            checksum: sibling_checksum,
+            classes: Some(vec!["person".to_owned(), "car".to_owned()]),
+            input_shape: Some("1x3x640x640".to_owned()),
+        })
+        .expect("a non-deployed sibling with unchanged version metadata is mutable");
+    assert_eq!(safe_sibling_update.artifact.status, "pending");
 }
 
 #[test]

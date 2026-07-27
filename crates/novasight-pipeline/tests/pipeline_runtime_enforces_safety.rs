@@ -303,13 +303,13 @@ fn hardware_trigger_poller_owns_production_output_gate() {
 }
 
 #[test]
-fn hardware_button_state_is_preserved_in_pipeline_metrics() {
+fn hardware_button_state_is_monitored_even_while_trigger_mode_is_always() {
     let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
     let device: Arc<dyn PointerDevice> = Arc::new(RightButtonDevice::default());
     let (mut runtime, _ingress) = PipelineRuntime::start(
         PipelineConfig {
             trigger_poll_interval_ms: Some(1),
-            trigger_mode: TriggerMode::Hardware,
+            trigger_mode: TriggerMode::Always,
             ..PipelineConfig::default()
         },
         clock,

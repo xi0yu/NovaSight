@@ -106,14 +106,12 @@ struct DeviceWorkerConfig {
     max_command_age_ns: u64,
     output_interval_ms: u64,
     recoil: RecoilConfig,
-    trigger_mode: TriggerMode,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct ControlWorkerConfig {
     epoch: RuntimeEpoch,
     control: DualPhaseConfig,
-    trigger_mode: TriggerMode,
     actuation_feedback_delay_ns: u64,
 }
 
@@ -329,6 +327,7 @@ struct SharedState {
     status: AtomicU8,
     output_gate: AtomicBool,
     output_gate_min_generation: AtomicU64,
+    hardware_trigger_required: AtomicBool,
     trigger_active: AtomicBool,
     buttons_available: AtomicBool,
     button_left: AtomicBool,
@@ -350,6 +349,7 @@ impl SharedState {
         event_tx: SyncSender<PipelineEvent>,
         external_stop: Arc<AtomicUsize>,
         device_connected: bool,
+        trigger_mode: TriggerMode,
     ) -> Self {
         let metrics = AtomicMetrics {
             vision: Mutex::new(VisionTelemetry {
@@ -370,6 +370,7 @@ impl SharedState {
             status: AtomicU8::new(STATUS_STARTING),
             output_gate: AtomicBool::new(false),
             output_gate_min_generation: AtomicU64::new(0),
+            hardware_trigger_required: AtomicBool::new(trigger_mode == TriggerMode::Hardware),
             trigger_active: AtomicBool::new(false),
             buttons_available: AtomicBool::new(false),
             button_left: AtomicBool::new(false),
@@ -635,6 +636,37 @@ impl PipelineIngress {
         }
     }
 
+    /// Change the current epoch's activation policy without rebuilding the
+    /// capture or inference pipeline. Entering hardware mode retires any
+    /// in-flight unconditional command before returning.
+    pub fn set_trigger_mode(&self, mode: TriggerMode) {
+        let hardware_required = mode == TriggerMode::Hardware;
+        self.shared
+            .hardware_trigger_required
+            .store(hardware_required, Ordering::Release);
+        if hardware_required {
+            drop(
+                self.shared
+                    .device_lane
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            self.shared.clear_control_telemetry();
+        }
+    }
+
+    pub fn trigger_mode(&self) -> TriggerMode {
+        if self
+            .shared
+            .hardware_trigger_required
+            .load(Ordering::Acquire)
+        {
+            TriggerMode::Hardware
+        } else {
+            TriggerMode::Always
+        }
+    }
+
     pub fn trigger_active(&self) -> bool {
         self.shared.trigger_active.load(Ordering::Acquire)
     }
@@ -851,6 +883,7 @@ impl PipelineRuntime {
             event_tx,
             external_stop,
             initial_device_error.is_none(),
+            config.trigger_mode,
         ));
         if let Some(error) = &initial_device_error {
             // Capture and inference remain useful while a commissioned output
@@ -882,7 +915,6 @@ impl PipelineRuntime {
             ControlWorkerConfig {
                 epoch: config.epoch,
                 control: config.control,
-                trigger_mode: config.trigger_mode,
                 actuation_feedback_delay_ns: config.actuation_feedback_delay_ns,
             },
         ) {
@@ -905,7 +937,6 @@ impl PipelineRuntime {
                 max_command_age_ns: config.max_command_age_ns,
                 output_interval_ms: config.output_interval_ms,
                 recoil: config.recoil,
-                trigger_mode: config.trigger_mode,
             },
         ) {
             Ok(handle) => handle,
@@ -917,12 +948,7 @@ impl PipelineRuntime {
         };
         workers.push(device_handle);
 
-        let needs_hardware_buttons =
-            config.trigger_mode == TriggerMode::Hardware || config.recoil.enabled;
-        if let Some(interval_ms) = config
-            .trigger_poll_interval_ms
-            .filter(|_| needs_hardware_buttons)
-        {
+        if let Some(interval_ms) = config.trigger_poll_interval_ms {
             let trigger_handle =
                 match spawn_trigger_worker(Arc::clone(&shared), Arc::clone(&device), interval_ms) {
                     Ok(handle) => handle,
@@ -1351,7 +1377,7 @@ fn spawn_control_worker(
                     }
                     let control_now_ns = clock.now().0;
                     let target_id = target.target_id.unwrap_or(0);
-                    let trigger_active = config.trigger_mode == TriggerMode::Always
+                    let trigger_active = !shared.hardware_trigger_required.load(Ordering::Acquire)
                         || shared.trigger_active.load(Ordering::Acquire);
                     let observation = ControlObservation {
                         generation: target.stamp.generation.0,
@@ -1506,7 +1532,7 @@ fn spawn_device_worker(
                     if !shared.device_connection_enabled.load(Ordering::Acquire) {
                         continue;
                     }
-                    if config.trigger_mode == TriggerMode::Hardware
+                    if shared.hardware_trigger_required.load(Ordering::Acquire)
                         && !shared.trigger_active.load(Ordering::Acquire)
                     {
                         continue;
@@ -1573,7 +1599,7 @@ fn spawn_device_worker(
                             .fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
-                    if config.trigger_mode == TriggerMode::Hardware
+                    if shared.hardware_trigger_required.load(Ordering::Acquire)
                         && !shared.trigger_active.load(Ordering::Acquire)
                     {
                         continue;

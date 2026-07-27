@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use axum::{
     body::{Body, to_bytes},
@@ -14,7 +15,8 @@ use novasight_api::{
 };
 use novasight_core::{
     CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError, Clock,
-    MonotonicNanos, PointerDevice, RecordingPointerDevice, UncommissionedPointerDevice,
+    Detection, DetectionBatch, FrameStamp, MonotonicNanos, PointerDevice, RecordingPointerDevice,
+    UncommissionedPointerDevice,
 };
 use novasight_pipeline::PipelineConfig;
 use novasight_runtime::{
@@ -249,6 +251,94 @@ async fn output_gate_config_is_persisted_and_applied_without_runtime_restart() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert!(runtime.snapshot().pipeline_metrics.output_gate_open);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn trigger_mode_config_is_applied_to_the_running_pipeline_without_restart() {
+    #[derive(Debug)]
+    struct FixedClock;
+
+    impl Clock for FixedClock {
+        fn now(&self) -> MonotonicNanos {
+            MonotonicNanos(1_008_000_000)
+        }
+    }
+
+    fn batch(epoch: novasight_core::RuntimeEpoch, generation: u64) -> DetectionBatch {
+        DetectionBatch::new(
+            FrameStamp::new(epoch, generation, 1_000_000_000 + generation),
+            640,
+            640,
+            vec![
+                Detection::new(generation, 0, 380.0, 330.0, 40.0, 40.0, 0.95)
+                    .expect("valid detection"),
+            ],
+        )
+        .expect("valid batch")
+    }
+
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(
+        &path,
+        commissioned_config(0, true).replace(
+            "control:\n  output_enabled: true",
+            "control:\n  output_enabled: true\n  trigger_mode: always",
+        ),
+    )
+    .unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let dependencies =
+        RuntimeDependencies::new(Arc::new(FixedClock), pointer, PipelineConfig::default())
+            .with_output_enabled(true);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn(dependencies);
+    let started = runtime.start().await.unwrap();
+    let app = build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"control","key":"trigger_mode","value":"hardware"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["config"]["control"]["trigger_mode"], "hardware");
+    assert_eq!(body["applied"], true);
+    assert_eq!(body["restart_required"], false);
+    assert_eq!(config.effective_revision(), 1);
+
+    let epoch = started.pipeline.epoch.unwrap();
+    runtime.submit_detection_batch(batch(epoch, 1)).unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(device.receipts().is_empty());
+
+    let restarted = runtime.restart().await.unwrap();
+    let epoch = restarted.pipeline.epoch.unwrap();
+    runtime.submit_detection_batch(batch(epoch, 2)).unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(device.receipts().is_empty());
+
+    runtime.set_trigger_active(true).await.unwrap();
+    runtime.submit_detection_batch(batch(epoch, 3)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(device.receipts().len(), 1);
 
     shutdown(supervisor, &runtime).await;
 }

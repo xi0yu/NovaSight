@@ -20,7 +20,7 @@ use crate::model_activation::{
 use crate::model_ingress::{ModelIngressError, ModelIngressRequest, ModelIngressResult};
 use crate::snapshot::RuntimeSnapshot;
 use crate::supervisor::UrgentStopToken;
-use novasight_pipeline::PreviewSnapshot;
+use novasight_pipeline::{PreviewSnapshot, TriggerMode};
 
 #[derive(Debug)]
 pub(crate) enum RuntimeCommand {
@@ -53,7 +53,16 @@ pub(crate) enum RuntimeCommand {
         active: bool,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
+    SetTriggerMode {
+        mode: TriggerMode,
+        reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
     UpdateOutputConfig {
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+        reply: oneshot::Sender<Result<ConfigUpdate, ConfigServiceError>>,
+    },
+    UpdateTriggerModeConfig {
         service: ConfigService,
         update: ConfigFieldUpdate,
         reply: oneshot::Sender<Result<ConfigUpdate, ConfigServiceError>>,

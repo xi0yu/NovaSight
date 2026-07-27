@@ -654,7 +654,17 @@ impl SqliteModelCatalog {
             )
             .optional()
             .map_err(ModelCatalogError::Sqlite)?;
-        if let Some(deployed_artifact_id) = deployed_artifact {
+        let changes_shared_version_metadata = update
+            .classes
+            .as_ref()
+            .is_some_and(|classes| classes != &artifact.version.classes)
+            || update
+                .input_shape
+                .as_ref()
+                .is_some_and(|input_shape| input_shape != &artifact.version.input_shape);
+        if let Some(deployed_artifact_id) = deployed_artifact
+            && (deployed_artifact_id == update.artifact_id || changes_shared_version_metadata)
+        {
             return Err(ModelCatalogError::VersionCurrentlyDeployed {
                 version_id: artifact.version.id,
                 deployed_artifact_id,

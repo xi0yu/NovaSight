@@ -64,7 +64,7 @@ pipeline:
 control:
   output_enabled: true
   # always: 有效目标即可输出；hardware: 仅在设备按钮按下时输出。
-  trigger_mode: always
+  trigger_mode: hardware
   recoil:
     enabled: false
     base_rate_counts_s: 0.0

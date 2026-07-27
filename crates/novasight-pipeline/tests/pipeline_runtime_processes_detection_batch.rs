@@ -293,7 +293,7 @@ fn detection_telemetry_is_bounded_without_dropping_the_runtime_batch() {
 }
 
 #[test]
-fn pipeline_output_is_closed_until_trigger_is_explicitly_active() {
+fn pipeline_hot_trigger_mode_blocks_until_trigger_is_explicitly_active() {
     let epoch = RuntimeEpoch(8);
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
     let device = Arc::new(RecordingPointerDevice::default());
@@ -301,13 +301,16 @@ fn pipeline_output_is_closed_until_trigger_is_explicitly_active() {
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            trigger_mode: TriggerMode::Hardware,
+            trigger_mode: TriggerMode::Always,
             ..PipelineConfig::default()
         },
         clock,
         pointer,
     )
     .expect("pipeline starts");
+    assert_eq!(ingress.trigger_mode(), TriggerMode::Always);
+    ingress.set_trigger_mode(TriggerMode::Hardware);
+    assert_eq!(ingress.trigger_mode(), TriggerMode::Hardware);
     let detection = Detection::new(42, 0, 380.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection");
     ingress
         .submit(
@@ -324,6 +327,26 @@ fn pipeline_output_is_closed_until_trigger_is_explicitly_active() {
     thread::sleep(Duration::from_millis(20));
     assert!(device.receipts().is_empty());
     assert_eq!(runtime.metrics().blocked_decisions, 1);
+
+    ingress.set_trigger_active(true);
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 2, 1_000_000_001),
+                640,
+                640,
+                vec![
+                    Detection::new(42, 0, 380.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection"),
+                ],
+            )
+            .expect("valid batch"),
+        )
+        .expect("pipeline accepts triggered batch");
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && std::time::Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(device.receipts().len(), 1);
     runtime.shutdown().expect("workers join");
 }
 

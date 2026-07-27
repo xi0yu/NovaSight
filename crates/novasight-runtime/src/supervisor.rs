@@ -20,8 +20,9 @@ use novasight_pipeline::{
     CrosshairHub, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate, PerceptionAdapter,
     PerceptionEvent, PerceptionMetrics, PerceptionModelContract, PerceptionRuntimeContract,
     PerceptionSession, PipelineConfig, PipelineEvent, PipelineIngress, PipelineMetrics,
-    PipelineRuntime, PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription,
+    PipelineRuntime, PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription, TriggerMode,
 };
+use novasight_store::config::TriggerMode as ConfigTriggerMode;
 use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, SqliteModelCatalog};
 use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 
@@ -94,6 +95,7 @@ pub struct RuntimeDependencies {
     clock: Arc<dyn Clock>,
     device: Arc<dyn PointerDevice>,
     pipeline: PipelineConfig,
+    hardware_trigger_required: AtomicBool,
     model_geometry: std::sync::RwLock<Option<ModelGeometry>>,
     perception: Option<Arc<dyn PerceptionAdapter>>,
     model_catalog: Option<SqliteModelCatalog>,
@@ -142,10 +144,12 @@ impl RuntimeDependencies {
             roi_width: pipeline.control.roi_width,
             roi_height: pipeline.control.roi_height,
         };
+        let hardware_trigger_required = pipeline.trigger_mode == TriggerMode::Hardware;
         Self {
             clock,
             device,
             pipeline,
+            hardware_trigger_required: AtomicBool::new(hardware_trigger_required),
             model_geometry: std::sync::RwLock::new(Some(model_geometry)),
             perception: None,
             model_catalog: None,
@@ -198,6 +202,7 @@ impl RuntimeDependencies {
             epoch,
             ..self.pipeline.clone()
         };
+        pipeline.trigger_mode = self.trigger_mode();
         if let Some(geometry) = self.model_geometry() {
             pipeline.control.source_width = geometry.source_width;
             pipeline.control.roi_width = geometry.roi_width;
@@ -211,6 +216,19 @@ impl RuntimeDependencies {
             }
         }
         pipeline
+    }
+
+    fn trigger_mode(&self) -> TriggerMode {
+        if self.hardware_trigger_required.load(Ordering::Acquire) {
+            TriggerMode::Hardware
+        } else {
+            TriggerMode::Always
+        }
+    }
+
+    fn set_trigger_mode(&self, mode: TriggerMode) {
+        self.hardware_trigger_required
+            .store(mode == TriggerMode::Hardware, Ordering::Release);
     }
 
     fn model_geometry(&self) -> Option<ModelGeometry> {
@@ -841,6 +859,20 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::supervisor_reply_lost())?
     }
 
+    pub async fn set_trigger_mode(&self, mode: TriggerMode) -> Result<(), RuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::SetTriggerMode {
+                mode,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
     pub(crate) async fn update_output_config(
         &self,
         service: ConfigService,
@@ -849,6 +881,25 @@ impl RuntimeHandle {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx
             .send(RuntimeCommand::UpdateOutputConfig {
+                service,
+                update,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
+    }
+
+    pub(crate) async fn update_trigger_mode_config(
+        &self,
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::UpdateTriggerModeConfig {
                 service,
                 update,
                 reply: reply_tx,
@@ -1285,6 +1336,11 @@ async fn handle_command(
             }
             let _ = reply.send(result);
         }
+        RuntimeCommand::SetTriggerMode { mode, reply } => {
+            let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
+            let result = install_trigger_mode(ingress, dependencies, mode).await;
+            let _ = reply.send(result);
+        }
         RuntimeCommand::UpdateOutputConfig {
             service,
             update,
@@ -1342,6 +1398,16 @@ async fn handle_command(
                 },
                 Err(error) => Err(error),
             };
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::UpdateTriggerModeConfig {
+            service,
+            update,
+            reply,
+        } => {
+            let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
+            let result =
+                update_trigger_mode_config_state(service, update, ingress, dependencies).await;
             let _ = reply.send(result);
         }
         RuntimeCommand::SetPreviewActive {
@@ -2429,6 +2495,65 @@ async fn set_trigger_state(ingress: PipelineIngress, requested: bool) -> Result<
         .map_err(|error| {
             RuntimeError::pipeline_rejected(format!("trigger transition task failed: {error}"))
         })
+}
+
+async fn install_trigger_mode(
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+    mode: TriggerMode,
+) -> Result<(), RuntimeError> {
+    if let Some(ingress) = ingress {
+        tokio::task::spawn_blocking(move || ingress.set_trigger_mode(mode))
+            .await
+            .map_err(|error| {
+                RuntimeError::pipeline_rejected(format!(
+                    "trigger mode transition task failed: {error}"
+                ))
+            })?;
+    }
+    dependencies.set_trigger_mode(mode);
+    Ok(())
+}
+
+async fn update_trigger_mode_config_state(
+    service: ConfigService,
+    update: ConfigFieldUpdate,
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ConfigUpdate, ConfigServiceError> {
+    let config_mode = ConfigService::trigger_mode_value(&update)?;
+    let mode = match config_mode {
+        ConfigTriggerMode::Always => TriggerMode::Always,
+        ConfigTriggerMode::Hardware => TriggerMode::Hardware,
+    };
+    let previous = dependencies.trigger_mode();
+
+    // Moving into hardware-gated mode is safety-monotonic: close the live
+    // path before waiting on disk. Moving back to always is enabled only after
+    // the matching configuration has been persisted.
+    if mode == TriggerMode::Hardware {
+        install_trigger_mode(ingress.clone(), dependencies, mode)
+            .await
+            .map_err(ConfigServiceError::Runtime)?;
+    }
+    let transaction = match service.persist_trigger_mode(update, config_mode).await {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            if mode == TriggerMode::Hardware
+                && let Err(revert) =
+                    install_trigger_mode(ingress.clone(), dependencies, previous).await
+            {
+                return Err(ConfigServiceError::Runtime(revert));
+            }
+            return Err(error);
+        }
+    };
+    if mode == TriggerMode::Always {
+        install_trigger_mode(ingress, dependencies, mode)
+            .await
+            .map_err(ConfigServiceError::Runtime)?;
+    }
+    Ok(transaction.commit())
 }
 
 async fn set_device_connection(

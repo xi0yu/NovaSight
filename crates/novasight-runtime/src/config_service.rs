@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use novasight_core::SelectedCaptureProfile;
 use novasight_store::config::{
-    AppConfig, CapturePreference, ConfigError, ConfigRepository, YamlConfigRepository,
+    AppConfig, CapturePreference, ConfigError, ConfigRepository, TriggerMode as ConfigTriggerMode,
+    YamlConfigRepository,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -75,6 +76,47 @@ impl PersistedOutputGate<'_> {
                 "output gate persisted and applied to the live runtime".to_owned()
             } else {
                 "output gate applied live; other configuration remains pending daemon restart"
+                    .to_owned()
+            },
+        }
+    }
+}
+
+pub(crate) struct PersistedTriggerMode<'a> {
+    _update_guard: MutexGuard<'a, ()>,
+    current_guard: RwLockWriteGuard<'a, AppConfig>,
+    effective_revision: &'a AtomicU64,
+    effective_config: &'a std::sync::RwLock<AppConfig>,
+    config: AppConfig,
+    advance_effective_revision: bool,
+}
+
+impl PersistedTriggerMode<'_> {
+    pub(crate) fn commit(mut self) -> ConfigUpdate {
+        *self.current_guard = self.config.clone();
+        if self.advance_effective_revision {
+            *self
+                .effective_config
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.config.clone();
+            self.effective_revision
+                .store(self.config.revision, Ordering::Release);
+        } else {
+            self.effective_config
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .control
+                .trigger_mode = self.config.control.trigger_mode;
+        }
+        ConfigUpdate {
+            config: self.config,
+            restart_required: !self.advance_effective_revision,
+            applied: true,
+            rolled_back: false,
+            message: if self.advance_effective_revision {
+                "trigger mode persisted and applied to the live runtime".to_owned()
+            } else {
+                "trigger mode applied live; other configuration remains pending daemon restart"
                     .to_owned()
             },
         }
@@ -272,8 +314,9 @@ impl ConfigService {
         update: ConfigFieldUpdate,
     ) -> Result<ConfigUpdate, ConfigServiceError> {
         let _update_guard = self.inner.update_lock.lock().await;
-        let hot_output_gate = update.section == "control" && update.key == "output_enabled";
-        if hot_output_gate {
+        let coordinated_control_update = update.section == "control"
+            && matches!(update.key.as_str(), "output_enabled" | "trigger_mode");
+        if coordinated_control_update {
             return Err(ConfigServiceError::HotUpdateTransactionRequired);
         }
         let current_revision = self.inner.current.read().await.revision;
@@ -315,6 +358,16 @@ impl ConfigService {
         runtime.update_output_config(self.clone(), update).await
     }
 
+    pub async fn update_trigger_mode(
+        &self,
+        runtime: &RuntimeHandle,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        runtime
+            .update_trigger_mode_config(self.clone(), update)
+            .await
+    }
+
     pub(crate) fn output_gate_value(
         update: &ConfigFieldUpdate,
     ) -> Result<bool, ConfigServiceError> {
@@ -325,6 +378,16 @@ impl ConfigService {
             .value
             .as_bool()
             .ok_or(ConfigServiceError::OutputGateUpdateInvalid)
+    }
+
+    pub(crate) fn trigger_mode_value(
+        update: &ConfigFieldUpdate,
+    ) -> Result<ConfigTriggerMode, ConfigServiceError> {
+        if update.section != "control" || update.key != "trigger_mode" {
+            return Err(ConfigServiceError::TriggerModeUpdateInvalid);
+        }
+        serde_json::from_value(update.value.clone())
+            .map_err(|_| ConfigServiceError::TriggerModeUpdateInvalid)
     }
 
     pub(crate) async fn persist_output_gate(
@@ -411,6 +474,52 @@ impl ConfigService {
         })
     }
 
+    pub(crate) async fn persist_trigger_mode(
+        &self,
+        update: ConfigFieldUpdate,
+        mode: ConfigTriggerMode,
+    ) -> Result<PersistedTriggerMode<'_>, ConfigServiceError> {
+        if Self::trigger_mode_value(&update)? != mode {
+            return Err(ConfigServiceError::TriggerModeUpdateInvalid);
+        }
+        let _update_guard = self.inner.update_lock.lock().await;
+        let current_guard = self.inner.current.write().await;
+        let current = current_guard.clone();
+        let effective_revision = self.effective_revision();
+        let advance_effective_revision = current.revision == effective_revision;
+        let expected_revision = update.expected_revision.unwrap_or(current.revision);
+        if expected_revision != current.revision {
+            return Err(ConfigError::RevisionConflict {
+                path: self.inner.repository.path().to_owned(),
+                expected: expected_revision,
+                actual: current.revision,
+            }
+            .into());
+        }
+
+        let mut candidate = current;
+        candidate.control.trigger_mode = mode;
+        candidate
+            .validate_configured_adapters()
+            .map_err(ConfigServiceError::TriggerModeValidation)?;
+        let repository = self.inner.repository.clone();
+        let config = tokio::task::spawn_blocking(move || {
+            repository.save_config(&candidate, expected_revision)
+        })
+        .await
+        .map_err(ConfigServiceError::SaveTask)
+        .and_then(|result| result.map_err(ConfigServiceError::Config))?;
+
+        Ok(PersistedTriggerMode {
+            _update_guard,
+            current_guard,
+            effective_revision: &self.inner.effective_revision,
+            effective_config: &self.inner.effective_config,
+            config,
+            advance_effective_revision,
+        })
+    }
+
     pub(crate) fn mark_output_gate_diverged(&self) {
         self.inner
             .output_gate_consistent
@@ -483,7 +592,13 @@ pub enum ConfigServiceError {
     OutputGateUpdateInvalid,
     #[error("output gate update is incompatible with the current configuration: {0}")]
     OutputGateValidation(novasight_store::config::ConfigValidationError),
-    #[error("control.output_enabled requires the coordinated runtime configuration transaction")]
+    #[error("trigger mode update must target control.trigger_mode with always or hardware")]
+    TriggerModeUpdateInvalid,
+    #[error("trigger mode update is incompatible with the current configuration: {0}")]
+    TriggerModeValidation(novasight_store::config::ConfigValidationError),
+    #[error(
+        "control.output_enabled and control.trigger_mode require the coordinated runtime configuration transaction"
+    )]
     HotUpdateTransactionRequired,
     #[error(
         "physical output was disabled, but the matching configuration could not be persisted: {source}"
@@ -519,6 +634,8 @@ impl ConfigServiceError {
             Self::CaptureValidation(_) => "CAPTURE_PROFILE_INVALID",
             Self::OutputGateUpdateInvalid => "CONFIG_FIELD_VALUE_INVALID",
             Self::OutputGateValidation(_) => "CONFIG_VALIDATION_ERROR",
+            Self::TriggerModeUpdateInvalid => "CONFIG_FIELD_VALUE_INVALID",
+            Self::TriggerModeValidation(_) => "CONFIG_VALIDATION_ERROR",
             Self::HotUpdateTransactionRequired => "CONFIG_HOT_UPDATE_TRANSACTION_REQUIRED",
             Self::OutputGateDisabledButNotPersisted { .. } => {
                 "CONFIG_OUTPUT_GATE_DISABLED_NOT_PERSISTED"

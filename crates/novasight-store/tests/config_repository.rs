@@ -52,6 +52,7 @@ fn loads_the_single_project_runtime_config() {
     assert_eq!(config.replay.frame_interval_ms, 16);
     assert!(!config.replay.output_gate_open);
     assert!(config.control.output_enabled);
+    assert_eq!(config.control.trigger_mode, TriggerMode::Hardware);
     let adapters = config.require_production_adapters().unwrap();
     assert_eq!(adapters.capture.appsink_max_buffers, 1);
     assert_eq!(adapters.inference.deepstream_component_id, 1);
