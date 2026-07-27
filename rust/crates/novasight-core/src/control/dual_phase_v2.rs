@@ -1,16 +1,10 @@
 //! Rust-owned dual-phase atan feedback controller.
 //!
-//! This implements the production semantics of
-//! ``novasight.control.algorithms.dual_phase_atan_robust_predictive_v2``:
-//! the measured error is projected into device counts and compressed by the
-//! FAR/NEAR atan response. Motion-prediction types remain compatibility
-//! machinery, but production configuration disables them and skips estimator
-//! work.
+//! The measured error is projected into device counts and compressed by the
+//! FAR/NEAR atan response. Optional two-axis target prediction is owned by the
+//! dedicated `prediction` module.
 //!
-//! * `dx`/`dy` are integer mouse counts the device should emit. We do
-//!   not promise 1:1 floating-point parity with the Python telemetry;
-//!   instead we pin the integer outcome and the contract edges that
-//!   the runtime actually depends on.
+//! * `dx`/`dy` are integer mouse counts the device should emit.
 //! * `emit_allowed` is `true` only when the algorithm produced an
 //!   emit-eligible decision. Triggers and target validity gate the
 //!   state machine; stale or non-monotonic observations are rejected
@@ -228,6 +222,16 @@ pub struct ControlDecision {
     pub prediction_weighted_offset_x: f64,
     pub prediction_allowed_cap_x: f64,
     pub prediction_allowed: bool,
+    pub motion_confidence_y: f64,
+    pub velocity_samples_y: [Option<f64>; 3],
+    pub median_velocity_y: Option<f64>,
+    pub velocity_spread_y: Option<f64>,
+    pub measurement_dt_ms_y: Option<f64>,
+    pub reference_dt_ms_y: f64,
+    pub prediction_raw_offset_y: f64,
+    pub prediction_weighted_offset_y: f64,
+    pub prediction_allowed_cap_y: f64,
+    pub prediction_allowed_y: bool,
     pub observed_error_x: f64,
     pub observed_error_y: f64,
     pub filtered_error_x: f64,
@@ -287,6 +291,16 @@ impl ControlDecision {
             prediction_weighted_offset_x: 0.0,
             prediction_allowed_cap_x: 0.0,
             prediction_allowed: false,
+            motion_confidence_y: 0.0,
+            velocity_samples_y: [None; 3],
+            median_velocity_y: None,
+            velocity_spread_y: None,
+            measurement_dt_ms_y: None,
+            reference_dt_ms_y: 0.0,
+            prediction_raw_offset_y: 0.0,
+            prediction_weighted_offset_y: 0.0,
+            prediction_allowed_cap_y: 0.0,
+            prediction_allowed_y: false,
             observed_error_x: 0.0,
             observed_error_y: 0.0,
             filtered_error_x: 0.0,
@@ -594,6 +608,7 @@ impl DualPhaseControl {
         let prediction = if capture_timestamp_discontinuity {
             self.prediction.unavailable(
                 error_x,
+                error_y,
                 match mode {
                     ControlMode::Far => PredictionRange::Far,
                     ControlMode::Near => PredictionRange::Near,
@@ -603,7 +618,9 @@ impl DualPhaseControl {
             self.prediction.predict(FocusTargetObservation {
                 track_id: observation.target_id,
                 aim_x,
+                aim_y,
                 measured_error_x: error_x,
+                measured_error_y: error_y,
                 capture_ts_ns: observation.capture_ts_ns,
                 detection_confidence: observation.detection_confidence,
                 identity_confidence: observation.track_confidence,
@@ -613,9 +630,8 @@ impl DualPhaseControl {
                 },
             })
         };
-        let predicted_offset_x = prediction.safe_offset_x;
-        // The authoritative Python robust predictor intentionally predicts X only.
-        let predicted_offset_y = 0.0;
+        let predicted_offset_x = prediction.x.safe_offset;
+        let predicted_offset_y = prediction.y.safe_offset;
         let filtered_error_x = error_x + predicted_offset_x;
         let filtered_error_y = error_y + predicted_offset_y;
         let Some((mut base_x, mut base_y, full_x, full_y, max_counts_per_axis)) =
@@ -718,22 +734,32 @@ impl DualPhaseControl {
             quantizer_residual_x: self.quantizer_x.accumulator,
             quantizer_residual_y: self.quantizer_y.accumulator,
             mode,
-            velocity_x: prediction.velocity_x,
-            velocity_y: 0.0,
+            velocity_x: prediction.x.velocity,
+            velocity_y: prediction.y.velocity,
             predicted_offset_x,
             predicted_offset_y,
-            motion_confidence: prediction.motion_confidence,
+            motion_confidence: prediction.x.motion_confidence,
             history_position_count: prediction.history_position_count,
-            velocity_samples: prediction.velocity_samples,
-            median_velocity: prediction.median_velocity,
-            velocity_spread: prediction.velocity_spread,
-            measurement_dt_ms: prediction.measurement_dt_ms,
-            reference_dt_ms: prediction.reference_dt_ms,
+            velocity_samples: prediction.x.velocity_samples,
+            median_velocity: prediction.x.median_velocity,
+            velocity_spread: prediction.x.velocity_spread,
+            measurement_dt_ms: prediction.x.measurement_dt_ms,
+            reference_dt_ms: prediction.x.reference_dt_ms,
             prediction_lead_frames: prediction.lead_frames,
-            prediction_raw_offset_x: prediction.raw_offset_x,
-            prediction_weighted_offset_x: prediction.weighted_offset_x,
-            prediction_allowed_cap_x: prediction.allowed_cap_x,
-            prediction_allowed: prediction.allowed,
+            prediction_raw_offset_x: prediction.x.raw_offset,
+            prediction_weighted_offset_x: prediction.x.weighted_offset,
+            prediction_allowed_cap_x: prediction.x.allowed_cap,
+            prediction_allowed: prediction.x.allowed,
+            motion_confidence_y: prediction.y.motion_confidence,
+            velocity_samples_y: prediction.y.velocity_samples,
+            median_velocity_y: prediction.y.median_velocity,
+            velocity_spread_y: prediction.y.velocity_spread,
+            measurement_dt_ms_y: prediction.y.measurement_dt_ms,
+            reference_dt_ms_y: prediction.y.reference_dt_ms,
+            prediction_raw_offset_y: prediction.y.raw_offset,
+            prediction_weighted_offset_y: prediction.y.weighted_offset,
+            prediction_allowed_cap_y: prediction.y.allowed_cap,
+            prediction_allowed_y: prediction.y.allowed,
             observed_error_x: error_x,
             observed_error_y: error_y,
             filtered_error_x,
@@ -863,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn confidence_weighted_prediction_matches_python_far_cap() {
+    fn confidence_weighted_prediction_respects_far_cap() {
         let config = DualPhaseConfig {
             prediction_enabled: true,
             prediction_lead_frames: 2.0,
@@ -874,7 +900,10 @@ mod tests {
         };
         let mut control = DualPhaseControl::new(config);
         let mut decision = None;
-        for (index, error_x) in [40.0, 44.0, 48.0, 52.0].into_iter().enumerate() {
+        for (index, (error_x, error_y)) in [(40.0, 20.0), (44.0, 22.0), (48.0, 24.0), (52.0, 26.0)]
+            .into_iter()
+            .enumerate()
+        {
             let generation = index as u64 + 1;
             let capture_ts_ns = 1_000_000_000 + generation * 10_000_000;
             decision = Some(control.calculate(ControlObservation {
@@ -885,7 +914,7 @@ mod tests {
                 inference_end_ts_ns: capture_ts_ns + 4_000_000,
                 control_now_ns: capture_ts_ns + 8_000_000,
                 aim_x: 160.0 + error_x,
-                aim_y: 160.0,
+                aim_y: 160.0 + error_y,
                 crosshair_x: 160.0,
                 crosshair_y: 160.0,
                 detection_confidence: 0.95,
@@ -906,6 +935,10 @@ mod tests {
         assert!(decision.prediction_allowed);
         assert!((decision.predicted_offset_x - 2.6).abs() < 1e-12);
         assert!((decision.filtered_error_x - 54.6).abs() < 1e-12);
+        assert!((decision.velocity_y - 0.2).abs() < 1e-12);
+        assert!(decision.prediction_allowed_y);
+        assert!(decision.predicted_offset_y > 0.0);
+        assert!(decision.filtered_error_y > 26.0);
         assert!(decision.full_error_counts_x.is_finite());
         assert!(decision.float_demand_x.is_finite());
     }

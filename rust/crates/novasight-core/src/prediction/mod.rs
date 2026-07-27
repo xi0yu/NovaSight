@@ -68,7 +68,9 @@ impl SingleTargetPredictionConfig {
 pub struct FocusTargetObservation {
     pub track_id: u64,
     pub aim_x: f64,
+    pub aim_y: f64,
     pub measured_error_x: f64,
+    pub measured_error_y: f64,
     pub capture_ts_ns: u64,
     pub detection_confidence: f64,
     pub identity_confidence: f64,
@@ -76,21 +78,27 @@ pub struct FocusTargetObservation {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SingleTargetPrediction {
-    pub velocity_x: f64,
+pub struct AxisPrediction {
+    pub velocity: f64,
     pub motion_confidence: f64,
-    pub history_position_count: usize,
     pub velocity_samples: [Option<f64>; 3],
     pub median_velocity: Option<f64>,
     pub velocity_spread: Option<f64>,
     pub measurement_dt_ms: Option<f64>,
     pub reference_dt_ms: f64,
-    pub lead_frames: f64,
-    pub raw_offset_x: f64,
-    pub weighted_offset_x: f64,
-    pub allowed_cap_x: f64,
-    pub safe_offset_x: f64,
+    pub raw_offset: f64,
+    pub weighted_offset: f64,
+    pub allowed_cap: f64,
+    pub safe_offset: f64,
     pub allowed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SingleTargetPrediction {
+    pub x: AxisPrediction,
+    pub y: AxisPrediction,
+    pub history_position_count: usize,
+    pub lead_frames: f64,
 }
 
 /// Stateful, bounded predictor for the one target selected upstream.
@@ -98,12 +106,14 @@ pub struct SingleTargetPrediction {
 pub struct SingleTargetPredictor {
     config: SingleTargetPredictionConfig,
     velocity_x: RobustVelocityEstimator,
+    velocity_y: RobustVelocityEstimator,
 }
 
 impl SingleTargetPredictor {
     pub fn new(config: SingleTargetPredictionConfig) -> Self {
         Self {
             velocity_x: RobustVelocityEstimator::new(config),
+            velocity_y: RobustVelocityEstimator::new(config),
             config,
         }
     }
@@ -114,6 +124,7 @@ impl SingleTargetPredictor {
 
     pub fn reset(&mut self, track_id: Option<u64>) {
         self.velocity_x.reset(track_id);
+        self.velocity_y.reset(track_id);
     }
 
     /// Return the configured prediction envelope without advancing history.
@@ -121,15 +132,23 @@ impl SingleTargetPredictor {
     pub fn unavailable(
         &self,
         measured_error_x: f64,
+        measured_error_y: f64,
         range: PredictionRange,
     ) -> SingleTargetPrediction {
         if !self.config.enabled {
             return SingleTargetPrediction::default();
         }
         SingleTargetPrediction {
+            x: AxisPrediction {
+                allowed_cap: self.allowed_cap(measured_error_x, range),
+                ..AxisPrediction::default()
+            },
+            y: AxisPrediction {
+                allowed_cap: self.allowed_cap(measured_error_y, range),
+                ..AxisPrediction::default()
+            },
             history_position_count: self.velocity_x.history_position_count(),
             lead_frames: self.config.lead_frames,
-            allowed_cap_x: self.allowed_cap(measured_error_x, range),
             ..SingleTargetPrediction::default()
         }
     }
@@ -138,18 +157,57 @@ impl SingleTargetPredictor {
         if !self.config.enabled {
             return SingleTargetPrediction::default();
         }
+        if !observation.aim_x.is_finite()
+            || !observation.aim_y.is_finite()
+            || observation.capture_ts_ns == 0
+        {
+            return self.unavailable(
+                observation.measured_error_x,
+                observation.measured_error_y,
+                observation.range,
+            );
+        }
 
-        let estimate = self.velocity_x.update(
+        let estimate_x = self.velocity_x.update(
             observation.track_id,
             observation.aim_x,
             observation.capture_ts_ns,
             observation.detection_confidence,
             observation.identity_confidence,
         );
-        let Some(estimate) = estimate else {
-            return self.unavailable(observation.measured_error_x, observation.range);
+        let estimate_y = self.velocity_y.update(
+            observation.track_id,
+            observation.aim_y,
+            observation.capture_ts_ns,
+            observation.detection_confidence,
+            observation.identity_confidence,
+        );
+        let (Some(estimate_x), Some(estimate_y)) = (estimate_x, estimate_y) else {
+            return self.unavailable(
+                observation.measured_error_x,
+                observation.measured_error_y,
+                observation.range,
+            );
         };
+        debug_assert_eq!(
+            self.velocity_x.history_position_count(),
+            self.velocity_y.history_position_count()
+        );
 
+        SingleTargetPrediction {
+            x: self.axis_prediction(estimate_x, observation.measured_error_x, observation.range),
+            y: self.axis_prediction(estimate_y, observation.measured_error_y, observation.range),
+            history_position_count: self.velocity_x.history_position_count(),
+            lead_frames: self.config.lead_frames,
+        }
+    }
+
+    fn axis_prediction(
+        &self,
+        estimate: VelocityEstimate,
+        measured_error: f64,
+        range: PredictionRange,
+    ) -> AxisPrediction {
         let allowed = estimate.reference_dt_ms.is_finite()
             && estimate.reference_dt_ms > 0.0
             && self.config.lead_frames > 0.0;
@@ -158,26 +216,23 @@ impl SingleTargetPredictor {
         } else {
             0.0
         };
-        let raw_offset_x = estimate.filtered_velocity
+        let raw_offset = estimate.filtered_velocity
             * estimate.reference_dt_ms.max(0.0)
             * self.config.lead_frames;
-        let allowed_cap_x = self.allowed_cap(observation.measured_error_x, observation.range);
-        let weighted_offset_x = raw_offset_x * confidence;
-
-        SingleTargetPrediction {
-            velocity_x: estimate.filtered_velocity,
+        let allowed_cap = self.allowed_cap(measured_error, range);
+        let weighted_offset = raw_offset * confidence;
+        AxisPrediction {
+            velocity: estimate.filtered_velocity,
             motion_confidence: estimate.motion_confidence,
-            history_position_count: self.velocity_x.history_position_count(),
             velocity_samples: estimate.raw_velocities.map(Some),
             median_velocity: Some(estimate.median_velocity),
             velocity_spread: Some(estimate.spread),
             measurement_dt_ms: Some(estimate.measurement_dt_ms),
             reference_dt_ms: estimate.reference_dt_ms,
-            lead_frames: self.config.lead_frames,
-            raw_offset_x,
-            weighted_offset_x,
-            allowed_cap_x,
-            safe_offset_x: weighted_offset_x.clamp(-allowed_cap_x, allowed_cap_x),
+            raw_offset,
+            weighted_offset,
+            allowed_cap,
+            safe_offset: weighted_offset.clamp(-allowed_cap, allowed_cap),
             allowed,
         }
     }
@@ -378,11 +433,13 @@ mod tests {
         }
     }
 
-    fn observation(index: u64, aim_x: f64) -> FocusTargetObservation {
+    fn observation(index: u64, aim_x: f64, aim_y: f64) -> FocusTargetObservation {
         FocusTargetObservation {
             track_id: 1,
             aim_x,
+            aim_y,
             measured_error_x: aim_x - 100.0,
+            measured_error_y: aim_y - 100.0,
             capture_ts_ns: 1_000_000_000 + index * 10_000_000,
             detection_confidence: 1.0,
             identity_confidence: 1.0,
@@ -395,16 +452,22 @@ mod tests {
         let mut predictor = SingleTargetPredictor::new(config());
         let mut prediction = Default::default();
         for (index, position) in [100.0, 102.0, 160.0, 106.0].into_iter().enumerate() {
-            prediction = predictor.predict(observation(index as u64, position));
+            prediction = predictor.predict(observation(
+                index as u64,
+                position,
+                200.0 + index as f64 * 3.0,
+            ));
         }
         assert_eq!(
-            prediction.velocity_samples,
+            prediction.x.velocity_samples,
             [Some(0.2), Some(5.8), Some(-5.4)]
         );
-        assert!((prediction.median_velocity.expect("median") - 0.2).abs() < 1e-12);
-        assert!((prediction.velocity_x - 0.2).abs() < 1e-12);
-        assert!((prediction.velocity_spread.expect("spread") - 5.6).abs() < 1e-12);
-        assert!(prediction.motion_confidence < 0.05);
+        assert!((prediction.x.median_velocity.expect("median") - 0.2).abs() < 1e-12);
+        assert!((prediction.x.velocity - 0.2).abs() < 1e-12);
+        assert!((prediction.x.velocity_spread.expect("spread") - 5.6).abs() < 1e-12);
+        assert!(prediction.x.motion_confidence < 0.05);
+        assert!((prediction.y.velocity - 0.3).abs() < 1e-12);
+        assert!(prediction.y.safe_offset > 0.0);
     }
 
     #[test]
@@ -412,11 +475,17 @@ mod tests {
         let mut predictor = SingleTargetPredictor::new(config());
         let mut prediction = Default::default();
         for elapsed_ms in [0_u64, 8, 20, 29] {
-            let mut sample = observation(0, 100.0 + 0.5 * elapsed_ms as f64);
+            let mut sample = observation(
+                0,
+                100.0 + 0.5 * elapsed_ms as f64,
+                100.0 - 0.25 * elapsed_ms as f64,
+            );
             sample.capture_ts_ns = 1_000_000_000 + elapsed_ms * 1_000_000;
             prediction = predictor.predict(sample);
         }
-        assert_eq!(prediction.velocity_samples, [Some(0.5); 3]);
-        assert!((prediction.reference_dt_ms - 29.0 / 3.0).abs() < 1e-12);
+        assert_eq!(prediction.x.velocity_samples, [Some(0.5); 3]);
+        assert_eq!(prediction.y.velocity_samples, [Some(-0.25); 3]);
+        assert!((prediction.x.reference_dt_ms - 29.0 / 3.0).abs() < 1e-12);
+        assert!((prediction.y.reference_dt_ms - 29.0 / 3.0).abs() < 1e-12);
     }
 }

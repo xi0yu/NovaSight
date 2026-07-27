@@ -465,6 +465,20 @@ pub(crate) struct ControlPipelineState {
     pub prediction_allowed_cap_x: Option<f64>,
     pub prediction_safe_offset_x: Option<f64>,
     pub prediction_allowed: Option<bool>,
+    pub velocity_y_1: Option<f64>,
+    pub velocity_y_2: Option<f64>,
+    pub velocity_y_3: Option<f64>,
+    pub median_velocity_y: Option<f64>,
+    pub filtered_velocity_y: Option<f64>,
+    pub velocity_spread_y: Option<f64>,
+    pub motion_confidence_y: Option<f64>,
+    pub measurement_dt_y_s: Option<f64>,
+    pub reference_dt_y_ms: Option<f64>,
+    pub prediction_raw_offset_y: Option<f64>,
+    pub prediction_weighted_offset_y: Option<f64>,
+    pub prediction_allowed_cap_y: Option<f64>,
+    pub prediction_safe_offset_y: Option<f64>,
+    pub prediction_allowed_y: Option<bool>,
     pub observed_error_x_px: Option<f64>,
     pub observed_error_y_px: Option<f64>,
     pub predicted_error_x_px: Option<f64>,
@@ -1035,6 +1049,28 @@ impl CompatibilityRuntimeState {
                         prediction_safe_offset_x: control_sample
                             .then_some(dual_phase.predicted_offset_x),
                         prediction_allowed: control_sample.then_some(dual_phase.prediction_allowed),
+                        velocity_y_1: dual_phase.velocity_samples_y[0],
+                        velocity_y_2: dual_phase.velocity_samples_y[1],
+                        velocity_y_3: dual_phase.velocity_samples_y[2],
+                        median_velocity_y: dual_phase.median_velocity_y,
+                        filtered_velocity_y: control_sample.then_some(dual_phase.velocity_y),
+                        velocity_spread_y: dual_phase.velocity_spread_y,
+                        motion_confidence_y: control_sample
+                            .then_some(dual_phase.motion_confidence_y),
+                        measurement_dt_y_s: dual_phase
+                            .measurement_dt_ms_y
+                            .map(|value| value / 1_000.0),
+                        reference_dt_y_ms: control_sample.then_some(dual_phase.reference_dt_ms_y),
+                        prediction_raw_offset_y: control_sample
+                            .then_some(dual_phase.prediction_raw_offset_y),
+                        prediction_weighted_offset_y: control_sample
+                            .then_some(dual_phase.prediction_weighted_offset_y),
+                        prediction_allowed_cap_y: control_sample
+                            .then_some(dual_phase.prediction_allowed_cap_y),
+                        prediction_safe_offset_y: control_sample
+                            .then_some(dual_phase.predicted_offset_y),
+                        prediction_allowed_y: control_sample
+                            .then_some(dual_phase.prediction_allowed_y),
                         observed_error_x_px: control_sample.then_some(dual_phase.observed_error_x),
                         observed_error_y_px: control_sample.then_some(dual_phase.observed_error_y),
                         predicted_error_x_px: control_sample.then_some(dual_phase.filtered_error_x),
@@ -1384,7 +1420,19 @@ mod tests {
             prediction_weighted_offset_x: 1.6,
             prediction_allowed_cap_x: 3.0,
             prediction_allowed: true,
+            velocity_y: -0.10,
+            motion_confidence_y: 0.75,
+            velocity_samples_y: [Some(-0.08), Some(-0.12), Some(-0.10)],
+            median_velocity_y: Some(-0.10),
+            velocity_spread_y: Some(0.02),
+            measurement_dt_ms_y: Some(8.0),
+            reference_dt_ms_y: 8.1,
+            prediction_raw_offset_y: -0.8,
+            prediction_weighted_offset_y: -0.6,
+            prediction_allowed_cap_y: 1.5,
+            prediction_allowed_y: true,
             predicted_offset_x: 1.6,
+            predicted_offset_y: -0.6,
             observed_error_x: 10.0,
             observed_error_y: -3.0,
             filtered_error_x: 11.6,
@@ -1496,6 +1544,9 @@ mod tests {
         assert_eq!(pipeline["mode"], "NEAR");
         assert_eq!(pipeline["velocity_2"], 0.3);
         assert_eq!(pipeline["prediction_safe_offset_x"], 1.6);
+        assert_eq!(pipeline["filtered_velocity_y"], -0.10);
+        assert_eq!(pipeline["prediction_safe_offset_y"], -0.6);
+        assert_eq!(pipeline["prediction_allowed_y"], true);
         assert_eq!(pipeline["integer_command_x"], 12);
         assert_eq!(pipeline["quantizer_residual_y"], -0.1);
         assert_eq!(pipeline["arrival_settled_x"], true);
