@@ -110,7 +110,6 @@ impl DeviceCountLimiter {
         demand_y: f64,
         limits: DeviceCountLimits,
     ) -> Result<LimitedDeviceCounts, AppError> {
-        let saved = *self;
         let dx = match self.x.limit(demand_x, limits) {
             Ok(value) => value,
             Err(error) => {
@@ -121,7 +120,7 @@ impl DeviceCountLimiter {
         let dy = match self.y.limit(demand_y, limits) {
             Ok(value) => value,
             Err(error) => {
-                *self = saved;
+                self.reset();
                 return Err(error);
             }
         };

@@ -126,7 +126,7 @@ fn quantizer_sign_inversion_round_trip() {
 }
 
 #[test]
-fn per_axis_quantizer_rolls_back_on_partial_failure() {
+fn device_count_limiter_clears_both_axes_on_partial_failure() {
     let mut quantizer = DeviceCountLimiter::new();
     let limits = DeviceCountLimits {
         max_counts_per_axis: 100.0,
@@ -134,11 +134,12 @@ fn per_axis_quantizer_rolls_back_on_partial_failure() {
     };
     let _ = quantizer.limit(0.6, 0.4, limits).expect("first limit");
     let (before_x, before_y) = quantizer.residuals();
+    assert!(before_x != 0.0 || before_y != 0.0);
     let result = quantizer.limit(0.1, f64::NAN, limits);
     assert!(result.is_err());
     let (after_x, after_y) = quantizer.residuals();
-    assert!((before_x - after_x).abs() < 1e-9);
-    assert!((before_y - after_y).abs() < 1e-9);
+    assert_eq!(after_x, 0.0);
+    assert_eq!(after_y, 0.0);
 }
 
 #[test]
