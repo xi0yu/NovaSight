@@ -15,10 +15,10 @@ latest DetectionBatch
 -> shared bbox aim point
 -> frozen crosshair/geometry reference
 -> current measured ROI error
--> FAR / NEAR phase selection
+-> FAR / NEAR transition weight
 -> source/FOV/counts projection
--> counts-domain Atan response
--> per-observation clamp and integer quantizer
+-> continuously blended counts-domain Atan response
+-> device-count limiter and truncating quantizer
 -> capacity-one latest-replace slot
 -> MouseCommandExecutor
 -> at most one move(dx, dy) per output tick
@@ -51,12 +51,18 @@ source_error = e_ctrl * roi_size / observation_size
 theta = atan(source_error / focal_length)
 full_counts = theta * counts_per_360 / (2*pi)
 
-u = kp_phase * atan_scale * atan(full_counts / atan_scale)
-u = clamp(u, -phase_limit, phase_limit)
+u_near = near_kp * atan_scale * atan(full_counts / atan_scale)
+u_far = far_kp * atan_scale * atan(full_counts / atan_scale)
+w_far = smoothstep(distance, 0.75 * near_threshold, 1.25 * near_threshold)
+u = (1 - w_far) * u_near + w_far * u_far
+limit = (1 - w_far) * near_limit + w_far * far_limit
+u = clamp(u, -limit, limit)
 ```
 
-One measured radial-error threshold chooses FAR or NEAR. No velocity estimate,
-position prediction, D term or velocity feed-forward enters `e_ctrl` or `u`.
+The configured radial-error threshold is the center of a continuous transition,
+not a hard mode switch. Outside the 75%-125% transition band, the original
+NEAR or FAR response is unchanged. No velocity estimate, position prediction,
+D term or velocity feed-forward enters `e_ctrl` or `u`.
 The old `predictive_v2` identifier and zero-valued prediction telemetry remain
 only for compatibility.
 
@@ -68,8 +74,10 @@ integer_count = trunc(accumulator)
 accumulator -= integer_count
 ```
 
-Direction changes clear opposite-direction residual. Trigger-inactive or
-blocked observations clear the quantizer and cannot bank historical movement.
+The dedicated limiter owns the per-update count ceiling, integer conversion and
+fractional residual. Direction changes clear opposite-direction residual.
+Trigger-inactive or blocked observations clear the limiter and cannot bank
+historical movement.
 
 The delivery slot retains one complete command. A newer observation replaces
 an older unsent command. Immediately before the device call,
@@ -98,14 +106,14 @@ control:
           max_counts_per_update: 72.0
 ```
 
-The Rust root schema is version 5 and uses `pipeline.prediction_enabled: false`.
+The Rust root schema is version 6 and uses `pipeline.prediction_enabled: false`.
 Both runtimes migrate older configurations to prediction disabled, reject an
 attempt to enable it, and omit prediction/velocity tuning from public schemas.
 
 ## User-Facing Telemetry
 
 The useful control display is limited to selected target/class, measured aim,
-crosshair, current control error, FAR/NEAR phase, projected full counts, Atan
+crosshair, current control error, dominant FAR/NEAR region, projected full counts, Atan
 demand, integer command, delivery state and block reason. Prediction is shown
 only as disabled. Internal compatibility fields are not presented as live
 motion measurements.

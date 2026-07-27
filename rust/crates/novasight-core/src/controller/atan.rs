@@ -1,22 +1,24 @@
 //! Two-phase Atan feedback controller for the selected target.
 //!
-//! The measured error is projected into device counts and compressed by the
-//! FAR/NEAR atan response. Optional two-axis target prediction is owned by the
-//! dedicated `prediction` module.
+//! The measured error is projected into device counts and compressed by one
+//! continuously blended FAR/NEAR Atan response. Optional two-axis target
+//! prediction is owned by the dedicated `prediction` module. Integer device
+//! conversion is owned by the dedicated `limiter` module.
 //!
 //! * `dx`/`dy` are integer mouse counts the device should emit.
 //! * `emit_allowed` is `true` only when the algorithm produced an
 //!   emit-eligible decision. Triggers and target validity gate the
 //!   state machine; stale or non-monotonic observations are rejected
 //!   with a typed `BlockReason`.
-//! * `quantizer_residual` carries fractional demand until it becomes one
-//!   actionable device count. Once the full geometric correction is within
+//! * `quantizer_residual` reports fractional demand retained by the limiter
+//!   until it becomes one actionable device count. Once the full correction is within
 //!   half a count, the current integer position is already the nearest point
 //!   the device can represent and that axis settles instead of limit-cycling.
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::AppError;
+use super::response_curve::{BlendedAtanConfig, ContinuousDemand};
+use crate::limiter::{DeviceCountLimiter, DeviceCountLimits};
 use crate::output::humanized_motion::{HumanizedMotionTelemetry, MotionProfile};
 use crate::prediction::{
     FocusTargetObservation, PredictionRange, SingleTargetPredictionConfig, SingleTargetPredictor,
@@ -328,49 +330,6 @@ impl Default for ControlDecision {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct Quantizer {
-    accumulator: f64,
-}
-
-impl Quantizer {
-    fn new() -> Self {
-        Self { accumulator: 0.0 }
-    }
-
-    fn reset(&mut self) {
-        self.accumulator = 0.0;
-    }
-
-    fn quantize(
-        &mut self,
-        demand: f64,
-        max_counts_per_axis: i32,
-        residual_cap: f64,
-    ) -> Result<i32, AppError> {
-        if !demand.is_finite() {
-            self.reset();
-            return Err(AppError::DeviceCountOutOfRange);
-        }
-        if self.accumulator != 0.0 && demand != 0.0 && self.accumulator * demand < 0.0 {
-            self.reset();
-        }
-        self.accumulator += demand;
-        let counts = self.accumulator.trunc().clamp(
-            -f64::from(max_counts_per_axis),
-            f64::from(max_counts_per_axis),
-        );
-        if !counts.is_finite() || counts < f64::from(i32::MIN) || counts > f64::from(i32::MAX) {
-            self.reset();
-            return Err(AppError::DeviceCountOutOfRange);
-        }
-        let counts_int = counts as i32;
-        self.accumulator -= f64::from(counts_int);
-        self.accumulator = self.accumulator.clamp(-residual_cap, residual_cap);
-        Ok(counts_int)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 struct AxisArrivalState {
     settled: bool,
@@ -435,8 +394,7 @@ impl AxisArrivalState {
 #[derive(Clone, Debug)]
 pub struct DualPhaseControl {
     config: DualPhaseConfig,
-    quantizer_x: Quantizer,
-    quantizer_y: Quantizer,
+    limiter: DeviceCountLimiter,
     last_generation: Option<u64>,
     last_frame_id: Option<u64>,
     last_capture_ts_ns: Option<u64>,
@@ -453,8 +411,7 @@ impl DualPhaseControl {
     pub fn new(config: DualPhaseConfig) -> Self {
         Self {
             config,
-            quantizer_x: Quantizer::new(),
-            quantizer_y: Quantizer::new(),
+            limiter: DeviceCountLimiter::new(),
             last_generation: None,
             last_frame_id: None,
             last_capture_ts_ns: None,
@@ -469,8 +426,7 @@ impl DualPhaseControl {
     }
 
     pub fn reset(&mut self) {
-        self.quantizer_x.reset();
-        self.quantizer_y.reset();
+        self.limiter.reset();
         self.last_generation = None;
         self.last_frame_id = None;
         self.last_capture_ts_ns = None;
@@ -484,8 +440,7 @@ impl DualPhaseControl {
     }
 
     pub fn release_trigger(&mut self) {
-        self.quantizer_x.reset();
-        self.quantizer_y.reset();
+        self.limiter.reset();
         self.arrival_x.reset();
         self.arrival_y.reset();
     }
@@ -593,10 +548,10 @@ impl DualPhaseControl {
         let error_y = aim_y - observation.crosshair_y;
         if self.measured_error_history_valid {
             if crossed_center(self.previous_error_x, error_x) {
-                self.quantizer_x.reset();
+                self.limiter.reset_x();
             }
             if crossed_center(self.previous_error_y, error_y) {
-                self.quantizer_y.reset();
+                self.limiter.reset_y();
             }
         }
         let distance = error_x.hypot(error_y);
@@ -634,8 +589,8 @@ impl DualPhaseControl {
         let predicted_offset_y = prediction.y.safe_offset;
         let filtered_error_x = error_x + predicted_offset_x;
         let filtered_error_y = error_y + predicted_offset_y;
-        let Some((mut base_x, mut base_y, full_x, full_y, max_counts_per_axis)) =
-            self.project_demand(filtered_error_x, filtered_error_y, mode)
+        let Some((mut response, full_x, full_y)) =
+            self.project_demand(filtered_error_x, filtered_error_y, distance)
         else {
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::GeometryInvalid);
@@ -654,41 +609,31 @@ impl DualPhaseControl {
                 .hold(full_y, observation.capture_ts_ns, arrival_enter_counts);
 
         if arrival_hold_x || full_x.abs() <= HALF_DEVICE_COUNT {
-            self.quantizer_x.reset();
-            base_x = 0.0;
+            self.limiter.reset_x();
+            response.x = 0.0;
         }
         if arrival_hold_y || full_y.abs() <= HALF_DEVICE_COUNT {
-            self.quantizer_y.reset();
-            base_y = 0.0;
+            self.limiter.reset_y();
+            response.y = 0.0;
         }
 
-        let maximum = f64::from(max_counts_per_axis);
-        let demand_x = base_x.clamp(-maximum, maximum);
-        let demand_y = base_y.clamp(-maximum, maximum);
+        let demand_x = response.x;
+        let demand_y = response.y;
+        let limits = DeviceCountLimits {
+            max_counts_per_axis: response.limit_counts,
+            residual_cap: self.config.residual_cap,
+        };
 
         let (dx, dy, block_reason) = if observation.trigger_active {
-            let dx = match self.quantizer_x.quantize(
-                demand_x,
-                max_counts_per_axis,
-                self.config.residual_cap,
-            ) {
+            let limited = match self.limiter.limit(demand_x, demand_y, limits) {
                 Ok(value) => value,
                 Err(_) => {
                     self.release_trigger();
                     return ControlDecision::blocked(BlockReason::DemandOutOfRange);
                 }
             };
-            let dy = match self.quantizer_y.quantize(
-                demand_y,
-                max_counts_per_axis,
-                self.config.residual_cap,
-            ) {
-                Ok(value) => value,
-                Err(_) => {
-                    self.release_trigger();
-                    return ControlDecision::blocked(BlockReason::DemandOutOfRange);
-                }
-            };
+            let dx = limited.dx;
+            let dy = limited.dy;
             let reason = if dx == 0 && dy == 0 && (feedback.pending_x || feedback.pending_y) {
                 BlockReason::ActuationFeedbackPending
             } else if dx == 0 && dy == 0 && (arrival_hold_x || arrival_hold_y) {
@@ -712,6 +657,7 @@ impl DualPhaseControl {
         self.previous_error_y = error_y;
         self.measured_error_history_valid = true;
 
+        let (quantizer_residual_x, quantizer_residual_y) = self.limiter.residuals();
         ControlDecision {
             sample_available: true,
             generation: observation.generation,
@@ -731,8 +677,8 @@ impl DualPhaseControl {
             dy,
             emit_allowed: block_reason == BlockReason::None,
             block_reason,
-            quantizer_residual_x: self.quantizer_x.accumulator,
-            quantizer_residual_y: self.quantizer_y.accumulator,
+            quantizer_residual_x,
+            quantizer_residual_y,
             mode,
             velocity_x: prediction.x.velocity,
             velocity_y: prediction.y.velocity,
@@ -784,8 +730,8 @@ impl DualPhaseControl {
         &self,
         error_x: f64,
         error_y: f64,
-        mode: ControlMode,
-    ) -> Option<(f64, f64, f64, f64, i32)> {
+        measured_distance_px: f64,
+    ) -> Option<(ContinuousDemand, f64, f64)> {
         let config = self.config;
         if config.source_width == 0
             || config.roi_width == 0
@@ -816,29 +762,16 @@ impl DualPhaseControl {
         if config.projection_invert_y {
             full_y = -full_y;
         }
-        let (kp, maximum) = match mode {
-            ControlMode::Far => (config.far_kp, config.far_max_counts_per_update),
-            ControlMode::Near => (config.near_kp, config.near_max_counts_per_update),
-        };
-        if !kp.is_finite()
-            || kp < 0.0
-            || !maximum.is_finite()
-            || maximum < 1.0
-            || maximum > f64::from(i16::MAX)
-        {
-            return None;
+        let response = BlendedAtanConfig {
+            near_threshold_px: config.near_threshold_px,
+            scale_counts: config.atan_scale_counts,
+            far_kp: config.far_kp,
+            far_limit_counts: config.far_max_counts_per_update,
+            near_kp: config.near_kp,
+            near_limit_counts: config.near_max_counts_per_update,
         }
-        let demand = |full: f64| {
-            (kp * config.atan_scale_counts * (full / config.atan_scale_counts).atan())
-                .clamp(-maximum, maximum)
-        };
-        Some((
-            demand(full_x),
-            demand(full_y),
-            full_x,
-            full_y,
-            maximum.ceil() as i32,
-        ))
+        .evaluate(measured_distance_px, full_x, full_y)?;
+        Some((response, full_x, full_y))
     }
 }
 
@@ -848,9 +781,7 @@ fn crossed_center(previous: f64, current: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AxisArrivalState, ControlObservation, DualPhaseConfig, DualPhaseControl, Quantizer,
-    };
+    use super::{AxisArrivalState, ControlObservation, DualPhaseConfig, DualPhaseControl};
 
     #[test]
     fn arrival_state_uses_hysteresis_but_never_traps_a_real_departure() {
@@ -875,17 +806,6 @@ mod tests {
         state.hold(2.0, 1_054_000_000, enter);
         assert!(state.settled);
         assert!(!state.hold(9.1, 1_055_000_000, enter));
-    }
-
-    #[test]
-    fn quantizer_truncates_whole_counts_and_carries_only_fractional_residual() {
-        let mut quantizer = Quantizer::new();
-        assert_eq!(quantizer.quantize(80.6, 100, 1.0).unwrap(), 80);
-        assert!((quantizer.accumulator - 0.6).abs() < 1e-9);
-        assert_eq!(quantizer.quantize(0.6, 100, 1.0).unwrap(), 1);
-        assert!((quantizer.accumulator - 0.2).abs() < 1e-9);
-        assert_eq!(quantizer.quantize(-0.6, 100, 1.0).unwrap(), 0);
-        assert!((quantizer.accumulator + 0.6).abs() < 1e-9);
     }
 
     #[test]

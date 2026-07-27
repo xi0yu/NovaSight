@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 pub mod humanized_motion;
 pub mod latest_command;
-pub mod quantizer;
 
 use crate::error::AppError;
 use crate::perception::types::{Generation, MonotonicNanos, RuntimeEpoch};

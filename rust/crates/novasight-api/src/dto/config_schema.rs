@@ -229,7 +229,7 @@ impl ConfigSchemaResponse {
                         ),
                         float(
                             "pipeline.near_threshold_px",
-                            "近目标阈值",
+                            "近远响应过渡中心",
                             0.0,
                             10_000.0,
                             Some("px"),

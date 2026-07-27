@@ -182,8 +182,7 @@ fn rust_feedback_matches_the_python_projection_and_atan_reference() {
 
 #[test]
 fn default_feedback_converges_with_two_frames_of_visual_delay() {
-    let mut config = DualPhaseConfig::default();
-    config.prediction_enabled = false;
+    let config = DualPhaseConfig::default();
     let focal_x =
         (config.source_width as f64 * 0.5) / (config.projection_fov_x_deg.to_radians() * 0.5).tan();
     let observation_px_per_count =

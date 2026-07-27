@@ -149,7 +149,6 @@ impl SingleTargetPredictor {
             },
             history_position_count: self.velocity_x.history_position_count(),
             lead_frames: self.config.lead_frames,
-            ..SingleTargetPrediction::default()
         }
     }
 

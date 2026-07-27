@@ -1,6 +1,6 @@
 //! Phase 2 algorithm microbench. Runs the full Phase 2 pipeline
-//! (FreshnessGate -> Tracker -> TargetingCore -> DualPhaseControl ->
-//! PerAxisQuantizer) for a fixed number of frames and prints a
+//! (FreshnessGate -> Tracker -> TargetingCore -> DualPhaseControl) for a fixed
+//! number of frames and prints a
 //! compact P50/P95/P99 latency table plus allocations per emit.
 //! Invoked via ``cargo bench -p novasight-core --bench
 //! algorithm_replay`` or directly with the underlying ``algorithm_bench``
@@ -11,7 +11,6 @@ use std::time::Instant;
 
 use novasight_core::controller::{ControlObservation, DualPhaseConfig, DualPhaseControl};
 use novasight_core::freshness::{FreshnessPolicy, evaluate as freshness_evaluate};
-use novasight_core::output::quantizer::{PerAxisQuantizer, QuantizerConfig};
 use novasight_core::perception::types::Detection;
 use novasight_core::tracking::{TargetingConfig, TargetingCore};
 use novasight_core::units::Nanoseconds;
@@ -63,7 +62,6 @@ fn main() {
     let policy = FreshnessPolicy::new(55.0).expect("policy");
     let mut tracking = TargetingCore::new(TargetingConfig::default());
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
-    let mut quantizer = PerAxisQuantizer::new(QuantizerConfig::default());
 
     let mut samples: Vec<u128> = Vec::with_capacity(ITERATIONS);
     for _ in 0..ITERATIONS {
@@ -106,12 +104,7 @@ fn main() {
                     target_valid: true,
                     trigger_active: true,
                 };
-                let decision = control.calculate(observation);
-                if decision.emit_allowed {
-                    let _ = quantizer
-                        .quantize(decision.dx as f64, decision.dy as f64)
-                        .expect("quantize");
-                }
+                let _decision = control.calculate(observation);
             }
             samples.push(start.elapsed().as_nanos());
         }

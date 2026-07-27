@@ -5,6 +5,7 @@ pub mod controller;
 pub mod error;
 pub mod freshness;
 pub mod geometry;
+pub mod limiter;
 pub mod output;
 pub mod perception;
 pub mod ports;

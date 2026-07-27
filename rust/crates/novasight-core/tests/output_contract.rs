@@ -1,14 +1,14 @@
 //! Phase 2 output contract tests. Pins the typed behavior of the
-//! `AxisQuantizer` / `PerAxisQuantizer` and `LatestCommandSlot` that
+//! `AxisCountLimiter` / `DeviceCountLimiter` and `LatestCommandSlot` that
 //! the runtime uses to convert a fractional control demand into a
 //! delivery-ready integer command. Every assertion in this file is
 //! anchored to the contract: a stale or wrong-epoch command can
 //! never reach a `PointerDevice`, and the residual carry never
 //! silently truncates sub-count motion.
 
+use novasight_core::limiter::{AxisCountLimiter, DeviceCountLimiter, DeviceCountLimits};
 use novasight_core::output::DeviceCommand;
 use novasight_core::output::latest_command::{LatestCommandSlot, SlotPushError, SlotTakeError};
-use novasight_core::output::quantizer::{AxisQuantizer, PerAxisQuantizer, QuantizerConfig};
 use novasight_core::{
     AppError, Generation, MonotonicNanos, PointerDevice, PointerDeviceMode, RuntimeEpoch,
     UncommissionedPointerDevice,
@@ -63,75 +63,78 @@ fn pointer_device_capability_defaults_to_uncommissioned() {
 
 #[test]
 fn quantizer_clamps_residual_to_cap() {
-    let mut quantizer = AxisQuantizer::new();
-    let config = QuantizerConfig {
-        max_counts_per_axis: 100,
+    let mut quantizer = AxisCountLimiter::new();
+    let limits = DeviceCountLimits {
+        max_counts_per_axis: 100.0,
         residual_cap: 1.0,
     };
-    let first = quantizer.quantize(5.0, config).expect("quantize 5");
+    let first = quantizer.limit(5.0, limits).expect("limit 5");
     assert_eq!(first, 5);
-    assert!(quantizer.accumulator().abs() <= 1.0);
+    assert!(quantizer.residual().abs() <= 1.0);
     // Force saturation by exceeding the per-axis cap.
     for _ in 0..5 {
-        let _ = quantizer.quantize(200.0, config).expect("quantize 200");
+        let _ = quantizer.limit(200.0, limits).expect("limit 200");
     }
-    assert!(quantizer.accumulator().abs() <= 1.0);
-    assert!(quantizer.saturating_attempts() > 0);
+    assert!(quantizer.residual().abs() <= 1.0);
 }
 
 #[test]
 fn quantizer_rejects_nan_and_infinity() {
-    let mut quantizer = AxisQuantizer::new();
-    let config = QuantizerConfig::default();
-    assert!(quantizer.quantize(f64::NAN, config).is_err());
-    assert!(quantizer.quantize(f64::INFINITY, config).is_err());
-    assert!(quantizer.quantize(f64::NEG_INFINITY, config).is_err());
-    assert_eq!(quantizer.rejected_attempts(), 3);
+    let mut quantizer = AxisCountLimiter::new();
+    let limits = DeviceCountLimits {
+        max_counts_per_axis: 100.0,
+        residual_cap: 1.0,
+    };
+    assert!(quantizer.limit(f64::NAN, limits).is_err());
+    assert!(quantizer.limit(f64::INFINITY, limits).is_err());
+    assert!(quantizer.limit(f64::NEG_INFINITY, limits).is_err());
+    assert_eq!(quantizer.residual(), 0.0);
 }
 
 #[test]
 fn quantizer_carries_residual_across_calls() {
-    let mut quantizer = AxisQuantizer::new();
-    let config = QuantizerConfig {
-        max_counts_per_axis: 100,
+    let mut quantizer = AxisCountLimiter::new();
+    let limits = DeviceCountLimits {
+        max_counts_per_axis: 100.0,
         residual_cap: 1.0,
     };
-    let first = quantizer.quantize(0.4, config).expect("quantize 0.4");
+    let first = quantizer.limit(0.4, limits).expect("limit 0.4");
     assert_eq!(first, 0);
-    let residual_after_first = quantizer.accumulator();
+    let residual_after_first = quantizer.residual();
     assert!((residual_after_first - 0.4).abs() < 1e-9);
-    let second = quantizer.quantize(0.4, config).expect("quantize 0.4");
-    assert_eq!(second, 1);
-    let residual_after_second = quantizer.accumulator();
-    assert!((residual_after_second - -0.2).abs() < 1e-9);
+    let second = quantizer.limit(0.4, limits).expect("limit 0.4");
+    assert_eq!(second, 0);
+    assert!((quantizer.residual() - 0.8).abs() < 1e-9);
+    let third = quantizer.limit(0.4, limits).expect("limit 0.4");
+    assert_eq!(third, 1);
+    assert!((quantizer.residual() - 0.2).abs() < 1e-9);
 }
 
 #[test]
 fn quantizer_sign_inversion_round_trip() {
-    let mut quantizer = AxisQuantizer::new();
-    let config = QuantizerConfig {
-        max_counts_per_axis: 100,
+    let mut quantizer = AxisCountLimiter::new();
+    let limits = DeviceCountLimits {
+        max_counts_per_axis: 100.0,
         residual_cap: 1.0,
     };
-    let positive = quantizer.quantize(3.5, config).expect("+3.5");
-    assert_eq!(positive, 4);
-    // After 3.5, accumulator = 3.5 - 4 = -0.5.
-    assert!((quantizer.accumulator() - -0.5).abs() < 1e-9);
-    let negative = quantizer.quantize(-3.5, config).expect("-3.5");
-    assert_eq!(negative, -4);
-    // -0.5 + -3.5 = -4.0 -> round to -4, residual = 0.0.
-    assert!((quantizer.accumulator() - 0.0).abs() < 1e-9);
+    let positive = quantizer.limit(3.5, limits).expect("+3.5");
+    assert_eq!(positive, 3);
+    assert!((quantizer.residual() - 0.5).abs() < 1e-9);
+    let negative = quantizer.limit(-3.5, limits).expect("-3.5");
+    assert_eq!(negative, -3);
+    assert!((quantizer.residual() + 0.5).abs() < 1e-9);
 }
 
 #[test]
 fn per_axis_quantizer_rolls_back_on_partial_failure() {
-    let mut quantizer = PerAxisQuantizer::new(QuantizerConfig {
-        max_counts_per_axis: 100,
+    let mut quantizer = DeviceCountLimiter::new();
+    let limits = DeviceCountLimits {
+        max_counts_per_axis: 100.0,
         residual_cap: 1.0,
-    });
-    let _ = quantizer.quantize(0.6, 0.4).expect("first quantize");
+    };
+    let _ = quantizer.limit(0.6, 0.4, limits).expect("first limit");
     let (before_x, before_y) = quantizer.residuals();
-    let result = quantizer.quantize(0.1, f64::NAN);
+    let result = quantizer.limit(0.1, f64::NAN, limits);
     assert!(result.is_err());
     let (after_x, after_y) = quantizer.residuals();
     assert!((before_x - after_x).abs() < 1e-9);
@@ -231,12 +234,13 @@ fn stale_epoch_command_cannot_reach_pointer_device() {
 
 #[test]
 fn reset_axis_quantizer_drops_residual() {
-    let mut quantizer = AxisQuantizer::new();
-    let config = QuantizerConfig::default();
-    let _ = quantizer.quantize(0.7, config).expect("quantize");
-    assert!(quantizer.accumulator().abs() > 0.0);
+    let mut quantizer = AxisCountLimiter::new();
+    let limits = DeviceCountLimits {
+        max_counts_per_axis: 100.0,
+        residual_cap: 1.0,
+    };
+    let _ = quantizer.limit(0.7, limits).expect("limit");
+    assert!(quantizer.residual().abs() > 0.0);
     quantizer.reset();
-    assert_eq!(quantizer.accumulator(), 0.0);
-    assert_eq!(quantizer.saturating_attempts(), 0);
-    assert_eq!(quantizer.rejected_attempts(), 0);
+    assert_eq!(quantizer.residual(), 0.0);
 }

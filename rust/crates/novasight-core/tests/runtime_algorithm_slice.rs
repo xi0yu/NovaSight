@@ -1,6 +1,5 @@
 //! Phase 2 algorithm-slice end-to-end test. Drives the full pipeline
-//! `FreshnessGate -> Tracker -> TargetingCore -> DualPhaseControl ->
-//! PerAxisQuantizer -> RecordingPointerDevice` against the
+//! `FreshnessGate -> Tracker -> TargetingCore -> DualPhaseControl` against the
 //! Python-exported fixtures. The runtime session is *not* the
 //! subject of this test; we instantiate each algorithm directly
 //! so the Phase 1 contract tests are not disturbed.
@@ -11,7 +10,6 @@ use novasight_core::controller::{
     BlockReason, ControlMode, ControlObservation, DualPhaseConfig, DualPhaseControl,
 };
 use novasight_core::freshness::{FreshnessPolicy, evaluate as freshness_evaluate};
-use novasight_core::output::quantizer::{PerAxisQuantizer, QuantizerConfig};
 use novasight_core::perception::types::Detection;
 use novasight_core::tracking::{TargetingConfig, TargetingCore};
 use novasight_core::units::Nanoseconds;
@@ -70,7 +68,6 @@ fn static_target_pipeline_drives_freshness_targeting_and_dual_phase() {
     let records = load_records("static-target.jsonl");
     assert!(!records.is_empty());
     let policy = FreshnessPolicy::new(55.0).expect("policy");
-    let mut quantizer = PerAxisQuantizer::new(QuantizerConfig::default());
     for record in &records {
         let frame = &record["frame"];
         let capture = Nanoseconds(frame["captured_at_ns"].as_u64().expect("captured_at_ns"));
@@ -112,13 +109,7 @@ fn static_target_pipeline_drives_freshness_targeting_and_dual_phase() {
             trigger_active: true,
         };
         let decision = control.calculate(observation);
-        if decision.emit_allowed {
-            let quantized = quantizer
-                .quantize(decision.dx as f64, decision.dy as f64)
-                .expect("quantize");
-            assert_eq!(quantized.dx, decision.dx);
-            assert_eq!(quantized.dy, decision.dy);
-        }
+        assert_eq!(decision.emit_allowed, decision.dx != 0 || decision.dy != 0);
     }
 }
 

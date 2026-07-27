@@ -20,6 +20,7 @@ limits:
 # every field below is consumed by the current Rust production hot path.
 pipeline:
   freshness_threshold_ms: 55.0
+  # 以该距离为中心，在前后 25% 范围内平滑融合 NEAR/FAR Atan 响应。
   near_threshold_px: 12.0
   projection_fov_x_deg: 105.0
   projection_counts_per_360: 9980.0

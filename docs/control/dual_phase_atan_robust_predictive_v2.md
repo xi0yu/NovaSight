@@ -15,11 +15,11 @@ configuration migration and do not participate in mouse output.
 latest valid DetectionBatch
 -> selected target and measured aim point
 -> current measured error
--> single-threshold FAR/NEAR selection
+-> FAR/NEAR transition weight from measured radial error
 -> ROI/source projection and geometric atan
 -> calibrated full correction counts
--> counts-domain Atan response and per-update clamp
--> truncating fractional quantizer
+-> continuously blended counts-domain Atan response
+-> device-count limiter and truncating fractional quantizer
 -> capacity-one latest-replace slot
 -> MouseCommandExecutor validation
 -> kmNet move(dx, dy)
@@ -40,24 +40,30 @@ focal_x = (source_width / 2) / tan(FOV_x / 2)
 theta = atan(source_error / focal_x)
 full_counts = theta * counts_per_360 / (2*pi)
 
-u = K_mode * S_counts * atan(full_counts / S_counts)
-u = clamp(u, -max_counts_per_update, max_counts_per_update)
+u_near = K_near * S_counts * atan(full_counts / S_counts)
+u_far = K_far * S_counts * atan(full_counts / S_counts)
+w_far = smoothstep(distance, 0.75 * threshold, 1.25 * threshold)
+u = (1 - w_far) * u_near + w_far * u_far
+limit = (1 - w_far) * near_limit + w_far * far_limit
+u = clamp(u, -limit, limit)
 ```
 
 The first Atan converts image displacement into view angle. The second is the
 nonlinear response curve that compresses large device corrections. It is not a
 derivative controller: no historical difference participates in `u`.
 
-FAR and NEAR are the only phases. A single radial error threshold selects the
-phase. Both phases share one Atan scale; only Kp and the per-update output limit
-differ. Neither phase is a movement deadzone.
+FAR and NEAR are two parameterizations of one response curve. The configured
+radial-error threshold centers a cubic Smoothstep transition whose half-width
+is 25% of that threshold. This removes the parameter jump without adding a
+second gain stage or another tuning field. Both regions share one Atan scale;
+only Kp and the per-update output limit differ. Neither is a movement deadzone.
 
 ## State And Integer Output
 
-The active target identity, phase and sub-count quantizer residual are
-target-local. Target switch/loss, Tracker rebuild, stale input, geometry or
-calibration change and runtime restart clear state. No velocity history is
-built while prediction is disabled.
+The active target identity and sub-count limiter residual are target-local.
+Target switch/loss, Tracker rebuild, stale input, geometry or calibration
+change and runtime restart clear state. No velocity history is built while
+prediction is disabled.
 
 ```text
 accumulator += u
