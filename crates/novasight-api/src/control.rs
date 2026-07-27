@@ -1585,7 +1585,7 @@ impl IntoResponse for ControlApiError {
                     "MODEL_PROFILE_NOT_FOUND",
                     error.to_string(),
                 ),
-                ModelIngressError::Catalog(ModelCatalogError::ArtifactCurrentlyDeployed(_)) => (
+                ModelIngressError::Catalog(ModelCatalogError::ArtifactCurrentlyActive(_)) => (
                     StatusCode::CONFLICT,
                     "MODEL_ARTIFACT_ACTIVE",
                     error.to_string(),

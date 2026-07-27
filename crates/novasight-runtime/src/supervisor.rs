@@ -1859,16 +1859,16 @@ async fn model_ingress_state(
         })?;
     }
 
-    let deployed_catalog = catalog.clone();
-    let deployed =
-        tokio::task::spawn_blocking(move || deployed_catalog.artifact_is_deployed(artifact_id))
+    let active_catalog = catalog.clone();
+    let active =
+        tokio::task::spawn_blocking(move || active_catalog.artifact_is_active(artifact_id))
             .await
             .map_err(|error| {
-                ModelIngressError::Failed(format!("deployment lookup task failed: {error}"))
+                ModelIngressError::Failed(format!("active model lookup task failed: {error}"))
             })??;
-    if deployed {
+    if active {
         return Err(ModelIngressError::Catalog(
-            ModelCatalogError::ArtifactCurrentlyDeployed(artifact_id),
+            ModelCatalogError::ArtifactCurrentlyActive(artifact_id),
         ));
     }
     let jobs = dependencies

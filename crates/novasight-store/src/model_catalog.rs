@@ -578,12 +578,12 @@ impl SqliteModelCatalog {
         self.runtime_artifact(project_id, artifact_id)
     }
 
-    pub fn artifact_is_deployed(&self, artifact_id: i64) -> Result<bool, ModelCatalogError> {
+    pub fn artifact_is_active(&self, artifact_id: i64) -> Result<bool, ModelCatalogError> {
         let connection = self.connect()?;
         require_artifact(&connection, artifact_id)?;
         connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM deployments WHERE artifact_id = ?1)",
+                "SELECT EXISTS(SELECT 1 FROM deployments WHERE artifact_id = ?1 AND id = (SELECT id FROM deployments ORDER BY updated_seq DESC, id DESC LIMIT 1))",
                 [artifact_id],
                 |row| row.get::<_, bool>(0),
             )
@@ -646,11 +646,11 @@ impl SqliteModelCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(ModelCatalogError::Sqlite)?;
-        let deployed_artifact = transaction
+        let active_artifact = transaction
             .query_row(
-                "SELECT model_artifacts.id FROM deployments JOIN model_artifacts ON model_artifacts.id = deployments.artifact_id WHERE model_artifacts.version_id = ?1 LIMIT 1",
-                [artifact.version.id],
-                |row| row.get::<_, i64>(0),
+                "SELECT model_artifacts.id, model_artifacts.version_id FROM deployments JOIN model_artifacts ON model_artifacts.id = deployments.artifact_id ORDER BY deployments.updated_seq DESC, deployments.id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()
             .map_err(ModelCatalogError::Sqlite)?;
@@ -662,12 +662,13 @@ impl SqliteModelCatalog {
                 .input_shape
                 .as_ref()
                 .is_some_and(|input_shape| input_shape != &artifact.version.input_shape);
-        if let Some(deployed_artifact_id) = deployed_artifact
-            && (deployed_artifact_id == update.artifact_id || changes_shared_version_metadata)
+        if let Some((active_artifact_id, active_version_id)) = active_artifact
+            && active_version_id == artifact.version.id
+            && (active_artifact_id == update.artifact_id || changes_shared_version_metadata)
         {
-            return Err(ModelCatalogError::VersionCurrentlyDeployed {
+            return Err(ModelCatalogError::VersionCurrentlyActive {
                 version_id: artifact.version.id,
-                deployed_artifact_id,
+                active_artifact_id,
             });
         }
         if let Some(classes) = update.classes {
@@ -2174,14 +2175,14 @@ pub enum ModelCatalogError {
     InvalidIngressInputShape,
     #[error("model-ingress requires TensorRT engine artifact {0}")]
     IngressRequiresEngine(i64),
-    #[error("model artifact {0} is currently deployed and cannot be mutated")]
-    ArtifactCurrentlyDeployed(i64),
+    #[error("model artifact {0} is active in the runtime and cannot be mutated")]
+    ArtifactCurrentlyActive(i64),
     #[error(
-        "model version {version_id} contains deployed artifact {deployed_artifact_id} and cannot be mutated"
+        "model version {version_id} contains active runtime artifact {active_artifact_id} and cannot be mutated"
     )]
-    VersionCurrentlyDeployed {
+    VersionCurrentlyActive {
         version_id: i64,
-        deployed_artifact_id: i64,
+        active_artifact_id: i64,
     },
     #[error(
         "model artifact {artifact_id} identity changed during ingress: expected {expected}, worker returned {actual}"

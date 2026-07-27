@@ -385,7 +385,7 @@ fn model_ingress_commit_verifies_engine_identity_and_updates_registry_atomically
 }
 
 #[test]
-fn model_ingress_refuses_to_mutate_a_deployed_artifact() {
+fn model_ingress_refuses_to_mutate_the_active_artifact() {
     let directory = TestDirectory::new();
     let path = directory.0.join("novasight.db");
     create_python_compatible_database(&path);
@@ -395,7 +395,7 @@ fn model_ingress_refuses_to_mutate_a_deployed_artifact() {
     let checksum = format!("sha256:{:x}", Sha256::digest(b"engine"));
     let catalog = SqliteModelCatalog::open(&path).unwrap();
 
-    assert!(catalog.artifact_is_deployed(3).unwrap());
+    assert!(catalog.artifact_is_active(3).unwrap());
     assert!(matches!(
         catalog.commit_model_ingress(ModelIngressCatalogUpdate {
             artifact_id: 3,
@@ -404,9 +404,9 @@ fn model_ingress_refuses_to_mutate_a_deployed_artifact() {
             classes: None,
             input_shape: None,
         }),
-        Err(ModelCatalogError::VersionCurrentlyDeployed {
+        Err(ModelCatalogError::VersionCurrentlyActive {
             version_id: 2,
-            deployed_artifact_id: 3
+            active_artifact_id: 3
         })
     ));
 
@@ -420,9 +420,9 @@ fn model_ingress_refuses_to_mutate_a_deployed_artifact() {
             classes: Some(vec!["changed".to_owned()]),
             input_shape: Some("1x3x320x320".to_owned()),
         }),
-        Err(ModelCatalogError::VersionCurrentlyDeployed {
+        Err(ModelCatalogError::VersionCurrentlyActive {
             version_id: 2,
-            deployed_artifact_id: 3
+            active_artifact_id: 3
         })
     ));
 
@@ -436,6 +436,59 @@ fn model_ingress_refuses_to_mutate_a_deployed_artifact() {
         })
         .expect("a non-deployed sibling with unchanged version metadata is mutable");
     assert_eq!(safe_sibling_update.artifact.status, "pending");
+}
+
+#[test]
+fn model_ingress_can_refresh_an_inactive_historical_deployment() {
+    let directory = TestDirectory::new();
+    let path = directory.0.join("novasight.db");
+    create_python_compatible_database(&path);
+    let primary_engine_dir = directory.0.join("models/yolo/v1");
+    fs::create_dir_all(&primary_engine_dir).unwrap();
+    fs::write(primary_engine_dir.join("model.engine"), b"engine").unwrap();
+    let checksum = format!("sha256:{:x}", Sha256::digest(b"engine"));
+
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            r#"
+            INSERT INTO model_projects VALUES (7, 'active', 'currently active detector');
+            INSERT INTO model_versions VALUES
+                (8, 7, 'v1', 'onnx', 'active.onnx', '["target"]', '1x3x320x320');
+            INSERT INTO model_artifacts VALUES
+                (9, 8, 'engine', 'active.engine', 'sha256:active', 'ready');
+            INSERT INTO deployments VALUES (10, 7, 9, NULL, 8);
+            UPDATE registry_sequence SET value = 8 WHERE name = 'deployment';
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let catalog = SqliteModelCatalog::open(&path).unwrap();
+    assert!(
+        catalog
+            .snapshot()
+            .unwrap()
+            .deployments
+            .iter()
+            .any(|deployment| deployment.artifact_id == 3)
+    );
+    assert!(!catalog.artifact_is_active(3).unwrap());
+    assert_eq!(catalog.active_model().unwrap().unwrap().artifact.id, 9);
+
+    let refreshed = catalog
+        .commit_model_ingress(ModelIngressCatalogUpdate {
+            artifact_id: 3,
+            status: "pending".to_owned(),
+            checksum,
+            classes: Some(vec!["target".to_owned()]),
+            input_shape: Some("1x3x256x256".to_owned()),
+        })
+        .expect("an inactive historical deployment must remain refreshable");
+
+    assert_eq!(refreshed.artifact.status, "pending");
+    assert_eq!(refreshed.version.classes, ["target"]);
+    assert_eq!(refreshed.version.input_shape, "1x3x256x256");
 }
 
 #[test]
