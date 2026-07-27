@@ -165,7 +165,7 @@ fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
 }
 
 #[test]
-fn development_hardware_check_rejects_an_explicit_invalid_license_public_key() {
+fn development_hardware_check_is_not_blocked_by_formal_license_configuration() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
     let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
@@ -176,7 +176,25 @@ fn development_hardware_check_rejects_an_explicit_invalid_license_public_key() {
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
 
     assert!(!output.status.success());
-    assert!(stderr.contains("LICENSE_PUBLIC_KEY_INVALID"));
+    assert!(!stderr.contains("LICENSE_PUBLIC_KEY_INVALID"));
+    assert!(stderr.contains("PRODUCTION_RUNTIME_UNAVAILABLE"));
+}
+
+#[test]
+fn development_hardware_check_ignores_an_unreadable_formal_key_file() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
+    let missing_key = path.with_file_name("missing-license-public.pem");
+    let output = daemon_command()
+        .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .env("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE", &missing_key)
+        .output()
+        .expect("run production check");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+
+    assert!(!output.status.success());
+    assert!(!stderr.contains("LICENSE_PUBLIC_KEY_READ_FAILED"));
+    assert!(stderr.contains("PRODUCTION_RUNTIME_UNAVAILABLE"));
 }
 
 #[test]
@@ -197,7 +215,7 @@ fn valid_production_authority_reaches_the_platform_build_boundary() {
 #[cfg(unix)]
 #[test]
 fn explicit_dry_run_exits_cleanly_on_sigterm() {
-    let (_directory, path) = temp_config();
+    let (directory, path) = temp_config();
     let mut child = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--dry-run"])
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
@@ -256,8 +274,13 @@ fn explicit_dry_run_exits_cleanly_on_sigterm() {
         Some("application/json"),
     );
     assert_eq!(status, 200);
+    assert!(activated.contains("\"supported\":true"));
     assert!(activated.contains("\"granted\":true"));
     assert!(activated.contains("\"valid\":true"));
+    assert!(
+        !directory.join("license.json").exists(),
+        "Debug development access must not create a license file"
+    );
     let (status, initial) = unix_http_request(&control_socket, "GET", "/api/v1/status");
     assert_eq!(status, 200);
     assert!(initial.contains("\"state\":\"stopped\""));

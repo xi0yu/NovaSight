@@ -25,17 +25,17 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
     if (code === "LICENSE_STORAGE_FAILED" || code === "LICENSE_TASK_FAILED") {
       return {
         kind: "service-error",
-        title: "授权存储暂时不可用",
-        description: "novasightd 在线，但授权文件或锁文件目前无法读取；这不是临时授权被拒绝。",
-        recovery: "请检查配置中的 paths.license 及其父目录权限，然后重新读取授权状态。"
+        title: "正式授权存储暂时不可用",
+        description: "novasightd 在线，但正式授权文件或锁文件目前无法读取。Debug 临时权限本身不会写入该文件。",
+        recovery: "如需正式授权，请检查 paths.license 及其父目录权限；开发验证可使用 Debug 构建。"
       };
     }
     if (code === "LICENSE_PUBLIC_KEY_MISSING" || code === "LICENSE_PUBLIC_KEY_INVALID") {
       return {
         kind: "service-error",
-        title: "授权验证器尚未配置完成",
-        description: "novasightd 在线，但生产授权公钥缺失或格式无效；这不是当前临时授权被拒绝。",
-        recovery: "请修复 NOVASIGHT_LICENSE_PUBLIC_KEY 配置并重启 novasightd。"
+        title: "正式授权验证器尚未配置完成",
+        description: "novasightd 在线，但 Release 构建所需的生产授权公钥缺失或格式无效。",
+        recovery: "正式环境请修复 NOVASIGHT_LICENSE_PUBLIC_KEY；开发验证请运行 Debug 构建。"
       };
     }
     if (code === "LICENSE_SERVICE_UNAVAILABLE") {

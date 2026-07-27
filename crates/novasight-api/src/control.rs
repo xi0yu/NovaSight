@@ -236,6 +236,7 @@ struct TemporaryLicenseRequest {}
 
 #[derive(Debug, Serialize)]
 struct TemporaryLicenseResponse {
+    supported: bool,
     granted: bool,
     status: LicenseStatus,
 }
@@ -284,6 +285,7 @@ async fn grant_temporary_license(
         .license
         .as_ref()
         .ok_or(ControlApiError::LicenseUnavailable)?;
+    let supported = license.temporary_access_supported();
     let (granted, status) = tokio::task::spawn_blocking({
         let repository = license.clone();
         move || match repository.grant_temporary() {
@@ -309,18 +311,22 @@ async fn grant_temporary_license(
         tracing::info!(
             tier = %status.tier,
             expires_at = status.expires_at,
-            "temporary license request granted"
+            "process-local development access granted"
         );
     } else {
         tracing::warn!(
             configured = status.configured,
             valid = status.valid,
             reason = %status.message,
-            "temporary license request rejected"
+            "process-local development access rejected"
         );
     }
     stop_if_license_disallows_runtime(&state, &status).await?;
-    Ok(Json(TemporaryLicenseResponse { granted, status }))
+    Ok(Json(TemporaryLicenseResponse {
+        supported,
+        granted,
+        status,
+    }))
 }
 
 async fn clear_license(

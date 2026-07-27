@@ -29,6 +29,7 @@ export function LicensePanel({
   const [message, setMessage] = useState<string | undefined>();
   const [failure, setFailure] = useState<LicenseActionFailure | null>(null);
   const currentTime = new Date().toLocaleString("zh-CN", { hour12: false });
+  const temporarySupported = license?.temporary_access_supported === true;
 
   const requestTemporary = useCallback(async () => {
     setFailure(null);
@@ -37,6 +38,15 @@ export function LicensePanel({
     try {
       const response = await requestTemporaryLicense();
       const status = response.status;
+      if (!response.supported) {
+        localStorage.setItem(LICENSE_CACHE_KEY, status.valid ? "1" : "0");
+        onLicenseChange(status);
+        setFailure({
+          title: "当前构建不支持临时权限",
+          message: "Release 后端只接受正式签名授权；请运行 cargo run 启动 Debug 后端进行开发验证。"
+        });
+        return;
+      }
       if (!response.granted || !status.valid) {
         localStorage.setItem(LICENSE_CACHE_KEY, status.valid ? "1" : "0");
         onLicenseChange(status);
@@ -50,7 +60,7 @@ export function LicensePanel({
       }
       localStorage.setItem(LICENSE_CACHE_KEY, status.valid ? "1" : "0");
       onLicenseChange(status);
-      setMessage("临时授权已通过，可以进入 NovaSight 工作台。");
+      setMessage("当前 Debug 后端进程已开放开发权限，可以进入 NovaSight 工作台。");
     } catch (err) {
       const nextFailure = describeLicenseActionFailure(err, "temporary");
       setFailure(nextFailure);
@@ -135,24 +145,37 @@ export function LicensePanel({
         <Field label="当前状态" value={license?.valid ? "可用" : "等待申请"} />
         <Field label="当前时间" value={currentTime} />
         <Field label="激活时间" value={formatEpoch(license?.activated_at)} />
-        <Field label="到期时间" value={formatEpoch(license?.expires_at)} />
+        <Field
+          label="到期时间"
+          value={license?.tier === "temporary" ? "进程退出即失效" : formatEpoch(license?.expires_at)}
+        />
         <Field
           label="期限"
-          value={formatDuration(license?.duration_value, license?.duration_unit)}
+          value={license?.tier === "temporary"
+            ? "当前后端进程"
+            : formatDuration(license?.duration_value, license?.duration_unit)}
         />
       </div>
       <div className="temporary-license-action">
         <div>
           <strong>测试临时授权</strong>
-          <span>Debug 后端直接批准，有效期 24 小时；不需要共享或固定测试码。</span>
+          <span>{temporarySupported
+            ? "由本机 Debug 构建直接批准，只在当前后端进程内有效；不访问外部授权服务，也不写入授权文件。"
+            : "当前是 Release 构建，不开放临时权限；正式使用需要签名授权凭证。"}</span>
         </div>
         <button
           className="button"
           type="button"
           onClick={requestTemporary}
-          disabled={requesting || license?.valid === true}
+          disabled={requesting || license?.valid === true || !temporarySupported}
         >
-          {requesting ? "正在申请…" : license?.valid ? "授权已生效" : "申请临时授权"}
+          {requesting
+            ? "正在申请…"
+            : license?.valid
+              ? "授权已生效"
+              : temporarySupported
+                ? "申请临时权限"
+                : "当前构建不支持"}
         </button>
       </div>
       <div className="signed-license-action">

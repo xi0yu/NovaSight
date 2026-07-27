@@ -185,14 +185,25 @@ fn platform_capture_probe() -> Option<Arc<dyn CaptureCapabilityProbe>> {
 }
 
 fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
-    // A debug `cargo run` is the supported Jetson development workflow: it may
-    // request a short-lived local grant without a shared secret. Only release
-    // artifacts enforce deployment key provisioning.
+    // A debug `cargo run` exposes process-local development access through the
+    // local API. It never creates a license document and disappears when this
+    // daemon exits. Only release artifacts enforce deployment key provisioning.
     let development_build = cfg!(debug_assertions);
-    let allow_temporary_grant = development_build;
+    let temporary_access_supported = development_build;
     let inline_public_key = std::env::var("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .ok()
         .filter(|value| !value.trim().is_empty());
+    if development_build {
+        // A formal verifier is optional in Debug. Load it opportunistically so
+        // signed-license testing still works, but stale deployment paths must
+        // never prevent the local development daemon from starting.
+        let public_key = inline_public_key.or_else(|| {
+            std::env::var_os("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
+                .filter(|path| !path.is_empty())
+                .and_then(|path| std::fs::read_to_string(path).ok())
+        });
+        return Ok(LicensePolicy::new(temporary_access_supported, public_key));
+    }
     let public_key = match inline_public_key {
         Some(public_key) => Some(public_key),
         None => std::env::var_os("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
@@ -208,8 +219,8 @@ fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
             })
             .transpose()?,
     };
-    let policy = LicensePolicy::new(allow_temporary_grant, public_key);
-    let public_key_required = mode.hardware_output_enabled() && !development_build;
+    let policy = LicensePolicy::new(temporary_access_supported, public_key);
+    let public_key_required = mode.hardware_output_enabled();
     match policy.validate_public_key(public_key_required) {
         Ok(()) => Ok(policy),
         Err(LicenseError::PublicKeyMissing) => Err(DaemonRunError::LicensePublicKeyMissing),

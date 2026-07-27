@@ -29,7 +29,7 @@ impl Drop for TestDirectory {
 }
 
 #[test]
-fn temporary_grant_persists_and_round_trips_verified_status() {
+fn development_access_is_process_local_and_never_written_to_the_license_file() {
     let directory = TestDirectory::new();
     let path = directory.0.join("license.json");
     let policy = LicensePolicy::new(true, None);
@@ -40,28 +40,34 @@ fn temporary_grant_persists_and_round_trips_verified_status() {
     assert!(activated.configured);
     assert!(activated.valid);
     assert_eq!(activated.tier, "temporary");
-    assert!(activated.license_id.starts_with("temporary-development-"));
+    assert_eq!(activated.license_id, "debug-process-session");
     assert!(activated.features.contains(&"hardware_control".to_owned()));
     assert!(activated.activated_at.is_some());
-    assert!(activated.expires_at.is_some());
-    let document = fs::read_to_string(&path).unwrap();
-    assert!(document.contains("key_hash"));
-    assert!(document.contains("temporary_development"));
-    let python_compatible: serde_json::Value = serde_json::from_str(&document).unwrap();
-    assert_eq!(
-        python_compatible["fingerprint"].as_str(),
-        Some(activated.fingerprint.as_str())
+    assert!(activated.expires_at.is_none());
+    assert!(
+        !path.exists(),
+        "debug access must not create a license file"
     );
-    assert_eq!(
-        python_compatible["expires_at"].as_f64(),
-        activated.expires_at
+    assert!(
+        !directory.0.join(".license.json.lock").exists(),
+        "debug access must not create a license lock file"
     );
 
     let repeated = repository.grant_temporary().unwrap();
     assert_eq!(repeated, activated);
 
+    let cleared = repository.clear().unwrap();
+    assert!(!cleared.configured);
+    assert!(!cleared.valid);
+    assert!(
+        !directory.0.join(".license.json.lock").exists(),
+        "clearing process-local access must not create a license lock file"
+    );
+
     let reopened = FileLicenseRepository::new(path, policy).status().unwrap();
-    assert_eq!(reopened, activated);
+    assert!(!reopened.configured);
+    assert!(!reopened.valid);
+    assert!(!directory.0.join(".license.json.lock").exists());
 }
 
 #[test]

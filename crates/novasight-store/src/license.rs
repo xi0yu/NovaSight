@@ -3,6 +3,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -17,9 +18,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-const TEMPORARY_LICENSE_DURATION_DAYS: u64 = 1;
-const TEMPORARY_LICENSE_ID_PREFIX: &str = "temporary-development";
 const TEMPORARY_LICENSE_TIER: &str = "temporary";
+const DEVELOPMENT_SESSION_ID: &str = "debug-process-session";
 const SECONDS_PER_YEAR: f64 = 365.0 * 24.0 * 60.0 * 60.0;
 const ALL_FEATURES: [&str; 7] = [
     "capture",
@@ -31,20 +31,23 @@ const ALL_FEATURES: [&str; 7] = [
     "config_write",
 ];
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
-static NEXT_TEMPORARY_LICENSE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct LicensePolicy {
-    allow_temporary_grants: bool,
+    temporary_access_supported: bool,
     public_key_pem: Option<String>,
 }
 
 impl LicensePolicy {
-    pub fn new(allow_temporary_grants: bool, public_key_pem: Option<String>) -> Self {
+    pub fn new(temporary_access_supported: bool, public_key_pem: Option<String>) -> Self {
         Self {
-            allow_temporary_grants,
+            temporary_access_supported,
             public_key_pem,
         }
+    }
+
+    pub const fn temporary_access_supported(&self) -> bool {
+        self.temporary_access_supported
     }
 
     /// Validate the verifier before daemon readiness. Production requires a
@@ -62,6 +65,8 @@ impl LicensePolicy {
 pub struct LicenseStatus {
     pub configured: bool,
     pub valid: bool,
+    #[serde(default)]
+    pub temporary_access_supported: bool,
     pub fingerprint: String,
     pub tier: String,
     pub features: Vec<String>,
@@ -80,6 +85,7 @@ impl LicenseStatus {
         Self {
             configured: false,
             valid: false,
+            temporary_access_supported: false,
             fingerprint: String::new(),
             tier: String::new(),
             features: Vec::new(),
@@ -108,6 +114,8 @@ impl LicenseStatus {
 pub struct FileLicenseRepository {
     path: PathBuf,
     policy: LicensePolicy,
+    operation_lock: Arc<Mutex<()>>,
+    development_session: Arc<Mutex<Option<f64>>>,
 }
 
 impl FileLicenseRepository {
@@ -115,6 +123,8 @@ impl FileLicenseRepository {
         Self {
             path: path.into(),
             policy,
+            operation_lock: Arc::new(Mutex::new(())),
+            development_session: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -122,15 +132,42 @@ impl FileLicenseRepository {
         &self.path
     }
 
+    pub fn temporary_access_supported(&self) -> bool {
+        self.policy.temporary_access_supported()
+    }
+
     pub fn status(&self) -> Result<LicenseStatus, LicenseError> {
-        let _lock = self.lock(false)?;
-        match self.read_status(now_seconds()?) {
-            Ok(status) => Ok(status),
-            Err(error) if error.is_invalid_license_state() => {
-                Ok(LicenseStatus::invalid_configured(error.to_string()))
-            }
-            Err(error) => Err(error),
+        if let Some(granted_at) = *self
+            .development_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        {
+            return Ok(development_session_status(granted_at));
         }
+        let _operation = self
+            .operation_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(granted_at) = *self
+            .development_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        {
+            return Ok(development_session_status(granted_at));
+        }
+        self.storage_status()
+    }
+
+    fn storage_status(&self) -> Result<LicenseStatus, LicenseError> {
+        let mut status = match self.read_status(now_seconds()?) {
+            Ok(status) => status,
+            Err(error) if error.is_invalid_license_state() => {
+                LicenseStatus::invalid_configured(error.to_string())
+            }
+            Err(error) => return Err(error),
+        };
+        status.temporary_access_supported = self.temporary_access_supported();
+        Ok(status)
     }
 
     pub fn activate(&self, key: &str) -> Result<LicenseStatus, LicenseError> {
@@ -140,7 +177,11 @@ impl FileLicenseRepository {
                 "license key must be at least 8 characters".to_owned(),
             ));
         }
-        let _lock = self.lock(true)?;
+        let _operation = self
+            .operation_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _lock = self.lock()?;
         let now = now_seconds()?;
         let (claims, payload, signature) = verify_signed_key(
             key,
@@ -171,55 +212,72 @@ impl FileLicenseRepository {
             verification: Verification::RsaPkcs1v15Sha256 { payload, signature },
         };
         self.write_document(&document)?;
-        self.status_from_document(document, now)
+        *self
+            .development_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let mut status = self.status_from_document(document, now)?;
+        status.temporary_access_supported = self.temporary_access_supported();
+        Ok(status)
     }
 
-    /// Persist a short-lived development grant without accepting a shared
-    /// secret. The daemon policy exposes this only in debug builds.
+    /// Enable full access for the lifetime of the current debug daemon.
+    /// This state is deliberately process-local and never written to disk.
     pub fn grant_temporary(&self) -> Result<LicenseStatus, LicenseError> {
-        if !self.policy.allow_temporary_grants {
+        if !self.temporary_access_supported() {
             return Err(LicenseError::TemporaryGrantDisabled);
         }
-        let _lock = self.lock(true)?;
+        let _operation = self
+            .operation_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = now_seconds()?;
-        let current = self.read_status(now)?;
-        if current.valid {
-            if current.tier == TEMPORARY_LICENSE_TIER
-                && current
-                    .license_id
-                    .starts_with(&format!("{TEMPORARY_LICENSE_ID_PREFIX}-"))
-            {
-                return Ok(current);
-            }
-            return Err(LicenseError::TemporaryGrantWouldReplaceActiveLicense);
+        if let Some(granted_at) = *self
+            .development_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        {
+            return Ok(development_session_status(granted_at));
         }
-        let sequence = NEXT_TEMPORARY_LICENSE.fetch_add(1, Ordering::Relaxed);
-        let license_id = format!(
-            "{TEMPORARY_LICENSE_ID_PREFIX}-{}-{sequence}",
-            (now * 1000.0).round() as u64
-        );
-        let key_hash = temporary_grant_hash(&license_id, now);
-        let document = PersistedLicense {
-            schema_version: 2,
-            fingerprint: key_hash.chars().take(12).collect(),
-            key_hash,
-            license_id,
-            tier: TEMPORARY_LICENSE_TIER.to_owned(),
-            features: ALL_FEATURES.iter().map(ToString::to_string).collect(),
-            created_at: now,
-            activated_at: now,
-            duration_value: TEMPORARY_LICENSE_DURATION_DAYS,
-            duration_unit: "days".to_owned(),
-            expires_at: expiration(now, TEMPORARY_LICENSE_DURATION_DAYS, "days")?,
-            updated_at: now,
-            verification: Verification::TemporaryDevelopment,
-        };
-        self.write_document(&document)?;
-        self.status_from_document(document, now)
+        // Development access does not create or lock authorization storage.
+        // An already readable signed license remains authoritative.
+        match self.read_status(now) {
+            Ok(current) if current.valid => {
+                return Err(LicenseError::TemporaryGrantWouldReplaceActiveLicense);
+            }
+            Ok(_) | Err(_) => {}
+        }
+        *self
+            .development_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
+        Ok(development_session_status(now))
     }
 
     pub fn clear(&self) -> Result<LicenseStatus, LicenseError> {
-        let _lock = self.lock(true)?;
+        let _operation = self
+            .operation_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let had_development_session = self
+            .development_session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .is_some();
+        if had_development_session {
+            return self.storage_status();
+        }
+        match fs::symlink_metadata(&self.path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let mut status = LicenseStatus::unconfigured();
+                status.temporary_access_supported = self.temporary_access_supported();
+                return Ok(status);
+            }
+            Ok(_) => {}
+            Err(source) => return Err(LicenseError::io("inspect", &self.path, source)),
+        }
+        let _lock = self.lock()?;
         match fs::symlink_metadata(&self.path) {
             Ok(metadata) => {
                 validate_regular_file(&self.path, &metadata)?;
@@ -230,7 +288,9 @@ impl FileLicenseRepository {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(source) => return Err(LicenseError::io("inspect", &self.path, source)),
         }
-        Ok(LicenseStatus::unconfigured())
+        let mut status = LicenseStatus::unconfigured();
+        status.temporary_access_supported = self.temporary_access_supported();
+        Ok(status)
     }
 
     fn read_status(&self, now: f64) -> Result<LicenseStatus, LicenseError> {
@@ -277,32 +337,6 @@ impl FileLicenseRepository {
             return Err(LicenseError::UnsupportedSchema(document.schema_version));
         }
         match &document.verification {
-            Verification::TemporaryDevelopment if self.policy.allow_temporary_grants => {
-                if document.key_hash
-                    != temporary_grant_hash(&document.license_id, document.created_at)
-                    || !document
-                        .license_id
-                        .starts_with(&format!("{TEMPORARY_LICENSE_ID_PREFIX}-"))
-                    || document.tier != TEMPORARY_LICENSE_TIER
-                    || document.features
-                        != ALL_FEATURES
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect::<Vec<_>>()
-                    || document.activated_at != document.created_at
-                    || document.updated_at != document.created_at
-                    || document.created_at > now
-                    || document.duration_value != TEMPORARY_LICENSE_DURATION_DAYS
-                    || document.duration_unit != "days"
-                {
-                    return Err(LicenseError::VerificationFailed(
-                        "temporary development license claims were modified".to_owned(),
-                    ));
-                }
-            }
-            Verification::TemporaryDevelopment => {
-                return Err(LicenseError::TemporaryGrantDisabled);
-            }
             Verification::RsaPkcs1v15Sha256 { payload, signature } => {
                 let key = format!("NS1.{payload}.{signature}");
                 let (claims, _, _) = verify_signed_key(
@@ -341,6 +375,7 @@ impl FileLicenseRepository {
         Ok(LicenseStatus {
             configured: true,
             valid,
+            temporary_access_supported: self.temporary_access_supported(),
             fingerprint: document.fingerprint,
             tier: document.tier,
             features: document.features,
@@ -399,7 +434,7 @@ impl FileLicenseRepository {
         result
     }
 
-    fn lock(&self, exclusive: bool) -> Result<LicenseLock, LicenseError> {
+    fn lock(&self) -> Result<LicenseLock, LicenseError> {
         let parent = parent_directory(&self.path);
         fs::create_dir_all(parent)
             .map_err(|source| LicenseError::io("create directory", parent, source))?;
@@ -418,12 +453,8 @@ impl FileLicenseRepository {
             .mode(0o600)
             .open(&lock_path)
             .map_err(|source| LicenseError::io("open lock", &lock_path, source))?;
-        if exclusive {
-            file.lock_exclusive()
-        } else {
-            FileExt::lock_shared(&file)
-        }
-        .map_err(|source| LicenseError::io("lock", &lock_path, source))?;
+        file.lock_exclusive()
+            .map_err(|source| LicenseError::io("lock", &lock_path, source))?;
         Ok(LicenseLock(file))
     }
 }
@@ -472,6 +503,7 @@ impl LegacyLicense {
         LicenseStatus {
             configured,
             valid: false,
+            temporary_access_supported: false,
             fingerprint: self.fingerprint,
             tier: self.tier,
             features: self.features,
@@ -495,12 +527,26 @@ impl LegacyLicense {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Verification {
-    TemporaryDevelopment,
     RsaPkcs1v15Sha256 { payload: String, signature: String },
 }
 
-fn temporary_grant_hash(license_id: &str, created_at: f64) -> String {
-    sha256_hex(format!("{license_id}:{}", created_at.to_bits()).as_bytes())
+fn development_session_status(granted_at: f64) -> LicenseStatus {
+    LicenseStatus {
+        configured: true,
+        valid: true,
+        temporary_access_supported: true,
+        fingerprint: String::new(),
+        tier: TEMPORARY_LICENSE_TIER.to_owned(),
+        features: ALL_FEATURES.iter().map(ToString::to_string).collect(),
+        license_id: DEVELOPMENT_SESSION_ID.to_owned(),
+        created_at: Some(granted_at),
+        activated_at: Some(granted_at),
+        expires_at: None,
+        duration_value: None,
+        duration_unit: "process".to_owned(),
+        updated_at: Some(granted_at),
+        message: "Debug development access is active for the current novasightd process".to_owned(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -654,9 +700,9 @@ fn sync_parent(path: &Path) -> Result<(), LicenseError> {
 pub enum LicenseError {
     #[error("invalid license key: {0}")]
     InvalidKey(String),
-    #[error("temporary licenses are disabled by policy")]
+    #[error("temporary development access is unavailable in this build")]
     TemporaryGrantDisabled,
-    #[error("an active signed license must be cleared before requesting a temporary license")]
+    #[error("a signed license is already active; development access was not enabled")]
     TemporaryGrantWouldReplaceActiveLicense,
     #[error("NOVASIGHT_LICENSE_PUBLIC_KEY is required for signed licenses")]
     PublicKeyMissing,

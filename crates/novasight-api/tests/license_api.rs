@@ -72,6 +72,7 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["configured"], false);
     assert_eq!(body["valid"], false);
+    assert_eq!(body["temporary_access_supported"], true);
 
     let (status, body) = json_response(app.clone(), "DELETE", "/api/license", Body::empty()).await;
     assert_eq!(status, StatusCode::OK);
@@ -115,6 +116,7 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["supported"], true);
     assert_eq!(body["granted"], true);
     assert_eq!(body["status"]["valid"], true);
     assert_eq!(body["status"]["tier"], "temporary");
@@ -152,13 +154,15 @@ async fn temporary_license_policy_rejection_is_an_explicit_business_response() {
     let (status, body) =
         json_response(app, "POST", "/api/license/temporary", Body::from("{}")).await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["supported"], false);
     assert_eq!(body["granted"], false);
+    assert_eq!(body["status"]["temporary_access_supported"], false);
     assert_eq!(body["status"]["valid"], false);
     assert!(
         body["status"]["message"]
             .as_str()
             .unwrap()
-            .contains("disabled by policy")
+            .contains("unavailable in this build")
     );
 
     runtime.shutdown_daemon().await.unwrap();

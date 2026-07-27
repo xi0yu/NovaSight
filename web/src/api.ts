@@ -542,6 +542,7 @@ export type LicenseFeature =
 export type LicenseStatus = {
   configured: boolean;
   valid: boolean;
+  temporary_access_supported: boolean;
   fingerprint: string;
   tier: string;
   features: LicenseFeature[];
@@ -556,6 +557,7 @@ export type LicenseStatus = {
 };
 
 export type TemporaryLicenseResponse = {
+  supported: boolean;
   granted: boolean;
   status: LicenseStatus;
 };

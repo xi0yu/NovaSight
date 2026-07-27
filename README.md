@@ -45,10 +45,12 @@ cargo run -p novasightd -- --dry-run
 Without `--config`, NovaSight reads exactly `.config/novasight.yaml` relative
 to the directory where it was started. `--config` remains available only as an
 explicit path override. The backend listens on `127.0.0.1:5174` by default.
-Debug builds expose a 24-hour temporary-license request through the Web UI and
-`POST /api/license/temporary`; no shared development code is required. Release
-builds reject temporary grants, including release runs started with `--dry-run`,
-and require the configured production public key for signed activation.
+Debug builds expose process-local development access through the Web UI and
+`POST /api/license/temporary`. The daemon decides this from its compiled build
+profile, makes no external authorization request, and writes no license file;
+access ends when that daemon process exits. Release builds reject temporary
+access, including release runs started with `--dry-run`, and require the
+configured production public key for signed activation.
 
 ## Web development run
 
