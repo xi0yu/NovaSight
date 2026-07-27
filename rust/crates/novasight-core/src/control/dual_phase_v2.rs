@@ -20,12 +20,13 @@
 //!   half a count, the current integer position is already the nearest point
 //!   the device can represent and that axis settles instead of limit-cycling.
 
-use std::collections::VecDeque;
-
 use serde::{Deserialize, Serialize};
 
 use crate::control::humanized_motion::{HumanizedMotionTelemetry, MotionProfile};
 use crate::error::AppError;
+use crate::prediction::{
+    FocusTargetObservation, PredictionRange, SingleTargetPredictionConfig, SingleTargetPredictor,
+};
 
 /// Integer mouse output cannot represent a correction smaller than one count.
 /// At half a count or less the current integer position is the nearest
@@ -139,6 +140,27 @@ impl Default for DualPhaseConfig {
             observation_width: 640,
             observation_height: 640,
             residual_cap: 1.0,
+        }
+    }
+}
+
+impl DualPhaseConfig {
+    fn prediction_config(self) -> SingleTargetPredictionConfig {
+        SingleTargetPredictionConfig {
+            enabled: self.prediction_enabled,
+            smoothing_frames: self.velocity_smoothing_frames,
+            history_reset_gap_ms: self.velocity_history_reset_gap_ms,
+            spread_base_px_ms: self.velocity_spread_base_px_ms,
+            spread_relative: self.velocity_spread_relative,
+            change_base_px_ms: self.velocity_change_base_px_ms,
+            change_relative: self.velocity_change_relative,
+            lead_frames: self.prediction_lead_frames,
+            far_absolute_cap_px: self.prediction_far_absolute_cap_px,
+            far_base_cap_px: self.prediction_far_base_cap_px,
+            far_relative_cap: self.prediction_far_relative_cap,
+            near_absolute_cap_px: self.prediction_near_absolute_cap_px,
+            near_base_cap_px: self.prediction_near_base_cap_px,
+            near_relative_cap: self.prediction_near_relative_cap,
         }
     }
 }
@@ -292,202 +314,6 @@ impl Default for ControlDecision {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct PredictionResult {
-    raw_offset_x: f64,
-    weighted_offset_x: f64,
-    allowed_cap_x: f64,
-    safe_offset_x: f64,
-    allowed: bool,
-}
-
-const VELOCITY_POSITION_COUNT: usize = 4;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PositionSample {
-    aim_x: f64,
-    capture_ts_ns: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct VelocityEstimate {
-    pub raw_velocities: [f64; 3],
-    pub median_velocity: f64,
-    pub filtered_velocity: f64,
-    pub spread: f64,
-    pub motion_confidence: f64,
-    pub measurement_dt_ms: f64,
-    pub reference_dt_ms: f64,
-    pub history_quality: f64,
-    pub spread_quality: f64,
-    pub trend_quality: f64,
-    pub detection_quality: f64,
-    pub track_quality: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct RobustVelocityConfig {
-    smoothing_frames: f64,
-    history_reset_gap_ms: f64,
-    spread_base_px_ms: f64,
-    spread_relative: f64,
-    change_base_px_ms: f64,
-    change_relative: f64,
-}
-
-impl From<DualPhaseConfig> for RobustVelocityConfig {
-    fn from(config: DualPhaseConfig) -> Self {
-        Self {
-            smoothing_frames: config.velocity_smoothing_frames,
-            history_reset_gap_ms: config.velocity_history_reset_gap_ms,
-            spread_base_px_ms: config.velocity_spread_base_px_ms,
-            spread_relative: config.velocity_spread_relative,
-            change_base_px_ms: config.velocity_change_base_px_ms,
-            change_relative: config.velocity_change_relative,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct RobustVelocityEstimator {
-    config: RobustVelocityConfig,
-    target_id: Option<u64>,
-    samples: VecDeque<PositionSample>,
-    filtered_velocity: f64,
-    initialized_velocity: bool,
-    complete_window_updates: u64,
-}
-
-impl RobustVelocityEstimator {
-    pub fn new(config: DualPhaseConfig) -> Self {
-        Self {
-            config: config.into(),
-            target_id: None,
-            samples: VecDeque::with_capacity(VELOCITY_POSITION_COUNT),
-            filtered_velocity: 0.0,
-            initialized_velocity: false,
-            complete_window_updates: 0,
-        }
-    }
-
-    pub fn history_position_count(&self) -> usize {
-        self.samples.len()
-    }
-
-    pub fn reset(&mut self, target_id: Option<u64>) {
-        self.target_id = target_id;
-        self.samples.clear();
-        self.filtered_velocity = 0.0;
-        self.initialized_velocity = false;
-        self.complete_window_updates = 0;
-    }
-
-    pub fn update(
-        &mut self,
-        target_id: u64,
-        aim_x: f64,
-        capture_ts_ns: u64,
-        detection_confidence: f64,
-        track_confidence: f64,
-    ) -> Option<VelocityEstimate> {
-        if !aim_x.is_finite() || capture_ts_ns == 0 {
-            return None;
-        }
-        if self.target_id != Some(target_id) {
-            self.reset(Some(target_id));
-        }
-        if let Some(previous) = self.samples.back() {
-            if capture_ts_ns <= previous.capture_ts_ns {
-                self.reset(Some(target_id));
-                return None;
-            }
-            let dt_ms = (capture_ts_ns - previous.capture_ts_ns) as f64 / 1_000_000.0;
-            if dt_ms > self.config.history_reset_gap_ms {
-                self.reset(Some(target_id));
-            }
-        }
-        if self.samples.len() == VELOCITY_POSITION_COUNT {
-            self.samples.pop_front();
-        }
-        self.samples.push_back(PositionSample {
-            aim_x,
-            capture_ts_ns,
-        });
-        if self.samples.len() < VELOCITY_POSITION_COUNT {
-            return None;
-        }
-
-        let points = [
-            self.samples[0],
-            self.samples[1],
-            self.samples[2],
-            self.samples[3],
-        ];
-        let mut velocities = [0.0; 3];
-        let mut intervals_ms = [0.0; 3];
-        for (index, pair) in points.windows(2).enumerate() {
-            let dt_ms = (pair[1].capture_ts_ns - pair[0].capture_ts_ns) as f64 / 1_000_000.0;
-            if dt_ms <= 0.0 {
-                self.reset(Some(target_id));
-                return None;
-            }
-            velocities[index] = (pair[1].aim_x - pair[0].aim_x) / dt_ms;
-            intervals_ms[index] = dt_ms;
-        }
-        let median_velocity = median_three(velocities);
-        let spread = median_three(velocities.map(|value| (value - median_velocity).abs()));
-        let latest_dt_ms = intervals_ms[2];
-        let reference_dt_ms = intervals_ms.iter().sum::<f64>() / 3.0;
-        let previous_filtered = if self.initialized_velocity {
-            self.filtered_velocity
-        } else {
-            median_velocity
-        };
-        if self.initialized_velocity {
-            let smoothing_window_ms = (reference_dt_ms * self.config.smoothing_frames).max(1e-9);
-            let alpha = 1.0 - (-latest_dt_ms / smoothing_window_ms).exp();
-            self.filtered_velocity = previous_filtered * (1.0 - alpha) + median_velocity * alpha;
-        } else {
-            self.filtered_velocity = median_velocity;
-            self.initialized_velocity = true;
-        }
-        self.complete_window_updates += 1;
-
-        let history_quality = (self.complete_window_updates as f64 / 2.0).min(1.0);
-        let spread_scale =
-            self.config.spread_base_px_ms + self.config.spread_relative * median_velocity.abs();
-        let spread_quality = 1.0 / (1.0 + spread / spread_scale.max(1e-9));
-        let trend_delta = (median_velocity - previous_filtered).abs();
-        let trend_scale =
-            self.config.change_base_px_ms + self.config.change_relative * previous_filtered.abs();
-        let trend_quality = 1.0 / (1.0 + trend_delta / trend_scale.max(1e-9));
-        let detection_quality = detection_confidence.clamp(0.0, 1.0);
-        let track_quality = track_confidence.clamp(0.0, 1.0);
-        let motion_confidence =
-            (history_quality * spread_quality * trend_quality * detection_quality * track_quality)
-                .clamp(0.0, 1.0);
-        Some(VelocityEstimate {
-            raw_velocities: velocities,
-            median_velocity,
-            filtered_velocity: self.filtered_velocity,
-            spread,
-            motion_confidence,
-            measurement_dt_ms: latest_dt_ms,
-            reference_dt_ms,
-            history_quality,
-            spread_quality,
-            trend_quality,
-            detection_quality,
-            track_quality,
-        })
-    }
-}
-
-fn median_three(mut values: [f64; 3]) -> f64 {
-    values.sort_by(f64::total_cmp);
-    values[1]
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Quantizer {
     accumulator: f64,
@@ -604,7 +430,7 @@ pub struct DualPhaseControl {
     previous_error_x: f64,
     previous_error_y: f64,
     measured_error_history_valid: bool,
-    velocity_x: RobustVelocityEstimator,
+    prediction: SingleTargetPredictor,
     arrival_x: AxisArrivalState,
     arrival_y: AxisArrivalState,
 }
@@ -622,7 +448,7 @@ impl DualPhaseControl {
             previous_error_x: 0.0,
             previous_error_y: 0.0,
             measured_error_history_valid: false,
-            velocity_x: RobustVelocityEstimator::new(config),
+            prediction: SingleTargetPredictor::new(config.prediction_config()),
             arrival_x: AxisArrivalState::default(),
             arrival_y: AxisArrivalState::default(),
         }
@@ -638,7 +464,7 @@ impl DualPhaseControl {
         self.previous_error_x = 0.0;
         self.previous_error_y = 0.0;
         self.measured_error_history_valid = false;
-        self.velocity_x.reset(None);
+        self.prediction.reset(None);
         self.arrival_x.reset();
         self.arrival_y.reset();
     }
@@ -654,7 +480,7 @@ impl DualPhaseControl {
     /// guards. Used when a tracker restores or rebuilds an identity.
     pub fn reset_target_state(&mut self) {
         self.release_trigger();
-        self.velocity_x.reset(None);
+        self.prediction.reset(None);
         self.target_id = None;
         self.previous_error_x = 0.0;
         self.previous_error_y = 0.0;
@@ -719,7 +545,7 @@ impl DualPhaseControl {
             .last_capture_ts_ns
             .is_some_and(|prev| observation.capture_ts_ns <= prev);
         if capture_timestamp_discontinuity {
-            self.velocity_x.reset(self.target_id);
+            self.prediction.reset(self.target_id);
             self.measured_error_history_valid = false;
         }
 
@@ -736,11 +562,14 @@ impl DualPhaseControl {
             self.last_capture_ts_ns = Some(observation.capture_ts_ns);
             self.target_id = None;
             self.measured_error_history_valid = false;
-            self.velocity_x.reset(None);
+            self.prediction.reset(None);
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::TargetInvalid);
         }
-        if !self.prediction_config_valid() {
+        if !self.config.arrival_radius_counts.is_finite()
+            || self.config.arrival_radius_counts < HALF_DEVICE_COUNT
+            || !self.prediction.config_valid()
+        {
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::GeometryInvalid);
         }
@@ -762,31 +591,27 @@ impl DualPhaseControl {
         } else {
             ControlMode::Far
         };
-        let estimate = if capture_timestamp_discontinuity || !self.config.prediction_enabled {
-            None
-        } else {
-            self.velocity_x.update(
-                observation.target_id,
-                aim_x,
-                observation.capture_ts_ns,
-                observation.detection_confidence,
-                observation.track_confidence,
-            )
-        };
-        let velocity_x = estimate.map_or(0.0, |value| value.filtered_velocity);
-        let motion_confidence = estimate.map_or(0.0, |value| value.motion_confidence);
-        let reference_dt_ms = estimate.map_or(0.0, |value| value.reference_dt_ms);
-        let prediction = if self.config.prediction_enabled {
-            self.predict_offset(
-                mode,
+        let prediction = if capture_timestamp_discontinuity {
+            self.prediction.unavailable(
                 error_x,
-                velocity_x,
-                motion_confidence,
-                reference_dt_ms,
-                estimate.is_some(),
+                match mode {
+                    ControlMode::Far => PredictionRange::Far,
+                    ControlMode::Near => PredictionRange::Near,
+                },
             )
         } else {
-            PredictionResult::default()
+            self.prediction.predict(FocusTargetObservation {
+                track_id: observation.target_id,
+                aim_x,
+                measured_error_x: error_x,
+                capture_ts_ns: observation.capture_ts_ns,
+                detection_confidence: observation.detection_confidence,
+                identity_confidence: observation.track_confidence,
+                range: match mode {
+                    ControlMode::Far => PredictionRange::Far,
+                    ControlMode::Near => PredictionRange::Near,
+                },
+            })
         };
         let predicted_offset_x = prediction.safe_offset_x;
         // The authoritative Python robust predictor intentionally predicts X only.
@@ -893,22 +718,18 @@ impl DualPhaseControl {
             quantizer_residual_x: self.quantizer_x.accumulator,
             quantizer_residual_y: self.quantizer_y.accumulator,
             mode,
-            velocity_x,
+            velocity_x: prediction.velocity_x,
             velocity_y: 0.0,
             predicted_offset_x,
             predicted_offset_y,
-            motion_confidence,
-            history_position_count: self.velocity_x.history_position_count(),
-            velocity_samples: estimate.map_or([None; 3], |value| value.raw_velocities.map(Some)),
-            median_velocity: estimate.map(|value| value.median_velocity),
-            velocity_spread: estimate.map(|value| value.spread),
-            measurement_dt_ms: estimate.map(|value| value.measurement_dt_ms),
-            reference_dt_ms,
-            prediction_lead_frames: if self.config.prediction_enabled {
-                self.config.prediction_lead_frames
-            } else {
-                0.0
-            },
+            motion_confidence: prediction.motion_confidence,
+            history_position_count: prediction.history_position_count,
+            velocity_samples: prediction.velocity_samples,
+            median_velocity: prediction.median_velocity,
+            velocity_spread: prediction.velocity_spread,
+            measurement_dt_ms: prediction.measurement_dt_ms,
+            reference_dt_ms: prediction.reference_dt_ms,
+            prediction_lead_frames: prediction.lead_frames,
             prediction_raw_offset_x: prediction.raw_offset_x,
             prediction_weighted_offset_x: prediction.weighted_offset_x,
             prediction_allowed_cap_x: prediction.allowed_cap_x,
@@ -931,88 +752,6 @@ impl DualPhaseControl {
             actuation_pending_y: feedback.pending_y,
             humanized_motion: HumanizedMotionTelemetry::default(),
         }
-    }
-
-    fn predict_offset(
-        &self,
-        mode: ControlMode,
-        measured_error_x: f64,
-        filtered_velocity_x: f64,
-        motion_confidence: f64,
-        reference_dt_ms: f64,
-        estimate_available: bool,
-    ) -> PredictionResult {
-        let allowed = estimate_available
-            && self.config.prediction_enabled
-            && reference_dt_ms.is_finite()
-            && reference_dt_ms > 0.0
-            && self.config.prediction_lead_frames > 0.0;
-        let confidence = if allowed {
-            motion_confidence.clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let raw_offset = if self.config.prediction_enabled {
-            filtered_velocity_x * reference_dt_ms.max(0.0) * self.config.prediction_lead_frames
-        } else {
-            0.0
-        };
-        let (absolute_cap, base_cap, relative_cap) = match mode {
-            ControlMode::Far => (
-                self.config.prediction_far_absolute_cap_px,
-                self.config.prediction_far_base_cap_px,
-                self.config.prediction_far_relative_cap,
-            ),
-            ControlMode::Near => (
-                self.config.prediction_near_absolute_cap_px,
-                self.config.prediction_near_base_cap_px,
-                self.config.prediction_near_relative_cap,
-            ),
-        };
-        let allowed_cap = absolute_cap.min(base_cap + relative_cap * measured_error_x.abs());
-        let weighted_offset = raw_offset * confidence;
-        PredictionResult {
-            raw_offset_x: raw_offset,
-            weighted_offset_x: weighted_offset,
-            allowed_cap_x: allowed_cap,
-            safe_offset_x: weighted_offset.clamp(-allowed_cap, allowed_cap),
-            allowed,
-        }
-    }
-
-    fn prediction_config_valid(&self) -> bool {
-        if !self.config.arrival_radius_counts.is_finite()
-            || self.config.arrival_radius_counts < HALF_DEVICE_COUNT
-        {
-            return false;
-        }
-        if !self.config.prediction_enabled {
-            return true;
-        }
-        self.config.velocity_smoothing_frames.is_finite()
-            && self.config.velocity_smoothing_frames > 0.0
-            && self.config.velocity_history_reset_gap_ms.is_finite()
-            && self.config.velocity_history_reset_gap_ms > 0.0
-            && self.config.velocity_spread_base_px_ms.is_finite()
-            && self.config.velocity_spread_base_px_ms > 0.0
-            && self.config.velocity_spread_relative.is_finite()
-            && self.config.velocity_spread_relative >= 0.0
-            && self.config.velocity_change_base_px_ms.is_finite()
-            && self.config.velocity_change_base_px_ms > 0.0
-            && self.config.velocity_change_relative.is_finite()
-            && self.config.velocity_change_relative >= 0.0
-            && self.config.prediction_lead_frames.is_finite()
-            && (0.0..=10.0).contains(&self.config.prediction_lead_frames)
-            && [
-                self.config.prediction_far_absolute_cap_px,
-                self.config.prediction_far_base_cap_px,
-                self.config.prediction_far_relative_cap,
-                self.config.prediction_near_absolute_cap_px,
-                self.config.prediction_near_base_cap_px,
-                self.config.prediction_near_relative_cap,
-            ]
-            .into_iter()
-            .all(|value| value.is_finite() && value >= 0.0)
     }
 
     fn project_demand(
@@ -1085,7 +824,6 @@ fn crossed_center(previous: f64, current: f64) -> bool {
 mod tests {
     use super::{
         AxisArrivalState, ControlObservation, DualPhaseConfig, DualPhaseControl, Quantizer,
-        RobustVelocityEstimator,
     };
 
     #[test]
@@ -1122,68 +860,6 @@ mod tests {
         assert!((quantizer.accumulator - 0.2).abs() < 1e-9);
         assert_eq!(quantizer.quantize(-0.6, 100, 1.0).unwrap(), 0);
         assert!((quantizer.accumulator + 0.6).abs() < 1e-9);
-    }
-
-    #[test]
-    fn robust_velocity_matches_python_three_segment_median_and_spread() {
-        let mut estimator = RobustVelocityEstimator::new(DualPhaseConfig::default());
-        let mut estimate = None;
-        for (index, position) in [100.0, 102.0, 160.0, 106.0].into_iter().enumerate() {
-            estimate = estimator.update(
-                1,
-                position,
-                1_000_000_000 + index as u64 * 10_000_000,
-                1.0,
-                1.0,
-            );
-        }
-        let estimate = estimate.expect("four positions complete the robust window");
-        for (actual, expected) in estimate.raw_velocities.into_iter().zip([0.2, 5.8, -5.4]) {
-            assert!((actual - expected).abs() < 1e-12);
-        }
-        assert!((estimate.median_velocity - 0.2).abs() < 1e-12);
-        assert!((estimate.filtered_velocity - 0.2).abs() < 1e-12);
-        assert!((estimate.spread - 5.6).abs() < 1e-12);
-        assert!(estimate.motion_confidence < 0.05);
-    }
-
-    #[test]
-    fn robust_velocity_uses_real_capture_intervals_and_ema_decay() {
-        let mut estimator = RobustVelocityEstimator::new(DualPhaseConfig::default());
-        let mut estimate = None;
-        for elapsed_ms in [0_u64, 8, 20, 29] {
-            estimate = estimator.update(
-                1,
-                100.0 + 0.5 * elapsed_ms as f64,
-                1_000_000_000 + elapsed_ms * 1_000_000,
-                1.0,
-                1.0,
-            );
-        }
-        let estimate = estimate.expect("variable interval window");
-        assert_eq!(estimate.raw_velocities, [0.5, 0.5, 0.5]);
-        assert!((estimate.reference_dt_ms - 29.0 / 3.0).abs() < 1e-12);
-
-        let mut estimator = RobustVelocityEstimator::new(DualPhaseConfig::default());
-        let mut estimates = Vec::new();
-        for (index, position) in [100.0, 105.0, 110.0, 115.0, 115.0, 115.0, 115.0]
-            .into_iter()
-            .enumerate()
-        {
-            if let Some(estimate) = estimator.update(
-                1,
-                position,
-                1_000_000_000 + index as u64 * 10_000_000,
-                1.0,
-                1.0,
-            ) {
-                estimates.push(estimate);
-            }
-        }
-        let last = estimates.last().expect("rolling estimate");
-        let expected = 0.5 * (-2.0_f64 / 3.0).exp();
-        assert_eq!(last.median_velocity, 0.0);
-        assert!((last.filtered_velocity - expected).abs() < 1e-12);
     }
 
     #[test]

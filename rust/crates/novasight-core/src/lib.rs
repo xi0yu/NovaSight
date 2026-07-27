@@ -8,6 +8,7 @@ pub mod geometry;
 pub mod output;
 pub mod perception;
 pub mod ports;
+pub mod prediction;
 pub mod targeting;
 pub mod tracking;
 pub mod units;
