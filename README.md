@@ -156,6 +156,10 @@ cargo run -p novasightd --features deepstream -- \
   --config ~/.config/novasight/novasightd.yaml
 ```
 
+The workspace pins native aarch64 builds to Ubuntu's `/usr/bin/g++` and system
+linker. This prevents a Linuxbrew `ld` earlier in `PATH` from mixing its own
+glibc and binutils with JetPack's CUDA, TensorRT, DLA, and driver libraries.
+
 This is the canonical product command: DeepStream live perception is the
 default production implementation, not an optional CLI mode. Physical kmNet
 commissioning and the output gate come from the same YAML configuration, so

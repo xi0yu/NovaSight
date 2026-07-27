@@ -1,7 +1,13 @@
-# JetPack's GStreamer, GLib, CUDA, and DeepStream libraries belong to Ubuntu's
-# native AArch64 sysroot. Do not let a Linuxbrew binutils installation link
-# those system libraries: its dependency search can mix incompatible glibc
-# generations into the same executable.
+# Jetson builds must use Ubuntu's system toolchain. A Linuxbrew `ld` earlier in
+# PATH cannot reliably resolve JetPack's driver-side CUDA and DLA dependencies
+# and may itself target a newer glibc than the Jetson host provides.
 [target.aarch64-unknown-linux-gnu]
-linker = "/usr/bin/aarch64-linux-gnu-gcc"
-rustflags = ["-C", "link-arg=-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu"]
+linker = "/usr/bin/g++"
+rustflags = [
+  "-C", "link-arg=-B/usr/bin",
+  "-C", "link-arg=-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu",
+  # JetPack 6 installs driver libraries here.
+  "-C", "link-arg=-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu/nvidia",
+  # JetPack 5 and older L4T releases use this directory.
+  "-C", "link-arg=-Wl,-rpath-link,/usr/lib/aarch64-linux-gnu/tegra",
+]
