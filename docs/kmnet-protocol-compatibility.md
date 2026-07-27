@@ -26,21 +26,12 @@ The `rand` field is refreshed for ordinary commands to match upstream packet
 behavior. It is not treated as authentication. The monitor command is the one
 exception because that field transports its tagged listener port.
 
-The retained `python_host` adapter is still the production default while this
-native path remains evidence-gated. Production `novasightd --check` now starts
-that exact configured helper, validates its JSON-lines protocol and
-`driver_available` receipt, and requests a clean shutdown without sending the
-hardware `connect` operation. This catches a missing interpreter, packaged
-module, incompatible helper, or unavailable vendor extension before systemd
-starts the daemon. Selecting `native_udp` without the explicit experimental
-feature fails the same preflight instead of producing a false PASS.
-The Rust composition root also pins the helper's working directory to the
-canonical release that contains the configured model worker. Helper startup no
-longer depends on the operator's shell directory or systemd's ambient working
-directory, and reconnect cannot cross an atomic `current` symlink switch into
-another release's Python package.
+`native_udp` is the production adapter and is included by the normal
+`deepstream` build. `novasightd --check` validates its IPv4, ports, UUID,
+timeouts and monitor contract without contacting the hardware; the runtime
+epoch owns the real UDP sockets, monitor thread, connect exchange and shutdown.
 
-At runtime, recoverable helper/driver failures close the output gate and mark
+At runtime, recoverable UDP/device failures close the output gate and mark
 the device disconnected while the pipeline remains available for bounded
 reconnect attempts. The supervisor projects this as `device.state=degraded`
 with a `device_reconnecting` error instead of leaving a false `ready` state.
@@ -51,8 +42,6 @@ historical evidence. Reconnect-cooldown polls do not overwrite the originating
 failure or inflate its failure count.
 
 The upstream repository does not publish a standard open-source license, and
-its copyright notice restricts use to official kmBox hardware. Protocol
-compatibility does not by itself grant commercial redistribution rights.
-Commercial NovaSight releases therefore require written vendor authorization;
-the native adapter remains evidence-gated until real Jetson and hardware runs
-also pass the sustained-output acceptance test.
+its copyright notice restricts use to official kmBox hardware. NovaSight's
+adapter therefore targets official kmBox hardware only; commercial terms still
+need to be confirmed with the vendor.

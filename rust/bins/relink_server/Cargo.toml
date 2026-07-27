@@ -29,7 +29,11 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [features]
 default = []
-deepstream = ["dep:novasight-platform-jetson", "novasight-platform-jetson/deepstream"]
+deepstream = [
+  "dep:novasight-platform-jetson",
+  "novasight-platform-jetson/deepstream",
+  "novasight-runtime/tensorrt-model-ingress",
+]
 cuda-preprocess = ["deepstream", "novasight-platform-jetson/cuda-preprocess"]
 tensorrt = [
   "cuda-preprocess",
@@ -37,7 +41,6 @@ tensorrt = [
   "dep:novasight-tensorrt",
   "novasight-platform-jetson/tensorrt",
 ]
-experimental-kmnet-native = ["deepstream"]
 
 [dev-dependencies]
 uuid.workspace = true

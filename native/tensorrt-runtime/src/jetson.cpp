@@ -4,6 +4,7 @@
 #include <cuda_runtime_api.h>
 
 #include <climits>
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <limits>
@@ -205,8 +206,9 @@ std::unique_ptr<novasight_tensorrt_engine> create_engine(
     const uint64_t* requested_input_shape,
     uint32_t requested_input_rank
 ) {
-    if (requested_input_shape == nullptr || requested_input_rank != 4) {
-        throw std::runtime_error("NovaSight requires a requested NCHW rank-4 input shape");
+    const bool auto_shape = requested_input_shape == nullptr && requested_input_rank == 0;
+    if (!auto_shape && (requested_input_shape == nullptr || requested_input_rank != 4)) {
+        throw std::runtime_error("NovaSight requires an automatic or requested NCHW rank-4 input shape");
     }
     auto owner = std::make_unique<novasight_tensorrt_engine>();
     const std::vector<char> bytes = read_engine(engine_path);
@@ -242,15 +244,35 @@ std::unique_ptr<novasight_tensorrt_engine> create_engine(
         throw std::runtime_error("TensorRT output count exceeds ABI capacity");
     }
 
-    nvinfer1::Dims requested{};
-    requested.nbDims = static_cast<int>(requested_input_rank);
-    for (uint32_t index = 0; index < requested_input_rank; ++index) {
-        if (requested_input_shape[index] == 0 || requested_input_shape[index] > INT_MAX) {
-            throw std::runtime_error("requested TensorRT input dimension is invalid");
-        }
-        requested.d[index] = static_cast<int>(requested_input_shape[index]);
-    }
     const nvinfer1::Dims engine_input = owner->engine->getTensorShape(input_name);
+    if (engine_input.nbDims <= 0 || engine_input.nbDims > static_cast<int>(NOVASIGHT_TENSORRT_MAX_RANK)) {
+        throw std::runtime_error("TensorRT input rank is unsupported");
+    }
+    nvinfer1::Dims requested = engine_input;
+    if (auto_shape && std::any_of(
+            engine_input.d,
+            engine_input.d + engine_input.nbDims,
+            [](int dimension) { return dimension < 0; })) {
+        if (owner->engine->getNbOptimizationProfiles() <= 0) {
+            throw std::runtime_error(
+                "dynamic TensorRT input has no optimization profile for automatic inspection"
+            );
+        }
+        requested = owner->engine->getProfileShape(
+            input_name,
+            0,
+            nvinfer1::OptProfileSelector::kOPT
+        );
+    } else if (!auto_shape) {
+        requested = {};
+        requested.nbDims = static_cast<int>(requested_input_rank);
+        for (uint32_t index = 0; index < requested_input_rank; ++index) {
+            if (requested_input_shape[index] == 0 || requested_input_shape[index] > INT_MAX) {
+                throw std::runtime_error("requested TensorRT input dimension is invalid");
+            }
+            requested.d[index] = static_cast<int>(requested_input_shape[index]);
+        }
+    }
     if (engine_input.nbDims != requested.nbDims) {
         throw std::runtime_error("requested input rank does not match TensorRT engine");
     }
@@ -265,6 +287,8 @@ std::unique_ptr<novasight_tensorrt_engine> create_engine(
     if (dynamic && !owner->context->setInputShape(input_name, requested)) {
         throw std::runtime_error("TensorRT setInputShape rejected requested dimensions");
     }
+    owner->spec.input_dynamic = dynamic ? 1U : 0U;
+    owner->spec.selected_profile = 0U;
     if (owner->context->inferShapes(0, nullptr) != 0) {
         throw std::runtime_error("TensorRT input shapes are not fully specified");
     }
@@ -430,6 +454,66 @@ extern "C" int novasight_tensorrt_execute(
     } catch (...) {
         if (output_count != nullptr) *output_count = 0;
         write_error(error_out, error_out_size, "unexpected TensorRT execute exception");
+        return 2;
+    }
+}
+
+extern "C" int novasight_tensorrt_probe_zero(
+    novasight_tensorrt_engine* engine,
+    novasight_host_tensor_view* outputs,
+    uint32_t output_capacity,
+    uint32_t* output_count,
+    char* error_out,
+    size_t error_out_size
+) {
+    void* input_device = nullptr;
+    try {
+        if (engine == nullptr) {
+            throw std::runtime_error("TensorRT zero probe engine is null");
+        }
+        const auto& input_spec = engine->spec.input;
+        if (input_spec.nbytes > std::numeric_limits<size_t>::max()) {
+            throw std::runtime_error("TensorRT zero probe input exceeds host size_t capacity");
+        }
+        cuda_check(
+            cudaMalloc(&input_device, static_cast<size_t>(input_spec.nbytes)),
+            "cudaMalloc zero probe input"
+        );
+        cuda_check(
+            cudaMemsetAsync(
+                input_device,
+                0,
+                static_cast<size_t>(input_spec.nbytes),
+                engine->stream
+            ),
+            "cudaMemsetAsync zero probe input"
+        );
+        novasight_device_tensor_view input{};
+        input.device_ptr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(input_device));
+        input.nbytes = input_spec.nbytes;
+        input.rank = input_spec.rank;
+        input.dtype = input_spec.dtype;
+        for (uint32_t index = 0; index < input.rank; ++index) {
+            input.dimensions[index] = static_cast<uint64_t>(input_spec.dimensions[index]);
+        }
+        const int result = execute_engine(
+            engine,
+            &input,
+            outputs,
+            output_capacity,
+            output_count
+        );
+        cuda_check(cudaFree(input_device), "cudaFree zero probe input");
+        return result;
+    } catch (const std::exception& error) {
+        if (input_device != nullptr) (void)cudaFree(input_device);
+        if (output_count != nullptr) *output_count = 0;
+        write_error(error_out, error_out_size, error.what());
+        return 1;
+    } catch (...) {
+        if (input_device != nullptr) (void)cudaFree(input_device);
+        if (output_count != nullptr) *output_count = 0;
+        write_error(error_out, error_out_size, "unexpected TensorRT zero probe exception");
         return 2;
     }
 }

@@ -1631,8 +1631,6 @@ pub struct DeviceConfig {
     pub uuid: String,
     #[serde(default = "default_kmnet_monitor_port")]
     pub monitor_port: u16,
-    #[serde(default = "default_kmnet_helper_module")]
-    pub helper_module: String,
     #[serde(default = "default_kmnet_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
     #[serde(default = "default_kmnet_send_timeout_ms")]
@@ -1641,8 +1639,6 @@ pub struct DeviceConfig {
     pub monitor_timeout_ms: u64,
     #[serde(default = "default_kmnet_trigger_poll_interval_ms")]
     pub trigger_poll_interval_ms: u64,
-    #[serde(default = "default_kmnet_reconnect_cooldown_ms")]
-    pub reconnect_cooldown_ms: u64,
     #[serde(skip)]
     pub(crate) production_fields_explicit: bool,
     #[serde(default, flatten)]
@@ -1658,12 +1654,10 @@ impl Default for DeviceConfig {
             port: default_kmnet_port(),
             uuid: default_kmnet_uuid(),
             monitor_port: default_kmnet_monitor_port(),
-            helper_module: default_kmnet_helper_module(),
             connect_timeout_ms: default_kmnet_connect_timeout_ms(),
             send_timeout_ms: default_kmnet_send_timeout_ms(),
             monitor_timeout_ms: default_kmnet_monitor_timeout_ms(),
             trigger_poll_interval_ms: default_kmnet_trigger_poll_interval_ms(),
-            reconnect_cooldown_ms: default_kmnet_reconnect_cooldown_ms(),
             production_fields_explicit: false,
             legacy: BTreeMap::new(),
         }
@@ -1709,15 +1703,6 @@ impl DeviceConfig {
                 "must be within the kmNet vendor range 1024..=49151",
             ));
         }
-        if self.auto_connect
-            && self.backend == DeviceBackend::PythonHost
-            && self.helper_module.trim().is_empty()
-        {
-            return Err(ConfigValidationError::new(
-                "hardware.helper_module",
-                "must not be empty",
-            ));
-        }
         if self.auto_connect && self.connect_timeout_ms == 0 {
             return Err(ConfigValidationError::new(
                 "hardware.connect_timeout_ms",
@@ -1736,22 +1721,10 @@ impl DeviceConfig {
                 "must be within 1..=50",
             ));
         }
-        if self.auto_connect
-            && self.backend == DeviceBackend::NativeUdp
-            && self.monitor_timeout_ms == 0
-        {
+        if self.auto_connect && self.monitor_timeout_ms == 0 {
             return Err(ConfigValidationError::new(
                 "hardware.monitor_timeout_ms",
                 "must be non-zero for native_udp",
-            ));
-        }
-        if self.auto_connect
-            && self.backend == DeviceBackend::PythonHost
-            && self.reconnect_cooldown_ms == 0
-        {
-            return Err(ConfigValidationError::new(
-                "hardware.reconnect_cooldown_ms",
-                "must be non-zero for python_host",
             ));
         }
         Ok(())
@@ -1761,9 +1734,9 @@ impl DeviceConfig {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceBackend {
-    NativeUdp,
     #[default]
-    PythonHost,
+    #[serde(alias = "python_host")]
+    NativeUdp,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1822,8 +1795,6 @@ pub struct PathConfig {
     pub database: PathBuf,
     #[serde(default = "default_license")]
     pub license: PathBuf,
-    #[serde(default = "default_python_executable")]
-    pub python_executable: PathBuf,
     #[serde(default, flatten)]
     pub legacy: BTreeMap<String, Value>,
 }
@@ -1835,7 +1806,6 @@ impl Default for PathConfig {
             model_dir: default_model_dir(),
             database: default_database(),
             license: default_license(),
-            python_executable: default_python_executable(),
             legacy: BTreeMap::new(),
         }
     }
@@ -1887,10 +1857,6 @@ fn default_database() -> PathBuf {
 
 fn default_license() -> PathBuf {
     PathBuf::from("data/license.json")
-}
-
-fn default_python_executable() -> PathBuf {
-    PathBuf::from("python3")
 }
 
 fn default_capture_device() -> PathBuf {
@@ -1965,10 +1931,6 @@ const fn default_kmnet_monitor_port() -> u16 {
     5001
 }
 
-fn default_kmnet_helper_module() -> String {
-    "novasight.executors.kmnet_host".to_owned()
-}
-
 const fn default_kmnet_connect_timeout_ms() -> u64 {
     3_000
 }
@@ -1983,10 +1945,6 @@ const fn default_kmnet_monitor_timeout_ms() -> u64 {
 
 const fn default_kmnet_trigger_poll_interval_ms() -> u64 {
     4
-}
-
-const fn default_kmnet_reconnect_cooldown_ms() -> u64 {
-    500
 }
 
 #[cfg(test)]

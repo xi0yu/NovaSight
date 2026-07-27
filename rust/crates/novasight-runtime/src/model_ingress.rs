@@ -548,6 +548,86 @@ impl OfflineModelJobRunner {
     }
 }
 
+/// Runtime-selected model admission backend. Production Jetson composition
+/// uses the native TensorRT variant; the process worker remains temporarily
+/// available to migration tests and is not selected by `novasightd`.
+#[derive(Clone, Debug)]
+pub enum ModelJobRunner {
+    Process(OfflineModelJobRunner),
+    #[cfg(feature = "tensorrt-model-ingress")]
+    Native(crate::model_ingress_native::NativeModelJobRunner),
+}
+
+impl From<OfflineModelJobRunner> for ModelJobRunner {
+    fn from(value: OfflineModelJobRunner) -> Self {
+        Self::Process(value)
+    }
+}
+
+#[cfg(feature = "tensorrt-model-ingress")]
+impl From<crate::model_ingress_native::NativeModelJobRunner> for ModelJobRunner {
+    fn from(value: crate::model_ingress_native::NativeModelJobRunner) -> Self {
+        Self::Native(value)
+    }
+}
+
+impl ModelJobRunner {
+    pub async fn preflight(&self) -> Result<(), ModelIngressError> {
+        match self {
+            Self::Process(runner) => runner.preflight().await,
+            #[cfg(feature = "tensorrt-model-ingress")]
+            Self::Native(runner) => runner.preflight().await,
+        }
+    }
+
+    pub(crate) async fn inspect(
+        &self,
+        engine_path: &Path,
+        display_name: &str,
+        cancellation: Arc<AtomicUsize>,
+    ) -> Result<ModelWorkerOutput, ModelIngressError> {
+        match self {
+            Self::Process(runner) => {
+                runner
+                    .inspect(engine_path, display_name, cancellation)
+                    .await
+            }
+            #[cfg(feature = "tensorrt-model-ingress")]
+            Self::Native(runner) => {
+                runner
+                    .inspect(engine_path, display_name, cancellation)
+                    .await
+            }
+        }
+    }
+
+    pub(crate) async fn configure(
+        &self,
+        engine_path: &Path,
+        profile: &ModelProfileConfigureRequest,
+        cancellation: Arc<AtomicUsize>,
+    ) -> Result<ModelWorkerOutput, ModelIngressError> {
+        match self {
+            Self::Process(runner) => runner.configure(engine_path, profile, cancellation).await,
+            #[cfg(feature = "tensorrt-model-ingress")]
+            Self::Native(runner) => runner.configure(engine_path, profile, cancellation).await,
+        }
+    }
+
+    pub(crate) async fn probe(
+        &self,
+        engine_path: &Path,
+        input_mode: ModelProbeInputMode,
+        cancellation: Arc<AtomicUsize>,
+    ) -> Result<ModelWorkerOutput, ModelIngressError> {
+        match self {
+            Self::Process(runner) => runner.probe(engine_path, input_mode, cancellation).await,
+            #[cfg(feature = "tensorrt-model-ingress")]
+            Self::Native(runner) => runner.probe(engine_path, input_mode, cancellation).await,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ModelWorkerPreflight {
     protocol: u32,

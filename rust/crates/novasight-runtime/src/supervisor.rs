@@ -32,8 +32,8 @@ use crate::model_activation::{
     ModelActivationError, ModelActivationRequest, ModelActivationResult,
 };
 use crate::model_ingress::{
-    ModelIngressError, ModelIngressRequest, ModelIngressResult, ModelIngressStage,
-    ModelManifestTransaction, OfflineModelJobRunner, load_profile, validate_worker_output,
+    ModelIngressError, ModelIngressRequest, ModelIngressResult, ModelIngressStage, ModelJobRunner,
+    ModelManifestTransaction, load_profile, validate_worker_output,
 };
 use crate::protocol::{RuntimeErrorSummary, SubsystemState};
 use crate::snapshot::{
@@ -97,7 +97,7 @@ pub struct RuntimeDependencies {
     model_geometry: std::sync::RwLock<Option<ModelGeometry>>,
     perception: Option<Arc<dyn PerceptionAdapter>>,
     model_catalog: Option<SqliteModelCatalog>,
-    model_jobs: Option<OfflineModelJobRunner>,
+    model_jobs: Option<ModelJobRunner>,
     preview: Option<PreviewHub>,
     crosshair: Option<CrosshairHub>,
     output_enabled: bool,
@@ -167,8 +167,8 @@ impl RuntimeDependencies {
         self
     }
 
-    pub fn with_model_jobs(mut self, model_jobs: OfflineModelJobRunner) -> Self {
-        self.model_jobs = Some(model_jobs);
+    pub fn with_model_jobs(mut self, model_jobs: impl Into<ModelJobRunner>) -> Self {
+        self.model_jobs = Some(model_jobs.into());
         self
     }
 

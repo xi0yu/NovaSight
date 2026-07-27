@@ -12,3 +12,6 @@ ffi = []
 novasight-core = { path = "../novasight-core" }
 novasight-jetson-preprocess = { path = "../novasight-jetson-preprocess" }
 thiserror.workspace = true
+
+[build-dependencies]
+cc = "1.3"

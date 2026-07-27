@@ -482,7 +482,6 @@ impl ConfigSchemaResponse {
                         string("paths.model_dir", "模型目录"),
                         string("paths.database", "数据库路径"),
                         string("paths.license", "许可证路径"),
-                        string("paths.python_executable", "Python 回退解释器"),
                     ],
                 ),
                 section(
@@ -606,16 +605,11 @@ impl ConfigSchemaResponse {
                     "kmNet 输出",
                     vec![
                         boolean("hardware.auto_connect", "运行时自动连接"),
-                        select(
-                            "hardware.backend",
-                            "设备后端",
-                            &["python_host", "native_udp"],
-                        ),
+                        select("hardware.backend", "设备后端", &["native_udp"]),
                         string("hardware.host", "设备地址"),
                         integer("hardware.port", "设备端口", 1.0, 65_535.0, None),
                         string("hardware.uuid", "设备 UUID"),
                         integer("hardware.monitor_port", "监控端口", 1_024.0, 49_151.0, None),
-                        string("hardware.helper_module", "Python 回退模块"),
                         integer(
                             "hardware.connect_timeout_ms",
                             "连接超时",
@@ -642,13 +636,6 @@ impl ConfigSchemaResponse {
                             "触发轮询间隔",
                             1.0,
                             50.0,
-                            Some("ms"),
-                        ),
-                        integer(
-                            "hardware.reconnect_cooldown_ms",
-                            "重连冷却",
-                            1.0,
-                            u64::MAX as f64,
                             Some("ms"),
                         ),
                     ],

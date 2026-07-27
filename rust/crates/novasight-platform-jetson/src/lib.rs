@@ -2,8 +2,8 @@
 
 mod clock;
 pub mod deepstream;
+#[path = "kmnet_native.rs"]
 pub mod kmnet;
-pub mod kmnet_native;
 pub mod v4l2;
 
 pub use clock::SystemMonotonicClock;

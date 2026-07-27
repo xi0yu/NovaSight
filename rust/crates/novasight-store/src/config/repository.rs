@@ -369,6 +369,17 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     let removed_humanized_motion = config.control.legacy.remove("humanized_motion").is_some();
+    config.paths.legacy.remove("python_executable");
+    if let Some(device) = &mut config.device {
+        device.legacy.remove("helper_module");
+        device.legacy.remove("reconnect_cooldown_ms");
+    }
+    remove_section_fields(document, "paths", &["python_executable"]);
+    remove_section_fields(
+        document,
+        "hardware",
+        &["helper_module", "reconnect_cooldown_ms"],
+    );
     if config.schema_version >= 7 {
         if removed_humanized_motion
             && let Value::Mapping(root) = document
@@ -455,6 +466,18 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         .or_insert_with(|| Value::Mapping(Default::default()));
     if let Value::Mapping(control) = control {
         control.remove(Value::String("humanized_motion".to_owned()));
+    }
+}
+
+fn remove_section_fields(document: &mut Value, section: &str, fields: &[&str]) {
+    let Value::Mapping(root) = document else {
+        return;
+    };
+    let Some(Value::Mapping(mapping)) = root.get_mut(Value::String(section.to_owned())) else {
+        return;
+    };
+    for field in fields {
+        mapping.remove(Value::String((*field).to_owned()));
     }
 }
 
@@ -547,19 +570,6 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
                 "connect_timeout_ms",
                 "send_timeout_ms",
                 "monitor_timeout_ms",
-                "trigger_poll_interval_ms",
-            ],
-            super::DeviceBackend::PythonHost => &[
-                "auto_connect",
-                "backend",
-                "host",
-                "port",
-                "uuid",
-                "monitor_port",
-                "helper_module",
-                "connect_timeout_ms",
-                "send_timeout_ms",
-                "reconnect_cooldown_ms",
                 "trigger_poll_interval_ms",
             ],
         };
@@ -956,13 +966,7 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
         (
             "paths",
             &config.paths.legacy,
-            &[
-                "data_dir",
-                "model_dir",
-                "database",
-                "license",
-                "python_executable",
-            ][..],
+            &["data_dir", "model_dir", "database", "license"][..],
         ),
         ("consumers", &config.consumers.legacy, &["preview"][..]),
         ("limits", &config.limits.legacy, &["stream_fps"][..]),
@@ -1032,12 +1036,10 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
                 "port",
                 "uuid",
                 "monitor_port",
-                "helper_module",
                 "connect_timeout_ms",
                 "send_timeout_ms",
                 "monitor_timeout_ms",
                 "trigger_poll_interval_ms",
-                "reconnect_cooldown_ms",
             ],
         )?;
     }

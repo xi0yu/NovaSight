@@ -1,7 +1,6 @@
 //! Jetson production adapter composition.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Read;
@@ -31,11 +30,7 @@ use novasight_platform_jetson::deepstream::{
     DeepStreamPipelineSpec, DeepStreamSessionConfig, InferenceStage, LatestFrameExchange,
     ModelInput, PreviewPipelineConfig, Roi, SessionError, preflight_deepstream_runtime,
 };
-use novasight_platform_jetson::kmnet::{KmNetError, KmNetHostClient, KmNetHostConfig};
-#[cfg(feature = "experimental-kmnet-native")]
-use novasight_platform_jetson::kmnet_native::{
-    KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError,
-};
+use novasight_platform_jetson::kmnet::{KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError};
 use novasight_platform_jetson::v4l2::V4l2CapabilityProbe;
 use novasight_runtime::{ConfigService, RuntimeDependencies};
 use novasight_store::config::{
@@ -56,7 +51,6 @@ pub(super) fn build_live_production_dependencies(
     config: &AppConfig,
     config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
-    python_package_root: &Path,
     parser_library: PathBuf,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
     let adapters = config
@@ -73,36 +67,7 @@ pub(super) fn build_live_production_dependencies(
         );
     }
     let device: Arc<dyn PointerDevice> = match adapters.device.backend {
-        DeviceBackend::NativeUdp => {
-            #[cfg(not(feature = "experimental-kmnet-native"))]
-            return Err(LivePerceptionError::NativeKmNetNotValidated);
-            #[cfg(feature = "experimental-kmnet-native")]
-            {
-                let host = adapters.device.host.parse().map_err(|_| {
-                    LivePerceptionError::InvalidKmNetHost(adapters.device.host.clone())
-                })?;
-                Arc::new(
-                    KmNetNativeDevice::new(KmNetNativeConfig {
-                        host,
-                        port: adapters.device.port,
-                        uuid: adapters.device.uuid.clone(),
-                        monitor_port: adapters.device.monitor_port,
-                        connect_timeout: Duration::from_millis(adapters.device.connect_timeout_ms),
-                        request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
-                        monitor_timeout: Duration::from_millis(adapters.device.monitor_timeout_ms),
-                    })
-                    .map_err(LivePerceptionError::NativeKmNet)?,
-                )
-            }
-        }
-        DeviceBackend::PythonHost => Arc::new(
-            KmNetHostClient::new(kmnet_host_config(
-                config,
-                adapters.device,
-                python_package_root,
-            ))
-            .map_err(LivePerceptionError::KmNet)?,
-        ),
+        DeviceBackend::NativeUdp => Arc::new(build_native_kmnet(adapters.device)?),
     };
     build_live_dependencies(
         config,
@@ -119,10 +84,9 @@ pub(super) fn build_live_production_dependencies(
 pub(super) fn preflight_live_production(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
-    python_package_root: &Path,
     parser_library: &Path,
 ) -> Result<(), LivePerceptionError> {
-    preflight_pointer_adapter(config, python_package_root)?;
+    preflight_pointer_adapter(config)?;
     let preview = PreviewHub::new(config.consumers.preview);
     let crosshair = build_crosshair_hub(config)?;
     let session =
@@ -130,10 +94,7 @@ pub(super) fn preflight_live_production(
     preflight_deepstream_runtime(&session).map_err(LivePerceptionError::RuntimePreflight)
 }
 
-fn preflight_pointer_adapter(
-    config: &AppConfig,
-    python_package_root: &Path,
-) -> Result<(), LivePerceptionError> {
+fn preflight_pointer_adapter(config: &AppConfig) -> Result<(), LivePerceptionError> {
     let adapters = config
         .require_production_adapters()
         .map_err(LivePerceptionError::Config)?;
@@ -141,57 +102,25 @@ fn preflight_pointer_adapter(
         return Ok(());
     }
     match adapters.device.backend {
-        DeviceBackend::PythonHost => KmNetHostClient::preflight(&kmnet_host_config(
-            config,
-            adapters.device,
-            python_package_root,
-        ))
-        .map_err(LivePerceptionError::KmNet),
-        DeviceBackend::NativeUdp => {
-            #[cfg(not(feature = "experimental-kmnet-native"))]
-            return Err(LivePerceptionError::NativeKmNetNotValidated);
-            #[cfg(feature = "experimental-kmnet-native")]
-            {
-                let host = adapters.device.host.parse().map_err(|_| {
-                    LivePerceptionError::InvalidKmNetHost(adapters.device.host.clone())
-                })?;
-                KmNetNativeDevice::new(KmNetNativeConfig {
-                    host,
-                    port: adapters.device.port,
-                    uuid: adapters.device.uuid.clone(),
-                    monitor_port: adapters.device.monitor_port,
-                    connect_timeout: Duration::from_millis(adapters.device.connect_timeout_ms),
-                    request_timeout: Duration::from_millis(adapters.device.send_timeout_ms),
-                    monitor_timeout: Duration::from_millis(adapters.device.monitor_timeout_ms),
-                })
-                .map(drop)
-                .map_err(LivePerceptionError::NativeKmNet)
-            }
-        }
+        DeviceBackend::NativeUdp => build_native_kmnet(adapters.device).map(drop),
     }
 }
 
-fn kmnet_host_config(
-    config: &AppConfig,
-    device: &DeviceConfig,
-    python_package_root: &Path,
-) -> KmNetHostConfig {
-    KmNetHostConfig {
-        program: config.paths.python_executable.clone(),
-        args: vec![
-            OsString::from("-u"),
-            OsString::from("-m"),
-            OsString::from(device.helper_module.trim()),
-        ],
-        working_directory: python_package_root.to_owned(),
-        host: device.host.clone(),
+fn build_native_kmnet(device: &DeviceConfig) -> Result<KmNetNativeDevice, LivePerceptionError> {
+    let host = device
+        .host
+        .parse()
+        .map_err(|_| LivePerceptionError::InvalidKmNetHost(device.host.clone()))?;
+    KmNetNativeDevice::new(KmNetNativeConfig {
+        host,
         port: device.port,
         uuid: device.uuid.clone(),
         monitor_port: device.monitor_port,
-        startup_timeout: Duration::from_millis(device.connect_timeout_ms),
+        connect_timeout: Duration::from_millis(device.connect_timeout_ms),
         request_timeout: Duration::from_millis(device.send_timeout_ms),
-        reconnect_cooldown: Duration::from_millis(device.reconnect_cooldown_ms),
-    }
+        monitor_timeout: Duration::from_millis(device.monitor_timeout_ms),
+    })
+    .map_err(LivePerceptionError::NativeKmNet)
 }
 
 fn build_live_dependencies(
@@ -1859,19 +1788,10 @@ pub(super) enum LivePerceptionError {
     CaptureProbe(String),
     #[error("capture profile cannot be resolved for the selected Jetson adapter: {0}")]
     CaptureSelection(String),
-    #[error("kmNet production adapter failed: {0}")]
-    KmNet(KmNetError),
-    #[cfg(feature = "experimental-kmnet-native")]
     #[error("hardware.host must be an IPv4 address for native kmNet: {0}")]
     InvalidKmNetHost(String),
-    #[cfg(feature = "experimental-kmnet-native")]
     #[error("native kmNet production adapter failed: {0}")]
     NativeKmNet(KmNetNativeError),
-    #[cfg(not(feature = "experimental-kmnet-native"))]
-    #[error(
-        "native kmNet is experimental; rebuild with experimental-kmnet-native only for Jetson evidence collection"
-    )]
-    NativeKmNetNotValidated,
     #[error("unsupported capture pixel format: {0}")]
     UnsupportedCaptureFormat(String),
     #[error("invalid DeepStream I/O mode: {0}")]

@@ -4,12 +4,22 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+tensorrt-model-ingress = [
+  "dep:novasight-jetson-preprocess",
+  "dep:novasight-tensorrt",
+  "novasight-tensorrt/ffi",
+]
+
 [dependencies]
 anyhow.workspace = true
 nix = { version = "0.29", features = ["process", "signal"] }
 novasight-core = { path = "../novasight-core" }
+novasight-jetson-preprocess = { path = "../novasight-jetson-preprocess", optional = true }
 novasight-pipeline = { path = "../novasight-pipeline" }
 novasight-store = { path = "../novasight-store" }
+novasight-tensorrt = { path = "../novasight-tensorrt", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

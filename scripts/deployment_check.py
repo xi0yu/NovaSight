@@ -5,10 +5,7 @@ import argparse
 import configparser
 from dataclasses import asdict, dataclass
 import json
-import os
 from pathlib import Path
-import subprocess
-import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -100,16 +97,12 @@ def _release_checks(root: Path) -> list[CheckResult]:
         "bin/novasightctl",
         "lib/libnovasight_deepstream_bridge.so",
         "lib/libnovasight_parser.so",
-        "scripts/model_ingress_job.py",
         "scripts/install_jetson_release.sh",
         "scripts/deployment_check.py",
         "scripts/release_manifest.py",
         "scripts/daemon_build_check.py",
         "deploy/novasight.service",
         "share/novasight/novasight.production.yaml",
-        "novasight/__init__.py",
-        "novasight/executors/kmnet_host.py",
-        "novasight/executors/kmnet_loader.py",
         "RELEASE_ID",
         "SHA256SUMS.json",
     )
@@ -129,13 +122,21 @@ def _release_checks(root: Path) -> list[CheckResult]:
         "data_dir: /var/lib/novasight",
         "database: /var/lib/novasight/novasight.db",
         "license: /var/lib/novasight/license.json",
-        "python_executable: /usr/bin/python3",
+        "backend: native_udp",
     )
     checks.append(
         CheckResult(
             name="release.production_config.absolute_paths",
-            passed=all(value in contents for value in expected_paths),
-            detail={"path": str(config), "required_values": list(expected_paths)},
+            passed=(
+                all(value in contents for value in expected_paths)
+                and "python_executable:" not in contents
+                and "backend: python_host" not in contents
+            ),
+            detail={
+                "path": str(config),
+                "required_values": list(expected_paths),
+                "forbidden_values": ["python_executable:", "backend: python_host"],
+            },
         )
     )
     integrity = verify_manifest(root)
@@ -154,90 +155,19 @@ def _release_checks(root: Path) -> list[CheckResult]:
             detail=asdict(daemon_build),
         )
     )
-    checks.append(_model_ingress_helper_check(root))
-    checks.append(_kmnet_helper_check(root))
+    legacy_runtime_paths = (
+        "scripts/model_ingress_job.py",
+        "novasight/executors/kmnet_host.py",
+        "novasight/executors/kmnet_loader.py",
+    )
+    checks.append(
+        CheckResult(
+            name="release.python_runtime.absent",
+            passed=all(not (root / relative).exists() for relative in legacy_runtime_paths),
+            detail={"forbidden_paths": list(legacy_runtime_paths)},
+        )
+    )
     return checks
-
-
-def _model_ingress_helper_check(root: Path) -> CheckResult:
-    helper = root / "scripts" / "model_ingress_job.py"
-    try:
-        result = subprocess.run(
-            [sys.executable, str(helper), "preflight"],
-            cwd=root,
-            text=True,
-            capture_output=True,
-            timeout=5,
-            check=False,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        return CheckResult(
-            name="release.model_ingress_helper.preflight",
-            passed=False,
-            detail={"error": str(error)},
-        )
-    receipt = _decode_json(result.stdout.encode())
-    passed = (
-        result.returncode == 0
-        and isinstance(receipt, dict)
-        and receipt.get("protocol") == 1
-        and receipt.get("worker") == "novasight.model_ingress"
-        and receipt.get("operations") == ["inspect", "configure", "probe"]
-    )
-    return CheckResult(
-        name="release.model_ingress_helper.preflight",
-        passed=passed,
-        detail={
-            "returncode": result.returncode,
-            "receipt": receipt,
-            "stderr": result.stderr,
-        },
-    )
-
-
-def _kmnet_helper_check(root: Path) -> CheckResult:
-    request = '{"id":1,"op":"hello","protocol":1}\n{"id":2,"op":"shutdown"}\n'
-    try:
-        result = subprocess.run(
-            [sys.executable, "-u", "-m", "novasight.executors.kmnet_host"],
-            cwd=root,
-            input=request,
-            text=True,
-            capture_output=True,
-            timeout=5,
-            check=False,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        return CheckResult(
-            name="release.python_helper.handshake",
-            passed=False,
-            detail={"error": str(error)},
-        )
-    lines = result.stdout.splitlines()
-    hello = _decode_json(lines[0].encode()) if lines else None
-    stopped = _decode_json(lines[1].encode()) if len(lines) > 1 else None
-    hello_result = hello.get("result") if isinstance(hello, dict) else None
-    passed = (
-        result.returncode == 0
-        and isinstance(hello, dict)
-        and hello.get("ok") is True
-        and isinstance(hello_result, dict)
-        and hello_result.get("protocol") == 1
-        and isinstance(stopped, dict)
-        and stopped.get("ok") is True
-    )
-    return CheckResult(
-        name="release.python_helper.handshake",
-        passed=passed,
-        detail={
-            "returncode": result.returncode,
-            "hello": hello,
-            "shutdown": stopped,
-            "stderr": result.stderr,
-        },
-    )
 
 
 def _read_unit(path: Path) -> configparser.ConfigParser:
@@ -283,16 +213,20 @@ def _exec_start_pre_check(unit: configparser.ConfigParser) -> CheckResult:
     executable = "/opt/novasight/current/bin/novasightd"
     required = (
         "--config /etc/novasight/novasight.yaml",
-        "--model-job-script /opt/novasight/current/scripts/model_ingress_job.py",
         "--check",
     )
     return CheckResult(
         name="unit.Service.ExecStartPre.production_preflight",
-        passed=actual.startswith(f"{executable} ") and all(value in actual for value in required),
+        passed=(
+            actual.startswith(f"{executable} ")
+            and all(value in actual for value in required)
+            and "--model-job-" not in actual
+        ),
         detail={
             "actual": actual,
             "expected_executable": executable,
             "required_arguments": list(required),
+            "forbidden_argument_prefix": "--model-job-",
         },
     )
 

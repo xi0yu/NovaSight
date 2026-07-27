@@ -1076,8 +1076,10 @@ dependencies = [
  "anyhow",
  "nix",
  "novasight-core",
+ "novasight-jetson-preprocess",
  "novasight-pipeline",
  "novasight-store",
+ "novasight-tensorrt",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1112,6 +1114,7 @@ dependencies = [
 name = "novasight-tensorrt"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "novasight-core",
  "novasight-jetson-preprocess",
  "thiserror",

@@ -16,7 +16,7 @@ use thiserror::Error;
 mod decoder;
 pub use decoder::{DecodeContract, DecodeError, DetectionDecoder};
 
-const ABI_VERSION: u32 = 1;
+const ABI_VERSION: u32 = 2;
 const MAX_NAME: usize = 128;
 const MAX_RANK: usize = 8;
 const MAX_OUTPUTS: usize = 8;
@@ -53,6 +53,8 @@ impl TensorSpec {
 pub struct EngineContract {
     input: TensorSpec,
     outputs: Vec<TensorSpec>,
+    input_dynamic: bool,
+    selected_profile: u32,
 }
 
 impl EngineContract {
@@ -62,6 +64,14 @@ impl EngineContract {
 
     pub fn outputs(&self) -> &[TensorSpec] {
         &self.outputs
+    }
+
+    pub const fn input_dynamic(&self) -> bool {
+        self.input_dynamic
+    }
+
+    pub const fn selected_profile(&self) -> u32 {
+        self.selected_profile
     }
 }
 
@@ -129,8 +139,97 @@ impl std::fmt::Debug for TensorRtEngine {
 
 impl TensorRtEngine {
     #[cfg(feature = "ffi")]
+    pub fn preflight() -> Result<(), TensorRtError> {
+        let actual = LinkedTensorRtAbi.abi_version();
+        if actual != ABI_VERSION {
+            return Err(TensorRtError::AbiVersion {
+                expected: ABI_VERSION,
+                actual,
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "ffi")]
     pub fn load(path: &Path, input: TensorContract) -> Result<Self, TensorRtError> {
         Self::from_abi(Arc::new(LinkedTensorRtAbi), path, input)
+    }
+
+    /// Load an Engine using its static input shape or optimization profile 0
+    /// OPT shape. Live inference still supplies an explicit input contract;
+    /// this automatic path exists only for offline inspection and probing.
+    #[cfg(feature = "ffi")]
+    pub fn inspect(path: &Path) -> Result<Self, TensorRtError> {
+        Self::inspect_from_abi(Arc::new(LinkedTensorRtAbi), path)
+    }
+
+    fn inspect_from_abi(
+        abi: Arc<dyn NativeTensorRtAbi>,
+        path: &Path,
+    ) -> Result<Self, TensorRtError> {
+        let actual = abi.abi_version();
+        if actual != ABI_VERSION {
+            return Err(TensorRtError::AbiVersion {
+                expected: ABI_VERSION,
+                actual,
+            });
+        }
+        let path = path
+            .to_str()
+            .ok_or_else(|| TensorRtError::NonUtf8Path(path.to_path_buf()))?;
+        let path = CString::new(path).map_err(|_| TensorRtError::PathContainsNul)?;
+        let mut handle = std::ptr::null_mut();
+        let mut native_spec = NativeEngineSpec::empty();
+        let mut error = [0 as c_char; ERROR_CAPACITY];
+        let code = unsafe { abi.create_auto(&path, &mut handle, &mut native_spec, &mut error) };
+        if code != 0 {
+            return Err(TensorRtError::NativeCreate {
+                code,
+                detail: error_text(&error),
+            });
+        }
+        let handle = NonNull::new(handle).ok_or(TensorRtError::NullEngineHandle)?;
+        let contract = match decode_engine_contract(&native_spec) {
+            Ok(contract) => contract,
+            Err(error) => {
+                unsafe { abi.destroy(handle.as_ptr()) };
+                return Err(error);
+            }
+        };
+        let dimensions = contract.input.dimensions();
+        if dimensions.len() != 4 {
+            unsafe { abi.destroy(handle.as_ptr()) };
+            return Err(TensorRtError::InspectedInput(
+                "input must be rank-4 NCHW".to_owned(),
+            ));
+        }
+        // Native TensorRT dimensions are positive `int`, so these conversions
+        // are lossless on every supported target.
+        let input_contract = match TensorContract::rgb_nchw(
+            dimensions[2] as u32,
+            dimensions[3] as u32,
+            contract.input.dtype(),
+        ) {
+            Ok(contract) => contract,
+            Err(error) => {
+                unsafe { abi.destroy(handle.as_ptr()) };
+                return Err(TensorRtError::InspectedInput(error.to_string()));
+            }
+        };
+        if !input_matches(&contract.input, input_contract) {
+            unsafe { abi.destroy(handle.as_ptr()) };
+            return Err(TensorRtError::InputContractMismatch {
+                expected: input_contract,
+                actual: Box::new(contract.input),
+            });
+        }
+        Ok(Self {
+            abi,
+            handle,
+            contract,
+            input_contract,
+            _thread_affine: PhantomData,
+        })
     }
 
     fn from_abi(
@@ -249,6 +348,61 @@ impl TensorRtEngine {
             _engine: PhantomData,
         })
     }
+
+    /// Execute one deterministic all-zero input for offline model admission.
+    /// The native runtime owns the temporary CUDA allocation; the returned
+    /// tensors pass through the same Rust decoder as live inference.
+    pub fn probe_zero(&mut self) -> Result<ExecutionOutputs<'_>, TensorRtError> {
+        let mut views = [NativeHostTensorView::empty(); MAX_OUTPUTS];
+        let mut output_count = 0_u32;
+        let mut error = [0 as c_char; ERROR_CAPACITY];
+        let code = unsafe {
+            self.abi.probe_zero(
+                self.handle.as_ptr(),
+                &mut views,
+                &mut output_count,
+                &mut error,
+            )
+        };
+        if code != 0 {
+            return Err(TensorRtError::NativeProbe {
+                code,
+                detail: error_text(&error),
+            });
+        }
+        let count = validate_output_views(&self.contract, &views, output_count)?;
+        Ok(ExecutionOutputs {
+            views,
+            count,
+            epoch: RuntimeEpoch(1),
+            generation: Generation(1),
+            captured_at: MonotonicNanos(1),
+            _engine: PhantomData,
+        })
+    }
+}
+
+fn validate_output_views(
+    contract: &EngineContract,
+    views: &[NativeHostTensorView; MAX_OUTPUTS],
+    output_count: u32,
+) -> Result<usize, TensorRtError> {
+    let count =
+        usize::try_from(output_count).map_err(|_| TensorRtError::OutputCount(output_count))?;
+    if count != contract.outputs.len() || count > MAX_OUTPUTS {
+        return Err(TensorRtError::OutputCount(output_count));
+    }
+    for (index, view) in views[..count].iter().enumerate() {
+        let actual = decode_tensor_spec(&view.spec)?;
+        if actual != contract.outputs[index]
+            || view.nbytes != actual.nbytes
+            || view.host_ptr.is_null()
+            || view.nbytes > usize::MAX as u64
+        {
+            return Err(TensorRtError::InvalidOutputView { index });
+        }
+    }
+    Ok(count)
 }
 
 impl Drop for TensorRtEngine {
@@ -383,6 +537,10 @@ pub enum TensorRtError {
     DeviceInputContractMismatch,
     #[error("TensorRT execute failed with code {code}: {detail}")]
     NativeExecute { code: i32, detail: String },
+    #[error("TensorRT zero probe failed with code {code}: {detail}")]
+    NativeProbe { code: i32, detail: String },
+    #[error("TensorRT inspected input is unsupported: {0}")]
+    InspectedInput(String),
     #[error("TensorRT returned invalid output count {0}")]
     OutputCount(u32),
     #[error("TensorRT returned invalid output view at index {index}")]
@@ -405,6 +563,8 @@ pub enum TensorRtError {
     InvalidEngineOutputCount(u32),
     #[error("TensorRT engine exposes duplicate output name {0}")]
     DuplicateOutputName(String),
+    #[error("TensorRT returned invalid dynamic-input flag {0}")]
+    InvalidDynamicFlag(u32),
     #[error("TensorRT output {0} is missing")]
     MissingOutput(String),
     #[error("TensorRT output index {index} exceeds {elements} elements")]
@@ -453,7 +613,15 @@ fn decode_engine_contract(native: &NativeEngineSpec) -> Result<EngineContract, T
         }
         outputs.push(output);
     }
-    Ok(EngineContract { input, outputs })
+    if native.input_dynamic > 1 {
+        return Err(TensorRtError::InvalidDynamicFlag(native.input_dynamic));
+    }
+    Ok(EngineContract {
+        input,
+        outputs,
+        input_dynamic: native.input_dynamic == 1,
+        selected_profile: native.selected_profile,
+    })
 }
 
 fn decode_tensor_spec(native: &NativeTensorSpec) -> Result<TensorSpec, TensorRtError> {
@@ -557,6 +725,8 @@ struct NativeEngineSpec {
     input: NativeTensorSpec,
     output_count: u32,
     outputs: [NativeTensorSpec; MAX_OUTPUTS],
+    input_dynamic: u32,
+    selected_profile: u32,
 }
 
 impl NativeEngineSpec {
@@ -565,6 +735,8 @@ impl NativeEngineSpec {
             input: NativeTensorSpec::empty(),
             output_count: 0,
             outputs: [NativeTensorSpec::empty(); MAX_OUTPUTS],
+            input_dynamic: 0,
+            selected_profile: 0,
         }
     }
 }
@@ -609,10 +781,26 @@ trait NativeTensorRtAbi: Send + Sync {
         error: &mut [c_char],
     ) -> i32;
 
+    unsafe fn create_auto(
+        &self,
+        path: &CStr,
+        handle: &mut *mut c_void,
+        spec: &mut NativeEngineSpec,
+        error: &mut [c_char],
+    ) -> i32;
+
     unsafe fn execute(
         &self,
         handle: *mut c_void,
         input: &NativeDeviceTensorView,
+        outputs: &mut [NativeHostTensorView; MAX_OUTPUTS],
+        output_count: &mut u32,
+        error: &mut [c_char],
+    ) -> i32;
+
+    unsafe fn probe_zero(
+        &self,
+        handle: *mut c_void,
         outputs: &mut [NativeHostTensorView; MAX_OUTPUTS],
         output_count: &mut u32,
         error: &mut [c_char],
@@ -652,6 +840,26 @@ impl NativeTensorRtAbi for LinkedTensorRtAbi {
         }
     }
 
+    unsafe fn create_auto(
+        &self,
+        path: &CStr,
+        handle: &mut *mut c_void,
+        spec: &mut NativeEngineSpec,
+        error: &mut [c_char],
+    ) -> i32 {
+        unsafe {
+            novasight_tensorrt_create(
+                path.as_ptr(),
+                std::ptr::null(),
+                0,
+                handle,
+                spec,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        }
+    }
+
     unsafe fn execute(
         &self,
         handle: *mut c_void,
@@ -664,6 +872,25 @@ impl NativeTensorRtAbi for LinkedTensorRtAbi {
             novasight_tensorrt_execute(
                 handle,
                 input,
+                outputs.as_mut_ptr(),
+                outputs.len() as u32,
+                output_count,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        }
+    }
+
+    unsafe fn probe_zero(
+        &self,
+        handle: *mut c_void,
+        outputs: &mut [NativeHostTensorView; MAX_OUTPUTS],
+        output_count: &mut u32,
+        error: &mut [c_char],
+    ) -> i32 {
+        unsafe {
+            novasight_tensorrt_probe_zero(
+                handle,
                 outputs.as_mut_ptr(),
                 outputs.len() as u32,
                 output_count,
@@ -693,6 +920,14 @@ unsafe extern "C" {
     fn novasight_tensorrt_execute(
         engine: *mut c_void,
         input: *const NativeDeviceTensorView,
+        outputs: *mut NativeHostTensorView,
+        output_capacity: u32,
+        output_count: *mut u32,
+        error_out: *mut c_char,
+        error_out_size: usize,
+    ) -> i32;
+    fn novasight_tensorrt_probe_zero(
+        engine: *mut c_void,
         outputs: *mut NativeHostTensorView,
         output_capacity: u32,
         output_count: *mut u32,
@@ -744,6 +979,16 @@ mod tests {
             0
         }
 
+        unsafe fn create_auto(
+            &self,
+            path: &CStr,
+            handle: &mut *mut c_void,
+            spec: &mut NativeEngineSpec,
+            error: &mut [c_char],
+        ) -> i32 {
+            unsafe { self.create(path, &[1, 3, 256, 256], handle, spec, error) }
+        }
+
         unsafe fn execute(
             &self,
             _handle: *mut c_void,
@@ -753,6 +998,22 @@ mod tests {
             _error: &mut [c_char],
         ) -> i32 {
             self.executed.lock().unwrap().push(*input);
+            outputs[0] = NativeHostTensorView {
+                host_ptr: self.output.as_ptr().cast(),
+                nbytes: self.output.len() as u64 * 4,
+                spec: native_spec("output0", &[1, 1, 6], 1),
+            };
+            *output_count = 1;
+            0
+        }
+
+        unsafe fn probe_zero(
+            &self,
+            _handle: *mut c_void,
+            outputs: &mut [NativeHostTensorView; MAX_OUTPUTS],
+            output_count: &mut u32,
+            _error: &mut [c_char],
+        ) -> i32 {
             outputs[0] = NativeHostTensorView {
                 host_ptr: self.output.as_ptr().cast(),
                 nbytes: self.output.len() as u64 * 4,
@@ -843,6 +1104,23 @@ mod tests {
     }
 
     #[test]
+    fn automatic_inspection_uses_resolved_shape_and_supports_a_real_probe_call() {
+        let abi = FakeAbi::new();
+        let mut engine =
+            TensorRtEngine::inspect_from_abi(abi.clone(), Path::new("/models/detector.engine"))
+                .unwrap();
+
+        assert_eq!(engine.contract().input().dimensions(), [1, 3, 256, 256]);
+        assert_eq!(engine.contract().selected_profile(), 0);
+        let outputs = engine.probe_zero().unwrap();
+        assert_eq!(outputs.iter().next().unwrap().dimensions(), [1, 1, 6]);
+
+        drop(outputs);
+        drop(engine);
+        assert_eq!(*abi.destroyed.lock().unwrap(), 1);
+    }
+
+    #[test]
     fn mismatched_device_tensor_is_rejected_before_native_execute() {
         let abi = FakeAbi::new();
         let loaded = TensorContract::rgb_nchw(640, 640, TensorDtype::Float16).unwrap();
@@ -880,7 +1158,7 @@ mod tests {
         assert_eq!(std::mem::offset_of!(NativeTensorSpec, dimensions), 136);
         assert_eq!(std::mem::offset_of!(NativeTensorSpec, dtype), 200);
         assert_eq!(std::mem::offset_of!(NativeTensorSpec, nbytes), 208);
-        assert_eq!(std::mem::size_of::<NativeEngineSpec>(), 1_952);
+        assert_eq!(std::mem::size_of::<NativeEngineSpec>(), 1_960);
         assert_eq!(std::mem::offset_of!(NativeEngineSpec, outputs), 224);
         assert_eq!(std::mem::size_of::<NativeDeviceTensorView>(), 96);
         assert_eq!(std::mem::offset_of!(NativeDeviceTensorView, dimensions), 24);

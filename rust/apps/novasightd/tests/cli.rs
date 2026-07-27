@@ -3,7 +3,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -17,22 +16,7 @@ fn binary() -> &'static str {
 }
 
 fn daemon_command() -> Command {
-    static PYTHON: OnceLock<PathBuf> = OnceLock::new();
-    let python = PYTHON.get_or_init(|| {
-        let output = Command::new("python3")
-            .args(["-c", "import sys; print(sys.executable)"])
-            .output()
-            .expect("resolve test Python");
-        assert!(output.status.success(), "test Python must be runnable");
-        PathBuf::from(
-            String::from_utf8(output.stdout)
-                .expect("UTF-8 Python path")
-                .trim(),
-        )
-    });
-    let mut command = Command::new(binary());
-    command.arg("--model-job-python").arg(python);
-    command
+    Command::new(binary())
 }
 
 struct TempDirectory(PathBuf);
@@ -150,74 +134,6 @@ fn check_loads_config_and_exits_without_starting_the_daemon() {
     assert!(stdout.contains("PASS mode=dry_run"));
     assert!(stdout.contains("configured_output_enabled=false"));
     assert!(stdout.contains("hardware_not_started=true"));
-}
-
-#[cfg(unix)]
-#[test]
-fn check_rejects_a_model_worker_that_cannot_execute_its_protocol() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let (directory, path) = temp_config();
-    let broken_python = directory.join("broken-python");
-    fs::write(
-        &broken_python,
-        "#!/bin/sh\necho worker-import-failed >&2\nexit 17\n",
-    )
-    .expect("write broken interpreter");
-    fs::set_permissions(&broken_python, fs::Permissions::from_mode(0o755))
-        .expect("make broken interpreter executable");
-    let output = Command::new(binary())
-        .args([
-            "--model-job-python",
-            broken_python.to_str().expect("UTF-8 interpreter"),
-            "--config",
-            path.to_str().expect("UTF-8 path"),
-            "--check",
-            "--dry-run",
-        ])
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
-        .output()
-        .expect("run check");
-    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
-
-    assert!(!output.status.success());
-    assert!(stderr.contains("MODEL_INGRESS_PREFLIGHT_FAILED"));
-    assert!(stderr.contains("worker-import-failed"));
-}
-
-#[cfg(unix)]
-#[test]
-fn check_rejects_an_incompatible_model_worker_protocol() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let (directory, path) = temp_config();
-    let incompatible_python = directory.join("incompatible-python");
-    fs::write(
-        &incompatible_python,
-        "#!/bin/sh\necho '{\"protocol\":2,\"worker\":\"other\",\"operations\":[]}'\n",
-    )
-    .expect("write incompatible interpreter");
-    fs::set_permissions(&incompatible_python, fs::Permissions::from_mode(0o755))
-        .expect("make incompatible interpreter executable");
-    let output = Command::new(binary())
-        .args([
-            "--model-job-python",
-            incompatible_python.to_str().expect("UTF-8 interpreter"),
-            "--config",
-            path.to_str().expect("UTF-8 path"),
-            "--check",
-            "--dry-run",
-        ])
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
-        .output()
-        .expect("run check");
-    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
-
-    assert!(!output.status.success());
-    assert!(stderr.contains("MODEL_INGRESS_PREFLIGHT_FAILED"));
-    assert!(stderr.contains("incompatible protocol"));
 }
 
 #[test]

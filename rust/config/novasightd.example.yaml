@@ -98,21 +98,17 @@ inference:
   deepstream_shutdown_timeout_ms: 5000
 hardware:
   auto_connect: true
-  # native_udp remains opt-in until verified against the target Jetson and box firmware.
-  backend: python_host
+  backend: native_udp
   host: "192.168.2.188"
   port: 8888
   uuid: "12345678"
   monitor_port: 5001
-  helper_module: novasight.executors.kmnet_host
   connect_timeout_ms: 3000
   send_timeout_ms: 25
   monitor_timeout_ms: 250
   trigger_poll_interval_ms: 4
-  reconnect_cooldown_ms: 500
 paths:
   data_dir: data
   model_dir: data/models
   database: data/novasight.db
   license: data/license.json
-  python_executable: python3

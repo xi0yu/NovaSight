@@ -1,7 +1,7 @@
 //! Canonical NovaSight daemon executable.
 //!
 //! The composition code lives in the `relink-server` library crate, but this
-//! is the only server executable. Legacy Python remains the rollback path.
+//! is the only server executable.
 
 use std::process::ExitCode;
 
@@ -29,9 +29,6 @@ fn build_info() -> BuildInfo {
     }
     if cfg!(feature = "tensorrt") {
         features.push("tensorrt");
-    }
-    if cfg!(feature = "experimental-kmnet-native") {
-        features.push("experimental-kmnet-native");
     }
     BuildInfo {
         schema_version: 1,

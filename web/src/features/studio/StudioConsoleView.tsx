@@ -242,7 +242,7 @@ const CAPTURE_BACKEND_CHOICES: {
 ];
 const KMNET_RECOMMENDED = {
   auto_connect: true,
-  backend: "python_host",
+  backend: "native_udp",
   host: "192.168.2.188",
   port: 8888,
   uuid: "12345678",

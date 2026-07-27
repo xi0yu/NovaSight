@@ -1796,6 +1796,13 @@ fn manifest_fingerprint(
     Ok(format!("{:x}", digest.finalize()))
 }
 
+/// Compute the canonical fingerprint used by model-admission receipts.
+/// Keeping this beside catalog verification guarantees that writers and
+/// readers hash exactly the same typed contract.
+pub fn compute_model_fingerprint(manifest: &ModelManifest) -> Result<String, serde_json::Error> {
+    manifest_fingerprint(manifest, true)
+}
+
 fn python_json_numbers(json: &str) -> String {
     let bytes = json.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());

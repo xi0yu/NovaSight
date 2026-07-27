@@ -730,6 +730,8 @@ mod tests {
                 dtype: TensorDtype::Float32,
                 nbytes: 480,
             }],
+            input_dynamic: false,
+            selected_profile: 0,
         };
         raw_decoder(false, 2)
             .validate_engine_contract(&valid)

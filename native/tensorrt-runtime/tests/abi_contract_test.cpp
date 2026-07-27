@@ -5,7 +5,7 @@
 
 int main() {
     static_assert(sizeof(novasight_tensor_spec) == 216);
-    static_assert(sizeof(novasight_engine_spec) == 1952);
+    static_assert(sizeof(novasight_engine_spec) == 1960);
     static_assert(sizeof(novasight_device_tensor_view) == 96);
     static_assert(sizeof(novasight_host_tensor_view) == 232);
     assert(novasight_tensorrt_abi_version() == NOVASIGHT_TENSORRT_RUNTIME_ABI_VERSION);

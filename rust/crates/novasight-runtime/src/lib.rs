@@ -16,6 +16,8 @@ mod config_service;
 mod error;
 mod model_activation;
 mod model_ingress;
+#[cfg(feature = "tensorrt-model-ingress")]
+mod model_ingress_native;
 mod protocol;
 pub mod snapshot;
 mod state;
@@ -26,9 +28,11 @@ pub use config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, C
 pub use error::{RuntimeError, RuntimeErrorKind};
 pub use model_activation::{ModelActivationError, ModelActivationRequest, ModelActivationResult};
 pub use model_ingress::{
-    ModelIngressError, ModelIngressRequest, ModelIngressResult, ModelProbeInputMode,
-    ModelProfileConfigureRequest, OfflineModelJobRunner,
+    ModelIngressError, ModelIngressRequest, ModelIngressResult, ModelJobRunner,
+    ModelProbeInputMode, ModelProfileConfigureRequest, OfflineModelJobRunner,
 };
+#[cfg(feature = "tensorrt-model-ingress")]
+pub use model_ingress_native::NativeModelJobRunner;
 pub use novasight_core::RuntimeEpoch;
 pub use novasight_pipeline::{
     CrosshairSnapshot, CrosshairTemplateSummary, DetectionTelemetryItem, PreviewFrame, PreviewHub,

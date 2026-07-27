@@ -59,6 +59,22 @@ extern "C" int novasight_tensorrt_execute(
     return 2;
 }
 
+extern "C" int novasight_tensorrt_probe_zero(
+    novasight_tensorrt_engine* engine,
+    novasight_host_tensor_view* outputs,
+    uint32_t output_capacity,
+    uint32_t* output_count,
+    char* error_out,
+    size_t error_out_size
+) {
+    (void)engine;
+    (void)outputs;
+    (void)output_capacity;
+    if (output_count != nullptr) *output_count = 0;
+    write_error(error_out, error_out_size, "reference TensorRT runtime cannot probe");
+    return 2;
+}
+
 extern "C" void novasight_tensorrt_destroy(novasight_tensorrt_engine* engine) {
     (void)engine;
 }

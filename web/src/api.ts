@@ -316,10 +316,14 @@ export type ModelProbeResponse = ModelProfileResponse & {
     decoder_ok: boolean;
     nms_ok: boolean;
     detection_batch_ok: boolean;
-    preprocess_ms: number;
+    // Null means the probe injected a model-shaped tensor and did not run the
+    // image preprocessing stage.
+    preprocess_ms: number | null;
     inference_ms: number;
     decode_ms: number;
-    nms_ms: number;
+    // Native probing currently measures decode + NMS as one operation. Null is
+    // deliberate: reporting 0 ms would be a fabricated measurement.
+    nms_ms: number | null;
     issues: Array<{ code: string; stage: string; message: string }>;
   };
 };

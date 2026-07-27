@@ -6,13 +6,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
 
 use clap::Parser;
 use novasight_core::controller::recoil::RecoilConfig;
-use novasight_runtime::{
-    ConfigService, LoadedApplication, OfflineModelJobRunner, RuntimeDependencies,
-};
+#[cfg(feature = "deepstream")]
+use novasight_runtime::NativeModelJobRunner;
+use novasight_runtime::{ConfigService, LoadedApplication, RuntimeDependencies};
 use novasight_store::model_catalog::SqliteModelCatalog;
 use tracing_subscriber::EnvFilter;
 
@@ -38,22 +37,6 @@ struct Args {
     /// production DeepStream or physical pointer-device path.
     #[arg(long)]
     dry_run: bool,
-
-    /// Fixed Python executable used only for allowlisted offline model jobs.
-    #[arg(long, default_value = "/usr/bin/python3")]
-    model_job_python: PathBuf,
-
-    /// Fixed helper script for inspect/configure/probe; API callers cannot override it.
-    #[arg(long)]
-    model_job_script: Option<PathBuf>,
-
-    /// Root under which each allowlisted model helper gets a private working directory.
-    #[arg(long, default_value = ".")]
-    model_job_workdir: PathBuf,
-
-    /// Hard timeout applied to every offline model helper process.
-    #[arg(long, default_value_t = 60)]
-    model_job_timeout_seconds: u64,
 }
 
 fn init_logging() {
@@ -85,30 +68,8 @@ pub async fn entry() -> ExitCode {
         &configured_parser_library,
         option_env!("NOVASIGHT_DEEPSTREAM_PARSER_LIBRARY").map(Path::new),
     );
-    let model_job_script = resolve_model_job_script(args.model_job_script.as_deref());
-    let python_package_root = model_job_script
-        .canonicalize()
-        .ok()
-        .and_then(|path| path.parent().and_then(Path::parent).map(Path::to_owned))
-        .unwrap_or_else(|| args.model_job_workdir.clone());
-    let model_job_code_root = python_package_root.join("novasight");
-    let model_jobs = match OfflineModelJobRunner::new(
-        &args.model_job_python,
-        &model_job_script,
-        &args.model_job_workdir,
-        parser_library.clone(),
-        Duration::from_secs(args.model_job_timeout_seconds),
-        1024 * 1024,
-    )
-    .and_then(|runner| runner.pin_python_code(model_job_code_root))
-    {
-        Ok(runner) => runner,
-        Err(error) => {
-            eprintln!("MODEL_INGRESS_CONFIG_INVALID: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
+    #[cfg(not(feature = "deepstream"))]
+    let _ = &parser_library;
     if args.check {
         if args.dry_run {
             if let Err(error) = loaded.config().validate_configured_adapters() {
@@ -123,12 +84,8 @@ pub async fn entry() -> ExitCode {
                 eprintln!("{}: {error}", error.code());
                 return ExitCode::FAILURE;
             }
-            if let Err(error) = model_jobs.preflight().await {
-                eprintln!("MODEL_INGRESS_PREFLIGHT_FAILED: {error}");
-                return ExitCode::FAILURE;
-            }
             println!(
-                "PASS mode=dry_run config={} configured_output_enabled={} model_ingress_helper=ready hardware_not_started=true",
+                "PASS mode=dry_run config={} configured_output_enabled={} model_ingress=not_started hardware_not_started=true",
                 args.config.display(),
                 loaded.config().control.output_enabled
             );
@@ -146,12 +103,13 @@ pub async fn entry() -> ExitCode {
             eprintln!("{}: {error}", error.code());
             return ExitCode::FAILURE;
         }
-        if let Err(error) = model_jobs.preflight().await {
-            eprintln!("MODEL_INGRESS_PREFLIGHT_FAILED: {error}");
-            return ExitCode::FAILURE;
-        }
         #[cfg(all(feature = "deepstream", target_os = "linux"))]
         {
+            let model_jobs = NativeModelJobRunner::new();
+            if let Err(error) = model_jobs.preflight().await {
+                eprintln!("MODEL_INGRESS_PREFLIGHT_FAILED: {error}");
+                return ExitCode::FAILURE;
+            }
             let model_catalog = match SqliteModelCatalog::open_with_model_root(
                 &loaded.config().paths.database,
                 &loaded.config().paths.model_dir,
@@ -165,7 +123,6 @@ pub async fn entry() -> ExitCode {
             if let Err(error) = live_perception::preflight_live_production(
                 loaded.config(),
                 &model_catalog,
-                &python_package_root,
                 &parser_library,
             ) {
                 eprintln!("PRODUCTION_PREFLIGHT_FAILED: {error}");
@@ -177,7 +134,7 @@ pub async fn entry() -> ExitCode {
                     novasight_core::PointerDeviceMode::Uncommissioned => "uncommissioned",
                 };
             println!(
-                "PASS mode={} config={} configured_output_enabled={} license_verifier=ready instance_guard=ready model_ingress_helper=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true pointer_adapter={} capture_not_started=true pointer_not_connected=true",
+                "PASS mode={} config={} configured_output_enabled={} license_verifier=ready instance_guard=ready model_ingress=native_tensorrt model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true pointer_adapter={} capture_not_started=true pointer_not_connected=true",
                 if cfg!(debug_assertions) {
                     "development_hardware"
                 } else {
@@ -204,11 +161,6 @@ pub async fn entry() -> ExitCode {
         eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
         return ExitCode::FAILURE;
     }
-    if let Err(error) = model_jobs.preflight().await {
-        eprintln!("MODEL_INGRESS_PREFLIGHT_FAILED: {error}");
-        return ExitCode::FAILURE;
-    }
-
     let model_catalog = match SqliteModelCatalog::open_with_model_root(
         &loaded.config().paths.database,
         &loaded.config().paths.model_dir,
@@ -232,7 +184,6 @@ pub async fn entry() -> ExitCode {
                 loaded.config(),
                 config_service.clone(),
                 model_catalog.clone(),
-                &python_package_root,
                 parser_library.clone(),
             ) {
                 Ok(dependencies) => (dependencies, server::DaemonMode::Hardware),
@@ -251,8 +202,9 @@ pub async fn entry() -> ExitCode {
         }
     };
 
+    #[cfg(feature = "deepstream")]
+    let dependencies = dependencies.with_model_jobs(NativeModelJobRunner::new());
     let dependencies = dependencies
-        .with_model_jobs(model_jobs)
         .with_output_enabled(loaded.config().control.output_enabled)
         .with_recoil(RecoilConfig {
             enabled: loaded.config().control.recoil.enabled,
@@ -275,22 +227,6 @@ pub async fn entry() -> ExitCode {
     }
 }
 
-fn resolve_model_job_script(configured: Option<&Path>) -> PathBuf {
-    if let Some(path) = configured {
-        return path.to_owned();
-    }
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(path) = bundled_model_job_script(&executable)
-    {
-        return path;
-    }
-    let working_tree_path = PathBuf::from("scripts/model_ingress_job.py");
-    if working_tree_path.is_file() {
-        return working_tree_path;
-    }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/model_ingress_job.py")
-}
-
 fn resolve_deepstream_parser_library(configured: &Path, bundled: Option<&Path>) -> PathBuf {
     if configured == Path::new("auto") {
         return bundled.unwrap_or(configured).to_owned();
@@ -298,18 +234,11 @@ fn resolve_deepstream_parser_library(configured: &Path, bundled: Option<&Path>) 
     configured.to_owned()
 }
 
-fn bundled_model_job_script(executable: &Path) -> Option<PathBuf> {
-    let release_root = executable.parent()?.parent()?;
-    let candidate = release_root.join("scripts/model_ingress_job.py");
-    candidate.is_file().then_some(candidate)
-}
-
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use std::path::Path;
 
-    use super::{bundled_model_job_script, resolve_deepstream_parser_library};
+    use super::resolve_deepstream_parser_library;
 
     #[test]
     fn cargo_managed_parser_replaces_the_auto_sentinel() {
@@ -332,22 +261,5 @@ mod tests {
             ),
             configured
         );
-    }
-
-    #[test]
-    fn installed_daemon_discovers_worker_in_its_own_release() {
-        let root =
-            std::env::temp_dir().join(format!("novasight-bundled-worker-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("bin")).unwrap();
-        fs::create_dir_all(root.join("scripts")).unwrap();
-        fs::write(root.join("scripts/model_ingress_job.py"), b"# worker\n").unwrap();
-
-        assert_eq!(
-            bundled_model_job_script(&root.join("bin/novasightd")),
-            Some(root.join("scripts/model_ingress_job.py"))
-        );
-
-        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define NOVASIGHT_TENSORRT_RUNTIME_ABI_VERSION 1U
+#define NOVASIGHT_TENSORRT_RUNTIME_ABI_VERSION 2U
 #define NOVASIGHT_TENSORRT_MAX_TENSOR_NAME 128U
 #define NOVASIGHT_TENSORRT_MAX_RANK 8U
 #define NOVASIGHT_TENSORRT_MAX_OUTPUTS 8U
@@ -30,6 +30,8 @@ typedef struct {
     novasight_tensor_spec input;
     uint32_t output_count;
     novasight_tensor_spec outputs[NOVASIGHT_TENSORRT_MAX_OUTPUTS];
+    uint32_t input_dynamic;
+    uint32_t selected_profile;
 } novasight_engine_spec;
 
 typedef struct {
@@ -63,6 +65,17 @@ int novasight_tensorrt_create(
 int novasight_tensorrt_execute(
     novasight_tensorrt_engine* engine,
     const novasight_device_tensor_view* input,
+    novasight_host_tensor_view* outputs,
+    uint32_t output_capacity,
+    uint32_t* output_count,
+    char* error_out,
+    size_t error_out_size
+);
+
+/* Execute one deterministic all-zero input owned by this runtime. This is
+ * used only by the offline model-ingress probe and never by the live path. */
+int novasight_tensorrt_probe_zero(
+    novasight_tensorrt_engine* engine,
     novasight_host_tensor_view* outputs,
     uint32_t output_capacity,
     uint32_t* output_count,

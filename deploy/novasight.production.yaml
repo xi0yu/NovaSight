@@ -100,21 +100,17 @@ inference:
   input_source: source.default
 hardware:
   auto_connect: true
-  # This helper is daemon-owned. native_udp remains an experimental evidence build.
-  backend: python_host
+  backend: native_udp
   host: 192.168.2.188
   port: 8888
   uuid: "12345678"
   monitor_port: 5001
-  helper_module: novasight.executors.kmnet_host
   connect_timeout_ms: 3000
   send_timeout_ms: 25
   monitor_timeout_ms: 250
   trigger_poll_interval_ms: 4
-  reconnect_cooldown_ms: 500
 paths:
   data_dir: /var/lib/novasight
   model_dir: /var/lib/novasight/models
   database: /var/lib/novasight/novasight.db
   license: /var/lib/novasight/license.json
-  python_executable: /usr/bin/python3

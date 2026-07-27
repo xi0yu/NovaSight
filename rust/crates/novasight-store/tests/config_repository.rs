@@ -258,7 +258,6 @@ fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
     assert_eq!(config.paths.model_dir, Path::new("data/models"));
     assert_eq!(config.paths.database, Path::new("data/novasight.db"));
     assert_eq!(config.paths.license, Path::new("data/license.json"));
-    assert_eq!(config.paths.python_executable, Path::new("python3"));
     assert!(config.capture.is_none());
     assert!(config.inference.is_none());
     assert!(config.device.is_none());
@@ -519,7 +518,6 @@ paths:
   model_dir: deploy/models
   database: deploy/novasight.db
   license: deploy/license.json
-  python_executable: deploy/python
   plugins:
     directory: deploy/plugins
 capture:

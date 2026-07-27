@@ -12,8 +12,8 @@ current authority document.
 
 ## Development
 
-The Rust daemon is the canonical backend. The Python package remains in-tree
-as a rollback path and for allowlisted offline model jobs.
+The Rust daemon is the canonical backend. Production capture, TensorRT model
+admission, inference, control, and kmNet output do not start Python processes.
 
 ```bash
 python3 -m venv .venv
@@ -205,9 +205,8 @@ sudo env NOVASIGHT_LICENSE_PUBLIC_KEY_FILE=/etc/novasight/license-public.pem \
 ```
 
 The staged `bin/../lib` layout matches the daemon's production RUNPATH and the
-`/opt/novasight/{bin,lib}` systemd layout. It also carries the retained Python
-package used only by the daemon-owned kmNet helper and allowlisted offline model
-job, so neither path depends on a source checkout or editable install. The
+`/opt/novasight/{bin,lib}` systemd layout. TensorRT's narrow C++ ABI is compiled
+and statically linked by Cargo, while kmNet is native Rust UDP. The
 production template uses absolute `/opt/novasight` and `/var/lib/novasight`
 paths; the development example remains repository-relative. Running the
 unstaged Cargo binary is not a production check because the native bridge is
@@ -258,24 +257,11 @@ guard automatically. The guard has no filesystem entry or environment setting,
 and the kernel releases it on normal shutdown, Ctrl+C, or process death. A
 second configuration therefore cannot become another hardware authority by
 choosing a different HTTP port or control socket.
-It also executes the packaged model-ingress worker's versioned `preflight`
-operation through the configured Python interpreter. This imports the pinned
-Python bundle and verifies the bounded JSON protocol without opening an Engine
-or mutating the model catalog, so `model_ingress_helper=ready` is runtime
-evidence rather than a path-existence claim.
-The same production preflight launches the configured daemon-owned kmNet
-Python helper, verifies protocol version 1 and requires its vendor driver to be
-loadable, then shuts the helper down without issuing `connect` or opening the
-device. A `native_udp` selection is rejected unless the daemon carries the
-explicit `experimental-kmnet-native` feature; with that feature, `--check`
-validates the native protocol configuration but still does not contact the
-box. Therefore `pointer_adapter=ready` proves the packaged adapter is usable,
-while `pointer_not_connected=true` remains an intentional hardware boundary.
-The daemon resolves the packaged model worker relative to its own installed
-binary when no override is supplied. It canonicalizes that worker path and
-starts every kmNet helper from the same immutable release root, so a later
-`/opt/novasight/current` switch cannot make an already-running daemon import
-Python code from a different release.
+Model inspection and fixed probing use the linked TensorRT runtime against the
+actual Engine; `--check` validates the native composition without inventing a
+candidate Engine. kmNet preflight validates the IPv4/port/UUID/monitor contract
+without contacting the box. Therefore `pointer_not_connected=true` remains an
+intentional hardware boundary rather than a helper-process limitation.
 Runtime health is also tied to the sole Rust supervisor, not merely its last
 published snapshot. If that lifecycle actor exits or panics, `/healthz` fails
 closed while the HTTP and Unix-socket servers drain; `novasightd` then exits
@@ -320,8 +306,8 @@ Startup validates the active engine checksum and manifest, CUDA preprocess
 semantics, named TensorRT output shape, and decoder contract before reporting
 ready. The current Rust decoder intentionally supports raw YOLO and decoded
 `[N,6]` boxes; EfficientNMS and Rockchip three-head manifests fail closed and
-can continue using `deepstream_nvinfer`. The existing Python and nvinfer paths
-remain available as compatibility and rollback routes.
+can continue using `deepstream_nvinfer`. Both inference choices remain owned by
+the Rust daemon.
 
 ### Rust control-plane contract
 
