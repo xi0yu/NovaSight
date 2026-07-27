@@ -88,7 +88,7 @@ Keep these modules and documents as current authority.
 | `novasight/model_registry/*` | Model assets are first-class; registry is core. | Split large API wrappers before changing store semantics. |
 | `novasight/control/*` and `novasight/executors/*` | Control intent and device execution are separate, which is correct. | Keep output safety checks explicit. |
 | `novasight/capture/session.py` | Useful seam for threaded capture integration. | Prefer it over ad hoc capture loops. |
-| `config/novasight.example.yaml` | Shared config reference. | Must match runtime schema. |
+| `.config/novasight.yaml` | Single Rust runtime configuration. | Must match runtime schema. |
 | `deploy/*` | Deployment support. | Verify on Jetson before treating as production-ready. |
 
 ## MERGE

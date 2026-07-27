@@ -3,10 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
-use novasight_store::config::{
-    AppConfig, ConfigRepository, DeepStreamBackend, InferenceBackend, TriggerMode,
-    YamlConfigRepository,
-};
+use novasight_store::config::{AppConfig, ConfigRepository, TriggerMode, YamlConfigRepository};
 use serde_yaml::Value;
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -41,31 +38,10 @@ impl Drop for TempDirectory {
 }
 
 #[test]
-fn tracked_project_example_preserves_commissioned_hardware_and_legacy_sections() {
-    let project_config =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/novasight.example.yaml");
-    let config = YamlConfigRepository::load(project_config).unwrap();
+fn loads_the_single_project_runtime_config() {
+    let runtime_config = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
 
-    assert_eq!(config.server.port, 5174);
-    let capture = config.capture.as_ref().unwrap();
-    assert_eq!(capture.device, Path::new("/dev/video0"));
-    assert_eq!(capture.backend, DeepStreamBackend::DeepstreamNvinfer);
-    assert!(capture.latest_only);
-    let inference = config.inference.as_ref().unwrap();
-    assert_eq!(inference.backend, InferenceBackend::DeepstreamNvinfer);
-    assert!(inference.require_gpu);
-    assert!(config.device.as_ref().unwrap().auto_connect);
-    assert_eq!(config.device.as_ref().unwrap().uuid, "12345678");
-    assert!(config.require_production_adapters().is_err());
-    assert!(config.legacy.contains_key("source"));
-}
-
-#[test]
-fn loads_the_complete_rust_owned_example() {
-    let example =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
-
-    let config = YamlConfigRepository::load(example).unwrap();
+    let config = YamlConfigRepository::load(runtime_config).unwrap();
 
     assert_eq!(config.schema_version, 7);
     assert_eq!(config.revision, 0);
@@ -98,7 +74,7 @@ fn loads_the_complete_rust_owned_example() {
 #[test]
 fn production_output_cannot_open_before_hardware_is_commissioned() {
     let directory = TempDirectory::new();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
     let path = directory.join("unsafe-output.yaml");
     let document = fs::read_to_string(source)
         .unwrap()
@@ -181,7 +157,7 @@ fn document_replacement_cannot_remove_hardware_while_output_is_enabled() {
 #[test]
 fn production_preflight_rejects_an_unauthenticated_public_http_binding() {
     let directory = TempDirectory::new();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
     let path = directory.join("public-http.yaml");
     let document = fs::read_to_string(source)
         .unwrap()
@@ -198,9 +174,9 @@ fn production_preflight_rejects_an_unauthenticated_public_http_binding() {
 #[test]
 fn production_does_not_silently_invent_rust_pipeline_parameters() {
     let directory = TempDirectory::new();
-    let example =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
-    let mut document: Value = serde_yaml::from_str(&fs::read_to_string(example).unwrap()).unwrap();
+    let runtime_config = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
+    let mut document: Value =
+        serde_yaml::from_str(&fs::read_to_string(runtime_config).unwrap()).unwrap();
     document
         .as_mapping_mut()
         .unwrap()
@@ -405,7 +381,7 @@ fn saving_partial_adapter_sections_cannot_materialize_defaults() {
 #[test]
 fn whitespace_only_parser_library_fails_closed() {
     let directory = TempDirectory::new();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
     let path = directory.join("blank-parser.yaml");
     let document = fs::read_to_string(source).unwrap().replace(
         "deepstream_parser_library: auto",

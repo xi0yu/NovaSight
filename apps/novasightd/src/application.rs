@@ -26,7 +26,7 @@ use crate::live_perception;
 #[command(about = "NovaSight runtime daemon")]
 struct Args {
     /// Path to the external NovaSight YAML configuration.
-    #[arg(long, default_value = "/etc/novasight/novasight.yaml")]
+    #[arg(long, default_value = ".config/novasight.yaml")]
     config: PathBuf,
 
     /// Run preflight checks and exit; do not start the pipeline.

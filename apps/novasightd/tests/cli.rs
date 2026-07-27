@@ -64,7 +64,7 @@ fn help_documents_yaml_check_and_explicit_dry_run() {
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 help");
 
     assert!(output.status.success());
-    assert!(stdout.contains("/etc/novasight/novasight.yaml"));
+    assert!(stdout.contains(".config/novasight.yaml"));
     assert!(stdout.contains("--check"));
     assert!(stdout.contains("--dry-run"));
 }
@@ -166,7 +166,7 @@ fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
 
 #[test]
 fn development_hardware_check_rejects_an_explicit_invalid_license_public_key() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
     let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
         .env("NOVASIGHT_LICENSE_PUBLIC_KEY", "not a PEM public key")
@@ -181,7 +181,7 @@ fn development_hardware_check_rejects_an_explicit_invalid_license_public_key() {
 
 #[test]
 fn valid_production_authority_reaches_the_platform_build_boundary() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/novasightd.example.yaml");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
     let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
