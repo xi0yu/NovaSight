@@ -10,13 +10,10 @@ use std::time::Duration;
 
 use clap::Parser;
 use novasight_core::controller::recoil::RecoilConfig;
-use novasight_core::output::humanized_motion::MotionRuntimeParameters;
-use novasight_pipeline::MotionProfileHub;
 use novasight_runtime::{
     ConfigService, LoadedApplication, OfflineModelJobRunner, RuntimeDependencies,
 };
 use novasight_store::model_catalog::SqliteModelCatalog;
-use novasight_store::motion_profile::MotionProfileRepository;
 use tracing_subscriber::EnvFilter;
 
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
@@ -112,55 +109,6 @@ pub async fn entry() -> ExitCode {
         }
     };
 
-    let motion_repository =
-        match MotionProfileRepository::open(loaded.config().paths.data_dir.join("motion")) {
-            Ok(repository) => repository,
-            Err(error) => {
-                eprintln!("MOTION_PROFILE_OPEN_FAILED: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
-    let motion_tuning = &loaded.config().control.humanized_motion;
-    let motion_hub = MotionProfileHub::new(
-        motion_tuning.builtin_fitts_a_ms,
-        motion_tuning.builtin_fitts_b_ms,
-        motion_tuning.builtin_side_ratio,
-        MotionRuntimeParameters {
-            spatial_curve_enabled: motion_tuning.spatial_curve_enabled,
-            side_scale: motion_tuning.side_scale,
-            max_side_ratio: motion_tuning.max_side_ratio,
-            near_fade_start_px: motion_tuning.near_fade_start_px,
-            micro_bypass_px: motion_tuning.micro_bypass_px,
-            dynamic_rebase_ratio: motion_tuning.dynamic_rebase_ratio,
-            minimum_jerk_fallback: motion_tuning.minimum_jerk_fallback,
-            terminal_feedback_gain: motion_tuning.terminal_feedback_gain,
-            ..MotionRuntimeParameters::default()
-        },
-    );
-    if motion_tuning.enabled {
-        if motion_tuning.active_profile.is_empty() || motion_tuning.active_profile == "builtin" {
-            motion_hub.activate_builtin_startup();
-        } else {
-            let profile = match motion_repository.profile(&motion_tuning.active_profile) {
-                Ok(profile) => profile,
-                Err(error) => {
-                    eprintln!(
-                        "MOTION_PROFILE_LOAD_FAILED: profile {}: {error}",
-                        motion_tuning.active_profile
-                    );
-                    return ExitCode::FAILURE;
-                }
-            };
-            if let Err(error) = motion_hub.activate_startup(Some(profile)) {
-                eprintln!(
-                    "MOTION_PROFILE_INVALID: profile {}: {error}",
-                    motion_tuning.active_profile
-                );
-                return ExitCode::FAILURE;
-            }
-        }
-    }
-
     if args.check {
         if args.dry_run {
             if let Err(error) = loaded.config().validate_configured_adapters() {
@@ -180,7 +128,7 @@ pub async fn entry() -> ExitCode {
                 return ExitCode::FAILURE;
             }
             println!(
-                "PASS mode=dry_run config={} configured_output_enabled={} model_ingress_helper=ready motion_profile=ready hardware_not_started=true",
+                "PASS mode=dry_run config={} configured_output_enabled={} model_ingress_helper=ready hardware_not_started=true",
                 args.config.display(),
                 loaded.config().control.output_enabled
             );
@@ -229,7 +177,7 @@ pub async fn entry() -> ExitCode {
                     novasight_core::PointerDeviceMode::Uncommissioned => "uncommissioned",
                 };
             println!(
-                "PASS mode={} config={} configured_output_enabled={} license_verifier=ready instance_guard=ready model_ingress_helper=ready motion_profile=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true pointer_adapter={} capture_not_started=true pointer_not_connected=true",
+                "PASS mode={} config={} configured_output_enabled={} license_verifier=ready instance_guard=ready model_ingress_helper=ready model_contract=ready deepstream_native_runtime=ready pipeline_constructed=true pointer_adapter={} capture_not_started=true pointer_not_connected=true",
                 if cfg!(debug_assertions) {
                     "development_hardware"
                 } else {
@@ -317,8 +265,7 @@ pub async fn entry() -> ExitCode {
             fast_add_gain_counts_s: loaded.config().control.recoil.fast_add_gain_counts_s,
             max_fast_add_ratio: loaded.config().control.recoil.max_fast_add_ratio,
             stale_threshold_ms: loaded.config().control.recoil.stale_threshold_ms,
-        })
-        .with_motion_profiles(motion_hub, motion_repository);
+        });
     match server::run_daemon(loaded, dependencies, config_service, model_catalog, mode).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

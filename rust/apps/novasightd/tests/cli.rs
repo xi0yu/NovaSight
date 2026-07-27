@@ -221,33 +221,6 @@ fn check_rejects_an_incompatible_model_worker_protocol() {
 }
 
 #[test]
-fn check_rejects_a_missing_named_motion_profile_instead_of_silently_using_builtin() {
-    let (_directory, path) = temp_config();
-    let mut config = fs::read_to_string(&path).expect("read config");
-    config.push_str(
-        "control:\n  humanized_motion:\n    enabled: true\n    active_profile: missing-profile\n",
-    );
-    fs::write(&path, config).expect("write motion config");
-
-    let output = daemon_command()
-        .args([
-            "--config",
-            path.to_str().expect("UTF-8 path"),
-            "--check",
-            "--dry-run",
-        ])
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
-        .output()
-        .expect("run check");
-    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
-
-    assert!(!output.status.success());
-    assert!(stderr.contains("MOTION_PROFILE_LOAD_FAILED"));
-    assert!(stderr.contains("missing-profile"));
-}
-
-#[test]
 fn production_check_rejects_incomplete_adapter_configuration() {
     let (_directory, path) = temp_config();
     let output = daemon_command()

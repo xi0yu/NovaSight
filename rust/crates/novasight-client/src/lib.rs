@@ -15,19 +15,14 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Method, Request, StatusCode, client::conn::http1};
 use hyper_util::rt::TokioIo;
-pub use novasight_core::output::humanized_motion::MotionProfile;
 use novasight_core::{CaptureCapabilities, CaptureSelectionPreference, DeviceReceipt};
 use novasight_runtime::{
     AppConfig, ConfigFieldUpdate, ConfigUpdate, CrosshairSnapshot, ModelIngressResult,
-    ModelProbeInputMode, ModelProfileConfigureRequest, MotionProfileStatus, PreviewSnapshot,
-    RuntimeSnapshot,
+    ModelProbeInputMode, ModelProfileConfigureRequest, PreviewSnapshot, RuntimeSnapshot,
 };
 pub use novasight_store::license::LicenseStatus;
 pub use novasight_store::model_catalog::{
     CatalogEngineRegistration, Deployment, ModelArtifact, ModelProject, ModelVersion,
-};
-pub use novasight_store::motion_profile::{
-    MotionSampleInput, MotionSampleResult, MotionSessionSummary,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -134,12 +129,6 @@ pub struct DiagnosticDeviceStatus {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DiagnosticMetadata {
     pub api_name: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ActivatedMotionProfile {
-    pub profile: MotionProfile,
-    pub runtime: MotionProfileStatus,
 }
 
 #[derive(Clone, Debug)]
@@ -382,94 +371,6 @@ impl ControlClient {
 
     pub async fn clear_crosshair(&self) -> Result<CrosshairSnapshot, ClientError> {
         self.request(Method::DELETE, "/api/crosshair/template", None::<&()>)
-            .await
-    }
-
-    pub async fn motion_sessions(&self) -> Result<Vec<MotionSessionSummary>, ClientError> {
-        self.request(Method::GET, "/api/motion/sessions", None::<&()>)
-            .await
-    }
-
-    pub async fn create_motion_session(
-        &self,
-        name: &str,
-    ) -> Result<MotionSessionSummary, ClientError> {
-        #[derive(Serialize)]
-        struct Request<'a> {
-            name: &'a str,
-        }
-        self.request(
-            Method::POST,
-            "/api/motion/sessions",
-            Some(&Request { name }),
-        )
-        .await
-    }
-
-    pub async fn add_motion_sample(
-        &self,
-        session_id: &str,
-        sample: &MotionSampleInput,
-    ) -> Result<MotionSampleResult, ClientError> {
-        self.request(
-            Method::POST,
-            &format!("/api/motion/sessions/{session_id}/samples"),
-            Some(sample),
-        )
-        .await
-    }
-
-    pub async fn train_motion_profile(
-        &self,
-        session_id: &str,
-        name: &str,
-    ) -> Result<MotionProfile, ClientError> {
-        #[derive(Serialize)]
-        struct Request<'a> {
-            session_id: &'a str,
-            name: &'a str,
-        }
-        self.request(
-            Method::POST,
-            "/api/motion/profiles/train",
-            Some(&Request { session_id, name }),
-        )
-        .await
-    }
-
-    pub async fn motion_profiles(&self) -> Result<Vec<MotionProfile>, ClientError> {
-        self.request(Method::GET, "/api/motion/profiles", None::<&()>)
-            .await
-    }
-
-    pub async fn activate_motion_profile(
-        &self,
-        profile_id: &str,
-    ) -> Result<ActivatedMotionProfile, ClientError> {
-        self.request(
-            Method::POST,
-            &format!("/api/motion/profiles/{profile_id}/activate"),
-            None::<&()>,
-        )
-        .await
-    }
-
-    pub async fn activate_builtin_motion(&self) -> Result<MotionProfileStatus, ClientError> {
-        self.request(
-            Method::POST,
-            "/api/motion/runtime/builtin/activate",
-            None::<&()>,
-        )
-        .await
-    }
-
-    pub async fn disable_motion_profile(&self) -> Result<MotionProfileStatus, ClientError> {
-        self.request(Method::POST, "/api/motion/profiles/disable", None::<&()>)
-            .await
-    }
-
-    pub async fn motion_profile_status(&self) -> Result<MotionProfileStatus, ClientError> {
-        self.request(Method::GET, "/api/motion/runtime", None::<&()>)
             .await
     }
 

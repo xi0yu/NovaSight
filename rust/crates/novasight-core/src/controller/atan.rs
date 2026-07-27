@@ -17,11 +17,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::response_curve::{BlendedAtanConfig, ContinuousDemand};
+use super::response_curve::{BlendedAtanConfig, ContinuousDemand, far_weight};
 use crate::limiter::{DeviceCountLimiter, DeviceCountLimits};
-use crate::output::humanized_motion::{HumanizedMotionTelemetry, MotionProfile};
 use crate::prediction::{
-    FocusTargetObservation, PredictionRange, SingleTargetPredictionConfig, SingleTargetPredictor,
+    FocusTargetObservation, SingleTargetPredictionConfig, SingleTargetPredictor,
 };
 
 /// Integer mouse output cannot represent a correction smaller than one count.
@@ -250,7 +249,6 @@ pub struct ControlDecision {
     pub arrival_exit_counts: f64,
     pub actuation_pending_x: bool,
     pub actuation_pending_y: bool,
-    pub humanized_motion: HumanizedMotionTelemetry,
 }
 
 impl ControlDecision {
@@ -319,7 +317,6 @@ impl ControlDecision {
             arrival_exit_counts: 0.0,
             actuation_pending_x: false,
             actuation_pending_y: false,
-            humanized_motion: HumanizedMotionTelemetry::default(),
         }
     }
 }
@@ -468,17 +465,6 @@ impl DualPhaseControl {
         self.calculate_internal(observation, feedback)
     }
 
-    /// Compatibility entrypoint for callers that still own motion profiles.
-    /// Production Atan-only control intentionally ignores profile shaping.
-    pub fn calculate_with_profile(
-        &mut self,
-        observation: ControlObservation,
-        _profile: Option<&MotionProfile>,
-        _target_width_px: f64,
-    ) -> ControlDecision {
-        self.calculate_internal(observation, ActuationFeedback::default())
-    }
-
     fn calculate_internal(
         &mut self,
         observation: ControlObservation,
@@ -560,15 +546,9 @@ impl DualPhaseControl {
         } else {
             ControlMode::Far
         };
+        let far_weight = far_weight(distance, self.config.near_threshold_px);
         let prediction = if capture_timestamp_discontinuity {
-            self.prediction.unavailable(
-                error_x,
-                error_y,
-                match mode {
-                    ControlMode::Far => PredictionRange::Far,
-                    ControlMode::Near => PredictionRange::Near,
-                },
-            )
+            self.prediction.unavailable(error_x, error_y, far_weight)
         } else {
             self.prediction.predict(FocusTargetObservation {
                 track_id: observation.target_id,
@@ -579,10 +559,7 @@ impl DualPhaseControl {
                 capture_ts_ns: observation.capture_ts_ns,
                 detection_confidence: observation.detection_confidence,
                 identity_confidence: observation.track_confidence,
-                range: match mode {
-                    ControlMode::Far => PredictionRange::Far,
-                    ControlMode::Near => PredictionRange::Near,
-                },
+                far_weight,
             })
         };
         let predicted_offset_x = prediction.x.safe_offset;
@@ -722,7 +699,6 @@ impl DualPhaseControl {
             arrival_exit_counts,
             actuation_pending_x: feedback.pending_x,
             actuation_pending_y: feedback.pending_y,
-            humanized_motion: HumanizedMotionTelemetry::default(),
         }
     }
 

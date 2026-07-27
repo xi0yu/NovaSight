@@ -12,22 +12,17 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use novasight_core::controller::recoil::RecoilConfig;
-use novasight_core::output::humanized_motion::MotionProfile;
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, MonotonicNanos, PointerDevice,
     PointerDeviceMode, RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
-    CrosshairHub, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate, MotionProfileHub,
-    MotionProfileStatus, PerceptionAdapter, PerceptionEvent, PerceptionMetrics,
-    PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession, PipelineConfig,
-    PipelineEvent, PipelineIngress, PipelineMetrics, PipelineRuntime, PipelineStatus, PreviewHub,
-    PreviewSnapshot, PreviewSubscription,
+    CrosshairHub, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate, PerceptionAdapter,
+    PerceptionEvent, PerceptionMetrics, PerceptionModelContract, PerceptionRuntimeContract,
+    PerceptionSession, PipelineConfig, PipelineEvent, PipelineIngress, PipelineMetrics,
+    PipelineRuntime, PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription,
 };
 use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, SqliteModelCatalog};
-use novasight_store::motion_profile::{
-    MotionProfileRepository, MotionSampleInput, MotionSampleResult, MotionSessionSummary,
-};
 use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 
 use crate::command::RuntimeCommand;
@@ -105,8 +100,6 @@ pub struct RuntimeDependencies {
     model_jobs: Option<OfflineModelJobRunner>,
     preview: Option<PreviewHub>,
     crosshair: Option<CrosshairHub>,
-    motion_profiles: Option<MotionProfileHub>,
-    motion_repository: Option<MotionProfileRepository>,
     output_enabled: bool,
     urgent_stop: Arc<UrgentStopSignal>,
 }
@@ -159,8 +152,6 @@ impl RuntimeDependencies {
             model_jobs: None,
             preview: None,
             crosshair: None,
-            motion_profiles: None,
-            motion_repository: None,
             output_enabled: false,
             urgent_stop: Arc::new(UrgentStopSignal::new()),
         }
@@ -189,17 +180,6 @@ impl RuntimeDependencies {
     pub fn with_crosshair(mut self, crosshair: CrosshairHub) -> Self {
         self.pipeline.crosshair = Some(crosshair.clone());
         self.crosshair = Some(crosshair);
-        self
-    }
-
-    pub fn with_motion_profiles(
-        mut self,
-        hub: MotionProfileHub,
-        repository: MotionProfileRepository,
-    ) -> Self {
-        self.pipeline.motion_profiles = Some(hub.clone());
-        self.motion_profiles = Some(hub);
-        self.motion_repository = Some(repository);
         self
     }
 
@@ -719,8 +699,6 @@ impl RuntimeSupervisor {
         let urgent_stop = Arc::clone(&dependencies.urgent_stop);
         let preview = dependencies.preview.clone();
         let crosshair = dependencies.crosshair.clone();
-        let motion_profiles = dependencies.motion_profiles.clone();
-        let motion_repository = dependencies.motion_repository.clone();
         let join = tokio::spawn(supervisor_loop(
             command_rx,
             notice_rx,
@@ -749,8 +727,6 @@ impl RuntimeSupervisor {
                 urgent_admission,
                 preview,
                 crosshair,
-                motion_profiles,
-                motion_repository,
             },
         )
     }
@@ -797,8 +773,6 @@ pub struct RuntimeHandle {
     urgent_admission: Arc<Semaphore>,
     preview: Option<PreviewHub>,
     crosshair: Option<CrosshairHub>,
-    motion_profiles: Option<MotionProfileHub>,
-    motion_repository: Option<MotionProfileRepository>,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -938,92 +912,6 @@ impl RuntimeHandle {
             .ok_or_else(RuntimeError::pipeline_unavailable)?
             .template_preview_png()
             .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
-    }
-
-    pub fn motion_sessions(&self) -> Result<Vec<MotionSessionSummary>, RuntimeError> {
-        self.motion_repository()?
-            .list_sessions()
-            .map_err(motion_error)
-    }
-
-    pub fn create_motion_session(&self, name: &str) -> Result<MotionSessionSummary, RuntimeError> {
-        self.motion_repository()?
-            .create_session(name)
-            .map_err(motion_error)
-    }
-
-    pub fn add_motion_sample(
-        &self,
-        session_id: &str,
-        sample: MotionSampleInput,
-    ) -> Result<MotionSampleResult, RuntimeError> {
-        self.motion_repository()?
-            .add_sample(session_id, sample)
-            .map_err(motion_error)
-    }
-
-    pub fn train_motion_profile(
-        &self,
-        session_id: &str,
-        name: &str,
-    ) -> Result<MotionProfile, RuntimeError> {
-        self.motion_repository()?
-            .train_profile(session_id, name)
-            .map_err(motion_error)
-    }
-
-    pub fn motion_profiles(&self) -> Result<Vec<MotionProfile>, RuntimeError> {
-        self.motion_repository()?
-            .list_profiles()
-            .map_err(motion_error)
-    }
-
-    pub fn activate_motion_profile(
-        &self,
-        profile_id: &str,
-    ) -> Result<(MotionProfile, MotionProfileStatus), RuntimeError> {
-        let profile = self.motion_profile(profile_id)?;
-        let status = self.activate_loaded_motion_profile(profile.clone())?;
-        Ok((profile, status))
-    }
-
-    pub fn motion_profile(&self, profile_id: &str) -> Result<MotionProfile, RuntimeError> {
-        self.motion_repository()?
-            .profile(profile_id)
-            .map_err(motion_error)
-    }
-
-    pub fn activate_loaded_motion_profile(
-        &self,
-        profile: MotionProfile,
-    ) -> Result<MotionProfileStatus, RuntimeError> {
-        self.motion_hub()?
-            .activate(profile)
-            .map_err(RuntimeError::invalid_pipeline_state)
-    }
-
-    pub fn activate_builtin_motion(&self) -> Result<MotionProfileStatus, RuntimeError> {
-        Ok(self.motion_hub()?.activate_builtin())
-    }
-
-    pub fn disable_motion_profile(&self) -> Result<MotionProfileStatus, RuntimeError> {
-        Ok(self.motion_hub()?.disable())
-    }
-
-    pub fn motion_profile_status(&self) -> Result<MotionProfileStatus, RuntimeError> {
-        Ok(self.motion_hub()?.status())
-    }
-
-    fn motion_repository(&self) -> Result<&MotionProfileRepository, RuntimeError> {
-        self.motion_repository
-            .as_ref()
-            .ok_or_else(RuntimeError::pipeline_unavailable)
-    }
-
-    fn motion_hub(&self) -> Result<&MotionProfileHub, RuntimeError> {
-        self.motion_profiles
-            .as_ref()
-            .ok_or_else(RuntimeError::pipeline_unavailable)
     }
 
     pub async fn diagnose_device_move(
@@ -1174,10 +1062,6 @@ impl RuntimeHandle {
             .await
             .map_err(|_| RuntimeError::supervisor_reply_lost())?
     }
-}
-
-fn motion_error(error: novasight_store::motion_profile::MotionProfileError) -> RuntimeError {
-    RuntimeError::invalid_pipeline_state(error.to_string())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2663,8 +2547,6 @@ mod tests {
             urgent_admission: Arc::new(Semaphore::new(URGENT_ADMISSION_CAPACITY)),
             preview: None,
             crosshair: None,
-            motion_profiles: None,
-            motion_repository: None,
         };
         let (occupied_reply, _occupied_reply_rx) = oneshot::channel();
         command_tx

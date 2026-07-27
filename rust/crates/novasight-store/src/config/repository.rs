@@ -368,98 +368,93 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 }
 
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
-    if config.schema_version >= 6 {
+    let removed_humanized_motion = config.control.legacy.remove("humanized_motion").is_some();
+    if config.schema_version >= 7 {
+        if removed_humanized_motion
+            && let Value::Mapping(root) = document
+            && let Some(Value::Mapping(control)) = root.get_mut(Value::String("control".to_owned()))
+        {
+            control.remove(Value::String("humanized_motion".to_owned()));
+        }
         return;
     }
 
-    // Schema 3 replaced a delay-stable authority tuple with an aggressive
-    // open-loop profile and removed the delayed closed-loop regression. Repair
-    // only that exact generated tuple; individually tuned values remain intact.
     let schema_version = config.schema_version;
-    let pipeline = &mut config.pipeline;
-    let migrated_aggressive_profile = schema_version == 3
-        && pipeline.atan_scale_counts == 1_024.0
-        && pipeline.far_kp == 0.90
-        && pipeline.far_max_counts_per_update == 600.0
-        && pipeline.near_kp == 0.30
-        && pipeline.near_max_counts_per_update == 120.0;
-    if migrated_aggressive_profile {
-        pipeline.atan_scale_counts = 256.0;
-        pipeline.far_kp = 0.45;
-        pipeline.far_max_counts_per_update = 127.0;
-        pipeline.near_kp = 0.22;
-        pipeline.near_max_counts_per_update = 72.0;
+    let mut migrated_aggressive_profile = false;
+    let mut migrated_delay_unstable_far_gain = false;
+    if schema_version < 6 {
+        let pipeline = &mut config.pipeline;
+        migrated_aggressive_profile = schema_version == 3
+            && pipeline.atan_scale_counts == 1_024.0
+            && pipeline.far_kp == 0.90
+            && pipeline.far_max_counts_per_update == 600.0
+            && pipeline.near_kp == 0.30
+            && pipeline.near_max_counts_per_update == 120.0;
+        if migrated_aggressive_profile {
+            pipeline.atan_scale_counts = 256.0;
+            pipeline.far_kp = 0.45;
+            pipeline.far_max_counts_per_update = 127.0;
+            pipeline.near_kp = 0.22;
+            pipeline.near_max_counts_per_update = 72.0;
+        }
+        migrated_delay_unstable_far_gain = pipeline.atan_scale_counts == 256.0
+            && pipeline.far_kp == 0.45
+            && pipeline.far_max_counts_per_update == 127.0
+            && pipeline.near_kp == 0.22
+            && pipeline.near_max_counts_per_update == 72.0;
+        if migrated_delay_unstable_far_gain {
+            pipeline.far_kp = 0.22;
+            pipeline.near_kp = 0.20;
+        }
+        pipeline.prediction_enabled = false;
     }
-    // Schema 5's generated FAR gain converged eventually, but its regression
-    // ignored the acquisition transient. With two frames of visual feedback
-    // delay it overshot a new 100 px target by about 20 px. Repair only the
-    // exact generated tuple so individually tuned profiles stay untouched.
-    let migrated_delay_unstable_far_gain = pipeline.atan_scale_counts == 256.0
-        && pipeline.far_kp == 0.45
-        && pipeline.far_max_counts_per_update == 127.0
-        && pipeline.near_kp == 0.22
-        && pipeline.near_max_counts_per_update == 72.0;
-    if migrated_delay_unstable_far_gain {
-        pipeline.far_kp = 0.22;
-        pipeline.near_kp = 0.20;
-    }
-    // Stage one of the control audit intentionally removes motion prediction
-    // from the production mouse path. Existing configurations are migrated to
-    // the same explicit non-predictive contract instead of silently retaining
-    // a previously enabled predictor.
-    pipeline.prediction_enabled = false;
-    config.control.humanized_motion.enabled = false;
-    config.schema_version = 6;
+    config.schema_version = 7;
 
     let Value::Mapping(root) = document else {
         return;
     };
     root.insert(
         Value::String("schema_version".to_owned()),
-        Value::Number(6_u64.into()),
+        Value::Number(7_u64.into()),
     );
-    let pipeline = root
-        .entry(Value::String("pipeline".to_owned()))
-        .or_insert_with(|| Value::Mapping(Default::default()));
-    let Value::Mapping(pipeline) = pipeline else {
-        return;
-    };
-    pipeline.insert(
-        Value::String("prediction_enabled".to_owned()),
-        Value::Bool(false),
-    );
-    if migrated_delay_unstable_far_gain {
-        for (key, value) in [("far_kp", 0.22), ("near_kp", 0.20)] {
+    if schema_version < 6 {
+        let pipeline = root
+            .entry(Value::String("pipeline".to_owned()))
+            .or_insert_with(|| Value::Mapping(Default::default()));
+        if let Value::Mapping(pipeline) = pipeline {
             pipeline.insert(
-                Value::String(key.to_owned()),
-                serde_yaml::to_value(value).expect("finite control migration value"),
+                Value::String("prediction_enabled".to_owned()),
+                Value::Bool(false),
             );
-        }
-    }
-    if migrated_aggressive_profile {
-        for (key, value) in [
-            ("atan_scale_counts", 256.0),
-            ("far_kp", 0.22),
-            ("far_max_counts_per_update", 127.0),
-            ("near_kp", 0.20),
-            ("near_max_counts_per_update", 72.0),
-        ] {
-            pipeline.insert(
-                Value::String(key.to_owned()),
-                serde_yaml::to_value(value).expect("finite control migration value"),
-            );
+            if migrated_delay_unstable_far_gain {
+                for (key, value) in [("far_kp", 0.22), ("near_kp", 0.20)] {
+                    pipeline.insert(
+                        Value::String(key.to_owned()),
+                        serde_yaml::to_value(value).expect("finite control migration value"),
+                    );
+                }
+            }
+            if migrated_aggressive_profile {
+                for (key, value) in [
+                    ("atan_scale_counts", 256.0),
+                    ("far_kp", 0.22),
+                    ("far_max_counts_per_update", 127.0),
+                    ("near_kp", 0.20),
+                    ("near_max_counts_per_update", 72.0),
+                ] {
+                    pipeline.insert(
+                        Value::String(key.to_owned()),
+                        serde_yaml::to_value(value).expect("finite control migration value"),
+                    );
+                }
+            }
         }
     }
     let control = root
         .entry(Value::String("control".to_owned()))
         .or_insert_with(|| Value::Mapping(Default::default()));
     if let Value::Mapping(control) = control {
-        let humanized = control
-            .entry(Value::String("humanized_motion".to_owned()))
-            .or_insert_with(|| Value::Mapping(Default::default()));
-        if let Value::Mapping(humanized) = humanized {
-            humanized.insert(Value::String("enabled".to_owned()), Value::Bool(false));
-        }
+        control.remove(Value::String("humanized_motion".to_owned()));
     }
 }
 
@@ -971,7 +966,7 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
         ),
         ("consumers", &config.consumers.legacy, &["preview"][..]),
         ("limits", &config.limits.legacy, &["stream_fps"][..]),
-        ("control", &config.control.legacy, &["humanized_motion"][..]),
+        ("control", &config.control.legacy, &[][..]),
     ] {
         if let Some(key) = reserved.iter().find(|key| legacy.contains_key(**key)) {
             return Err(ConfigError::ReservedLegacyKey {
@@ -981,26 +976,6 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
             });
         }
     }
-    validate_reserved_legacy(
-        path,
-        "control.humanized_motion",
-        &config.control.humanized_motion.legacy,
-        &[
-            "enabled",
-            "active_profile",
-            "spatial_curve_enabled",
-            "side_scale",
-            "max_side_ratio",
-            "near_fade_start_px",
-            "micro_bypass_px",
-            "dynamic_rebase_ratio",
-            "minimum_jerk_fallback",
-            "terminal_feedback_gain",
-            "builtin_fitts_a_ms",
-            "builtin_fitts_b_ms",
-            "builtin_side_ratio",
-        ],
-    )?;
     if let Some(capture) = &config.capture {
         validate_reserved_legacy(
             path,

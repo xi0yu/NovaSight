@@ -19,22 +19,15 @@ import {
   ModelCatalogResponse,
   ModelProject,
   ModelVersion,
-  MotionProfile,
-  MotionProfileRuntime,
   ParserPresetId,
   RuntimeConfig,
   RuntimeConfigValue,
   RuntimeState,
   RuntimeStatusTopic,
-  activateMotionProfile,
-  activateBuiltinMotion,
-  disableMotionProfile,
   getCaptureCapabilities,
   getModelArtifacts,
   getModelCatalog,
   getModelVersions,
-  getMotionProfileRuntime,
-  getMotionProfiles,
   publishModel,
   registerCatalogModel,
   selectCaptureProfile,
@@ -95,6 +88,12 @@ const RUST_DUAL_PHASE_PATHS: Record<string, string> = {
   "atan.far.max_counts_per_update": "far_max_counts_per_update",
   "atan.near.max_counts_per_update": "near_max_counts_per_update",
   "arrival.radius_counts": "arrival_radius_counts",
+  "prediction.enabled": "prediction_enabled",
+  "prediction.smoothing_frames": "velocity_smoothing_frames",
+  "prediction.history_reset_gap_ms": "velocity_history_reset_gap_ms",
+  "prediction.lead_frames": "prediction_lead_frames",
+  "prediction.far_absolute_cap_px": "prediction_far_absolute_cap_px",
+  "prediction.near_absolute_cap_px": "prediction_near_absolute_cap_px",
 };
 const ModelManagerDialog = lazy(() =>
   import("../models/ModelManagerDialog").then((module) => ({
@@ -657,10 +656,6 @@ export function StudioConsoleView({
   const [modelCatalogModelCount, setModelCatalogModelCount] = useState(0);
   const [modelCatalogDirectoryCount, setModelCatalogDirectoryCount] = useState(0);
   const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
-  const [motionProfiles, setMotionProfiles] = useState<MotionProfile[]>([]);
-  const [motionProfileRuntime, setMotionProfileRuntime] = useState<MotionProfileRuntime | null>(null);
-  const [selectedMotionProfileId, setSelectedMotionProfileId] = useState("");
-  const [motionProfileBusy, setMotionProfileBusy] = useState(false);
   const [expandedModelDirectories, setExpandedModelDirectories] = useState<Set<string>>(
     () => new Set([""])
   );
@@ -847,82 +842,6 @@ export function StudioConsoleView({
     setActivePage(page);
     writePageToUrl(page);
   }, []);
-
-  const openMotionProfileStudio = useCallback(() => {
-    window.open("?page=motion-profile", "novasight-motion-profile", "popup=yes,width=1280,height=820");
-  }, []);
-
-  const refreshMotionProfileRuntime = useCallback(async () => {
-    const [profiles, status] = await Promise.all([getMotionProfiles(), getMotionProfileRuntime()]);
-    setMotionProfiles(profiles);
-    setMotionProfileRuntime(status);
-    setSelectedMotionProfileId((current) => {
-      if (status.trajectory_source === "builtin" || status.active_profile === "builtin") {
-        return "__builtin__";
-      }
-      if (status.active_profile && profiles.some((profile) => profile.profile_id === status.active_profile)) {
-        return status.active_profile;
-      }
-      if (current && profiles.some((profile) => profile.profile_id === current)) {
-        return current;
-      }
-      return "__builtin__";
-    });
-  }, []);
-
-  useEffect(() => {
-    if (activePage !== "params") {
-      return;
-    }
-    const refresh = () => {
-      void refreshMotionProfileRuntime().catch((error) => {
-        reportError(error, { source: "motion-profile-runtime", title: "真人轨迹状态读取失败" });
-      });
-    };
-    refresh();
-    window.addEventListener("focus", refresh);
-    return () => window.removeEventListener("focus", refresh);
-  }, [activePage, refreshMotionProfileRuntime]);
-
-  const setMotionControlMode = useCallback(async (useHumanProfile: boolean) => {
-    if (motionProfileBusy) {
-      return;
-    }
-    setMotionProfileBusy(true);
-    try {
-      if (useHumanProfile) {
-        if (!selectedMotionProfileId || selectedMotionProfileId === "__builtin__") {
-          await activateBuiltinMotion();
-        } else {
-          await activateMotionProfile(selectedMotionProfileId);
-        }
-      } else {
-        await disableMotionProfile();
-      }
-      await refreshMotionProfileRuntime();
-    } catch (error) {
-      reportError(error, { source: "motion-profile-mode", title: "控制轨迹切换失败" });
-    } finally {
-      setMotionProfileBusy(false);
-    }
-  }, [motionProfileBusy, refreshMotionProfileRuntime, selectedMotionProfileId]);
-
-  const selectMotionProfile = useCallback(async (profileId: string) => {
-    setSelectedMotionProfileId(profileId);
-    if (!motionProfileRuntime?.enabled || !profileId) {
-      return;
-    }
-    setMotionProfileBusy(true);
-    try {
-      if (profileId === "__builtin__") await activateBuiltinMotion();
-      else await activateMotionProfile(profileId);
-      await refreshMotionProfileRuntime();
-    } catch (error) {
-      reportError(error, { source: "motion-profile-select", title: "真人画像切换失败" });
-    } finally {
-      setMotionProfileBusy(false);
-    }
-  }, [motionProfileRuntime?.enabled, refreshMotionProfileRuntime]);
 
   useEffect(() => {
     if (!modelSwitchDialogOpen) {
@@ -1317,21 +1236,6 @@ export function StudioConsoleView({
       : nestedRecord(controlConfig, algorithmId);
   };
   const aimConfig = nestedRecord(controlConfig, "aim");
-  const humanizedMotionConfig = nestedRecord(controlConfig, "humanized_motion");
-  const humanizedSpatialCurveEnabled = readBoolean(humanizedMotionConfig.spatial_curve_enabled, true);
-  const motionTrajectorySource = motionProfileRuntime?.trajectory_source
-    ?? (motionProfileRuntime?.active_profile === "builtin"
-      ? "builtin"
-      : motionProfileRuntime?.enabled
-        ? "trained"
-        : "static");
-  const humanizedValue = (key: string, fallback: number) => readNumber(humanizedMotionConfig[key], fallback);
-  const updateHumanized = (key: string, value: RuntimeConfigValue) =>
-    updateConfigField(
-      "control",
-      "humanized_motion",
-      { ...humanizedMotionConfig, [key]: value } as Record<string, RuntimeConfigValue>
-    );
   const calibratedAngularConfig = algorithmConfig("calibrated_angular");
   const universalSaturatedConfig = algorithmConfig("universal_saturated");
   const dualPhaseConfig = algorithmConfig("dual_phase_atan_robust_predictive_v2");
@@ -1402,6 +1306,12 @@ export function StudioConsoleView({
   const dualPhaseFarMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.far_max_counts_per_update : dualPhaseFarConfig.max_counts_per_update, 127);
   const dualPhaseNearMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.near_max_counts_per_update : dualPhaseNearConfig.max_counts_per_update, 72);
   const dualPhaseArrivalRadiusCounts = readNumber(rustPipelineConfig.arrival_radius_counts, 3);
+  const dualPhasePredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, false);
+  const dualPhasePredictionSmoothingFrames = readNumber(rustPipelineConfig.velocity_smoothing_frames, 3);
+  const dualPhasePredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
+  const dualPhasePredictionLeadFrames = readNumber(rustPipelineConfig.prediction_lead_frames, 1);
+  const dualPhasePredictionFarCapPx = readNumber(rustPipelineConfig.prediction_far_absolute_cap_px, 10);
+  const dualPhasePredictionNearCapPx = readNumber(rustPipelineConfig.prediction_near_absolute_cap_px, 3);
   const actuationFeedbackDelayMs = readNumber(rustPipelineConfig.actuation_feedback_delay_ms, 4);
   const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
   const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
@@ -1655,22 +1565,6 @@ export function StudioConsoleView({
       : diagnosticTracks.find((item) => readNumber(item.track_id, Number.NaN) === selectedTrackId) ?? {};
   const selectedTrackEstimate = asRecord(selectedTrackDebug.estimate);
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
-  const humanizedSpeedCurveSource = readString(controlPipeline.humanized_motion_speed_curve_source, "");
-  const humanizedSpatialCurveSource = readString(controlPipeline.humanized_motion_spatial_curve_source, "");
-  const humanizedSpeedCurveLabel = humanizedSpeedCurveSource === "minimum_jerk"
-    ? "minimum-jerk 钟形速度"
-    : humanizedSpeedCurveSource === "trained_progress"
-      ? "训练进度曲线"
-      : humanizedSpeedCurveSource === "micro_bypass"
-        ? "微调区闭环直通"
-        : humanizedSpeedCurveSource || NO_SAMPLE;
-  const humanizedSpatialCurveLabel = humanizedSpatialCurveSource === "cubic_bezier"
-    ? "三次贝塞尔"
-    : humanizedSpatialCurveSource === "sampled_side_curve"
-      ? "训练侧向曲线"
-      : humanizedSpatialCurveSource === "micro_bypass"
-        ? "微调区关闭侧偏"
-        : humanizedSpatialCurveSource || NO_SAMPLE;
   const mouseObservation = asRecord(control.mouse_observation ?? target.mouse_observation);
   const rawAimDebug = asRecord(mouseObservation.raw_aim);
   const controlHasSample = rustControlPlane
@@ -3611,14 +3505,6 @@ export function StudioConsoleView({
             <NovaIcon name={runtimeControlRequested ? "stop" : "start"} size={16} />
             {runtimeControlRequested ? (runtimeMainlineSelected ? "停止主链" : "停止采集") : runtimeMainlineSelected ? "启动主链" : "启动采集"}
           </button>
-          <button
-            className="console-button"
-            onClick={openMotionProfileStudio}
-            type="button"
-          >
-            <NovaIcon name="track-trace" size={16} />
-            真人轨迹
-          </button>
           {!runtimeMainlineSelected && !runtime?.running && capture?.available ? (
             <button
               className="console-button"
@@ -4121,7 +4007,7 @@ export function StudioConsoleView({
                 {dualPhaseActive ? (
                   <>
                     <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                    <span>位置预测</span><b>已从生产控制主链关闭</b>
+                    <span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b>
                   </>
                 ) : (
                   <>
@@ -4178,14 +4064,6 @@ export function StudioConsoleView({
                     <span>累计余量 counts</span><b>{formatPoint(controlPipeline.residual_x_counts, controlPipeline.residual_y_counts, 2)}</b>
                   </>
                 )}
-                {controlPipeline.humanized_motion_enabled !== undefined ? (
-                  <>
-                    <span>拟人轨迹状态</span><b>{readBoolean(controlPipeline.humanized_motion_enabled, false) ? readString(controlPipeline.humanized_motion_phase, "运行中") : readString(controlPipeline.humanized_motion_reason, "未启用")}</b>
-                    <span>速度 / 空间曲线</span><b>{`${humanizedSpeedCurveLabel} / ${humanizedSpatialCurveLabel}`}</b>
-                    <span>轨迹进度 / 侧偏</span><b>{`${formatPercent(controlPipeline.humanized_motion_progress)} / ${formatOptionalNumber(controlPipeline.humanized_motion_side_offset, 4)}`}</b>
-                    <span>计划时长</span><b>{formatOptionalNumber(controlPipeline.humanized_motion_planned_duration_ms, STANDARD_DECIMAL_DIGITS, "ms")}</b>
-                  </>
-                ) : null}
                 <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
                 <span>基础 / 追加速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_base_rate_counts_s, 0)} / ${formatOptionalNumber(controlPipeline.recoil_fast_add_rate_counts_s, 0)} counts/s`}</b>
                 <span>门控 / 最终速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_position_gate, 2)} / ${formatOptionalNumber(controlPipeline.recoil_final_rate_counts_s, 0)} `}counts/s</b>
@@ -4224,14 +4102,9 @@ export function StudioConsoleView({
           <>
             <div className="console-metrics params-summary-metrics">
               <Metric title="控制模式" value={controlModeLabel} small="单选策略" />
-              <Metric
-                title="轨迹来源"
-                value={motionProfileRuntime === null ? "读取中" : motionTrajectorySource === "builtin" ? "内置拟人" : motionProfileRuntime.enabled ? "训练拟人" : "静态参数"}
-                small={motionProfileRuntime?.enabled ? motionProfileRuntime.profile_name || "运行内存画像" : motionProfileRuntime === null ? "等待运行态" : "配置文件"}
-              />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
-              <Metric title="位置预测" value={dualPhaseActive ? "已关闭" : "不使用"} small="Atan 基础反馈" />
+              <Metric title="位置预测" value={dualPhaseActive ? dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭" : "不使用"} small={dualPhasePredictionEnabled ? "单目标真实帧间速度" : "当前观测 Atan 反馈"} />
               <Metric title="偏移输出" value={outputEnabled ? "已允许" : "已暂停"} small={outputEnabled ? "可发送至设备" : "算法仍继续计算"} />
               <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
             </div>
@@ -4276,83 +4149,16 @@ export function StudioConsoleView({
               <div className="motion-control-mode-copy">
                 <span className="class-config-eyebrow">生产算法隔离</span>
                 <h3>双阶段 Atan 基础反馈</h3>
-                <p>位置预测与拟人轨迹整形均已关闭；设备输出只由当前测量误差、投影、Atan、限幅和量化产生。</p>
+                <p>{dualPhasePredictionEnabled ? "单目标 X / Y 预测先修正当前位置，随后进入投影、Atan、限幅和量化。" : "设备输出只由当前测量误差、投影、Atan、限幅和量化产生。"}</p>
               </div>
-              <div className="motion-control-mode-actions">
-                <div className="motion-mode-segmented" role="group" aria-label="控制轨迹来源">
-                  <button
-                    aria-pressed={true}
-                    className="active"
-                    disabled
-                    onClick={() => void setMotionControlMode(false)}
-                    type="button"
-                  >
-                    <NovaIcon name="settings" size={16} />
-                    静态控制算法
-                  </button>
-                  <button
-                    aria-pressed={false}
-                    className=""
-                    disabled
-                    onClick={() => void setMotionControlMode(true)}
-                    type="button"
-                  >
-                    <NovaIcon name="track-trace" size={16} />
-                    拟人轨迹
-                  </button>
-                </div>
-                <div className="motion-profile-picker">
-                  <label htmlFor="motion-profile-select">轨迹来源</label>
-                  <select
-                    id="motion-profile-select"
-                    disabled
-                    onChange={(event) => void selectMotionProfile(event.target.value)}
-                    value={selectedMotionProfileId}
-                  >
-                    <option value="__builtin__">内置拟人轨迹（无需训练）</option>
-                    {motionProfiles.map((profile) => (
-                      <option key={profile.profile_id} value={profile.profile_id}>
-                        {profile.name} · {profile.sample_count} 条
-                      </option>
-                    ))}
-                  </select>
-                  <button className="console-button" disabled onClick={openMotionProfileStudio} type="button">
-                    {motionProfiles.length === 0 ? "去训练画像" : "管理与训练"}
-                  </button>
-                </div>
-                <small className="motion-control-memory-note">
-                  当前生产主链不会加载或应用轨迹画像。
-                </small>
-                <div className="motion-profile-runtime-tuning" hidden>
-                  <ModuleSwitch label="空间贝塞尔轨迹" detail="控制画像的侧向空间路径；关闭后仍保留真人速度节奏和末端闭环。" enabled={humanizedSpatialCurveEnabled} onToggle={(enabled) => updateHumanized("spatial_curve_enabled", enabled)} />
-                  <div className="control-grid compact">
-                    <NumberControl label="侧向弯曲倍率" value={humanizedValue("side_scale", 1)} min={0} max={4} step={0.05} onCommit={(value) => updateHumanized("side_scale", value)} />
-                    <NumberControl label="微调直通距离 px" value={humanizedValue("micro_bypass_px", 3)} min={0} max={500} step={1} onCommit={(value) => updateHumanized("micro_bypass_px", value)} />
-                    <NumberControl label="末端闭环增益" value={humanizedValue("terminal_feedback_gain", 0.35)} min={0.05} max={2} step={0.05} onCommit={(value) => updateHumanized("terminal_feedback_gain", value)} />
-                  </div>
-                </div>
-                <details className="control-advanced-disclosure" hidden>
-                  <summary>轨迹运行说明与高级策略</summary>
-                  <div className="control-grid compact">
-                    <NumberControl label="最大侧偏比例" value={humanizedValue("max_side_ratio", 0.1)} min={0} max={0.25} step={0.005} onCommit={(value) => updateHumanized("max_side_ratio", value)} />
-                    <NumberControl label="近端淡出距离 px" value={humanizedValue("near_fade_start_px", 24)} min={0} max={1000} step={1} onCommit={(value) => updateHumanized("near_fade_start_px", value)} />
-                    <NumberControl label="动态重规划比例" value={humanizedValue("dynamic_rebase_ratio", 0.25)} min={0.05} max={1} step={0.01} onCommit={(value) => updateHumanized("dynamic_rebase_ratio", value)} />
-                    <ModuleSwitch label="钟形速度回退" detail="没有训练进度曲线时，用 minimum-jerk 累计曲线生成钟形速度。" enabled={readBoolean(humanizedMotionConfig.minimum_jerk_fallback, true)} onToggle={(enabled) => updateHumanized("minimum_jerk_fallback", enabled)} />
-                    <NumberControl label="内置启动基准 ms" value={humanizedValue("builtin_fitts_a_ms", 35)} min={0} max={500} step={1} onCommit={(value) => updateHumanized("builtin_fitts_a_ms", value)} />
-                    <NumberControl label="内置难度时长 ms" value={humanizedValue("builtin_fitts_b_ms", 55)} min={1} max={500} step={1} onCommit={(value) => updateHumanized("builtin_fitts_b_ms", value)} />
-                    <NumberControl label="内置侧向弯曲" value={humanizedValue("builtin_side_ratio", 0.012)} min={-0.15} max={0.15} step={0.001} onCommit={(value) => updateHumanized("builtin_side_ratio", value)} />
-                  </div>
-                  <div className="console-kv compact">
-                    <span>空间轨迹</span><b>{motionProfileRuntime?.enabled ? "贝塞尔 / 训练采样曲线" : "静态控制参数"}</b>
-                    <span>速度曲线来源</span><b>{motionTrajectorySource === "trained" ? "训练画像；缺失时钟形回退" : motionProfileRuntime?.enabled ? "内置 minimum-jerk 钟形速度" : "静态控制算法"}</b>
-                    <span>侧向弯曲</span><b>{motionTrajectorySource === "trained" ? "由训练轨迹拟合" : "由内置贝塞尔控制点生成"}</b>
-                    <span>近端淡出</span><b>由运行时控制器按距离自动处理</b>
-                    <span>动态目标降级 / 重规划</span><b>由最新观测自动触发</b>
-                    <span>末端闭环</span><b>始终保留目标误差闭环</b>
-                  </div>
-                  <p className="control-advanced-hint">上方是持久化的轨迹安全参数；真人画像开关只覆盖运行内存，不会改写画像文件。</p>
-                </details>
-              </div>
+              {dualPhaseActive ? (
+                <ModuleSwitch
+                  label="启用 X / Y 目标预测"
+                  detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。保存后重启主链生效。"
+                  enabled={dualPhasePredictionEnabled}
+                  onToggle={(enabled) => updateDualPhasePath(["prediction", "enabled"], enabled)}
+                />
+              ) : null}
             </div>
             <div className="console-card class-config-summary-card">
               <div className="class-config-summary-main">
@@ -4461,7 +4267,7 @@ export function StudioConsoleView({
                     <>
                       <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
                       <div><span>FAR / NEAR Kp</span><b>{dualPhaseFarKp.toFixed(3)} / {dualPhaseNearKp.toFixed(3)}</b></div>
-                      <div><span>位置预测</span><b>已关闭</b></div>
+                      <div><span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b></div>
                     </>
                   ) : controlMode === "calibrated_angular" ? (
                     <>
@@ -4913,6 +4719,16 @@ export function StudioConsoleView({
               <NumberControl label="共享 Atan 尺度 counts" detail="控制响应曲线尺度，不代表协议可发送的最大 counts。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(["atan", "scale_counts"], value)} />
               <NumberControl label="FAR 单次上限 counts" detail="稳定性保护上限；KMNet 的 signed-16 能力独立校验。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "far", "max_counts_per_update"], value)} />
               <NumberControl label="NEAR 单次上限 counts" detail="近目标单次修正上限，默认低于 FAR 以抑制过冲。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "near", "max_counts_per_update"], value)} />
+              <ModuleSwitch label="启用 X / Y 目标预测" detail="使用唯一锁定目标的真实帧间速度；不会预测多个候选目标。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhasePath(["prediction", "enabled"], enabled)} />
+              {dualPhasePredictionEnabled ? (
+                <>
+                  <NumberControl label="预测速度平滑帧数" value={dualPhasePredictionSmoothingFrames} min={1} max={30} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "smoothing_frames"], value)} />
+                  <NumberControl label="预测历史重置间隔 ms" detail="相邻有效画面超过该时间后丢弃旧速度，避免断流后沿旧方向预测。" value={dualPhasePredictionHistoryResetGapMs} min={1} max={1000} step={1} onCommit={(value) => updateDualPhasePath(["prediction", "history_reset_gap_ms"], value)} />
+                  <NumberControl label="预测提前帧数" value={dualPhasePredictionLeadFrames} min={0} max={10} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "lead_frames"], value)} />
+                  <NumberControl label="FAR 预测上限 px" value={dualPhasePredictionFarCapPx} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "far_absolute_cap_px"], value)} />
+                  <NumberControl label="NEAR 预测上限 px" value={dualPhasePredictionNearCapPx} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "near_absolute_cap_px"], value)} />
+                </>
+              ) : null}
               {rustControlPlane ? (
                 <>
                   <NumberControl label="到位半径 counts" detail="误差先按 ROI、FOV 和每圈 counts 投影。每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞，避免目标附近 ±1 往返。" value={dualPhaseArrivalRadiusCounts} min={0.5} max={100} step={0.5} onCommit={(value) => updateDualPhasePath(["arrival", "radius_counts"], value)} />
@@ -4982,7 +4798,7 @@ export function StudioConsoleView({
         </div>
         <div className="advanced-settings-divider">
           <span>{rustControlPlane ? "Rust Tracker" : "Kalman 估计器"}</span>
-          <small>{rustControlPlane ? "Rust 主链使用有界关联保持目标身份；Atan 输出只读取当前测量误差。" : dualPhaseActive ? "当前算法仍使用 Tracker 的 Kalman 位置估计。" : "调整过程噪声与观测噪声。"}</small>
+          <small>{rustControlPlane ? dualPhasePredictionEnabled ? "Rust 主链只预测唯一锁定目标的 X / Y 位置；Tracker 切换身份会立即重置预测历史。" : "Rust 主链使用有界关联保持目标身份；当前位置直接进入 Atan。" : dualPhaseActive ? "当前算法仍使用 Tracker 的 Kalman 位置估计。" : "调整过程噪声与观测噪声。"}</small>
         </div>
         {!rustControlPlane ? (
           <div className="advanced-settings-grid two-column">

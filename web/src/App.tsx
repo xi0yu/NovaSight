@@ -140,11 +140,6 @@ const VisualSystemView = lazy(() =>
     default: module.VisualSystemView
   }))
 );
-const MotionProfileStudio = lazy(() =>
-  import("./features/motion/MotionProfileStudio").then((module) => ({
-    default: module.MotionProfileStudio
-  }))
-);
 
 function RouteLoadingShell() {
   return (
@@ -157,10 +152,6 @@ function RouteLoadingShell() {
 }
 
 export default function App() {
-  const page = new URLSearchParams(window.location.search).get("page");
-  if (page === "motion-profile") {
-    return <Suspense fallback={<RouteLoadingShell />}><MotionProfileStudio /></Suspense>;
-  }
   if (visualSystemMode) {
     return <Suspense fallback={<RouteLoadingShell />}><VisualSystemView /></Suspense>;
   }

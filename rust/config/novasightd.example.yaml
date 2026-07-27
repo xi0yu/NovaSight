@@ -1,4 +1,4 @@
-schema_version: 6
+schema_version: 7
 revision: 0
 server:
   # Remote access belongs behind an authenticated TLS proxy.
@@ -74,20 +74,6 @@ control:
     fast_add_gain_counts_s: 0.0
     max_fast_add_ratio: 0.30
     stale_threshold_ms: 55.0
-  humanized_motion:
-    enabled: false
-    active_profile: ""
-    spatial_curve_enabled: true
-    side_scale: 1.0
-    max_side_ratio: 0.10
-    near_fade_start_px: 24.0
-    micro_bypass_px: 3.0
-    dynamic_rebase_ratio: 0.25
-    minimum_jerk_fallback: true
-    terminal_feedback_gain: 0.35
-    builtin_fitts_a_ms: 35.0
-    builtin_fitts_b_ms: 55.0
-    builtin_side_ratio: 0.012
 capture:
   device: /dev/video0
   preference: manual

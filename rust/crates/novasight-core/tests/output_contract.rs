@@ -1,14 +1,9 @@
 //! Phase 2 output contract tests. Pins the typed behavior of the
-//! `AxisCountLimiter` / `DeviceCountLimiter` and `LatestCommandSlot` that
-//! the runtime uses to convert a fractional control demand into a
-//! delivery-ready integer command. Every assertion in this file is
-//! anchored to the contract: a stale or wrong-epoch command can
-//! never reach a `PointerDevice`, and the residual carry never
-//! silently truncates sub-count motion.
+//! `AxisCountLimiter` / `DeviceCountLimiter` contract used to convert a
+//! fractional control demand into a delivery-ready integer command.
 
 use novasight_core::limiter::{AxisCountLimiter, DeviceCountLimiter, DeviceCountLimits};
 use novasight_core::output::DeviceCommand;
-use novasight_core::output::latest_command::{LatestCommandSlot, SlotPushError, SlotTakeError};
 use novasight_core::{
     AppError, Generation, MonotonicNanos, PointerDevice, PointerDeviceMode, RuntimeEpoch,
     UncommissionedPointerDevice,
@@ -140,97 +135,6 @@ fn device_count_limiter_clears_both_axes_on_partial_failure() {
     let (after_x, after_y) = quantizer.residuals();
     assert_eq!(after_x, 0.0);
     assert_eq!(after_y, 0.0);
-}
-
-#[test]
-fn slot_push_rejects_invalid_expiry() {
-    let slot = LatestCommandSlot::new();
-    let cmd = command(1, 1, 100, 50);
-    assert!(matches!(
-        slot.push(cmd, MonotonicNanos(50)),
-        Err(SlotPushError::InvalidExpiry)
-    ));
-    assert!(slot.push(cmd, MonotonicNanos(99)).is_err());
-}
-
-#[test]
-fn slot_push_take_round_trip_returns_command() {
-    let slot = LatestCommandSlot::new();
-    let cmd = command(1, 1, 100, 200);
-    slot.push(cmd, MonotonicNanos(200)).expect("push");
-    let taken = slot
-        .take(MonotonicNanos(150), RuntimeEpoch(1))
-        .expect("take");
-    assert_eq!(taken, cmd);
-    assert_eq!(slot.take_count(), 1);
-}
-
-#[test]
-fn slot_take_on_empty_returns_empty() {
-    let slot = LatestCommandSlot::new();
-    assert!(matches!(
-        slot.take(MonotonicNanos(0), RuntimeEpoch(1)),
-        Err(SlotTakeError::Empty)
-    ));
-}
-
-#[test]
-fn slot_take_with_wrong_epoch_rejects_command() {
-    let slot = LatestCommandSlot::new();
-    let cmd = command(1, 1, 100, 200);
-    slot.push(cmd, MonotonicNanos(200)).expect("push");
-    assert!(matches!(
-        slot.take(MonotonicNanos(150), RuntimeEpoch(2)),
-        Err(SlotTakeError::EpochMismatch { .. })
-    ));
-}
-
-#[test]
-fn slot_overwrite_increments_counter() {
-    let slot = LatestCommandSlot::new();
-    slot.push(command(1, 1, 100, 200), MonotonicNanos(200))
-        .expect("push 1");
-    slot.push(command(1, 2, 110, 210), MonotonicNanos(210))
-        .expect("push 2");
-    assert_eq!(slot.overwrite_count(), 1);
-}
-
-#[test]
-fn slot_expired_take_increments_drops_counter() {
-    let slot = LatestCommandSlot::new();
-    let cmd = command(1, 1, 100, 200);
-    slot.push(cmd, MonotonicNanos(200)).expect("push");
-    assert!(matches!(
-        slot.take(MonotonicNanos(250), RuntimeEpoch(1)),
-        Err(SlotTakeError::Expired { .. })
-    ));
-    assert_eq!(slot.expired_drops(), 1);
-}
-
-#[test]
-fn slot_clear_drops_the_command_without_emit() {
-    let slot = LatestCommandSlot::new();
-    slot.push(command(1, 1, 100, 200), MonotonicNanos(200))
-        .expect("push");
-    slot.clear();
-    assert!(matches!(
-        slot.take(MonotonicNanos(150), RuntimeEpoch(1)),
-        Err(SlotTakeError::Empty)
-    ));
-}
-
-#[test]
-fn stale_epoch_command_cannot_reach_pointer_device() {
-    let slot = LatestCommandSlot::new();
-    slot.push(command(1, 1, 100, 200), MonotonicNanos(200))
-        .expect("push");
-    slot.clear();
-    let next = command(2, 1, 250, 350);
-    slot.push(next, MonotonicNanos(350)).expect("push epoch 2");
-    let taken = slot
-        .take(MonotonicNanos(300), RuntimeEpoch(2))
-        .expect("take epoch 2");
-    assert_eq!(taken.epoch, RuntimeEpoch(2));
 }
 
 #[test]

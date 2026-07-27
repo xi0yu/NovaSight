@@ -79,7 +79,7 @@ fn atan_response(error_counts: f64, kp: f64, scale_counts: f64) -> f64 {
 /// FAR and NEAR remain exact outside a transition band spanning 50% of the
 /// configured threshold. Inside it, cubic smoothstep removes the parameter
 /// jump without introducing another gain stage or another user-facing knob.
-fn far_weight(distance_px: f64, near_threshold_px: f64) -> f64 {
+pub(super) fn far_weight(distance_px: f64, near_threshold_px: f64) -> f64 {
     if near_threshold_px <= f64::EPSILON {
         return 1.0;
     }

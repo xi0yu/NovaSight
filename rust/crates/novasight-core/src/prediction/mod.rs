@@ -8,12 +8,6 @@ use std::collections::VecDeque;
 
 const VELOCITY_POSITION_COUNT: usize = 4;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PredictionRange {
-    Far,
-    Near,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SingleTargetPredictionConfig {
     pub enabled: bool,
@@ -74,7 +68,9 @@ pub struct FocusTargetObservation {
     pub capture_ts_ns: u64,
     pub detection_confidence: f64,
     pub identity_confidence: f64,
-    pub range: PredictionRange,
+    /// Continuous FAR response weight shared with the controller response
+    /// curve. Zero is fully NEAR and one is fully FAR.
+    pub far_weight: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -133,18 +129,18 @@ impl SingleTargetPredictor {
         &self,
         measured_error_x: f64,
         measured_error_y: f64,
-        range: PredictionRange,
+        far_weight: f64,
     ) -> SingleTargetPrediction {
         if !self.config.enabled {
             return SingleTargetPrediction::default();
         }
         SingleTargetPrediction {
             x: AxisPrediction {
-                allowed_cap: self.allowed_cap(measured_error_x, range),
+                allowed_cap: self.allowed_cap(measured_error_x, far_weight),
                 ..AxisPrediction::default()
             },
             y: AxisPrediction {
-                allowed_cap: self.allowed_cap(measured_error_y, range),
+                allowed_cap: self.allowed_cap(measured_error_y, far_weight),
                 ..AxisPrediction::default()
             },
             history_position_count: self.velocity_x.history_position_count(),
@@ -163,7 +159,7 @@ impl SingleTargetPredictor {
             return self.unavailable(
                 observation.measured_error_x,
                 observation.measured_error_y,
-                observation.range,
+                observation.far_weight,
             );
         }
 
@@ -185,7 +181,7 @@ impl SingleTargetPredictor {
             return self.unavailable(
                 observation.measured_error_x,
                 observation.measured_error_y,
-                observation.range,
+                observation.far_weight,
             );
         };
         debug_assert_eq!(
@@ -194,8 +190,16 @@ impl SingleTargetPredictor {
         );
 
         SingleTargetPrediction {
-            x: self.axis_prediction(estimate_x, observation.measured_error_x, observation.range),
-            y: self.axis_prediction(estimate_y, observation.measured_error_y, observation.range),
+            x: self.axis_prediction(
+                estimate_x,
+                observation.measured_error_x,
+                observation.far_weight,
+            ),
+            y: self.axis_prediction(
+                estimate_y,
+                observation.measured_error_y,
+                observation.far_weight,
+            ),
             history_position_count: self.velocity_x.history_position_count(),
             lead_frames: self.config.lead_frames,
         }
@@ -205,7 +209,7 @@ impl SingleTargetPredictor {
         &self,
         estimate: VelocityEstimate,
         measured_error: f64,
-        range: PredictionRange,
+        far_weight: f64,
     ) -> AxisPrediction {
         let allowed = estimate.reference_dt_ms.is_finite()
             && estimate.reference_dt_ms > 0.0
@@ -218,7 +222,7 @@ impl SingleTargetPredictor {
         let raw_offset = estimate.filtered_velocity
             * estimate.reference_dt_ms.max(0.0)
             * self.config.lead_frames;
-        let allowed_cap = self.allowed_cap(measured_error, range);
+        let allowed_cap = self.allowed_cap(measured_error, far_weight);
         let weighted_offset = raw_offset * confidence;
         AxisPrediction {
             velocity: estimate.filtered_velocity,
@@ -236,21 +240,29 @@ impl SingleTargetPredictor {
         }
     }
 
-    fn allowed_cap(&self, measured_error_x: f64, range: PredictionRange) -> f64 {
-        let (absolute_cap, base_cap, relative_cap) = match range {
-            PredictionRange::Far => (
-                self.config.far_absolute_cap_px,
-                self.config.far_base_cap_px,
-                self.config.far_relative_cap,
-            ),
-            PredictionRange::Near => (
-                self.config.near_absolute_cap_px,
-                self.config.near_base_cap_px,
-                self.config.near_relative_cap,
-            ),
-        };
+    fn allowed_cap(&self, measured_error_x: f64, far_weight: f64) -> f64 {
+        let far_weight = far_weight.clamp(0.0, 1.0);
+        let absolute_cap = lerp(
+            self.config.near_absolute_cap_px,
+            self.config.far_absolute_cap_px,
+            far_weight,
+        );
+        let base_cap = lerp(
+            self.config.near_base_cap_px,
+            self.config.far_base_cap_px,
+            far_weight,
+        );
+        let relative_cap = lerp(
+            self.config.near_relative_cap,
+            self.config.far_relative_cap,
+            far_weight,
+        );
         absolute_cap.min(base_cap + relative_cap * measured_error_x.abs())
     }
+}
+
+fn lerp(start: f64, end: f64, weight: f64) -> f64 {
+    start + (end - start) * weight
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -408,10 +420,7 @@ fn median_three(mut values: [f64; 3]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        FocusTargetObservation, PredictionRange, SingleTargetPredictionConfig,
-        SingleTargetPredictor,
-    };
+    use super::{FocusTargetObservation, SingleTargetPredictionConfig, SingleTargetPredictor};
 
     fn config() -> SingleTargetPredictionConfig {
         SingleTargetPredictionConfig {
@@ -442,7 +451,7 @@ mod tests {
             capture_ts_ns: 1_000_000_000 + index * 10_000_000,
             detection_confidence: 1.0,
             identity_confidence: 1.0,
-            range: PredictionRange::Far,
+            far_weight: 1.0,
         }
     }
 

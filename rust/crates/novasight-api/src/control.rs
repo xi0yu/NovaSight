@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
     body::{Body, Bytes},
     extract::{
-        Path as AxumPath, Query, State, WebSocketUpgrade,
+        Query, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
     http::{Method, Request, StatusCode},
@@ -28,9 +28,6 @@ use novasight_runtime::{
 };
 use novasight_store::license::{FileLicenseRepository, LicenseError, LicenseStatus};
 use novasight_store::model_catalog::{ModelCatalogError, SqliteModelCatalog};
-use novasight_store::motion_profile::{
-    MotionSampleInput, MotionSampleResult, MotionSessionSummary,
-};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
 use tracing::Instrument;
@@ -162,26 +159,6 @@ pub fn build_control_router_with_platform_queries(
             "/api/crosshair/template.png",
             get(crosshair_template_preview),
         )
-        .route(
-            "/api/motion/sessions",
-            get(motion_sessions).post(create_motion_session),
-        )
-        .route(
-            "/api/motion/sessions/{session_id}/samples",
-            post(add_motion_sample),
-        )
-        .route("/api/motion/profiles/train", post(train_motion_profile))
-        .route("/api/motion/profiles", get(motion_profiles))
-        .route("/api/motion/profiles/disable", post(disable_motion_profile))
-        .route(
-            "/api/motion/profiles/{profile_id}/activate",
-            post(activate_motion_profile),
-        )
-        .route(
-            "/api/motion/runtime/builtin/activate",
-            post(activate_builtin_motion),
-        )
-        .route("/api/motion/runtime", get(motion_profile_status))
         .route(
             "/api/capture/capabilities",
             get(capture_capabilities).post(post_capture_capabilities),
@@ -457,7 +434,6 @@ fn required_license_feature(method: &Method, path: &str) -> Option<&'static str>
     }
     if path.starts_with("/api/runtime/")
         || path.starts_with("/api/v1/runtime/")
-        || path.starts_with("/api/motion/")
         || path == "/api/v1/status"
         || path == "/api/v1/events"
     {
@@ -661,152 +637,6 @@ async fn crosshair_template_preview(
         payload,
     )
         .into_response())
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CreateMotionSessionRequest {
-    #[serde(default = "default_motion_session_name")]
-    name: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TrainMotionProfileRequest {
-    session_id: String,
-    #[serde(default = "default_motion_profile_name")]
-    name: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ActivatedMotionProfile {
-    profile: novasight_core::output::humanized_motion::MotionProfile,
-    runtime: novasight_runtime::MotionProfileStatus,
-}
-
-async fn motion_sessions(
-    State(state): State<ControlState>,
-) -> Result<Json<Vec<MotionSessionSummary>>, ControlApiError> {
-    run_motion_operation(state.runtime, |runtime| runtime.motion_sessions())
-        .await
-        .map(Json)
-}
-
-async fn create_motion_session(
-    State(state): State<ControlState>,
-    Json(request): Json<CreateMotionSessionRequest>,
-) -> Result<Json<MotionSessionSummary>, ControlApiError> {
-    run_motion_operation(state.runtime, move |runtime| {
-        runtime.create_motion_session(&request.name)
-    })
-    .await
-    .map(Json)
-}
-
-async fn add_motion_sample(
-    State(state): State<ControlState>,
-    AxumPath(session_id): AxumPath<String>,
-    Json(sample): Json<MotionSampleInput>,
-) -> Result<Json<MotionSampleResult>, ControlApiError> {
-    run_motion_operation(state.runtime, move |runtime| {
-        runtime.add_motion_sample(&session_id, sample)
-    })
-    .await
-    .map(Json)
-}
-
-async fn train_motion_profile(
-    State(state): State<ControlState>,
-    Json(request): Json<TrainMotionProfileRequest>,
-) -> Result<Json<novasight_core::output::humanized_motion::MotionProfile>, ControlApiError> {
-    run_motion_operation(state.runtime, move |runtime| {
-        runtime.train_motion_profile(&request.session_id, &request.name)
-    })
-    .await
-    .map(Json)
-}
-
-async fn motion_profiles(
-    State(state): State<ControlState>,
-) -> Result<Json<Vec<novasight_core::output::humanized_motion::MotionProfile>>, ControlApiError> {
-    run_motion_operation(state.runtime, |runtime| runtime.motion_profiles())
-        .await
-        .map(Json)
-}
-
-async fn activate_motion_profile(
-    State(_state): State<ControlState>,
-    AxumPath(_profile_id): AxumPath<String>,
-) -> Result<Json<ActivatedMotionProfile>, ControlApiError> {
-    Err(ControlApiError::AtanOnlyMotionDisabled)
-}
-
-async fn activate_builtin_motion(
-    State(_state): State<ControlState>,
-) -> Result<Json<novasight_runtime::MotionProfileStatus>, ControlApiError> {
-    Err(ControlApiError::AtanOnlyMotionDisabled)
-}
-
-async fn disable_motion_profile(
-    State(state): State<ControlState>,
-) -> Result<Json<novasight_runtime::MotionProfileStatus>, ControlApiError> {
-    let _lifecycle_guard = state.lifecycle_lock.lock().await;
-    let revision = persist_motion_profile_selection(&state, false, "").await?;
-    let status = state.runtime.disable_motion_profile()?;
-    commit_motion_profile_selection(&state, revision).await?;
-    Ok(Json(status))
-}
-
-async fn persist_motion_profile_selection(
-    state: &ControlState,
-    enabled: bool,
-    active_profile: &str,
-) -> Result<Option<u64>, ControlApiError> {
-    let Some(service) = state.config.as_ref() else {
-        return Ok(None);
-    };
-    let update = service
-        .persist_motion_profile_selection(enabled, active_profile)
-        .await?;
-    Ok(Some(update.config.revision))
-}
-
-async fn commit_motion_profile_selection(
-    state: &ControlState,
-    revision: Option<u64>,
-) -> Result<(), ControlApiError> {
-    if let (Some(service), Some(revision)) = (state.config.as_ref(), revision) {
-        service.commit_effective_revision(revision).await?;
-    }
-    Ok(())
-}
-
-async fn motion_profile_status(
-    State(state): State<ControlState>,
-) -> Result<Json<novasight_runtime::MotionProfileStatus>, ControlApiError> {
-    state
-        .runtime
-        .motion_profile_status()
-        .map(Json)
-        .map_err(Into::into)
-}
-
-async fn run_motion_operation<T: Send + 'static>(
-    runtime: RuntimeHandle,
-    operation: impl FnOnce(RuntimeHandle) -> Result<T, RuntimeError> + Send + 'static,
-) -> Result<T, ControlApiError> {
-    tokio::task::spawn_blocking(move || operation(runtime))
-        .await
-        .map_err(ControlApiError::MotionTask)?
-        .map_err(Into::into)
-}
-
-fn default_motion_session_name() -> String {
-    "未命名训练".to_owned()
-}
-
-fn default_motion_profile_name() -> String {
-    "真人画像".to_owned()
 }
 
 async fn executors(State(state): State<ControlState>) -> Json<serde_json::Value> {
@@ -1432,8 +1262,6 @@ enum ControlApiError {
     CaptureProbeUnavailable,
     CaptureSelection(CaptureSelectionError),
     CaptureSelectionRequiresStoppedRuntime,
-    AtanOnlyMotionDisabled,
-    MotionTask(tokio::task::JoinError),
 }
 
 impl From<LicenseError> for ControlApiError {
@@ -1522,12 +1350,6 @@ impl IntoResponse for ControlApiError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "HARDWARE_OUTPUT_DISABLED",
                 "physical kmNet is unavailable because novasightd was started with --dry-run; restart without --dry-run to use production hardware"
-                    .to_owned(),
-            ),
-            Self::AtanOnlyMotionDisabled => (
-                StatusCode::CONFLICT,
-                "ATAN_ONLY_MOTION_DISABLED",
-                "humanized motion is disabled while the production controller is atan-only"
                     .to_owned(),
             ),
             Self::DeviceNotConfigured => (
@@ -1794,11 +1616,6 @@ impl IntoResponse for ControlApiError {
                 "CAPTURE_SELECTION_REQUIRES_STOPPED_RUNTIME",
                 "stop the runtime before changing its concrete capture profile".to_owned(),
             ),
-            Self::MotionTask(error) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "MOTION_PROFILE_TASK_FAILED",
-                format!("motion profile worker failed: {error}"),
-            ),
         };
         let body = ControlErrorBody {
             code,
@@ -1835,9 +1652,8 @@ mod tests {
 
     use futures_util::{Sink, task::noop_waker};
     use novasight_core::RuntimeEpoch;
-    use novasight_pipeline::{CrosshairConfig, CrosshairHub, MotionProfileHub, PreviewHub};
+    use novasight_pipeline::{CrosshairConfig, CrosshairHub, PreviewHub};
     use novasight_runtime::{RuntimeDependencies, RuntimeSupervisor};
-    use novasight_store::{config::YamlConfigRepository, motion_profile::MotionProfileRepository};
     use tower::ServiceExt;
 
     use super::*;
@@ -2027,167 +1843,5 @@ mod tests {
         runtime.shutdown_daemon().await.unwrap();
         supervisor.join().await.unwrap();
         let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn motion_routes_train_but_reject_activation_in_atan_only_mode() {
-        let root = std::env::temp_dir().join(format!(
-            "novasight-motion-api-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let repository = MotionProfileRepository::open(&root).unwrap();
-        let hub = MotionProfileHub::default();
-        let dependencies =
-            RuntimeDependencies::recording().with_motion_profiles(hub.clone(), repository.clone());
-        let (supervisor, runtime) = RuntimeSupervisor::spawn(dependencies);
-        let config_path = root.join("novasight.yaml");
-        std::fs::write(&config_path, "revision: 0\n").unwrap();
-        let config = ConfigService::new(
-            &config_path,
-            YamlConfigRepository::load(&config_path).unwrap(),
-        );
-        let router =
-            build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
-
-        let response = router
-            .clone()
-            .oneshot(
-                Request::post("/api/motion/sessions")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"name":"api test"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
-            .await
-            .unwrap();
-        let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let session_id = session["session_id"].as_str().unwrap();
-
-        for (index, target_x) in [120.0, 240.0, 420.0, 620.0].into_iter().enumerate() {
-            let duration = 120_000 + index as i64 * 70_000;
-            let sample = serde_json::json!({
-                "target_x": target_x,
-                "target_y": 100.0,
-                "radius_px": 20.0,
-                "target_spawn_us": 0,
-                "first_motion_us": 100_000,
-                "click_us": 100_000 + duration,
-                "points": [
-                    {"t_us": 0, "x": 20.0, "y": 100.0},
-                    {"t_us": 100_000, "x": 22.0, "y": 100.0},
-                    {"t_us": 100_000 + duration / 2, "x": 20.0 + (target_x - 20.0) * 0.55, "y": 100.0},
-                    {"t_us": 100_000 + duration, "x": target_x, "y": 100.0}
-                ]
-            });
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::post(format!("/api/motion/sessions/{session_id}/samples"))
-                        .header("content-type", "application/json")
-                        .body(Body::from(sample.to_string()))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-        }
-
-        let response = router
-            .clone()
-            .oneshot(
-                Request::post("/api/motion/profiles/train")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({"session_id": session_id, "name": "trained"})
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
-            .await
-            .unwrap();
-        let profile: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let profile_id = profile["profile_id"].as_str().unwrap();
-        assert_eq!(profile["profile_version"], 4);
-        assert_eq!(profile["sample_count"], 4);
-
-        let response = router
-            .clone()
-            .oneshot(
-                Request::post(format!("/api/motion/profiles/{profile_id}/activate"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
-            .await
-            .unwrap();
-        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(error["code"], "ATAN_ONLY_MOTION_DISABLED");
-        assert!(hub.active().is_none());
-        let persisted = YamlConfigRepository::load(&config_path).unwrap();
-        assert!(!persisted.control.humanized_motion.enabled);
-        assert_eq!(config.effective_revision(), persisted.revision);
-
-        let response = router
-            .clone()
-            .oneshot(
-                Request::get("/api/motion/runtime")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
-            .await
-            .unwrap();
-        let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(status["enabled"], false);
-
-        let response = router
-            .clone()
-            .oneshot(
-                Request::post("/api/motion/runtime/builtin/activate")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
-        let persisted = YamlConfigRepository::load(&config_path).unwrap();
-        assert!(!persisted.control.humanized_motion.enabled);
-        assert_eq!(config.effective_revision(), persisted.revision);
-
-        let response = router
-            .clone()
-            .oneshot(
-                Request::post("/api/motion/profiles/disable")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let persisted = YamlConfigRepository::load(&config_path).unwrap();
-        assert!(!persisted.control.humanized_motion.enabled);
-        assert!(persisted.control.humanized_motion.active_profile.is_empty());
-        assert_eq!(config.effective_revision(), persisted.revision);
-        assert!(hub.active().is_none());
-
-        runtime.shutdown_daemon().await.unwrap();
-        supervisor.join().await.unwrap();
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -72,7 +72,6 @@ impl AppConfig {
 
     pub fn validate_configured_adapters(&self) -> Result<(), ConfigValidationError> {
         self.pipeline.validate()?;
-        self.control.humanized_motion.validate()?;
         self.control.recoil.validate()?;
         if let Some(capture) = &self.capture {
             capture.validate()?;
@@ -136,7 +135,6 @@ impl AppConfig {
         &self,
     ) -> Result<VisionAdapterConfig<'_>, ConfigValidationError> {
         self.pipeline.validate()?;
-        self.control.humanized_motion.validate()?;
         self.control.recoil.validate()?;
         self.crosshair.validate()?;
         if self.limits.stream_fps == 0 {
@@ -218,8 +216,6 @@ pub struct RustControlConfig {
     pub output_enabled: bool,
     #[serde(default)]
     pub trigger_mode: TriggerMode,
-    #[serde(default)]
-    pub humanized_motion: HumanizedMotionConfig,
     #[serde(default)]
     pub recoil: RecoilConfig,
     #[serde(default, flatten)]
@@ -368,166 +364,6 @@ const fn default_recoil_fast_add_ratio() -> f64 {
 }
 const fn default_recoil_stale_threshold_ms() -> f64 {
     55.0
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HumanizedMotionConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub active_profile: String,
-    #[serde(default = "default_humanized_true")]
-    pub spatial_curve_enabled: bool,
-    #[serde(default = "default_humanized_one")]
-    pub side_scale: f64,
-    #[serde(default = "default_humanized_max_side_ratio")]
-    pub max_side_ratio: f64,
-    #[serde(default = "default_humanized_near_fade_start_px")]
-    pub near_fade_start_px: f64,
-    #[serde(default = "default_humanized_micro_bypass_px")]
-    pub micro_bypass_px: f64,
-    #[serde(default = "default_humanized_dynamic_rebase_ratio")]
-    pub dynamic_rebase_ratio: f64,
-    #[serde(default = "default_humanized_true")]
-    pub minimum_jerk_fallback: bool,
-    #[serde(default = "default_humanized_terminal_feedback_gain")]
-    pub terminal_feedback_gain: f64,
-    #[serde(default = "default_builtin_fitts_a_ms")]
-    pub builtin_fitts_a_ms: f64,
-    #[serde(default = "default_builtin_fitts_b_ms")]
-    pub builtin_fitts_b_ms: f64,
-    #[serde(default = "default_builtin_side_ratio")]
-    pub builtin_side_ratio: f64,
-    #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
-}
-
-impl Default for HumanizedMotionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            active_profile: String::new(),
-            spatial_curve_enabled: true,
-            side_scale: 1.0,
-            max_side_ratio: default_humanized_max_side_ratio(),
-            near_fade_start_px: default_humanized_near_fade_start_px(),
-            micro_bypass_px: default_humanized_micro_bypass_px(),
-            dynamic_rebase_ratio: default_humanized_dynamic_rebase_ratio(),
-            minimum_jerk_fallback: true,
-            terminal_feedback_gain: default_humanized_terminal_feedback_gain(),
-            builtin_fitts_a_ms: default_builtin_fitts_a_ms(),
-            builtin_fitts_b_ms: default_builtin_fitts_b_ms(),
-            builtin_side_ratio: default_builtin_side_ratio(),
-            legacy: BTreeMap::new(),
-        }
-    }
-}
-
-impl HumanizedMotionConfig {
-    fn validate(&self) -> Result<(), ConfigValidationError> {
-        if self.enabled {
-            return Err(ConfigValidationError::new(
-                "control.humanized_motion.enabled",
-                "must be false while the production controller is atan-only",
-            ));
-        }
-        for (field, value, lower, upper) in [
-            (
-                "control.humanized_motion.side_scale",
-                self.side_scale,
-                0.0,
-                4.0,
-            ),
-            (
-                "control.humanized_motion.max_side_ratio",
-                self.max_side_ratio,
-                0.0,
-                1.0,
-            ),
-            (
-                "control.humanized_motion.near_fade_start_px",
-                self.near_fade_start_px,
-                0.0,
-                5_000.0,
-            ),
-            (
-                "control.humanized_motion.micro_bypass_px",
-                self.micro_bypass_px,
-                0.0,
-                1_000.0,
-            ),
-            (
-                "control.humanized_motion.dynamic_rebase_ratio",
-                self.dynamic_rebase_ratio,
-                0.05,
-                1.0,
-            ),
-            (
-                "control.humanized_motion.terminal_feedback_gain",
-                self.terminal_feedback_gain,
-                0.0,
-                2.0,
-            ),
-            (
-                "control.humanized_motion.builtin_fitts_a_ms",
-                self.builtin_fitts_a_ms,
-                0.0,
-                1_000.0,
-            ),
-            (
-                "control.humanized_motion.builtin_fitts_b_ms",
-                self.builtin_fitts_b_ms,
-                1.0,
-                1_000.0,
-            ),
-            (
-                "control.humanized_motion.builtin_side_ratio",
-                self.builtin_side_ratio,
-                -0.15,
-                0.15,
-            ),
-        ] {
-            validate_finite_range(field, value, lower, upper)?;
-        }
-        if self.active_profile.len() > 128 {
-            return Err(ConfigValidationError::new(
-                "control.humanized_motion.active_profile",
-                "must contain at most 128 characters",
-            ));
-        }
-        Ok(())
-    }
-}
-
-const fn default_humanized_true() -> bool {
-    true
-}
-const fn default_humanized_one() -> f64 {
-    1.0
-}
-const fn default_humanized_max_side_ratio() -> f64 {
-    0.10
-}
-const fn default_humanized_near_fade_start_px() -> f64 {
-    24.0
-}
-const fn default_humanized_micro_bypass_px() -> f64 {
-    3.0
-}
-const fn default_humanized_dynamic_rebase_ratio() -> f64 {
-    0.25
-}
-const fn default_humanized_terminal_feedback_gain() -> f64 {
-    0.35
-}
-const fn default_builtin_fitts_a_ms() -> f64 {
-    35.0
-}
-const fn default_builtin_fitts_b_ms() -> f64 {
-    55.0
-}
-const fn default_builtin_side_ratio() -> f64 {
-    0.012
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -861,12 +697,6 @@ impl Default for PipelineRuntimeConfig {
 
 impl PipelineRuntimeConfig {
     fn validate(&self) -> Result<(), ConfigValidationError> {
-        if self.prediction_enabled {
-            return Err(ConfigValidationError::new(
-                "pipeline.prediction_enabled",
-                "must be false while the production controller is atan-only",
-            ));
-        }
         validate_finite_range(
             "pipeline.freshness_threshold_ms",
             self.freshness_threshold_ms,
@@ -917,6 +747,76 @@ impl PipelineRuntimeConfig {
             0.5,
             1_000.0,
         )?;
+        validate_finite_range(
+            "pipeline.velocity_smoothing_frames",
+            self.velocity_smoothing_frames,
+            0.000_001,
+            120.0,
+        )?;
+        validate_finite_range(
+            "pipeline.velocity_history_reset_gap_ms",
+            self.velocity_history_reset_gap_ms,
+            0.000_001,
+            10_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.velocity_spread_base_px_ms",
+            self.velocity_spread_base_px_ms,
+            0.000_001,
+            10_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.velocity_spread_relative",
+            self.velocity_spread_relative,
+            0.0,
+            100.0,
+        )?;
+        validate_finite_range(
+            "pipeline.velocity_change_base_px_ms",
+            self.velocity_change_base_px_ms,
+            0.000_001,
+            10_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.velocity_change_relative",
+            self.velocity_change_relative,
+            0.0,
+            100.0,
+        )?;
+        validate_finite_range(
+            "pipeline.prediction_lead_frames",
+            self.prediction_lead_frames,
+            0.0,
+            10.0,
+        )?;
+        for (field, value) in [
+            (
+                "pipeline.prediction_far_absolute_cap_px",
+                self.prediction_far_absolute_cap_px,
+            ),
+            (
+                "pipeline.prediction_far_base_cap_px",
+                self.prediction_far_base_cap_px,
+            ),
+            (
+                "pipeline.prediction_far_relative_cap",
+                self.prediction_far_relative_cap,
+            ),
+            (
+                "pipeline.prediction_near_absolute_cap_px",
+                self.prediction_near_absolute_cap_px,
+            ),
+            (
+                "pipeline.prediction_near_base_cap_px",
+                self.prediction_near_base_cap_px,
+            ),
+            (
+                "pipeline.prediction_near_relative_cap",
+                self.prediction_near_relative_cap,
+            ),
+        ] {
+            validate_finite_range(field, value, 0.0, 100_000.0)?;
+        }
         validate_finite_range("pipeline.residual_cap", self.residual_cap, 0.0, 1.0)?;
         validate_finite_range(
             "pipeline.target_fov_radius_px",
@@ -1942,7 +1842,7 @@ impl Default for PathConfig {
 }
 
 const fn default_schema_version() -> u32 {
-    6
+    7
 }
 
 fn default_server_host() -> String {

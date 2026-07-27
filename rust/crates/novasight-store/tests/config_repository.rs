@@ -67,7 +67,7 @@ fn loads_the_complete_rust_owned_example() {
 
     let config = YamlConfigRepository::load(example).unwrap();
 
-    assert_eq!(config.schema_version, 6);
+    assert_eq!(config.schema_version, 7);
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
@@ -243,7 +243,7 @@ fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
 
     let config = YamlConfigRepository::load(path).unwrap();
 
-    assert_eq!(config.schema_version, 6);
+    assert_eq!(config.schema_version, 7);
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
@@ -285,27 +285,26 @@ pipeline:
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 6);
+    assert_eq!(config.schema_version, 7);
     assert!(!config.pipeline.prediction_enabled);
     assert_eq!(config.pipeline.atan_scale_counts, 256.0);
     assert_eq!(config.pipeline.far_kp, 0.22);
     assert_eq!(config.pipeline.far_max_counts_per_update, 127.0);
     assert_eq!(config.pipeline.near_kp, 0.20);
     assert_eq!(config.pipeline.near_max_counts_per_update, 72.0);
-    assert!(!config.control.humanized_motion.enabled);
 
     YamlConfigRepository::new(&path)
         .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["schema_version"], 6);
+    assert_eq!(persisted["schema_version"], 7);
     assert_eq!(persisted["pipeline"]["prediction_enabled"], false);
     assert_eq!(persisted["pipeline"]["atan_scale_counts"], 256.0);
     assert_eq!(persisted["pipeline"]["far_kp"], 0.22);
     assert_eq!(persisted["pipeline"]["far_max_counts_per_update"], 127.0);
     assert_eq!(persisted["pipeline"]["near_kp"], 0.20);
     assert_eq!(persisted["pipeline"]["near_max_counts_per_update"], 72.0);
-    assert_eq!(persisted["control"]["humanized_motion"]["enabled"], false);
+    assert!(persisted["control"].get("humanized_motion").is_none());
 }
 
 #[test]
@@ -325,7 +324,7 @@ pipeline:
     )
     .unwrap();
     let migrated = YamlConfigRepository::load(generated_path).unwrap();
-    assert_eq!(migrated.schema_version, 6);
+    assert_eq!(migrated.schema_version, 7);
     assert_eq!(migrated.pipeline.far_kp, 0.22);
     assert_eq!(migrated.pipeline.near_kp, 0.20);
 
@@ -343,7 +342,7 @@ pipeline:
     )
     .unwrap();
     let custom = YamlConfigRepository::load(custom_path).unwrap();
-    assert_eq!(custom.schema_version, 6);
+    assert_eq!(custom.schema_version, 7);
     assert_eq!(custom.pipeline.far_kp, 0.30);
 }
 
@@ -906,7 +905,7 @@ fn document_replacement_uses_revision_guard_and_preserves_unsubmitted_extensions
         .replace_document(replacement, 5)
         .unwrap();
 
-    assert_eq!(saved.schema_version, 6);
+    assert_eq!(saved.schema_version, 7);
     assert_eq!(saved.revision, 6);
     assert_eq!(saved.server.port, 7000);
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();

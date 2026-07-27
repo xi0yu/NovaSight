@@ -2,9 +2,6 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-pub mod humanized_motion;
-pub mod latest_command;
-
 use crate::error::AppError;
 use crate::perception::types::{Generation, MonotonicNanos, RuntimeEpoch};
 use crate::ports::{PointerDevice, PointerDeviceMode};

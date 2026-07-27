@@ -2,10 +2,6 @@ use std::collections::BTreeMap;
 
 use novasight_core::controller::recoil::{RecoilBlockReason, RecoilState};
 use novasight_core::controller::{BlockReason, ControlMode};
-use novasight_core::output::humanized_motion::{
-    HumanizedMotionPhase, HumanizedMotionReason, HumanizedSpatialCurveSource,
-    HumanizedSpeedCurveSource,
-};
 use novasight_core::tracking::{LockReason, TargetSelection};
 use novasight_runtime::{
     AppConfig, CrosshairSnapshot, DetectionTelemetryItem, PipelineState, PreviewSnapshot,
@@ -500,14 +496,6 @@ pub(crate) struct ControlPipelineState {
     pub actuation_pending_x: Option<bool>,
     pub actuation_pending_y: Option<bool>,
     pub block_reason: Option<&'static str>,
-    pub humanized_motion_enabled: bool,
-    pub humanized_motion_reason: HumanizedMotionReason,
-    pub humanized_motion_phase: Option<HumanizedMotionPhase>,
-    pub humanized_motion_speed_curve_source: Option<HumanizedSpeedCurveSource>,
-    pub humanized_motion_spatial_curve_source: Option<HumanizedSpatialCurveSource>,
-    pub humanized_motion_progress: f64,
-    pub humanized_motion_side_offset: f64,
-    pub humanized_motion_planned_duration_ms: f64,
     pub recoil_mode: &'static str,
     pub recoil_enabled: bool,
     pub recoil_active: bool,
@@ -1100,32 +1088,6 @@ impl CompatibilityRuntimeState {
                         actuation_pending_y: control_sample
                             .then_some(dual_phase.actuation_pending_y),
                         block_reason: control_reason,
-                        humanized_motion_enabled: snapshot
-                            .pipeline_metrics
-                            .humanized_motion
-                            .enabled,
-                        humanized_motion_reason: snapshot.pipeline_metrics.humanized_motion.reason,
-                        humanized_motion_phase: snapshot.pipeline_metrics.humanized_motion.phase,
-                        humanized_motion_speed_curve_source: snapshot
-                            .pipeline_metrics
-                            .humanized_motion
-                            .speed_curve_source,
-                        humanized_motion_spatial_curve_source: snapshot
-                            .pipeline_metrics
-                            .humanized_motion
-                            .spatial_curve_source,
-                        humanized_motion_progress: snapshot
-                            .pipeline_metrics
-                            .humanized_motion
-                            .progress,
-                        humanized_motion_side_offset: snapshot
-                            .pipeline_metrics
-                            .humanized_motion
-                            .side_offset,
-                        humanized_motion_planned_duration_ms: snapshot
-                            .pipeline_metrics
-                            .humanized_motion
-                            .planned_duration_ms,
                         recoil_mode: "independent_target_relative_rate",
                         recoil_enabled: config.is_some_and(|config| config.control.recoil.enabled),
                         recoil_active: snapshot.pipeline_metrics.recoil.engaged(),
@@ -1347,10 +1309,6 @@ mod tests {
     use novasight_core::Generation;
     use novasight_core::controller::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
     use novasight_core::controller::{BlockReason, ControlDecision, ControlMode};
-    use novasight_core::output::humanized_motion::{
-        HumanizedMotionPhase, HumanizedMotionReason, HumanizedMotionTelemetry,
-        HumanizedSpatialCurveSource, HumanizedSpeedCurveSource,
-    };
     use novasight_core::tracking::{LockReason, TargetSelection, TrackId};
     use novasight_pipeline::DetectionTelemetryItem;
     use novasight_runtime::{
@@ -1450,16 +1408,6 @@ mod tests {
             actuation_pending_y: true,
             ..ControlDecision::default()
         };
-        snapshot.pipeline_metrics.humanized_motion = HumanizedMotionTelemetry {
-            enabled: true,
-            reason: HumanizedMotionReason::Active,
-            phase: Some(HumanizedMotionPhase::Acceleration),
-            speed_curve_source: Some(HumanizedSpeedCurveSource::TrainedProgress),
-            spatial_curve_source: Some(HumanizedSpatialCurveSource::CubicBezier),
-            progress: 0.42,
-            side_offset: 0.015,
-            planned_duration_ms: 180.0,
-        };
         snapshot.pipeline_metrics.recoil = RecoilDecision {
             state: RecoilState::Active,
             base_rate_counts_s: 600.0,
@@ -1555,19 +1503,6 @@ mod tests {
         assert_eq!(pipeline["arrival_exit_counts"], 4.5);
         assert_eq!(pipeline["actuation_pending_y"], true);
         assert_eq!(pipeline["block_reason"], "");
-        assert_eq!(pipeline["humanized_motion_enabled"], true);
-        assert_eq!(pipeline["humanized_motion_reason"], "active");
-        assert_eq!(pipeline["humanized_motion_phase"], "acceleration");
-        assert_eq!(
-            pipeline["humanized_motion_speed_curve_source"],
-            "trained_progress"
-        );
-        assert_eq!(
-            pipeline["humanized_motion_spatial_curve_source"],
-            "cubic_bezier"
-        );
-        assert_eq!(pipeline["humanized_motion_progress"], 0.42);
-        assert_eq!(pipeline["humanized_motion_planned_duration_ms"], 180.0);
         assert_eq!(pipeline["recoil_state"], "ACTIVE");
         assert_eq!(pipeline["recoil_active"], true);
         assert_eq!(pipeline["recoil_final_rate_counts_s"], 625.0);

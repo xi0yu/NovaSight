@@ -69,8 +69,6 @@ impl AxisCountLimiter {
 pub struct LimitedDeviceCounts {
     pub dx: i32,
     pub dy: i32,
-    pub residual_x: f64,
-    pub residual_y: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -124,11 +122,6 @@ impl DeviceCountLimiter {
                 return Err(error);
             }
         };
-        Ok(LimitedDeviceCounts {
-            dx,
-            dy,
-            residual_x: self.x.residual(),
-            residual_y: self.y.residual(),
-        })
+        Ok(LimitedDeviceCounts { dx, dy })
     }
 }

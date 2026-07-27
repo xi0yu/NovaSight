@@ -1645,11 +1645,6 @@ tbody tr:hover {
     linear-gradient(120deg, color-mix(in srgb, var(--brand-soft) 72%, var(--bg-surface)), var(--bg-surface) 54%);
 }
 
-.motion-control-mode-card.human {
-  border-color: color-mix(in srgb, var(--brand-primary) 48%, var(--border-default));
-  box-shadow: inset 3px 0 0 var(--brand-primary), var(--shadow-card);
-}
-
 .motion-control-mode-copy h3 {
   margin: 5px 0 5px;
   color: var(--text-primary);
@@ -1663,85 +1658,6 @@ tbody tr:hover {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.55;
-}
-
-.motion-control-mode-actions {
-  min-width: 0;
-  display: grid;
-  gap: 9px;
-}
-
-.motion-mode-segmented {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px;
-  padding: 4px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-4);
-  background: var(--bg-subtle);
-}
-
-.motion-mode-segmented button {
-  min-width: 0;
-  min-height: 38px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-3);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.motion-mode-segmented button:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.motion-mode-segmented button.active {
-  border-color: color-mix(in srgb, var(--brand-primary) 40%, var(--border-default));
-  background: var(--selection-strong-bg);
-  color: var(--brand-primary);
-  box-shadow: 0 1px 5px color-mix(in srgb, var(--brand-primary) 12%, transparent);
-}
-
-.motion-mode-segmented button:disabled {
-  color: var(--text-disabled);
-  cursor: not-allowed;
-}
-
-.motion-profile-picker {
-  display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-}
-
-.motion-profile-picker label {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.motion-profile-picker select {
-  width: 100%;
-  height: 36px;
-  min-width: 0;
-  border: 1px solid var(--input-border);
-  border-radius: var(--input-radius);
-  padding: 0 10px;
-  background: var(--input-bg);
-  color: var(--text-primary);
-}
-
-.motion-control-memory-note {
-  color: var(--text-tertiary);
-  font-size: 11px;
-  line-height: 1.4;
 }
 
 .console-card input[type="range"] {
@@ -4474,17 +4390,6 @@ button:focus-visible {
     gap: 14px;
   }
 
-  .motion-profile-picker {
-    grid-template-columns: 1fr;
-  }
-
-  .motion-profile-picker label {
-    display: none;
-  }
-
-  .motion-profile-picker .console-button {
-    width: 100%;
-  }
 }
 
 .nova-icon {

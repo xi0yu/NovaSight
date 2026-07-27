@@ -15,7 +15,6 @@ use novasight_core::controller::{
     ActuationFeedback, ControlDecision as DualPhaseDecision, ControlObservation, DualPhaseConfig,
     DualPhaseControl,
 };
-use novasight_core::output::humanized_motion::HumanizedMotionTelemetry;
 use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore};
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, PointerDevice, RuntimeEpoch,
@@ -23,7 +22,7 @@ use novasight_core::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{CrosshairHub, MotionProfileHub};
+use crate::CrosshairHub;
 use crate::{LatestSlot, TryPublishError};
 
 const STATUS_STARTING: u8 = 0;
@@ -34,6 +33,7 @@ const STATUS_FAULTED: u8 = 4;
 const STATUS_STANDBY: u8 = 5;
 const MAX_TELEMETRY_DETECTIONS: usize = 64;
 const DETECTION_TELEMETRY_MIN_INTERVAL_NS: u64 = 200_000_000;
+const CONTROL_TELEMETRY_MIN_INTERVAL_NS: u64 = 50_000_000;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PipelineStatus {
@@ -95,8 +95,6 @@ pub struct PipelineConfig {
     /// Optional vision-verified control origin. The hub owns its template and
     /// observation state; targeting only performs a cheap resolved-point read.
     pub crosshair: Option<CrosshairHub>,
-    /// Hot-swappable immutable trajectory profile shared with the daemon.
-    pub motion_profiles: Option<MotionProfileHub>,
     /// Independent target-relative recoil branch, evaluated at the output
     /// scheduler cadence rather than the detector cadence.
     pub recoil: RecoilConfig,
@@ -131,7 +129,6 @@ impl Default for PipelineConfig {
             trigger_mode: TriggerMode::Always,
             actuation_feedback_delay_ns: 4_000_000,
             crosshair: None,
-            motion_profiles: None,
             recoil: RecoilConfig::default(),
         }
     }
@@ -171,7 +168,6 @@ pub struct PipelineMetrics {
     pub detections: DetectionTelemetry,
     pub target_selection: TargetSelection,
     pub dual_phase: DualPhaseDecision,
-    pub humanized_motion: HumanizedMotionTelemetry,
     pub recoil: RecoilDecision,
 }
 
@@ -244,7 +240,6 @@ struct AtomicMetrics {
     vision: Mutex<VisionTelemetry>,
     last_device_receipt: AtomicDeviceReceipt,
     dual_phase: Mutex<DualPhaseDecision>,
-    humanized_motion: Mutex<HumanizedMotionTelemetry>,
     recoil: Mutex<RecoilDecision>,
 }
 
@@ -398,14 +393,6 @@ impl SharedState {
 
     /// Telemetry must never stall the realtime control lane. A concurrent
     /// status snapshot may keep the previous complete sample for one poll.
-    fn record_humanized_motion(&self, value: HumanizedMotionTelemetry) {
-        match self.metrics.humanized_motion.try_lock() {
-            Ok(mut telemetry) => *telemetry = value,
-            Err(TryLockError::WouldBlock) => {}
-            Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
-        }
-    }
-
     fn record_dual_phase(&self, value: DualPhaseDecision) {
         match self.metrics.dual_phase.try_lock() {
             Ok(mut telemetry) => *telemetry = value,
@@ -483,7 +470,6 @@ impl SharedState {
 
     fn clear_control_telemetry(&self) {
         self.record_dual_phase(DualPhaseDecision::default());
-        self.record_humanized_motion(HumanizedMotionTelemetry::default());
         self.record_recoil(RecoilDecision::default());
     }
 
@@ -895,7 +881,6 @@ impl PipelineRuntime {
                 trigger_mode: config.trigger_mode,
                 actuation_feedback_delay_ns: config.actuation_feedback_delay_ns,
             },
-            config.motion_profiles.clone(),
         ) {
             Ok(handle) => handle,
             Err(error) => {
@@ -1347,7 +1332,6 @@ fn spawn_control_worker(
     shared: Arc<SharedState>,
     clock: Arc<dyn Clock>,
     config: ControlWorkerConfig,
-    _motion_profiles: Option<MotionProfileHub>,
 ) -> Result<JoinHandle<()>, PipelineError> {
     thread::Builder::new()
         .name("novasight-control".to_owned())
@@ -1356,6 +1340,7 @@ fn spawn_control_worker(
             guard_worker(&shared, "control", || {
                 let mut control = DualPhaseControl::new(config.control);
                 let mut previous_capture_ts_ns = None;
+                let mut next_telemetry_at_ns = 0;
                 while let Some(target) = input.wait_take() {
                     if shared.status() != PipelineStatus::Running {
                         break;
@@ -1416,8 +1401,11 @@ fn spawn_control_worker(
                         ),
                     };
                     let decision = control.calculate_with_feedback(observation, feedback);
-                    shared.record_dual_phase(decision);
-                    shared.record_humanized_motion(decision.humanized_motion);
+                    if control_now_ns >= next_telemetry_at_ns {
+                        shared.record_dual_phase(decision);
+                        next_telemetry_at_ns =
+                            control_now_ns.saturating_add(CONTROL_TELEMETRY_MIN_INTERVAL_NS);
+                    }
                     shared
                         .metrics
                         .control_decisions
@@ -1709,11 +1697,6 @@ fn snapshot_metrics(
         dual_phase: *shared
             .metrics
             .dual_phase
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        humanized_motion: *shared
-            .metrics
-            .humanized_motion
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         recoil: *shared
