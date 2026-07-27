@@ -51,10 +51,9 @@ source_error = e_ctrl * roi_size / observation_size
 theta = atan(source_error / focal_length)
 full_counts = theta * counts_per_360 / (2*pi)
 
-u_near = near_kp * atan_scale * atan(full_counts / atan_scale)
-u_far = far_kp * atan_scale * atan(full_counts / atan_scale)
 w_far = smoothstep(distance, 0.75 * near_threshold, 1.25 * near_threshold)
-u = (1 - w_far) * u_near + w_far * u_far
+kp = (1 - w_far) * near_kp + w_far * far_kp
+u = kp * atan_scale * atan(full_counts / atan_scale)
 limit = (1 - w_far) * near_limit + w_far * far_limit
 u = clamp(u, -limit, limit)
 ```

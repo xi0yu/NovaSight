@@ -40,10 +40,9 @@ focal_x = (source_width / 2) / tan(FOV_x / 2)
 theta = atan(source_error / focal_x)
 full_counts = theta * counts_per_360 / (2*pi)
 
-u_near = K_near * S_counts * atan(full_counts / S_counts)
-u_far = K_far * S_counts * atan(full_counts / S_counts)
 w_far = smoothstep(distance, 0.75 * threshold, 1.25 * threshold)
-u = (1 - w_far) * u_near + w_far * u_far
+K = (1 - w_far) * K_near + w_far * K_far
+u = K * S_counts * atan(full_counts / S_counts)
 limit = (1 - w_far) * near_limit + w_far * far_limit
 u = clamp(u, -limit, limit)
 ```

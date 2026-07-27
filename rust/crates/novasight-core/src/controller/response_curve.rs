@@ -41,31 +41,13 @@ impl BlendedAtanConfig {
         }
 
         let far_weight = far_weight(measured_distance_px, self.near_threshold_px);
-        if far_weight <= 0.0 {
-            return single_region_demand(
-                full_error_counts_x,
-                full_error_counts_y,
-                self.near_kp,
-                self.scale_counts,
-                self.near_limit_counts,
-            );
-        }
-        if far_weight >= 1.0 {
-            return single_region_demand(
-                full_error_counts_x,
-                full_error_counts_y,
-                self.far_kp,
-                self.scale_counts,
-                self.far_limit_counts,
-            );
-        }
-        let near_x = atan_response(full_error_counts_x, self.near_kp, self.scale_counts);
-        let near_y = atan_response(full_error_counts_y, self.near_kp, self.scale_counts);
-        let far_x = atan_response(full_error_counts_x, self.far_kp, self.scale_counts);
-        let far_y = atan_response(full_error_counts_y, self.far_kp, self.scale_counts);
+        // Both regions share one Atan scale, so blending their responses is
+        // algebraically identical to blending Kp first. This keeps the hot
+        // path at one response Atan per axis even inside the transition band.
+        let kp = lerp(self.near_kp, self.far_kp, far_weight);
         let limit_counts = lerp(self.near_limit_counts, self.far_limit_counts, far_weight);
-        let x = lerp(near_x, far_x, far_weight);
-        let y = lerp(near_y, far_y, far_weight);
+        let x = atan_response(full_error_counts_x, kp, self.scale_counts);
+        let y = atan_response(full_error_counts_y, kp, self.scale_counts);
         if !x.is_finite() || !y.is_finite() || !limit_counts.is_finite() {
             return None;
         }
@@ -92,21 +74,6 @@ fn valid_limit(value: f64) -> bool {
 
 fn atan_response(error_counts: f64, kp: f64, scale_counts: f64) -> f64 {
     kp * scale_counts * (error_counts / scale_counts).atan()
-}
-
-fn single_region_demand(
-    full_error_counts_x: f64,
-    full_error_counts_y: f64,
-    kp: f64,
-    scale_counts: f64,
-    limit_counts: f64,
-) -> Option<ContinuousDemand> {
-    let x = atan_response(full_error_counts_x, kp, scale_counts);
-    let y = atan_response(full_error_counts_y, kp, scale_counts);
-    if !x.is_finite() || !y.is_finite() {
-        return None;
-    }
-    Some(ContinuousDemand { x, y, limit_counts })
 }
 
 /// FAR and NEAR remain exact outside a transition band spanning 50% of the
