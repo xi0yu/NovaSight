@@ -121,9 +121,6 @@ function mergeRuntimePatch(current: RuntimeState, patch: Partial<RuntimeState>):
             : {})
         }
       : current.pipeline,
-    power_saving: patch.power_saving
-      ? { ...(current.power_saving ?? {}), ...patch.power_saving }
-      : current.power_saving,
     vision: patch.vision ?? current.vision
   };
 }

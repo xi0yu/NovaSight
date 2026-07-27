@@ -1000,7 +1000,6 @@ export function StudioConsoleView({
     "projection_fov_x_deg"
   );
   const hardwareConfig = nestedRecord(config, "hardware");
-  const powerSavingConfig = nestedRecord(config, "power_saving");
   const consumersConfig = nestedRecord(config, "consumers");
   const vision = asRecord(runtime?.vision);
   const crosshairStatus = asRecord(vision.crosshair);
@@ -1022,14 +1021,6 @@ export function StudioConsoleView({
   const mainlineRuntimeSelected = RUNTIME_MAINLINE_BACKENDS.has(selectedRuntimeBackend);
   const runtimeMainlineSelected = mainlineRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
-  const runtimePowerSaving = asRecord(runtime?.power_saving);
-  const runtimePowerMode = readString(runtimePowerSaving.mode, "disabled");
-  const runtimePowerRunIntent = readBoolean(runtimePowerSaving.run_intent);
-  const runtimePowerAutoResume = readBoolean(runtimePowerSaving.auto_resume, true);
-  const runtimePowerReason = readString(runtimePowerSaving.reason, "");
-  const hostPresenceStandby = runtimePowerMode === "cold_standby" && runtimePowerRunIntent;
-  const hostPresenceGrace = runtimePowerMode === "grace";
-  const runtimePowerInterrupted = runtimePowerMode === "interrupted";
   const mainlineTerminalError = runtimeMainlineStatus.terminalError;
   const runtimeInferenceConfigured = runtimeInference.configured === true;
   const runtimeInferenceReason = readString(runtimeInference.reason, "");
@@ -1048,12 +1039,6 @@ export function StudioConsoleView({
   const captureStatusText = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
       ? runtimeMainlineStatus.readinessLabel
-      : runtimePowerInterrupted
-        ? "主链意外停止"
-      : hostPresenceStandby
-        ? "主机离线省流待机"
-      : hostPresenceGrace
-        ? "主机心跳中断 · 宽限运行"
       : runtimeMainlineRunning
         ? runtimeMainlineStatus.readinessLabel
       : mainlineLaunchPending
@@ -1069,10 +1054,6 @@ export function StudioConsoleView({
   const inferenceStatusText = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
       ? "管线故障"
-      : runtimePowerInterrupted
-        ? "需要人工处理"
-      : hostPresenceStandby
-        ? "推理已暂停"
       : runtimeMainlineRunning
         ? runtimeMainlineStatus.hasRuntimeConsumption
           ? "runtime 已消费"
@@ -1087,9 +1068,7 @@ export function StudioConsoleView({
     : runtime?.running
       ? "运行中"
       : "已停止";
-  const runtimeControlRequested = captureMainRunning || (
-    runtimeMainlineSelected && runtimePowerRunIntent
-  );
+  const runtimeControlRequested = captureMainRunning;
   const runtimeModelOutput = asRecord(runtimeInference.model_output);
   const runtimePostprocess = asRecord(runtimeInference.postprocess);
   const runtimeModelOutputClassNames = stringArray(runtimeModelOutput.class_names);
@@ -1328,14 +1307,6 @@ export function StudioConsoleView({
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
   const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, true);
-  const hostPresencePowerSavingEnabled = readBoolean(
-    powerSavingConfig.host_presence_enabled,
-    false
-  );
-  const targetHostId = readString(powerSavingConfig.target_host_id, "");
-  const hostHeartbeatTimeoutS = readNumber(powerSavingConfig.heartbeat_timeout_s, 6);
-  const hostOfflineGraceS = readNumber(powerSavingConfig.offline_grace_s, 15);
-  const hostAutoResume = readBoolean(powerSavingConfig.auto_resume, true);
   const schedulerEnabled = readBoolean(controlConfig.scheduler_enabled, true);
   const outputEnabled = readBoolean(controlConfig.output_enabled, true);
   const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 8);
@@ -1872,17 +1843,10 @@ export function StudioConsoleView({
     if (localError) items.push({ key: "local", title: "当前操作未完成", detail: localError });
     if (capture?.last_error) items.push({ key: "capture", title: "采集链路异常", detail: capture.last_error });
     if (lastModelSwitchError) items.push({ key: "model-switch", title: "模型切换异常", detail: lastModelSwitchError });
-    if (runtimePowerInterrupted) {
-      items.push({
-        key: "runtime-power",
-        title: "主链运行被中断",
-        detail: runtimePowerReason || "主链并非由省流策略停止，请检查运行管线。"
-      });
-    }
     return items.filter((item, index, all) => (
       all.findIndex((candidate) => candidate.title === item.title && candidate.detail === item.detail) === index
     ));
-  }, [capture?.last_error, errorNotices, errors, lastModelSwitchError, localError, runtimePowerInterrupted, runtimePowerReason]);
+  }, [capture?.last_error, errorNotices, errors, lastModelSwitchError, localError]);
 
   useEffect(() => {
     if (configuredCaptureDevice) {
@@ -2344,8 +2308,6 @@ export function StudioConsoleView({
     setLaunchProgressDetail("正在提交启动请求，等待后端阶段反馈。");
     setLaunchStageIndex(0);
     setLaunchCompletedStages(0);
-    let enteredPowerStandby = false;
-
     const ensureNotCancelled = () => {
       if (launchCancelledRef.current) {
         throw new Error("launch cancelled");
@@ -2375,17 +2337,6 @@ export function StudioConsoleView({
       });
       await runStage(2, async () => {
         const status = asRecord(await startRuntimePipeline());
-        if (readBoolean(status.standby)) {
-          const powerSaving = asRecord(status.power_saving);
-          enteredPowerStandby = true;
-          setMainlineLaunchAccepted(false);
-          setMainlineLaunchMessage(
-            readBoolean(powerSaving.auto_resume, true)
-              ? readString(powerSaving.reason, "等待目标主机心跳")
-              : "等待目标主机上线；自动恢复已关闭，请上线后再次点击启动"
-          );
-          return;
-        }
         const accepted = readBoolean(status.running, true);
         if (!accepted) {
           const reason = readString(status.last_error, "后端未确认主链运行。");
@@ -2394,17 +2345,6 @@ export function StudioConsoleView({
         setMainlineLaunchAccepted(true);
         setMainlineLaunchMessage("后端已确认主链运行，正在核对运行时消费数据。");
       });
-      if (enteredPowerStandby) {
-        setLaunchStatus("success");
-        setLaunchCompletedStages(3);
-        setLaunchProgressDetail(
-          hostAutoResume
-            ? "启动意图已保存；等待目标主机心跳后自动启动主链。"
-            : "启动意图已保存；目标主机上线后需要再次点击启动。"
-        );
-        await onRefresh();
-        return;
-      }
       await runStage(3, async () => {
         const state = await waitForRuntimeEvidence(
           "激活鼠标算法",
@@ -2446,7 +2386,6 @@ export function StudioConsoleView({
   }, [
     assertCaptureLaunchState,
     buildCapturePayload,
-    hostAutoResume,
     launchStatus,
     onRefresh,
     onRuntimeStateChange,
@@ -3530,12 +3469,7 @@ export function StudioConsoleView({
           ) : null}
         </section>
 
-        {hostPresenceStandby ? (
-          <div className="console-info">
-            省流待机：{runtimePowerReason || "等待目标主机心跳"}。
-            {runtimePowerAutoResume ? "主机恢复后将按运行意图自动启动。" : "主机上线后需要再次点击启动。"}
-          </div>
-        ) : mainlineLaunchPending ? (
+        {mainlineLaunchPending ? (
           <div className="console-info">
             {mainlineLaunchMessage || "主链启动请求已提交，正在等待后端状态确认。"}
           </div>
@@ -3552,55 +3486,6 @@ export function StudioConsoleView({
             <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="nvinfer 实际输出" />
             <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
           </div>
-          <div className="console-card power-saving-card">
-            <SectionTitle title="目标主机离线省流" />
-            <p className="console-section-note">
-              可选功能：游戏电脑离线后暂停 Jetson 的采集与推理，电脑恢复后可自动继续。配置立即生效，无需重启后端。
-            </p>
-            <ModuleSwitch
-              label="游戏电脑离线时自动待机"
-              detail={targetHostId ? `监管标识：${targetHostId}` : "请先填写游戏电脑标识，再启用此功能"}
-              enabled={hostPresencePowerSavingEnabled}
-              disabled={!hostPresencePowerSavingEnabled && !targetHostId.trim()}
-              onToggle={(enabled) => updateConfigField("power_saving", "host_presence_enabled", enabled)}
-            />
-            <div className="power-saving-host-field">
-              <TextControl
-                label="游戏电脑标识"
-                value={targetHostId}
-                onCommit={(value) => updateConfigField("power_saving", "target_host_id", value.trim())}
-              />
-              <p className="console-field-hint">需与游戏电脑上 host_presence_agent.py 的 --host-id 完全一致，例如 gaming-pc。</p>
-            </div>
-            <details className="compact-settings-details">
-              <summary>高级时序设置</summary>
-              <NumberControl
-                label="掉线判定时间 s"
-                detail="超过该时间未收到心跳，开始进入离线宽限。"
-                value={hostHeartbeatTimeoutS}
-                min={1}
-                max={120}
-                step={1}
-                onCommit={(value) => updateConfigField("power_saving", "heartbeat_timeout_s", value)}
-              />
-              <NumberControl
-                label="停止前宽限 s"
-                detail="宽限结束后暂停采集、解码、推理与预览。"
-                value={hostOfflineGraceS}
-                min={0}
-                max={600}
-                step={1}
-                onCommit={(value) => updateConfigField("power_saving", "offline_grace_s", value)}
-              />
-              <ModuleSwitch
-                label="电脑恢复后自动继续"
-                detail="只恢复省流策略暂停的任务；用户主动停止后不会自动启动。"
-                enabled={hostAutoResume}
-                onToggle={(enabled) => updateConfigField("power_saving", "auto_resume", enabled)}
-              />
-            </details>
-          </div>
-
           <div className="console-grid2 capture-config-grid compact-content-grid">
               <div className="console-card">
                 <SectionTitle title="采集设备" />

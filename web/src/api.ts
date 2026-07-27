@@ -451,20 +451,6 @@ export type RuntimeConfigSummary = {
   consumers?: Record<string, unknown>;
 };
 
-export type RuntimePowerSavingState = {
-  enabled: boolean;
-  mode: "disabled" | "stopped" | "active" | "grace" | "cold_standby" | "interrupted" | (string & {});
-  run_intent: boolean;
-  suspended_by_policy: boolean;
-  running: boolean;
-  host_id: string;
-  target_host_id: string;
-  host_online: boolean;
-  heartbeat_age_ms: number | null;
-  auto_resume: boolean;
-  reason: string;
-};
-
 export type RuntimeState = {
   running: boolean;
   source: string;
@@ -475,7 +461,6 @@ export type RuntimeState = {
   inference: Record<string, unknown>;
   config: RuntimeConfigSummary;
   pipeline: Record<string, unknown>;
-  power_saving?: RuntimePowerSavingState;
   vision?: Record<string, unknown>;
   fatal_error: Record<string, unknown> | null;
 };

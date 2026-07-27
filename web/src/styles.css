@@ -5486,24 +5486,6 @@ body::after {
 /* Dense Studio workbench: cards group work without consuming the workspace. */
 .console-kv b { min-width: 0; overflow-wrap: anywhere; text-align: right; }
 
-.power-saving-card {
-  display: grid;
-  grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr);
-  grid-template-areas:
-    "title host"
-    "note host"
-    "switch advanced";
-  align-items: start;
-  gap: 8px 16px;
-}
-.power-saving-card > .console-title { grid-area: title; }
-.power-saving-card > .console-section-note { grid-area: note; }
-.power-saving-card > .module-switch { grid-area: switch; }
-.power-saving-card > .power-saving-host-field { grid-area: host; }
-.power-saving-card > .compact-settings-details { grid-area: advanced; }
-.power-saving-host-field { min-width: 0; }
-.power-saving-host-field > label { margin-top: 0; }
-.power-saving-host-field .console-field-hint { margin-bottom: 0; }
 .compact-settings-details { min-width: 0; padding: 9px 11px; border: 1px solid var(--border-subtle); border-radius: 9px; background: var(--bg-subtle); }
 .compact-settings-details summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; font-weight: 750; }
 
@@ -5612,8 +5594,6 @@ body::after {
 @media (max-width: 980px) {
   .console-app { width: 100%; height: auto; min-height: 100vh; margin: 0; border-radius: 0; }
   .console-main { padding: 14px; }
-  .power-saving-card { grid-template-columns: minmax(0, 1fr); }
-  .power-saving-card { grid-template-areas: "title" "note" "host" "switch" "advanced"; }
   .control-output-gate-card { grid-template-columns: minmax(0, 1fr); }
   .model-manager-dialog-header { grid-template-columns: minmax(0, 1fr) 34px; }
   .model-manager-active-pill { grid-column: 1 / -1; grid-row: 2; }
