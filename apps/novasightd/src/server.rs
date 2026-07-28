@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use novasight_api::build_control_router_with_platform_queries;
+use novasight_api::{build_control_router_with_platform_queries, with_trusted_local_control};
 use novasight_core::CaptureCapabilityProbe;
 use novasight_runtime::{
     ApplicationError, ConfigService, LoadedApplication, PipelineState, RuntimeDependencies,
@@ -84,6 +84,7 @@ pub(super) async fn run_daemon(
         mode.hardware_output_enabled(),
         server_shutdown_rx.clone(),
     );
+    let control_router = with_trusted_local_control(router.clone());
     let http_server = axum::serve(listener, router.clone())
         .with_graceful_shutdown(async move {
             if !*server_shutdown_rx.borrow() {
@@ -92,7 +93,7 @@ pub(super) async fn run_daemon(
         })
         .into_future();
     let mut control_shutdown_rx = server_shutdown_tx.subscribe();
-    let control_server = axum::serve(control_listener, router)
+    let control_server = axum::serve(control_listener, control_router)
         .with_graceful_shutdown(async move {
             if !*control_shutdown_rx.borrow() {
                 let _ = control_shutdown_rx.changed().await;

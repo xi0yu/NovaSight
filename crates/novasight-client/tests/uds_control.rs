@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use novasight_api::{
     build_control_router, build_control_router_with_control_plane,
-    build_control_router_with_services,
+    build_control_router_with_services, with_trusted_local_control,
 };
 use novasight_client::{ClientError, ControlClient};
 use novasight_core::RuntimeEpoch;
@@ -222,8 +222,14 @@ async fn license_middleware_rejection_remains_a_typed_daemon_error() {
     let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind Unix control socket");
     let license = FileLicenseRepository::new(&license_path, LicensePolicy::new(true, None));
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
-    let app =
-        build_control_router_with_control_plane(runtime.clone(), None, license, None, false, None);
+    let app = with_trusted_local_control(build_control_router_with_control_plane(
+        runtime.clone(),
+        None,
+        license,
+        None,
+        false,
+        None,
+    ));
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
             .await

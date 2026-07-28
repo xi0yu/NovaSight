@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 
 import {
   type LicenseStatus,
@@ -14,8 +14,6 @@ import {
   describeLicenseActionFailure,
   type LicenseActionFailure
 } from "./connectionIssue";
-import { LICENSE_CACHE_KEY } from "./storage";
-import { inspectLicenseCredential } from "./licenseJwt";
 
 export function LicensePanel({
   license,
@@ -31,10 +29,6 @@ export function LicensePanel({
   const [failure, setFailure] = useState<LicenseActionFailure | null>(null);
   const currentTime = new Date().toLocaleString("zh-CN", { hour12: false });
   const temporarySupported = license?.temporary_access_supported === true;
-  const credentialPreview = useMemo(
-    () => inspectLicenseCredential(licenseInput),
-    [licenseInput]
-  );
 
   const requestTemporary = useCallback(async () => {
     setFailure(null);
@@ -44,7 +38,6 @@ export function LicensePanel({
       const response = await requestTemporaryLicense();
       const status = response.status;
       if (!response.supported) {
-        localStorage.setItem(LICENSE_CACHE_KEY, status.valid ? "1" : "0");
         onLicenseChange(status);
         setFailure({
           title: "当前构建不支持临时权限",
@@ -53,7 +46,6 @@ export function LicensePanel({
         return;
       }
       if (!response.granted || !status.valid) {
-        localStorage.setItem(LICENSE_CACHE_KEY, status.valid ? "1" : "0");
         onLicenseChange(status);
         setFailure({
           title: "临时授权未通过",
@@ -63,7 +55,6 @@ export function LicensePanel({
         });
         return;
       }
-      localStorage.setItem(LICENSE_CACHE_KEY, status.valid ? "1" : "0");
       onLicenseChange(status);
       setMessage("当前 Debug 后端进程已开放开发权限，可以进入 NovaSight 工作台。");
     } catch (err) {
@@ -86,7 +77,6 @@ export function LicensePanel({
     setActivating(true);
     try {
       const status = await saveLicenseKey(licenseInput);
-      localStorage.setItem(LICENSE_CACHE_KEY, status.valid ? "1" : "0");
       onLicenseChange(status);
       if (!status.valid) {
         setFailure({
@@ -116,7 +106,6 @@ export function LicensePanel({
     setMessage(undefined);
     try {
       const status = await clearLicenseKey();
-      localStorage.removeItem(LICENSE_CACHE_KEY);
       onLicenseChange(status);
       setMessage("当前授权已退出。");
     } catch (err) {
@@ -209,36 +198,6 @@ export function LicensePanel({
           >
             {activating ? "正在验证…" : "激活正式授权"}
           </button>
-          {credentialPreview ? (
-            <div className={credentialPreview.acceptedShape
-              ? "signed-license-preview"
-              : "signed-license-preview invalid"}>
-              <div>
-                <span>凭证格式</span>
-                <strong>{credentialPreview.label}</strong>
-              </div>
-              {credentialPreview.licenseId ? (
-                <div>
-                  <span>授权编号</span>
-                  <strong>{credentialPreview.licenseId}</strong>
-                </div>
-              ) : null}
-              {credentialPreview.tier ? (
-                <div>
-                  <span>授权版本</span>
-                  <strong>{formatTier(credentialPreview.tier)}</strong>
-                </div>
-              ) : null}
-              {credentialPreview.expiresAt ? (
-                <div>
-                  <span>声明到期</span>
-                  <strong>{formatEpoch(credentialPreview.expiresAt)}</strong>
-                </div>
-              ) : null}
-              <p>{credentialPreview.problems[0]
-                ?? "这里只预览 JWT 声明；签名、签发方、有效期与权限最终由 novasightd 校验。"}</p>
-            </div>
-          ) : null}
         </div>
       </div>
       {license?.configured ? (

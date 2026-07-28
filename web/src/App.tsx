@@ -31,7 +31,6 @@ import {
   describeLicenseConnectionIssue,
   type LicenseConnectionIssue
 } from "./features/license/connectionIssue";
-import { LICENSE_CACHE_KEY } from "./features/license/storage";
 import { formatTime, getErrorMessage } from "./features/shared/format";
 import {
   runtimeDeliveryLabel,
@@ -234,20 +233,11 @@ function StudioApp() {
     setLicenseLoading(true);
     setLicenseIssue(null);
     try {
-      const cached = localStorage.getItem(LICENSE_CACHE_KEY) === "1";
       const status = await getLicenseStatusWithStartupRetry();
       if (requestSeq !== licenseRequestSeqRef.current) {
         return status;
       }
       setLicense(status);
-      if (status.valid) {
-        localStorage.setItem(LICENSE_CACHE_KEY, "1");
-        if (cached) {
-          reportInfo("授权已从本地缓存命中", "本次刷新沿用上一次的授权结论。", "license");
-        }
-      } else {
-        localStorage.removeItem(LICENSE_CACHE_KEY);
-      }
       return status;
     } catch (err) {
       if (requestSeq !== licenseRequestSeqRef.current) {
@@ -256,7 +246,6 @@ function StudioApp() {
       setLicense(null);
       const issue = describeLicenseConnectionIssue(err);
       setLicenseIssue(issue);
-      localStorage.removeItem(LICENSE_CACHE_KEY);
       reportError(err, {
         source: "license",
         title: issue.title,
@@ -273,10 +262,7 @@ function StudioApp() {
 
   const handleLicenseChange = useCallback((status: LicenseStatus) => {
     setLicense(status);
-    if (status.valid) {
-      localStorage.setItem(LICENSE_CACHE_KEY, "1");
-    } else {
-      localStorage.removeItem(LICENSE_CACHE_KEY);
+    if (!status.valid) {
       loadRequestSeqRef.current += 1;
       setState(initialState);
       setRealtimeStatus("disconnected");
@@ -621,6 +607,11 @@ function StudioApp() {
         setRealtimeStatus((current) =>
           current === "fallback" ? current : closedForStaleData ? "stale" : "disconnected"
         );
+        if (event.code === 4401) {
+          failureReported = true;
+          void loadLicense().finally(scheduleReconnect);
+          return;
+        }
         if (!closedForStaleData && !failureReported && event.code !== 1000 && event.code !== 1001) {
           if (reportWebSocketFailure(event.reason || `code=${event.code}`, "status")) {
             void refreshHealth();
@@ -682,7 +673,7 @@ function StudioApp() {
       }
       socket?.close(1000, "client suspended");
     };
-  }, [applyRuntimeFrame, applyRuntimeState, license?.valid, networkOnline, pageVisible, refreshHealth, statusTopic]);
+  }, [applyRuntimeFrame, applyRuntimeState, license?.valid, loadLicense, networkOnline, pageVisible, refreshHealth, statusTopic]);
 
   const realtimeConnected = realtimeStatus === "connected";
 

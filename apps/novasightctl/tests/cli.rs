@@ -5,7 +5,7 @@ use std::sync::Arc;
 use novasight_api::{
     build_control_router, build_control_router_with_capabilities,
     build_control_router_with_control_plane, build_control_router_with_platform_queries,
-    build_control_router_with_services,
+    build_control_router_with_services, with_trusted_local_control,
 };
 use novasight_core::{
     CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError,
@@ -210,14 +210,14 @@ async fn license_commands_bootstrap_through_a_key_file_and_the_real_repository()
     );
     let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
-    let app = build_control_router_with_control_plane(
+    let app = with_trusted_local_control(build_control_router_with_control_plane(
         runtime.clone(),
         None,
         repository,
         None,
         false,
         None,
-    );
+    ));
     let server = tokio::spawn(async move {
         axum::serve(listener, app)
             .await

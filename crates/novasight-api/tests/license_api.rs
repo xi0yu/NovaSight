@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::body::{Body, to_bytes};
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode, header::SET_COOKIE};
 use futures_util::StreamExt;
 use novasight_api::build_control_router_with_control_plane;
 use novasight_runtime::{PipelineState, RuntimeSupervisor};
@@ -41,20 +41,40 @@ async fn json_response(
     path: &str,
     body: Body,
 ) -> (StatusCode, Value) {
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(path)
-                .header("content-type", "application/json")
-                .body(body)
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let (status, _, body) = json_response_with_cookie(app, method, path, body, None).await;
+    (status, body)
+}
+
+async fn json_response_with_cookie(
+    app: axum::Router,
+    method: &str,
+    path: &str,
+    body: Body,
+    cookie: Option<&str>,
+) -> (StatusCode, HeaderMap, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/json");
+    if let Some(cookie) = cookie {
+        request = request.header("cookie", cookie);
+    }
+    let response = app.oneshot(request.body(body).unwrap()).await.unwrap();
     let status = response.status();
+    let headers = response.headers().clone();
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    (status, serde_json::from_slice(&body).unwrap())
+    (status, headers, serde_json::from_slice(&body).unwrap())
+}
+
+fn session_cookie(headers: &HeaderMap) -> String {
+    let set_cookie = headers
+        .get(SET_COOKIE)
+        .expect("license response sets a session cookie")
+        .to_str()
+        .unwrap();
+    assert!(set_cookie.contains("HttpOnly"));
+    assert!(set_cookie.contains("SameSite=Strict"));
+    set_cookie.split(';').next().unwrap().to_owned()
 }
 
 #[tokio::test]
@@ -108,11 +128,12 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
     assert_eq!(body["license"]["valid"], false);
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
 
-    let (status, body) = json_response(
+    let (status, headers, body) = json_response_with_cookie(
         app.clone(),
         "POST",
         "/api/license/temporary",
         Body::from("{}"),
+        None,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -120,15 +141,42 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
     assert_eq!(body["granted"], true);
     assert_eq!(body["status"]["valid"], true);
     assert_eq!(body["status"]["tier"], "temporary");
+    let cookie = session_cookie(&headers);
 
     let (status, body) =
         json_response(app.clone(), "POST", "/api/runtime/start", Body::empty()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "LICENSE_SESSION_REQUIRED");
+
+    let (status, _, body) = json_response_with_cookie(
+        app.clone(),
+        "POST",
+        "/api/runtime/start",
+        Body::empty(),
+        Some(&cookie),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["running"], true);
 
-    let (status, body) = json_response(app.clone(), "DELETE", "/api/license", Body::empty()).await;
+    let (status, headers, body) = json_response_with_cookie(
+        app.clone(),
+        "DELETE",
+        "/api/license",
+        Body::empty(),
+        Some(&cookie),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["configured"], false);
+    assert!(
+        headers
+            .get(SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("Max-Age=0")
+    );
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
 
     let (status, body) = json_response(app, "POST", "/api/runtime/stop", Body::empty()).await;
@@ -242,13 +290,31 @@ async fn license_gate_enforces_features_on_the_server() {
     let app =
         build_control_router_with_control_plane(runtime.clone(), None, license, None, true, None);
 
-    let (status, body) =
-        json_response(app.clone(), "GET", "/api/runtime/state", Body::empty()).await;
+    let (status, headers, body) =
+        json_response_with_cookie(app.clone(), "GET", "/api/license", Body::empty(), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["valid"], true);
+    let cookie = session_cookie(&headers);
+
+    let (status, _, body) = json_response_with_cookie(
+        app.clone(),
+        "GET",
+        "/api/runtime/state",
+        Body::empty(),
+        Some(&cookie),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["running"], false);
 
-    let (status, body) =
-        json_response(app.clone(), "POST", "/api/runtime/start", Body::empty()).await;
+    let (status, _, body) = json_response_with_cookie(
+        app.clone(),
+        "POST",
+        "/api/runtime/start",
+        Body::empty(),
+        Some(&cookie),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], "LICENSE_FEATURE_REQUIRED");
     assert_eq!(
@@ -258,16 +324,24 @@ async fn license_gate_enforces_features_on_the_server() {
     assert_eq!(body["required_feature"], "hardware_control");
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
 
-    let (status, body) = json_response(app.clone(), "GET", "/api/executors", Body::empty()).await;
+    let (status, _, body) = json_response_with_cookie(
+        app.clone(),
+        "GET",
+        "/api/executors",
+        Body::empty(),
+        Some(&cookie),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], "LICENSE_FEATURE_REQUIRED");
     assert_eq!(body["required_feature"], "hardware_control");
 
-    let (status, body) = json_response(
+    let (status, _, body) = json_response_with_cookie(
         app,
         "POST",
         "/api/config",
         Body::from(r#"{"section":"server","key":"port","value":6000}"#),
+        Some(&cookie),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);

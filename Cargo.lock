@@ -1152,10 +1152,12 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "futures-util",
+ "jsonwebtoken",
  "novasight-core",
  "novasight-pipeline",
  "novasight-runtime",
  "novasight-store",
+ "rand 0.8.7",
  "rusqlite",
  "serde",
  "serde_json",

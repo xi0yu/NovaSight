@@ -710,6 +710,7 @@ async function requestJson<T>(
     try {
       response = await fetch(apiUrl(path), {
         ...init,
+        credentials: init?.credentials ?? "include",
         signal: timeoutController?.signal ?? upstreamSignal,
         headers: {
           ...Object.fromEntries(headers.entries())

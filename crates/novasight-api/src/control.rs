@@ -4,13 +4,13 @@ use std::time::Duration;
 use std::time::Instant;
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::{Body, Bytes},
     extract::{
         Query, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
-    http::{Method, Request, StatusCode},
+    http::{HeaderMap, Method, Request, StatusCode, header::SET_COOKIE},
     middleware,
     middleware::Next,
     response::{IntoResponse, Response},
@@ -36,10 +36,14 @@ use crate::dto::{
     CompatibilityHealth, CompatibilityRuntimeStart, CompatibilityRuntimeState,
     ConfigSchemaResponse, serialize_compatibility_status_frame,
 };
+use crate::license_session::LicenseSession;
 use crate::websocket::status::send_while_receiving;
 
 const COMPATIBILITY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug)]
+struct TrustedLocalControl;
 
 mod models;
 
@@ -47,6 +51,13 @@ mod models;
 /// single daemon-owned RuntimeHandle and returns its immutable snapshot.
 pub fn build_control_router(runtime: RuntimeHandle) -> Router {
     build_control_router_with_shutdown(runtime, None)
+}
+
+/// Mark a router served only through the daemon-owned Unix socket. The socket
+/// permissions are its session boundary, while license features remain
+/// enforced by the same middleware as HTTP.
+pub fn with_trusted_local_control(router: Router) -> Router {
+    router.layer(Extension(TrustedLocalControl))
 }
 
 /// Build the control surface with a daemon-owned shutdown signal.
@@ -119,6 +130,7 @@ pub fn build_control_router_with_platform_queries(
         hardware_output_enabled,
         shutdown: shutdown.into(),
         lifecycle_lock: Arc::new(Mutex::new(())),
+        license_session: LicenseSession::new(),
     };
     let license_gate_enabled = state.license.is_some();
     let router = Router::new()
@@ -224,6 +236,7 @@ struct ControlState {
     hardware_output_enabled: bool,
     shutdown: Option<watch::Receiver<bool>>,
     lifecycle_lock: Arc<Mutex<()>>,
+    license_session: LicenseSession,
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,22 +254,19 @@ struct TemporaryLicenseResponse {
     status: LicenseStatus,
 }
 
-async fn license_status(
-    State(state): State<ControlState>,
-) -> Result<Json<LicenseStatus>, ControlApiError> {
+async fn license_status(State(state): State<ControlState>) -> Result<Response, ControlApiError> {
     let license = state
         .license
         .as_ref()
         .ok_or(ControlApiError::LicenseUnavailable)?;
-    Ok(Json(
-        run_license_operation(license.clone(), |repository| repository.status()).await?,
-    ))
+    let status = run_license_operation(license.clone(), |repository| repository.status()).await?;
+    license_response(&state, &status, status.clone())
 }
 
 async fn activate_license(
     State(state): State<ControlState>,
     Json(request): Json<LicenseActivationRequest>,
-) -> Result<Json<LicenseStatus>, ControlApiError> {
+) -> Result<Response, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     let license = state
         .license
@@ -275,13 +285,13 @@ async fn activate_license(
         "license activation completed"
     );
     stop_if_license_disallows_runtime(&state, &status).await?;
-    Ok(Json(status))
+    license_response(&state, &status, status.clone())
 }
 
 async fn grant_temporary_license(
     State(state): State<ControlState>,
     Json(_request): Json<TemporaryLicenseRequest>,
-) -> Result<Json<TemporaryLicenseResponse>, ControlApiError> {
+) -> Result<Response, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     let license = state
         .license
@@ -324,16 +334,15 @@ async fn grant_temporary_license(
         );
     }
     stop_if_license_disallows_runtime(&state, &status).await?;
-    Ok(Json(TemporaryLicenseResponse {
+    let payload = TemporaryLicenseResponse {
         supported,
         granted,
-        status,
-    }))
+        status: status.clone(),
+    };
+    license_response(&state, &status, payload)
 }
 
-async fn clear_license(
-    State(state): State<ControlState>,
-) -> Result<Json<LicenseStatus>, ControlApiError> {
+async fn clear_license(State(state): State<ControlState>) -> Result<Response, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     let license = state
         .license
@@ -342,7 +351,25 @@ async fn clear_license(
     let status = run_license_operation(license.clone(), |repository| repository.clear()).await?;
     tracing::info!("license cleared");
     stop_if_license_disallows_runtime(&state, &status).await?;
-    Ok(Json(status))
+    let mut response = Json(status).into_response();
+    response
+        .headers_mut()
+        .append(SET_COOKIE, LicenseSession::clear_cookie());
+    Ok(response)
+}
+
+fn license_response<T: Serialize>(
+    state: &ControlState,
+    status: &LicenseStatus,
+    payload: T,
+) -> Result<Response, ControlApiError> {
+    let cookie = state
+        .license_session
+        .issue_cookie(status)
+        .map_err(ControlApiError::LicenseSession)?;
+    let mut response = Json(payload).into_response();
+    response.headers_mut().append(SET_COOKIE, cookie);
+    Ok(response)
 }
 
 async fn stop_if_license_disallows_runtime(
@@ -420,6 +447,31 @@ async fn require_license(
         )
             .into_response();
     }
+    let trusted_local_control = request.extensions().get::<TrustedLocalControl>().is_some();
+    let refresh_session = if trusted_local_control {
+        false
+    } else {
+        match state.license_session.verify(request.headers(), &status) {
+            Ok(session) => session.refresh,
+            Err(reason) => {
+                tracing::warn!(
+                    error_code = "LICENSE_SESSION_REQUIRED",
+                    reason,
+                    "license session rejected"
+                );
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "code": "LICENSE_SESSION_REQUIRED",
+                        "detail": "license session required",
+                        "message": "refresh the license status to establish a browser session",
+                        "license": status,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    };
     if let Some(feature) = required_license_feature(method, path)
         && !status.features.iter().any(|candidate| candidate == feature)
     {
@@ -464,7 +516,19 @@ async fn require_license(
         )
             .into_response();
     }
-    next.run(request).await
+    let mut response = next.run(request).await;
+    if refresh_session {
+        match state.license_session.issue_cookie(&status) {
+            Ok(cookie) => {
+                response.headers_mut().append(SET_COOKIE, cookie);
+            }
+            Err(error) => {
+                tracing::error!(error_code = "LICENSE_SESSION_FAILED", %error);
+                return ControlApiError::LicenseSession(error).into_response();
+            }
+        }
+    }
+    response
 }
 
 fn is_runtime_start(method: &Method, path: &str) -> bool {
@@ -1145,10 +1209,18 @@ async fn legacy_events(
     websocket: WebSocketUpgrade,
     Query(query): Query<CompatibilityStatusQuery>,
     State(state): State<ControlState>,
+    trusted_local_control: Option<Extension<TrustedLocalControl>>,
+    headers: HeaderMap,
 ) -> Response {
     if let Some(license) = state.license.as_ref() {
         match run_license_operation(license.clone(), |repository| repository.status()).await {
-            Ok(status) if status.configured && status.valid => {}
+            Ok(status) if status.configured && status.valid => {
+                if trusted_local_control.is_none()
+                    && state.license_session.verify(&headers, &status).is_err()
+                {
+                    return websocket.on_upgrade(close_unlicensed_websocket);
+                }
+            }
             Ok(_) => {
                 return websocket.on_upgrade(close_unlicensed_websocket);
             }
@@ -1342,6 +1414,7 @@ enum ControlApiError {
     UnsupportedDiagnostic(String),
     License(LicenseError),
     LicenseTask(tokio::task::JoinError),
+    LicenseSession(String),
     LicenseUnavailable,
     LicenseRequired,
     LicenseFeatureRequired(&'static str),
@@ -1470,6 +1543,11 @@ impl IntoResponse for ControlApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "LICENSE_TASK_FAILED",
                 format!("license storage task failed: {error}"),
+            ),
+            Self::LicenseSession(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "LICENSE_SESSION_FAILED",
+                error,
             ),
             Self::LicenseUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,

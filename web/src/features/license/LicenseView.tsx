@@ -3,7 +3,6 @@ import { NovaIcon, ThemeToggle } from "../../components/visual";
 import { Panel } from "../../components/ui";
 import { LicensePanel } from "./LicensePanel";
 import { type LicenseConnectionIssue } from "./connectionIssue";
-import { LICENSE_CACHE_KEY } from "./storage";
 
 type LicenseProps = {
   license: LicenseStatus | null;
@@ -101,4 +100,3 @@ export function LicenseView({ license, onLicenseChange }: LicenseProps) {
 }
 
 export { LicensePanel };
-export { LICENSE_CACHE_KEY };
