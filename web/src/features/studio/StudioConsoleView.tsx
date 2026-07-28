@@ -60,24 +60,9 @@ import { Event, KvCard, Metric, SectionTitle } from "./StudioPresentation";
 import { trapDialogTabKey } from "./dialogFocus";
 import "./studio-settings.css";
 
-const CONTROL_ALGORITHM_OPTIONS = [
-  {
-    id: "universal_saturated",
-    label: "通用控制",
-    description: "无需精确游戏参数，适合快速适配。"
-  },
-  {
-    id: "calibrated_angular",
-    label: "精确角度控制",
-    description: "依赖 FOV 和 counts_per_360 标定。"
-  },
-  {
-    id: "dual_phase_atan_robust_predictive_v2",
-    label: "双阶段 Atan 控制",
-    description: "仅使用当前观测误差、角度投影和 Atan 响应曲线。"
-  }
-] as const;
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
+const CONTROL_ALGORITHM_LABEL = "双阶段 Atan 控制";
+const CONTROL_ALGORITHM_DESCRIPTION = "唯一生产控制器：单目标预测、角度投影、连续双阶段 Atan 响应、限幅与量化。";
 const ModelManagerDialog = lazy(() =>
   import("../models/ModelManagerDialog").then((module) => ({
     default: module.ModelManagerDialog
@@ -144,8 +129,10 @@ type LaunchStatus = "idle" | "running" | "success" | "failed" | "cancelled";
 type LaunchStepState = "pending" | "running" | "success" | "failed";
 type ConfigDialogId = "class-config" | "target-weights" | "algorithm" | "target-advanced" | "tracker";
 type DualPhasePipelineField =
+  | "freshness_threshold_ms"
   | "projection_fov_x_deg"
   | "projection_counts_per_360"
+  | "projection_invert_y"
   | "near_threshold_px"
   | "far_kp"
   | "near_kp"
@@ -155,11 +142,41 @@ type DualPhasePipelineField =
   | "prediction_enabled"
   | "velocity_smoothing_frames"
   | "velocity_history_reset_gap_ms"
+  | "velocity_spread_base_px_ms"
+  | "velocity_spread_relative"
+  | "velocity_change_base_px_ms"
+  | "velocity_change_relative"
   | "prediction_lead_frames"
   | "prediction_far_absolute_cap_px"
+  | "prediction_far_base_cap_px"
+  | "prediction_far_relative_cap"
   | "prediction_near_absolute_cap_px"
+  | "prediction_near_base_cap_px"
+  | "prediction_near_relative_cap"
   | "arrival_radius_counts"
+  | "residual_cap"
+  | "max_command_age_ms"
+  | "output_interval_ms"
   | "actuation_feedback_delay_ms";
+
+type TargetingPipelineField =
+  | "target_fov_radius_px"
+  | "target_min_confidence"
+  | "target_track_max_age"
+  | "target_track_max_lost_age_ms"
+  | "tracker_max_match_distance"
+  | "tracker_position_cost_weight"
+  | "tracker_iou_cost_weight"
+  | "tracker_scale_cost_weight"
+  | "tracker_max_size_ratio"
+  | "tracker_max_association_dt_ms"
+  | "target_selection_class_weight"
+  | "target_selection_distance_weight"
+  | "target_sticky_bias"
+  | "target_switch_min_preference_advantage"
+  | "target_switch_min_continuity_score"
+  | "target_switch_delay_ms"
+  | "candidate_max_aspect_ratio";
 
 type LaunchStage = {
   title: string;
@@ -1080,7 +1097,6 @@ export function StudioConsoleView({
   const runtimePostprocess = asRecord(runtimeInference.postprocess);
   const runtimeModelOutputClassNames = stringArray(runtimeModelOutput.class_names);
   const executorStatus = asRecord(runtime?.executor);
-  const schedulerStatus = asRecord(executorStatus.scheduler);
   const executors = asRecord(executorStatus.executors);
   const kmnetStatus = asRecord(executors.kmnet);
   const selectedProfile = capture?.profile;
@@ -1211,26 +1227,7 @@ export function StudioConsoleView({
     runtimeInferenceReason,
     runtimeMainlineRunning
   ]);
-  const controlMode = rustControlPlane
-    ? DEFAULT_CONTROL_ALGORITHM
-    : readString(controlConfig.active_algorithm ?? controlConfig.mode, DEFAULT_CONTROL_ALGORITHM);
-  const algorithmConfigs = nestedRecord(controlConfig, "algorithms");
-  const algorithmConfig = (algorithmId: string): Record<string, unknown> => {
-    const namespaced = nestedRecord(algorithmConfigs, algorithmId);
-    return Object.keys(namespaced).length > 0
-      ? namespaced
-      : nestedRecord(controlConfig, algorithmId);
-  };
   const aimConfig = nestedRecord(controlConfig, "aim");
-  const calibratedAngularConfig = algorithmConfig("calibrated_angular");
-  const universalSaturatedConfig = algorithmConfig("universal_saturated");
-  const dualPhaseConfig = algorithmConfig("dual_phase_atan_robust_predictive_v2");
-  const dualPhaseProjectionConfig = nestedRecord(dualPhaseConfig, "projection");
-  const dualPhaseModeConfig = nestedRecord(dualPhaseConfig, "mode");
-  const dualPhaseAtanConfig = nestedRecord(dualPhaseConfig, "atan");
-  const dualPhaseFarConfig = nestedRecord(dualPhaseAtanConfig, "far");
-  const dualPhaseNearConfig = nestedRecord(dualPhaseAtanConfig, "near");
-  const sharedControlConfig = nestedRecord(controlConfig, "shared");
   const rawAimRoleRatios = nestedRecord(aimConfig, "role_y_ratios");
   const aimRoleRatios: AimRoleRatios = {
     head: clampNumber(readNumber(rawAimRoleRatios.head, 0.22), 0, 1),
@@ -1248,10 +1245,10 @@ export function StudioConsoleView({
   };
   const classRoleProfiles = profileRoleRecords(aimConfig.class_roles);
   const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? {};
-  const targetFovRadiusPx = readNumber(rustControlPlane ? rustPipelineConfig.target_fov_radius_px : controlConfig.target_fov_radius_px, 180);
-  const candidateRatioMaxAspect = readNumber(rustControlPlane ? rustPipelineConfig.candidate_max_aspect_ratio : controlConfig.candidate_ratio_max_aspect, 6);
-  const candidateSelectionClassWeight = readNumber(rustControlPlane ? rustPipelineConfig.target_selection_class_weight : controlConfig.candidate_selection_class_weight, 0.55);
-  const candidateSelectionDistanceWeight = readNumber(rustControlPlane ? rustPipelineConfig.target_selection_distance_weight : controlConfig.candidate_selection_distance_weight, 0.40);
+  const targetFovRadiusPx = readNumber(rustPipelineConfig.target_fov_radius_px, 180);
+  const candidateRatioMaxAspect = readNumber(rustPipelineConfig.candidate_max_aspect_ratio, 6);
+  const candidateSelectionClassWeight = readNumber(rustPipelineConfig.target_selection_class_weight, 0.55);
+  const candidateSelectionDistanceWeight = readNumber(rustPipelineConfig.target_selection_distance_weight, 0.40);
   const candidateSelectionWeightTotal = candidateSelectionClassWeight + candidateSelectionDistanceWeight;
   const normalizedSelectionClassWeight = candidateSelectionWeightTotal > 0
     ? candidateSelectionClassWeight / candidateSelectionWeightTotal
@@ -1259,52 +1256,47 @@ export function StudioConsoleView({
   const normalizedSelectionDistanceWeight = candidateSelectionWeightTotal > 0
     ? candidateSelectionDistanceWeight / candidateSelectionWeightTotal
     : 0;
-  const trackerMaxMatchDistance = readNumber(rustControlPlane ? rustPipelineConfig.tracker_max_match_distance : controlConfig.tracker_max_match_distance, 1.5);
-  const trackerPositionCostWeight = readNumber(rustControlPlane ? rustPipelineConfig.tracker_position_cost_weight : controlConfig.tracker_position_cost_weight, 0.75);
-  const trackerIouCostWeight = readNumber(rustControlPlane ? rustPipelineConfig.tracker_iou_cost_weight : controlConfig.tracker_iou_cost_weight, 0.25);
-  const trackerMaxMissedFrames = readNumber(rustControlPlane ? rustPipelineConfig.target_track_max_age : controlConfig.tracker_max_missed_frames, 2);
+  const trackerMaxMatchDistance = readNumber(rustPipelineConfig.tracker_max_match_distance, 1.5);
+  const trackerPositionCostWeight = readNumber(rustPipelineConfig.tracker_position_cost_weight, 0.75);
+  const trackerIouCostWeight = readNumber(rustPipelineConfig.tracker_iou_cost_weight, 0.25);
+  const targetTrackMaxAge = readNumber(rustPipelineConfig.target_track_max_age, 2);
   const targetLostGraceMs = readNumber(rustPipelineConfig.target_track_max_lost_age_ms, 120);
-  const targetSwitchPreferenceAdvantage = readNumber(rustControlPlane ? rustPipelineConfig.target_switch_min_preference_advantage : controlConfig.target_switch_min_preference_advantage, 0.08);
-  const targetSwitchContinuityScore = readNumber(rustControlPlane ? rustPipelineConfig.target_switch_min_continuity_score : controlConfig.target_switch_min_continuity_score, 0.7);
-  const targetSwitchDelayMs = readNumber(rustControlPlane ? rustPipelineConfig.target_switch_delay_ms : controlConfig.target_switch_delay_ms, 50);
-  const kalmanAccelerationNoise = readNumber(controlConfig.kalman_acceleration_noise, 1200);
-  const kalmanMeasurementNoiseX = readNumber(controlConfig.kalman_measurement_noise_x, 16);
-  const kalmanMeasurementNoiseY = readNumber(controlConfig.kalman_measurement_noise_y, 16);
-  const calibratedFovX = readNumber(calibratedAngularConfig.fov_x_deg, 105);
-  const calibratedCountsPer360X = readNumber(calibratedAngularConfig.counts_per_360_x, 9980);
-  const calibratedCountsPer360Y = readNumber(calibratedAngularConfig.counts_per_360_y, 9980);
-  const calibratedKpX = readNumber(calibratedAngularConfig.kp_x, 1);
-  const calibratedKpY = readNumber(calibratedAngularConfig.kp_y, 1);
-  const calibratedKdX = readNumber(calibratedAngularConfig.kd_x, 0);
-  const calibratedKdY = readNumber(calibratedAngularConfig.kd_y, 0);
-  const calibratedDEmaAlpha = readNumber(calibratedAngularConfig.d_ema_alpha, 0.3);
-  const calibratedMaxAngleX = readNumber(calibratedAngularConfig.max_angle_step_x_deg, 2);
-  const calibratedMaxAngleY = readNumber(calibratedAngularConfig.max_angle_step_y_deg, 1.5);
-  const universalResponseScaleX = readNumber(universalSaturatedConfig.response_scale_x_px, 80);
-  const universalResponseScaleY = readNumber(universalSaturatedConfig.response_scale_y_px, 60);
-  const universalMaxStepX = readNumber(universalSaturatedConfig.max_step_x_counts, 50);
-  const universalMaxStepY = readNumber(universalSaturatedConfig.max_step_y_counts, 40);
-  const dualPhaseFovX = readNumber(rustControlPlane ? rustPipelineConfig.projection_fov_x_deg : dualPhaseProjectionConfig.fov_x_deg, 105);
-  const dualPhaseCountsPer360 = readNumber(rustControlPlane ? rustPipelineConfig.projection_counts_per_360 : dualPhaseProjectionConfig.counts_per_360, 9980);
-  const dualPhaseNearThreshold = readNumber(rustControlPlane ? rustPipelineConfig.near_threshold_px : dualPhaseModeConfig.near_threshold_px, 12);
-  const dualPhaseFarKp = readNumber(rustControlPlane ? rustPipelineConfig.far_kp : dualPhaseFarConfig.kp, 0.22);
-  const dualPhaseNearKp = readNumber(rustControlPlane ? rustPipelineConfig.near_kp : dualPhaseNearConfig.kp, 0.20);
-  const dualPhaseAtanScale = readNumber(rustControlPlane ? rustPipelineConfig.atan_scale_counts : dualPhaseAtanConfig.scale_counts, 256);
-  const dualPhaseFarMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.far_max_counts_per_update : dualPhaseFarConfig.max_counts_per_update, 127);
-  const dualPhaseNearMaxCounts = readNumber(rustControlPlane ? rustPipelineConfig.near_max_counts_per_update : dualPhaseNearConfig.max_counts_per_update, 72);
+  const targetSwitchPreferenceAdvantage = readNumber(rustPipelineConfig.target_switch_min_preference_advantage, 0.08);
+  const targetSwitchContinuityScore = readNumber(rustPipelineConfig.target_switch_min_continuity_score, 0.7);
+  const targetSwitchDelayMs = readNumber(rustPipelineConfig.target_switch_delay_ms, 50);
+  const freshnessThresholdMs = readNumber(rustPipelineConfig.freshness_threshold_ms, 55);
+  const projectionInvertY = readBoolean(rustPipelineConfig.projection_invert_y, false);
+  const dualPhaseFovX = readNumber(rustPipelineConfig.projection_fov_x_deg, 105);
+  const dualPhaseCountsPer360 = readNumber(rustPipelineConfig.projection_counts_per_360, 9980);
+  const dualPhaseNearThreshold = readNumber(rustPipelineConfig.near_threshold_px, 12);
+  const dualPhaseFarKp = readNumber(rustPipelineConfig.far_kp, 0.22);
+  const dualPhaseNearKp = readNumber(rustPipelineConfig.near_kp, 0.20);
+  const dualPhaseAtanScale = readNumber(rustPipelineConfig.atan_scale_counts, 256);
+  const dualPhaseFarMaxCounts = readNumber(rustPipelineConfig.far_max_counts_per_update, 127);
+  const dualPhaseNearMaxCounts = readNumber(rustPipelineConfig.near_max_counts_per_update, 72);
   const dualPhaseArrivalRadiusCounts = readNumber(rustPipelineConfig.arrival_radius_counts, 3);
   const dualPhasePredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, false);
   const dualPhasePredictionSmoothingFrames = readNumber(rustPipelineConfig.velocity_smoothing_frames, 3);
   const dualPhasePredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
+  const velocitySpreadBasePxMs = readNumber(rustPipelineConfig.velocity_spread_base_px_ms, 0.12);
+  const velocitySpreadRelative = readNumber(rustPipelineConfig.velocity_spread_relative, 0.50);
+  const velocityChangeBasePxMs = readNumber(rustPipelineConfig.velocity_change_base_px_ms, 0.20);
+  const velocityChangeRelative = readNumber(rustPipelineConfig.velocity_change_relative, 0.75);
   const dualPhasePredictionLeadFrames = readNumber(rustPipelineConfig.prediction_lead_frames, 1);
   const dualPhasePredictionFarCapPx = readNumber(rustPipelineConfig.prediction_far_absolute_cap_px, 10);
+  const dualPhasePredictionFarBaseCapPx = readNumber(rustPipelineConfig.prediction_far_base_cap_px, 1.25);
+  const dualPhasePredictionFarRelativeCap = readNumber(rustPipelineConfig.prediction_far_relative_cap, 0.30);
   const dualPhasePredictionNearCapPx = readNumber(rustPipelineConfig.prediction_near_absolute_cap_px, 3);
+  const dualPhasePredictionNearBaseCapPx = readNumber(rustPipelineConfig.prediction_near_base_cap_px, 0.75);
+  const dualPhasePredictionNearRelativeCap = readNumber(rustPipelineConfig.prediction_near_relative_cap, 0.20);
+  const residualCap = readNumber(rustPipelineConfig.residual_cap, 1);
+  const maxCommandAgeMs = readNumber(rustPipelineConfig.max_command_age_ms, 55);
   const actuationFeedbackDelayMs = readNumber(rustPipelineConfig.actuation_feedback_delay_ms, 4);
-  const sharedDeadzoneX = readNumber(sharedControlConfig.deadzone_x_px, 4);
-  const sharedDeadzoneY = readNumber(sharedControlConfig.deadzone_y_px, 4);
-  const sharedMaxSlewX = readNumber(sharedControlConfig.max_count_slew_x, 10);
-  const sharedMaxSlewY = readNumber(sharedControlConfig.max_count_slew_y, 8);
-  const triggerActivationDelayMs = readNumber(sharedControlConfig.trigger_activation_delay_ms, 0);
+  const targetMinConfidence = readNumber(rustPipelineConfig.target_min_confidence, 0.5);
+  const trackerScaleCostWeight = readNumber(rustPipelineConfig.tracker_scale_cost_weight, 0.15);
+  const trackerMaxSizeRatio = readNumber(rustPipelineConfig.tracker_max_size_ratio, 2.5);
+  const trackerMaxAssociationDtMs = readNumber(rustPipelineConfig.tracker_max_association_dt_ms, 150);
+  const targetStickyBias = readNumber(rustPipelineConfig.target_sticky_bias, 0.25);
   const recoilConfig = (controlConfig.recoil ?? {}) as Record<string, unknown>;
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
   const recoilStartupRampMs = readNumber(recoilConfig.startup_ms, 35);
@@ -1315,18 +1307,9 @@ export function StudioConsoleView({
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
   const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, true);
-  const schedulerEnabled = readBoolean(controlConfig.scheduler_enabled, true);
   const outputEnabled = readBoolean(controlConfig.output_enabled, true);
-  const schedulerStepCountsX = readNumber(controlConfig.scheduler_step_counts_x, 8);
-  const schedulerStepCountsY = readNumber(controlConfig.scheduler_step_counts_y, 8);
-  const schedulerIntervalMs = readNumber(rustControlPlane ? rustPipelineConfig.output_interval_ms : controlConfig.scheduler_interval_ms, 4);
-  const dualPhaseActive = controlMode === "dual_phase_atan_robust_predictive_v2";
-  const availableControlAlgorithms = rustControlPlane
-    ? CONTROL_ALGORITHM_OPTIONS.filter((item) => item.id === DEFAULT_CONTROL_ALGORITHM)
-    : CONTROL_ALGORITHM_OPTIONS;
-  const activeControlAlgorithm = availableControlAlgorithms.find((item) => item.id === controlMode)
-    ?? CONTROL_ALGORITHM_OPTIONS[2];
-  const controlModeLabel = activeControlAlgorithm.label;
+  const schedulerIntervalMs = readNumber(rustPipelineConfig.output_interval_ms, 4);
+  const controlModeLabel = CONTROL_ALGORITHM_LABEL;
 
   useEffect(() => {
     runtimeConfigLatestRef.current = runtimeConfig;
@@ -2607,21 +2590,9 @@ export function StudioConsoleView({
   );
 
   const updateControlGroupField = useCallback(
-    async (group: "aim" | "calibrated_angular" | "universal_saturated" | "shared" | "recoil", key: string, value: RuntimeConfigValue) => {
+    async (group: "aim" | "recoil", key: string, value: RuntimeConfigValue) => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
       const control = nestedRecord(base, "control");
-      if (group !== "aim" && group !== "shared" && group !== "recoil") {
-        const algorithms = nestedRecord(control, "algorithms");
-        const algorithm = {
-          ...nestedRecord(algorithms, group),
-          [key]: value
-        };
-        await updateConfigField("control", "algorithms", {
-          ...algorithms,
-          [group]: algorithm
-        } as RuntimeConfigValue);
-        return;
-      }
       const groupValue = {
         ...nestedRecord(control, group),
         [key]: value
@@ -2631,21 +2602,11 @@ export function StudioConsoleView({
     [runtimeConfig, updateConfigField]
   );
 
-  const updateControlOrPipelineField = useCallback(
-    async (
-      controlKey: string,
-      pipelineKey: string,
-      value: RuntimeConfigValue
-    ) => {
-      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
-      const pipelineConfig = nestedRecord(base, "pipeline");
-      if (Object.prototype.hasOwnProperty.call(pipelineConfig, "projection_fov_x_deg")) {
-        await updateConfigField("pipeline", pipelineKey, value);
-        return;
-      }
-      await updateConfigField("control", controlKey, value);
+  const updatePipelineField = useCallback(
+    async (key: TargetingPipelineField, value: RuntimeConfigValue) => {
+      await updateConfigField("pipeline", key, value);
     },
-    [runtimeConfig, updateConfigField]
+    [updateConfigField]
   );
 
   const updateDualPhaseField = useCallback(
@@ -3862,17 +3823,8 @@ export function StudioConsoleView({
                 <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                 <span>类别配置 / 瞄点类型</span><b>{`${readString(controlPipeline.active_class_profile, activeDetectionProfile)} / ${readString(controlPipeline.effective_aim_role, "other")}`}</b>
                 <span>aim_y_ratio</span><b>{formatOptionalNumber(control.aim_y_ratio ?? rawAimDebug.y_ratio, 2)}</b>
-                {dualPhaseActive ? (
-                  <>
-                    <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                    <span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b>
-                  </>
-                ) : (
-                  <>
-                    <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                    <span>位置预测</span><b>不参与当前控制算法</b>
-                  </>
-                )}
+                <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                <span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b>
               </div>
             </div>
             <div className="console-card">
@@ -3893,62 +3845,34 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>控制模式</span><b>{controlModeLabel}</b>
                 <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
-                {dualPhaseActive ? (
-                  <>
-                    <span>FAR / NEAR</span><b>{readString(controlPipeline.mode, readString(controlPipeline.control_mode, "")) || NO_SAMPLE}</b>
-                    <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
-                    <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
-                    <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
-                    <span>量化余量</span><b>{formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts")}</b>
-                    <span>到位区（进入 / 退出）</span><b>{formatPoint(controlPipeline.arrival_enter_counts, controlPipeline.arrival_exit_counts, 2, "counts")}</b>
-                    <span>每轴到位</span><b>{`${readBoolean(controlPipeline.arrival_settled_x, false) ? "X 已到位" : "X 调整中"} / ${readBoolean(controlPipeline.arrival_settled_y, false) ? "Y 已到位" : "Y 调整中"}`}</b>
-                    <span>视觉反馈门控</span><b>{readBoolean(controlPipeline.actuation_pending_x, false) || readBoolean(controlPipeline.actuation_pending_y, false) ? "等待新画面" : "允许闭环更新"}</b>
-                  </>
-                ) : (
-                  <>
-                    <span>Kp X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKpX, calibratedKpY, 2) : NO_SAMPLE}</b>
-                    <span>Kd X / Y</span><b>{readString(controlPipeline.control_mode, controlMode) === "calibrated_angular" ? formatPoint(calibratedKdX, calibratedKdY, 2) : NO_SAMPLE}</b>
-                    <span>D 原始值</span><b>{formatPoint(controlPipeline.d_raw_x_rad_s, controlPipeline.d_raw_y_rad_s, 5, "rad/s")}</b>
-                    <span>D EMA 值</span><b>{formatPoint(controlPipeline.d_ema_x_rad_s, controlPipeline.d_ema_y_rad_s, 5, "rad/s")}</b>
-                    <span>P 项输出</span><b>{formatPoint(controlPipeline.p_x_rad, controlPipeline.p_y_rad, 6, "rad")}</b>
-                    <span>D 项输出</span><b>{formatPoint(controlPipeline.d_x_rad, controlPipeline.d_y_rad, 6, "rad")}</b>
-                    <span>角度控制量</span><b>{formatPoint(controlPipeline.requested_output_x_rad, controlPipeline.requested_output_y_rad, 6, "rad")}</b>
-                    <span>角度限幅后</span><b>{formatPoint(controlPipeline.limited_output_x_rad, controlPipeline.limited_output_y_rad, 6, "rad")}</b>
-                    <span>理论 counts</span><b>{formatPoint(controlPipeline.theoretical_counts_x_float, controlPipeline.theoretical_counts_y_float, 2)}</b>
-                    <span>模式限幅后 counts</span><b>{formatPoint(controlPipeline.mode_limited_counts_x_float, controlPipeline.mode_limited_counts_y_float, 2)}</b>
-                    <span>到位状态</span><b>{readString(controlPipeline.arrival_state, "") || NO_SAMPLE}</b>
-                    <span>到位限制后 counts</span><b>{formatPoint(controlPipeline.deadzone_limited_counts_x_float, controlPipeline.deadzone_limited_counts_y_float, 2)}</b>
-                    <span>Slew 后 counts</span><b>{formatPoint(controlPipeline.slew_limited_counts_x_float, controlPipeline.slew_limited_counts_y_float, 2)}</b>
-                    <span>累计余量 counts</span><b>{formatPoint(controlPipeline.residual_x_counts, controlPipeline.residual_y_counts, 2)}</b>
-                  </>
-                )}
+                <span>FAR / NEAR</span><b>{readString(controlPipeline.mode, readString(controlPipeline.control_mode, "")) || NO_SAMPLE}</b>
+                <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
+                <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
+                <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
+                <span>量化余量</span><b>{formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts")}</b>
+                <span>到位区（进入 / 退出）</span><b>{formatPoint(controlPipeline.arrival_enter_counts, controlPipeline.arrival_exit_counts, 2, "counts")}</b>
+                <span>每轴到位</span><b>{`${readBoolean(controlPipeline.arrival_settled_x, false) ? "X 已到位" : "X 调整中"} / ${readBoolean(controlPipeline.arrival_settled_y, false) ? "Y 已到位" : "Y 调整中"}`}</b>
+                <span>视觉反馈门控</span><b>{readBoolean(controlPipeline.actuation_pending_x, false) || readBoolean(controlPipeline.actuation_pending_y, false) ? "等待新画面" : "允许闭环更新"}</b>
                 <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
                 <span>基础 / 追加速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_base_rate_counts_s, 0)} / ${formatOptionalNumber(controlPipeline.recoil_fast_add_rate_counts_s, 0)} counts/s`}</b>
                 <span>门控 / 最终速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_position_gate, 2)} / ${formatOptionalNumber(controlPipeline.recoil_final_rate_counts_s, 0)} `}counts/s</b>
                 <span>请求 / 实际输出</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 2)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 2)} counts`}</b>
                 <span>误差归一化</span><b>{formatOptionalNumber(controlPipeline.recoil_error_y_norm, 3)}</b>
-                <span>触发持续 / 启动延迟</span><b>{`${formatOptionalNumber(control.trigger_hold_ms, STANDARD_DECIMAL_DIGITS, "ms")} / ${formatOptionalNumber(control.trigger_activation_delay_ms, STANDARD_DECIMAL_DIGITS, "ms")}`}</b>
+                <span>硬件触发持续</span><b>{formatOptionalNumber(control.trigger_hold_ms, STANDARD_DECIMAL_DIGITS, "ms")}</b>
                 <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
               </div>
             </div>
             <div className="console-card">
-              <SectionTitle title={dualPhaseActive ? "Latest Replace 与设备发送" : "Scheduler 与设备发送"} />
+              <SectionTitle title="Latest Replace 与设备发送" />
               <p className="console-section-note">控制样本与设备回执分别展示；最近回执不冒充为当前观测的同步发送结果。</p>
               <div className="console-kv">
                 <span>触发状态</span><b>{control.trigger_active === true ? "按下" : control.trigger_active === false ? "未按下" : NO_SAMPLE}</b>
                 <span>是否允许发包</span><b>{control.will_emit === true ? "是" : control.will_emit === false ? "否" : NO_SAMPLE}</b>
                 <span>不发包原因</span><b>{controlNoSendReason || NO_SAMPLE}</b>
                 <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
-                <span>{dualPhaseActive ? "发送语义" : "待执行 counts"}</span><b>{dualPhaseActive ? "仅保留最新观测" : formatPoint(schedulerStatus.pending_dx, schedulerStatus.pending_dy, 0, "counts")}</b>
+                <span>发送语义</span><b>仅保留最新观测</b>
                 <span>设备接受累计</span><b>{formatOptionalInteger(acceptedCommandCount)}</b>
                 <span>最近设备已接受</span><b>{hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE}</b>
-                {!dualPhaseActive ? (
-                  <>
-                    <span>剩余 pending steps</span><b>{formatOptionalInteger(schedulerStatus.pending_steps)}</b>
-                    <span>旧计划截断次数</span><b>{formatOptionalInteger(schedulerStatus.cancelled_pending)}</b>
-                    <span>最近取消原因</span><b>{readString(schedulerStatus.last_cancel_reason, "") || NO_SAMPLE}</b>
-                  </>
-                ) : null}
                 <span>主链设备通道</span><b>{kmnetRuntimeConnectionLabel}</b>
               </div>
             </div>
@@ -3962,9 +3886,9 @@ export function StudioConsoleView({
               <Metric title="控制模式" value={controlModeLabel} small="单选策略" />
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
-              <Metric title="位置预测" value={dualPhaseActive ? dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭" : "不使用"} small={dualPhasePredictionEnabled ? "单目标真实帧间速度" : "当前观测 Atan 反馈"} />
+              <Metric title="位置预测" value={dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"} small={dualPhasePredictionEnabled ? "单目标真实帧间速度" : "当前观测 Atan 反馈"} />
               <Metric title="偏移输出" value={outputEnabled ? "已允许" : "已暂停"} small={outputEnabled ? "可发送至设备" : "算法仍继续计算"} />
-              <Metric title="发送方式" value={dualPhaseActive ? "最新覆盖" : schedulerEnabled ? `${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms` : "观测直发"} small={dualPhaseActive ? `${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms 单槽` : schedulerEnabled ? `${schedulerStepCountsX}/${schedulerStepCountsY} counts` : "scheduler off"} />
+              <Metric title="发送方式" value="最新覆盖" small={`${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms 单槽`} />
             </div>
             <div className={outputEnabled ? "console-card control-output-gate-card enabled" : "console-card control-output-gate-card paused"}>
               <div className="control-output-gate-identity">
@@ -4009,14 +3933,12 @@ export function StudioConsoleView({
                 <h3>双阶段 Atan 基础反馈</h3>
                 <p>{dualPhasePredictionEnabled ? "单目标 X / Y 预测先修正当前位置，随后进入投影、Atan、限幅和量化。" : "设备输出只由当前测量误差、投影、Atan、限幅和量化产生。"}</p>
               </div>
-              {dualPhaseActive ? (
-                <ModuleSwitch
-                  label="启用 X / Y 目标预测"
-                  detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。保存后重启主链生效。"
-                  enabled={dualPhasePredictionEnabled}
-                  onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)}
-                />
-              ) : null}
+              <ModuleSwitch
+                label="启用 X / Y 目标预测"
+                detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。保存后重启主链生效。"
+                enabled={dualPhasePredictionEnabled}
+                onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)}
+              />
             </div>
             <div className="console-card class-config-summary-card">
               <div className="class-config-summary-main">
@@ -4045,45 +3967,19 @@ export function StudioConsoleView({
                 管理类别配置
               </button>
             </div>
-            <div className="console-grid2 params-control-grid compact-content-grid" data-algorithm-page={controlMode}>
+            <div className="console-grid2 params-control-grid compact-content-grid" data-algorithm-page={DEFAULT_CONTROL_ALGORITHM}>
               <div className="console-card">
                 <SectionTitle title="控制模式" />
-                <div className="mini-segmented control-algorithm-segmented" role="group" aria-label="控制模式">
-                  {availableControlAlgorithms.map((algorithm) => (
-                    <button
-                      className={controlMode === algorithm.id ? "active" : ""}
-                      key={algorithm.id}
-                      onClick={() => {
-                        if (!rustControlPlane) {
-                          void updateConfigField("control", "active_algorithm", algorithm.id);
-                        }
-                      }}
-                      type="button"
-                    >
-                      {algorithm.label}
-                    </button>
-                  ))}
+                <div className="console-kv compact-kv" aria-label="控制模式">
+                  <span>生产控制器</span><b>{CONTROL_ALGORITHM_LABEL}</b>
                 </div>
-                <p className="console-section-note">{activeControlAlgorithm.description}</p>
+                <p className="console-section-note">{CONTROL_ALGORITHM_DESCRIPTION}</p>
                 <label>触发方式</label>
                 <select value={triggerMode} onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}>
                   <option value="hardware">kmNet 硬件按键触发</option>
                   <option value="always">检测到目标后自动控制</option>
                 </select>
-                {triggerMode === "hardware" && !rustControlPlane ? (
-                  <NumberControl
-                    label="按下后启动延迟 ms"
-                    detail="kmNet 硬件触发键持续按下达到此时间后，才允许控制输出。自动控制模式不使用该参数。"
-                    value={triggerActivationDelayMs}
-                    min={0}
-                    max={1000}
-                    step={1}
-                    onCommit={(value) => updateControlGroupField("shared", "trigger_activation_delay_ms", value)}
-                  />
-                ) : null}
-                {rustControlPlane ? (
-                  <p className="console-section-note">Rust 主链直接使用 daemon 缓存的 kmNet 硬件按键状态，不读取旧 Python 触发延迟参数。</p>
-                ) : null}
+                <p className="console-section-note">硬件触发直接使用 daemon 缓存的 kmNet 按键状态；自动控制只要求存在合格目标。</p>
                 <div className="control-aim-source-note">
                   <span>
                     <b>瞄点规则由三种类型统一提供</b>
@@ -4095,50 +3991,22 @@ export function StudioConsoleView({
                     <i className="other" style={{ top: `${aimRoleRatios.other * 100}%` }} />
                   </div>
                 </div>
-                {dualPhaseActive ? (
-                  <div className="console-kv compact-kv">
-                    <span>输出交付</span><b>Latest Replace</b>
-                    <span>每个推理结果</span><b>覆盖尚未发送的旧命令</b>
-                    <span>待发送容量</span><b>1 条完整命令</b>
-                    <span>设备发送校验</span><b>{rustControlPlane ? "Rust DeviceLane" : "MouseCommandExecutor"}</b>
-                    <span>误差死区</span><b>不使用</b>
-                  </div>
-                ) : (
-                  <>
-                    <NumberControl label="X 到位阈值" value={sharedDeadzoneX} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_x_px", value)} />
-                    <NumberControl label="Y 到位阈值" value={sharedDeadzoneY} min={0} max={10} step={0.1} onCommit={(value) => updateControlGroupField("shared", "deadzone_y_px", value)} />
-                    <NumberControl label="X counts 增长限制" detail="限制相邻观测中 X 输出增大的速度；接近目标时允许立即减速，反向输出前先归零。" value={sharedMaxSlewX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_x", value)} />
-                    <NumberControl label="Y counts 增长限制" detail="限制相邻观测中 Y 输出增大的速度；接近目标时允许立即减速，反向输出前先归零。" value={sharedMaxSlewY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("shared", "max_count_slew_y", value)} />
-                    <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接发送完整 counts" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
-                    <NumberControl label="Scheduler X 单步" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
-                    <NumberControl label="Scheduler Y 单步" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
-                    <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
-                  </>
-                )}
+                <div className="console-kv compact-kv">
+                  <span>输出交付</span><b>Latest Replace</b>
+                  <span>每个推理结果</span><b>覆盖尚未发送的旧命令</b>
+                  <span>待发送容量</span><b>1 条完整命令</b>
+                  <span>设备发送校验</span><b>Rust DeviceLane</b>
+                  <span>到位判断</span><b>角度投影后的 counts 迟滞区</b>
+                </div>
               </div>
 
               <div className="console-card">
                 <SectionTitle title={`控制算法 · ${controlModeLabel}`} />
                 <p className="console-section-note">当前生产主链仅使用投影、增益、Atan 响应曲线和单次限幅。</p>
                 <div className="advanced-settings-summary">
-                  {dualPhaseActive ? (
-                    <>
-                      <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
-                      <div><span>FAR / NEAR Kp</span><b>{dualPhaseFarKp.toFixed(3)} / {dualPhaseNearKp.toFixed(3)}</b></div>
-                      <div><span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b></div>
-                    </>
-                  ) : controlMode === "calibrated_angular" ? (
-                    <>
-                      <div><span>FOVX</span><b>{calibratedFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
-                      <div><span>Kp X / Y</span><b>{calibratedKpX.toFixed(2)} / {calibratedKpY.toFixed(2)}</b></div>
-                      <div><span>Kd X / Y</span><b>{calibratedKdX.toFixed(2)} / {calibratedKdY.toFixed(2)}</b></div>
-                    </>
-                  ) : (
-                    <>
-                      <div><span>响应尺度 X / Y</span><b>{universalResponseScaleX.toFixed(STANDARD_DECIMAL_DIGITS)} / {universalResponseScaleY.toFixed(STANDARD_DECIMAL_DIGITS)} px</b></div>
-                      <div><span>最大移动 X / Y</span><b>{universalMaxStepX.toFixed(STANDARD_DECIMAL_DIGITS)} / {universalMaxStepY.toFixed(STANDARD_DECIMAL_DIGITS)}</b></div>
-                    </>
-                  )}
+                  <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
+                  <div><span>FAR / NEAR Kp</span><b>{dualPhaseFarKp.toFixed(3)} / {dualPhaseNearKp.toFixed(3)}</b></div>
+                  <div><span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b></div>
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("algorithm")} type="button">
                   <NovaIcon name="settings" size={15} />
@@ -4240,7 +4108,7 @@ export function StudioConsoleView({
 
               <div className="console-card">
                 <SectionTitle title="目标选择与切换 · 通用参数" />
-                <NumberControl label="目标选择半径（640 基准 px）" detail="以 640×640 ROI 为基准；运行时按当前 ROI 尺寸同比缩放，保证 320～640 ROI 使用一致的相对选择范围。" value={targetFovRadiusPx} min={1} max={640} step={1} onCommit={(value) => updateControlOrPipelineField("target_fov_radius_px", "target_fov_radius_px", value)} />
+                <NumberControl label="目标选择半径（640 基准 px）" detail="以 640×640 ROI 为基准；运行时按当前 ROI 尺寸同比缩放，保证 320～640 ROI 使用一致的相对选择范围。" value={targetFovRadiusPx} min={1} max={640} step={1} onCommit={(value) => updatePipelineField("target_fov_radius_px", value)} />
                 <div className="target-weight-summary">
                   <div>
                     <span>当前综合分权重</span>
@@ -4268,16 +4136,16 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                <SectionTitle title={dualPhaseActive ? "Tracker · 公共参数" : "Tracker / Kalman · 公共参数"} />
+                <SectionTitle title="Tracker · 身份关联" />
                 <div className="console-kv compact-kv"><span>关联算法</span><b>Hungarian</b><span>输出状态</span><b>仅 ACTIVE</b></div>
                 <div className="advanced-settings-summary compact">
                   <div><span>匹配距离</span><b>{trackerMaxMatchDistance.toFixed(2)}</b></div>
-                  <div><span>位置 / IoU</span><b>{trackerPositionCostWeight.toFixed(2)} / {trackerIouCostWeight.toFixed(2)}</b></div>
-                  <div><span>最大漏检</span><b>{trackerMaxMissedFrames} 帧</b></div>
+                  <div><span>位置 / IoU / 尺度</span><b>{trackerPositionCostWeight.toFixed(2)} / {trackerIouCostWeight.toFixed(2)} / {trackerScaleCostWeight.toFixed(2)}</b></div>
+                  <div><span>丢失保持</span><b>{targetLostGraceMs.toFixed(0)} ms</b></div>
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("tracker")} type="button">
                   <NovaIcon name="settings" size={15} />
-                  管理 Tracker / Kalman
+                  管理 Tracker
                 </button>
               </div>
             </div>
@@ -4431,26 +4299,13 @@ export function StudioConsoleView({
                 onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
               />
               <label>命令调度</label>
-              {dualPhaseActive ? (
-                <>
-                  <div className="console-kv compact-kv">
-                    <span>执行层</span><b>Latest Replace Scheduler</b>
-                    <span>行为</span><b>新观测覆盖未发送的旧命令</b>
-                    <span>待发送容量</span><b>1 条完整命令</b>
-                    <span>最终校验</span><b>{rustControlPlane ? "Rust DeviceLane" : "MouseCommandExecutor"}</b>
-                  </div>
-                  {rustControlPlane ? (
-                    <NumberControl label="Rust 输出调度间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={1} onCommit={(value) => updateConfigField("pipeline", "output_interval_ms", Math.round(value))} />
-                  ) : null}
-                </>
-              ) : (
-                <>
-                  <ModuleSwitch label="Scheduler 分步发送" detail="关闭后每个新观测直接调用一次 kmNet" enabled={schedulerEnabled} onToggle={(enabled) => updateConfigField("control", "scheduler_enabled", enabled)} />
-                  <NumberControl label="Scheduler 间隔 ms" value={schedulerIntervalMs} min={1} max={10} step={0.1} onCommit={(value) => updateConfigField("control", "scheduler_interval_ms", value)} />
-                  <NumberControl label="X 单步 counts" value={schedulerStepCountsX} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_x", Math.round(value))} />
-                  <NumberControl label="Y 单步 counts" value={schedulerStepCountsY} min={1} max={20} step={1} onCommit={(value) => updateConfigField("control", "scheduler_step_counts_y", Math.round(value))} />
-                </>
-              )}
+              <div className="console-kv compact-kv">
+                <span>执行层</span><b>Latest Replace Scheduler</b>
+                <span>行为</span><b>新观测覆盖未发送的旧命令</b>
+                <span>待发送容量</span><b>1 条完整命令</b>
+                <span>最终校验</span><b>Rust DeviceLane</b>
+              </div>
+              <NumberControl label="空闲 / 压枪调度间隔 ms" detail="目标跟踪命令不等待此间隔；该值只控制空闲设备轮询与独立压枪节拍。" value={schedulerIntervalMs} min={1} max={10} step={1} onCommit={(value) => updateDualPhaseField("output_interval_ms", Math.round(value))} />
               <div className="console-action-row">
                 <button
                   className="console-button"
@@ -4556,7 +4411,7 @@ export function StudioConsoleView({
       {wideThemeGallery ? <ThemeGallery /> : null}
 
       <AdvancedSettingsDialog
-        description="这些参数只决定投影、Atan 响应曲线与单次限幅。"
+        description="这里只展示 Rust 主链真实读取的投影、预测、Atan、量化与时效安全参数。"
         dirty={configDialogDirty}
         eyebrow="参数设置 / 控制算法"
         footerNote={`当前算法：${controlModeLabel}`}
@@ -4567,54 +4422,38 @@ export function StudioConsoleView({
         title={`${controlModeLabel} · 高级参数`}
       >
         <div className="advanced-settings-grid">
-          {dualPhaseActive ? (
+          <NumberControl label="观测新鲜度上限 ms" detail="超过该帧龄的视觉观测不会进入控制器。" value={freshnessThresholdMs} min={1} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("freshness_threshold_ms", value)} />
+          <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhaseField("projection_fov_x_deg", value)} />
+          <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhaseField("projection_counts_per_360", value)} />
+          <ModuleSwitch label="反转 Y 轴输出" detail="只改变垂直控制方向；X 轴不受影响。" enabled={projectionInvertY} onToggle={(enabled) => updateDualPhaseField("projection_invert_y", enabled)} />
+          <NumberControl label="近远过渡中心 px" detail="以该误差距离为中心，在前后 25% 区间内平滑融合 NEAR 与 FAR Atan 响应，避免阈值附近突然换挡。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("near_threshold_px", value)} />
+          <NumberControl label="FAR Kp" detail="远距离闭环增益；不是 KMNet 设备能力上限。" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("far_kp", value)} />
+          <NumberControl label="NEAR Kp" detail="接近准星后的闭环增益，过高会导致左右往返修正。" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("near_kp", value)} />
+          <NumberControl label="共享 Atan 尺度 counts" detail="控制响应曲线尺度，不代表协议可发送的最大 counts。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("atan_scale_counts", value)} />
+          <NumberControl label="FAR 单次上限 counts" detail="稳定性保护上限；KMNet 的 signed-16 能力独立校验。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("far_max_counts_per_update", value)} />
+          <NumberControl label="NEAR 单次上限 counts" detail="近目标单次修正上限，默认低于 FAR 以抑制过冲。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("near_max_counts_per_update", value)} />
+          <NumberControl label="到位半径 counts" detail="每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞。" value={dualPhaseArrivalRadiusCounts} min={0.5} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("arrival_radius_counts", value)} />
+          <NumberControl label="量化残差上限 counts" detail="限制不足一个设备计数的累计余量，范围为 0～1。" value={residualCap} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("residual_cap", value)} />
+          <ModuleSwitch label="启用 X / Y 目标预测" detail="使用唯一锁定目标的真实帧间速度；不会预测多个候选目标。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)} />
+          {dualPhasePredictionEnabled ? (
             <>
-              <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhaseField("projection_fov_x_deg", value)} />
-              <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhaseField("projection_counts_per_360", value)} />
-              <NumberControl label="近远过渡中心 px" detail="以该误差距离为中心，在前后 25% 区间内平滑融合 NEAR 与 FAR Atan 响应，避免阈值附近突然换挡。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("near_threshold_px", value)} />
-              <NumberControl label="FAR Kp" detail="远距离闭环增益；不是 KMNet 设备能力上限。" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("far_kp", value)} />
-              <NumberControl label="NEAR Kp" detail="接近准星后的闭环增益，过高会导致左右往返修正。" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("near_kp", value)} />
-              <NumberControl label="共享 Atan 尺度 counts" detail="控制响应曲线尺度，不代表协议可发送的最大 counts。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("atan_scale_counts", value)} />
-              <NumberControl label="FAR 单次上限 counts" detail="稳定性保护上限；KMNet 的 signed-16 能力独立校验。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("far_max_counts_per_update", value)} />
-              <NumberControl label="NEAR 单次上限 counts" detail="近目标单次修正上限，默认低于 FAR 以抑制过冲。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("near_max_counts_per_update", value)} />
-              <ModuleSwitch label="启用 X / Y 目标预测" detail="使用唯一锁定目标的真实帧间速度；不会预测多个候选目标。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)} />
-              {dualPhasePredictionEnabled ? (
-                <>
-                  <NumberControl label="预测速度平滑帧数" value={dualPhasePredictionSmoothingFrames} min={1} max={30} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_smoothing_frames", value)} />
-                  <NumberControl label="预测历史重置间隔 ms" detail="相邻有效画面超过该时间后丢弃旧速度，避免断流后沿旧方向预测。" value={dualPhasePredictionHistoryResetGapMs} min={1} max={1000} step={1} onCommit={(value) => updateDualPhaseField("velocity_history_reset_gap_ms", value)} />
-                  <NumberControl label="预测提前帧数" value={dualPhasePredictionLeadFrames} min={0} max={10} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_lead_frames", value)} />
-                  <NumberControl label="FAR 预测上限 px" value={dualPhasePredictionFarCapPx} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_far_absolute_cap_px", value)} />
-                  <NumberControl label="NEAR 预测上限 px" value={dualPhasePredictionNearCapPx} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_near_absolute_cap_px", value)} />
-                </>
-              ) : null}
-              {rustControlPlane ? (
-                <>
-                  <NumberControl label="到位半径 counts" detail="误差先按 ROI、FOV 和每圈 counts 投影。每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞，避免目标附近 ±1 往返。" value={dualPhaseArrivalRadiusCounts} min={0.5} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("arrival_radius_counts", value)} />
-                  <NumberControl label="设备反馈等待 ms" detail="设备成功移动后额外等待的最小视觉反馈时间；运行时还会自动加一帧实测采集周期，避免同一旧画面重复驱动。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("actuation_feedback_delay_ms", value)} />
-                </>
-              ) : null}
+              <NumberControl label="预测速度平滑帧数" value={dualPhasePredictionSmoothingFrames} min={0.1} max={120} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_smoothing_frames", value)} />
+              <NumberControl label="预测历史重置间隔 ms" detail="相邻有效画面超过该时间后丢弃旧速度，避免断流后沿旧方向预测。" value={dualPhasePredictionHistoryResetGapMs} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_history_reset_gap_ms", value)} />
+              <NumberControl label="速度离散基础容差 px/ms" detail="三段速度样本的离散程度超过基础值加相对值后，会降低预测可信度。" value={velocitySpreadBasePxMs} min={0.01} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_spread_base_px_ms", value)} />
+              <NumberControl label="速度离散相对容差" value={velocitySpreadRelative} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_spread_relative", value)} />
+              <NumberControl label="速度变化基础容差 px/ms" detail="限制相邻平滑速度的突变；超过阈值时降低预测可信度。" value={velocityChangeBasePxMs} min={0.01} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_change_base_px_ms", value)} />
+              <NumberControl label="速度变化相对容差" value={velocityChangeRelative} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_change_relative", value)} />
+              <NumberControl label="预测提前帧数" value={dualPhasePredictionLeadFrames} min={0} max={10} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_lead_frames", value)} />
+              <NumberControl label="FAR 预测绝对上限 px" value={dualPhasePredictionFarCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_far_absolute_cap_px", value)} />
+              <NumberControl label="FAR 预测基础上限 px" detail="实际上限取绝对上限与“基础上限 + 相对上限 × 当前误差”中的较小值。" value={dualPhasePredictionFarBaseCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_far_base_cap_px", value)} />
+              <NumberControl label="FAR 预测相对上限" value={dualPhasePredictionFarRelativeCap} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("prediction_far_relative_cap", value)} />
+              <NumberControl label="NEAR 预测绝对上限 px" value={dualPhasePredictionNearCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_near_absolute_cap_px", value)} />
+              <NumberControl label="NEAR 预测基础上限 px" detail="接近目标时的预测基线，避免小误差被过量提前。" value={dualPhasePredictionNearBaseCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_near_base_cap_px", value)} />
+              <NumberControl label="NEAR 预测相对上限" value={dualPhasePredictionNearRelativeCap} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("prediction_near_relative_cap", value)} />
             </>
-          ) : controlMode === "calibrated_angular" ? (
-            <>
-              <NumberControl label="水平 FOVX" value={calibratedFovX} min={30} max={179} step={0.1} onCommit={(value) => updateControlGroupField("calibrated_angular", "fov_x_deg", value)} />
-              <NumberControl label="X 每圈 counts" value={calibratedCountsPer360X} min={1} max={100000} step={1} onCommit={(value) => updateControlGroupField("calibrated_angular", "counts_per_360_x", value)} />
-              <NumberControl label="Y 每圈 counts" value={calibratedCountsPer360Y} min={1} max={100000} step={1} onCommit={(value) => updateControlGroupField("calibrated_angular", "counts_per_360_y", value)} />
-              <NumberControl label="Kp X" value={calibratedKpX} min={0} max={2} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kp_x", value)} />
-              <NumberControl label="Kp Y" value={calibratedKpY} min={0} max={2} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kp_y", value)} />
-              <NumberControl label="Kd X" value={calibratedKdX} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kd_x", value)} />
-              <NumberControl label="Kd Y" value={calibratedKdY} min={0} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "kd_y", value)} />
-              <NumberControl label="D 项 EMA" value={calibratedDEmaAlpha} min={0.01} max={1} step={0.01} onCommit={(value) => updateControlGroupField("calibrated_angular", "d_ema_alpha", value)} />
-              <NumberControl label="X 最大角度步长 deg" value={calibratedMaxAngleX} min={0.0001} max={180} step={0.0001} onCommit={(value) => updateControlGroupField("calibrated_angular", "max_angle_step_x_deg", value)} />
-              <NumberControl label="Y 最大角度步长 deg" value={calibratedMaxAngleY} min={0.0001} max={180} step={0.0001} onCommit={(value) => updateControlGroupField("calibrated_angular", "max_angle_step_y_deg", value)} />
-            </>
-          ) : (
-            <>
-              <NumberControl label="水平响应尺度 px" value={universalResponseScaleX} min={0.1} max={4000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "response_scale_x_px", value)} />
-              <NumberControl label="垂直响应尺度 px" value={universalResponseScaleY} min={0.1} max={4000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "response_scale_y_px", value)} />
-              <NumberControl label="最大水平移动 counts" value={universalMaxStepX} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "max_step_x_counts", value)} />
-              <NumberControl label="最大垂直移动 counts" value={universalMaxStepY} min={0.1} max={1000} step={0.1} onCommit={(value) => updateControlGroupField("universal_saturated", "max_step_y_counts", value)} />
-            </>
-          )}
+          ) : null}
+          <NumberControl label="设备反馈等待 ms" detail="设备成功移动后额外等待的最小视觉反馈时间；运行时还会自动加一帧实测采集周期，避免同一旧画面重复驱动。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("actuation_feedback_delay_ms", value)} />
+          <NumberControl label="命令最大年龄 ms" detail="命令进入设备通道时已超过该年龄会被丢弃，防止旧控制量迟到发送。" value={maxCommandAgeMs} min={1} max={1000} step={1} onCommit={(value) => updateDualPhaseField("max_command_age_ms", Math.round(value))} />
         </div>
       </AdvancedSettingsDialog>
 
@@ -4630,15 +4469,17 @@ export function StudioConsoleView({
         title="目标切换高级设置"
       >
         <div className="advanced-settings-grid two-column">
-          <NumberControl label="候选框最大宽高比" detail="拒绝宽高比或高宽比超过此值的异常细长框。值越大越宽松。" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updateControlOrPipelineField("candidate_ratio_max_aspect", "candidate_max_aspect_ratio", value)} />
-          <NumberControl label="切换最小优势" detail="新候选综合分减去当前锁定目标综合分，至少达到此值才允许切换。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updateControlOrPipelineField("target_switch_min_preference_advantage", "target_switch_min_preference_advantage", value)} />
-          <NumberControl label="切换最小连续性" detail="新候选 Track 的身份连续性至少达到此值，才允许进入切换确认。" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updateControlOrPipelineField("target_switch_min_continuity_score", "target_switch_min_continuity_score", value)} />
-          <NumberControl label="目标切换确认延迟 ms" detail="新候选持续满足优势和连续性阈值达到此时间后，才正式替换当前目标。" value={targetSwitchDelayMs} min={0} max={500} step={1} onCommit={(value) => updateControlOrPipelineField("target_switch_delay_ms", "target_switch_delay_ms", value)} />
+          <NumberControl label="控制目标最低置信度" detail="推理结果通过模型阈值后，还必须达到该值才允许进入目标选择。" value={targetMinConfidence} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_min_confidence", value)} />
+          <NumberControl label="候选框最大宽高比" detail="拒绝宽高比或高宽比超过此值的异常细长框。值越大越宽松。" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updatePipelineField("candidate_max_aspect_ratio", value)} />
+          <NumberControl label="当前目标粘滞偏置" detail="给已锁定目标增加连续性优势，降低分数接近时的无意义切换；过高会延迟合理切换。" value={targetStickyBias} min={0} max={0.9} step={0.01} onCommit={(value) => updatePipelineField("target_sticky_bias", value)} />
+          <NumberControl label="切换最小优势" detail="新候选综合分减去当前锁定目标综合分，至少达到此值才允许切换。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_switch_min_preference_advantage", value)} />
+          <NumberControl label="切换最小连续性" detail="新候选 Track 的身份连续性至少达到此值，才允许进入切换确认。" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_switch_min_continuity_score", value)} />
+          <NumberControl label="目标切换确认延迟 ms" detail="新候选持续满足优势和连续性阈值达到此时间后，才正式替换当前目标。" value={targetSwitchDelayMs} min={0} max={500} step={1} onCommit={(value) => updatePipelineField("target_switch_delay_ms", value)} />
         </div>
       </AdvancedSettingsDialog>
 
       <AdvancedSettingsDialog
-        description="Tracker 负责跨帧身份关联，Kalman 负责位置估计。错误设置可能造成断轨、误关联或位置滞后。"
+        description="这些参数直接进入 Rust Tracker 的跨帧身份关联；设置过松会误关联，过严会频繁断轨。"
         dirty={configDialogDirty}
         eyebrow="参数设置 / Tracker"
         footerNote="关联算法固定为 Hungarian；仅输出 ACTIVE Track。"
@@ -4646,29 +4487,22 @@ export function StudioConsoleView({
         open={trackerSettingsDialogOpen}
         saveError={dialogSaveError}
         saving={dialogSaving}
-        title="Tracker / Kalman 高级设置"
+        title="Tracker 高级设置"
       >
         <div className="advanced-settings-grid two-column">
-          <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updateControlOrPipelineField("tracker_max_match_distance", "tracker_max_match_distance", value)} />
-          <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateControlOrPipelineField("tracker_position_cost_weight", "tracker_position_cost_weight", value)} />
-          <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updateControlOrPipelineField("tracker_iou_cost_weight", "tracker_iou_cost_weight", value)} />
-          {rustControlPlane ? (
-            <NumberControl label="目标丢失保持 ms" detail="锁定目标短暂漏检时暂停输出并保留原身份；超过该时间后才允许其他目标接管。" value={targetLostGraceMs} min={1} max={1000} step={1} onCommit={(value) => updateControlOrPipelineField("tracker_max_missed_frames", "target_track_max_lost_age_ms", value)} />
-          ) : (
-            <NumberControl label="最大漏检轮数" value={trackerMaxMissedFrames} min={0} max={10} step={1} onCommit={(value) => updateControlOrPipelineField("tracker_max_missed_frames", "target_track_max_age", Math.round(value))} />
-          )}
+          <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updatePipelineField("tracker_max_match_distance", value)} />
+          <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("tracker_position_cost_weight", value)} />
+          <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("tracker_iou_cost_weight", value)} />
+          <NumberControl label="尺度代价权重" detail="候选框尺寸变化参与身份匹配的权重。" value={trackerScaleCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("tracker_scale_cost_weight", value)} />
+          <NumberControl label="最大尺寸变化倍数" detail="宽或高相对上一帧变化超过该倍数时，不允许关联为同一目标。" value={trackerMaxSizeRatio} min={1} max={100} step={0.1} onCommit={(value) => updatePipelineField("tracker_max_size_ratio", value)} />
+          <NumberControl label="最大关联时间间隔 ms" detail="两次观测间隔超过该值时，不使用旧轨迹继续关联。" value={trackerMaxAssociationDtMs} min={1} max={10000} step={1} onCommit={(value) => updatePipelineField("tracker_max_association_dt_ms", value)} />
+          <NumberControl label="无时间戳漏检上限（帧）" detail="只用于没有有效捕获时间戳的回放或降级输入；Jetson 正常主链优先使用毫秒保持时间。" value={targetTrackMaxAge} min={1} max={120} step={1} onCommit={(value) => updatePipelineField("target_track_max_age", Math.round(value))} />
+          <NumberControl label="目标丢失保持 ms" detail="锁定目标短暂漏检时暂停输出并保留原身份；超过该时间后才允许其他目标接管。" value={targetLostGraceMs} min={1} max={10000} step={1} onCommit={(value) => updatePipelineField("target_track_max_lost_age_ms", value)} />
         </div>
         <div className="advanced-settings-divider">
-          <span>{rustControlPlane ? "Rust Tracker" : "Kalman 估计器"}</span>
-          <small>{rustControlPlane ? dualPhasePredictionEnabled ? "Rust 主链只预测唯一锁定目标的 X / Y 位置；Tracker 切换身份会立即重置预测历史。" : "Rust 主链使用有界关联保持目标身份；当前位置直接进入 Atan。" : dualPhaseActive ? "当前算法仍使用 Tracker 的 Kalman 位置估计。" : "调整过程噪声与观测噪声。"}</small>
+          <span>Rust Tracker</span>
+          <small>{dualPhasePredictionEnabled ? "主链只预测唯一锁定目标的 X / Y 位置；Tracker 切换身份会立即重置预测历史。" : "主链使用有界关联保持目标身份；当前位置直接进入 Atan。"}</small>
         </div>
-        {!rustControlPlane ? (
-          <div className="advanced-settings-grid two-column">
-            <NumberControl label="加速度噪声" value={kalmanAccelerationNoise} min={0.001} max={10000} step={10} onCommit={(value) => updateConfigField("control", "kalman_acceleration_noise", value)} />
-            <NumberControl label="X 测量噪声" value={kalmanMeasurementNoiseX} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_x", value)} />
-            <NumberControl label="Y 测量噪声" value={kalmanMeasurementNoiseY} min={0.001} max={1000} step={1} onCommit={(value) => updateConfigField("control", "kalman_measurement_noise_y", value)} />
-          </div>
-        ) : null}
       </AdvancedSettingsDialog>
 
       {targetWeightsDialogOpen ? (
@@ -4728,8 +4562,8 @@ export function StudioConsoleView({
                   <span><i className="distance" />距离 <b>{(normalizedSelectionDistanceWeight * 100).toFixed(0)}%</b></span>
                 </div>
                 <div className="target-weight-controls">
-                  <NumberControl label="综合分权重：类别" detail="类别顺序第一项得 1.0，第二项得 0.5，其余类别得 0.0。提高后更倾向优先类别。" value={candidateSelectionClassWeight} min={0} max={2} step={0.01} onCommit={(value) => updateControlOrPipelineField("candidate_selection_class_weight", "target_selection_class_weight", value)} />
-                  <NumberControl label="综合分权重：距离" detail="候选瞄点到准星的距离，按当前目标选择半径归一化。降低后允许优先类别位于更远位置。" value={candidateSelectionDistanceWeight} min={0} max={2} step={0.01} onCommit={(value) => updateControlOrPipelineField("candidate_selection_distance_weight", "target_selection_distance_weight", value)} />
+                  <NumberControl label="综合分权重：类别" detail="类别顺序第一项得 1.0，第二项得 0.5，其余类别得 0.0。提高后更倾向优先类别。" value={candidateSelectionClassWeight} min={0} max={2} step={0.01} onCommit={(value) => updatePipelineField("target_selection_class_weight", value)} />
+                  <NumberControl label="综合分权重：距离" detail="候选瞄点到准星的距离，按当前目标选择半径归一化。降低后允许优先类别位于更远位置。" value={candidateSelectionDistanceWeight} min={0} max={2} step={0.01} onCommit={(value) => updatePipelineField("target_selection_distance_weight", value)} />
                 </div>
               </section>
 

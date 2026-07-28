@@ -381,6 +381,19 @@ def test_studio_uses_truthful_runtime_metrics_and_atomic_dialog_save_copy() -> N
     assert 'inert: dialogSaving ? "" : undefined' in source
 
 
+def test_advanced_settings_dialog_keeps_input_focus_during_runtime_updates() -> None:
+    dialog = ADVANCED_SETTINGS_DIALOG.read_text(encoding="utf-8")
+
+    assert "const onCloseRef = useRef(onClose);" in dialog
+    assert "onCloseRef.current = onClose;" in dialog
+    assert "onCloseRef.current();" in dialog
+    focus_effect_start = dialog.index("window.requestAnimationFrame")
+    focus_effect_end = dialog.index("if (!open)", focus_effect_start)
+    focus_effect = dialog[focus_effect_start:focus_effect_end]
+    assert "}, [open]);" in focus_effect
+    assert "[onClose, open]" not in focus_effect
+
+
 def test_model_selection_exposes_only_builtin_parser_presets() -> None:
     panel = (
         STUDIO_CONSOLE.parents[1] / "models" / "ModelSelectionPanel.tsx"
@@ -459,10 +472,7 @@ def test_studio_diagnostics_separate_capture_inference_and_control_layers() -> N
         "控制器输出",
     ):
         assert f'<SectionTitle title="{title}" />' in control_page
-    assert (
-        '<SectionTitle title={dualPhaseActive ? "Latest Replace 与设备发送" '
-        ': "Scheduler 与设备发送"} />'
-    ) in control_page
+    assert '<SectionTitle title="Latest Replace 与设备发送" />' in control_page
 
 
 def test_studio_telemetry_uses_explicit_missing_and_capability_states() -> None:
@@ -480,8 +490,8 @@ def test_studio_tracker_controls_match_active_hungarian_mainline() -> None:
 
     assert "<span>关联算法</span><b>Hungarian</b>" in source
     assert "<span>输出状态</span><b>仅 ACTIVE</b>" in source
-    assert 'updateControlOrPipelineField("tracker_max_match_distance", "tracker_max_match_distance", value)' in source
-    assert 'updateControlOrPipelineField("tracker_max_missed_frames", "target_track_max_age", Math.round(value))' in source
+    assert 'updatePipelineField("tracker_max_match_distance", value)' in source
+    assert 'updatePipelineField("target_track_max_age", Math.round(value))' in source
     assert "experimental_angle_hungarian_enabled" not in source
     assert 'label="Track 确认帧数"' not in source
     assert 'label="Track 匹配距离 px"' not in source
@@ -543,16 +553,14 @@ def test_studio_class_editor_exposes_profile_scoped_roles_and_three_role_aim_ran
     assert 'updateDualPhasePath(["aim", "y_ratio"]' not in source
 
 
-def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
+def test_studio_exposes_only_the_rust_production_controller() -> None:
     studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
 
-    assert 'id: "universal_saturated"' in studio
-    assert 'label: "通用控制"' in studio
-    assert 'id: "calibrated_angular"' in studio
-    assert 'label: "精确角度控制"' in studio
-    assert 'id: "dual_phase_atan_robust_predictive_v2"' in studio
-    assert 'label: "双阶段 Atan 控制"' in studio
-    assert 'updateConfigField("control", "active_algorithm", algorithm.id)' in studio
+    assert 'const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";' in studio
+    assert 'const CONTROL_ALGORITHM_LABEL = "双阶段 Atan 控制";' in studio
+    assert "universal_saturated" not in studio
+    assert "calibrated_angular" not in studio
+    assert 'updateConfigField("control", "active_algorithm"' not in studio
     assert "dual_phase_atan_predictive_v1" not in studio
     assert "ttbox_pid_atan" not in studio
     assert 'label="近远过渡中心 px"' in studio
@@ -564,13 +572,14 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     assert 'updateControlGroupField("recoil", "enabled", enabled)' in studio
     assert 'updateControlGroupField("recoil", "base_rate_counts_s", value)' in studio
     assert 'updateControlGroupField("recoil", "max_rate_counts_s", value)' in studio
-    assert 'updateDualPhasePath(["prediction", "coefficient"]' not in studio
-    assert 'updateDualPhasePath(["prediction", "actuation_delay_ms"]' not in studio
-    assert 'updateControlGroupField("calibrated_angular", "kp_x", value)' in studio
-    assert 'updateControlGroupField("universal_saturated", "response_scale_x_px", value)' in studio
-    assert 'updateControlGroupField("shared", "max_count_slew_x", value)' in studio
-    assert 'candidate_selection_class_weight' in studio
-    assert 'candidate_selection_distance_weight' in studio
+    assert 'updateDualPhaseField("velocity_spread_base_px_ms", value)' in studio
+    assert 'updateDualPhaseField("prediction_far_base_cap_px", value)' in studio
+    assert 'updateDualPhaseField("residual_cap", value)' in studio
+    assert "scheduler_step_counts_x" not in studio
+    assert "trigger_activation_delay_ms" not in studio
+    assert "kalman_acceleration_noise" not in studio
+    assert 'target_selection_class_weight' in studio
+    assert 'target_selection_distance_weight' in studio
     assert 'candidate_selection_quality_weight' not in studio
     assert "候选质量内部构成" not in studio
     assert "Track quality" not in studio
@@ -592,10 +601,10 @@ def test_studio_routes_rust_control_edits_to_typed_pipeline_fields() -> None:
     assert 'updateDualPhaseField("actuation_feedback_delay_ms", value)' in studio
     assert "decimalPlacesForStep(step)" in controls
     assert "step >= 1 ? 0 : 2" not in controls
-    assert 'await updateConfigField("pipeline", pipelineKey, value)' in studio
+    assert 'await updateConfigField("pipeline", key, value)' in studio
     assert 'rustPipelineConfig.target_selection_class_weight' in studio
     assert 'rustPipelineConfig.target_track_max_age' in studio
-    assert 'updateConfigField("pipeline", "output_interval_ms"' in studio
+    assert 'updateDualPhaseField("output_interval_ms", Math.round(value))' in studio
     assert "serializeRustClassAimRatios" in studio
     assert "target_class_aim_y_ratios" in studio
     assert "target_aim_y_ratio: nextRatios.other" in studio
@@ -604,10 +613,11 @@ def test_studio_routes_rust_control_edits_to_typed_pipeline_fields() -> None:
     assert "rustPipelineConfig.target_aim_y_ratio" in studio
     assert "rustPipelineConfig.target_class_filter" in studio
     assert 'updateConfigField("pipeline", "target_class_filter", value)' in studio
-    assert 'Rust 主链直接使用 daemon 缓存的 kmNet 硬件按键状态' in studio
-    assert 'Rust 主链使用有界关联保持目标身份；当前位置直接进入 Atan。' in studio
+    assert '硬件触发直接使用 daemon 缓存的 kmNet 按键状态' in studio
+    assert '主链使用有界关联保持目标身份；当前位置直接进入 Atan。' in studio
     assert 'min={rustControlPlane ? 1024 : 0}' in studio
     assert 'max={rustControlPlane ? 49151 : 65535}' in studio
     assert '"主链启动时连接设备"' in studio
     assert '"修改后需要重启 novasightd；连接失败时视觉主链继续运行，并由低频设备线程自动重连"' in studio
-    assert 'availableControlAlgorithms.map' in studio
+    assert 'availableControlAlgorithms.map' not in studio
+    assert '<span>生产控制器</span><b>{CONTROL_ALGORITHM_LABEL}</b>' in studio

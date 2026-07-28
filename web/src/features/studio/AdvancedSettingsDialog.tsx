@@ -28,7 +28,12 @@ export function AdvancedSettingsDialog({
 }) {
   const titleId = useId();
   const dialogRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
   const savingRef = useRef(saving);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     savingRef.current = saving;
@@ -45,7 +50,7 @@ export function AdvancedSettingsDialog({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (!savingRef.current) {
-          onClose();
+          onCloseRef.current();
         }
       } else {
         trapDialogTabKey(event, dialogRef.current);
@@ -57,7 +62,7 @@ export function AdvancedSettingsDialog({
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };
-  }, [onClose, open]);
+  }, [open]);
 
   if (!open) {
     return null;
