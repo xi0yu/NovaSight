@@ -74,7 +74,6 @@ fn initializes_the_single_local_runtime_config() {
     assert_eq!(adapters.device.uuid, "12345678");
     assert_eq!(adapters.device.send_timeout_ms, 25);
     assert_eq!(adapters.pipeline.freshness_threshold_ms, 55.0);
-    assert_eq!(adapters.pipeline.max_command_age_ms, 55);
     assert_eq!(adapters.pipeline.output_interval_ms, 4);
     assert_eq!(config.paths.database, Path::new("data/novasight.db"));
     assert_eq!(config.paths.license, Path::new("data/license.json"));
@@ -423,6 +422,30 @@ pipeline:
             < f64::EPSILON
     );
     assert!(persisted["pipeline"].get("target_sticky_bias").is_none());
+}
+
+#[test]
+fn removed_command_age_is_cleaned_from_legacy_configuration() {
+    let directory = TempDirectory::new();
+    let path = directory.join("legacy-command-age.yaml");
+    fs::write(
+        &path,
+        r#"schema_version: 7
+revision: 0
+pipeline:
+  max_command_age_ms: 55
+"#,
+    )
+    .unwrap();
+
+    let config = YamlConfigRepository::load(&path).unwrap();
+    assert!(!config.pipeline.legacy.contains_key("max_command_age_ms"));
+
+    YamlConfigRepository::new(&path)
+        .save_field("server", "port", Value::Number(5_175_u64.into()), 0)
+        .unwrap();
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert!(persisted["pipeline"].get("max_command_age_ms").is_none());
 }
 
 #[test]

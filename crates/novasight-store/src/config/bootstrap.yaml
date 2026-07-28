@@ -55,7 +55,6 @@ pipeline:
   target_aim_y_ratio: 0.22
   target_class_aim_y_ratios: ""
   candidate_max_aspect_ratio: 6.0
-  max_command_age_ms: 55
   output_interval_ms: 4
   # 成功发送后，等待设备运动有机会反映到采集帧；实际门控还会加一帧测量周期。
   actuation_feedback_delay_ms: 4.0

@@ -156,7 +156,6 @@ type DualPhasePipelineField =
   | "prediction_near_relative_cap"
   | "arrival_radius_counts"
   | "residual_cap"
-  | "max_command_age_ms"
   | "output_interval_ms"
   | "actuation_feedback_delay_ms";
 
@@ -1253,7 +1252,6 @@ export function StudioConsoleView({
   const dualPhasePredictionNearBaseCapPx = readNumber(rustPipelineConfig.prediction_near_base_cap_px, 0.75);
   const dualPhasePredictionNearRelativeCap = readNumber(rustPipelineConfig.prediction_near_relative_cap, 0.20);
   const residualCap = readNumber(rustPipelineConfig.residual_cap, 1);
-  const maxCommandAgeMs = readNumber(rustPipelineConfig.max_command_age_ms, 55);
   const actuationFeedbackDelayMs = readNumber(rustPipelineConfig.actuation_feedback_delay_ms, 4);
   const targetMinConfidence = readNumber(rustPipelineConfig.target_min_confidence, 0.5);
   const trackerScaleCostWeight = readNumber(rustPipelineConfig.tracker_scale_cost_weight, 0.15);
@@ -4197,7 +4195,6 @@ export function StudioConsoleView({
             </>
           ) : null}
           <NumberControl label="设备反馈等待 ms" detail="设备成功移动后额外等待的最小视觉反馈时间；运行时还会自动加一帧实测采集周期，避免同一旧画面重复驱动。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("actuation_feedback_delay_ms", value)} />
-          <NumberControl label="命令最大年龄 ms" detail="命令进入设备通道时已超过该年龄会被丢弃，防止旧控制量迟到发送。" value={maxCommandAgeMs} min={1} max={1000} step={1} onCommit={(value) => updateDualPhaseField("max_command_age_ms", Math.round(value))} />
         </div>
       </AdvancedSettingsDialog>
 

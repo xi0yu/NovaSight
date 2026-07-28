@@ -442,6 +442,7 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     let removed_humanized_motion = config.control.legacy.remove("humanized_motion").is_some();
     config.pipeline.legacy.remove("projection_invert_y");
+    config.pipeline.legacy.remove("max_command_age_ms");
     let legacy_class_weight = config
         .pipeline
         .legacy
@@ -505,6 +506,7 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
             "target_selection_class_weight",
             "target_selection_distance_weight",
             "target_sticky_bias",
+            "max_command_age_ms",
         ],
     );
     remove_section_fields(
@@ -647,7 +649,6 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "target_aim_y_ratio",
             "target_class_aim_y_ratios",
             "candidate_max_aspect_ratio",
-            "max_command_age_ms",
             "output_interval_ms",
         ],
     );

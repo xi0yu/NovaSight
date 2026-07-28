@@ -29,19 +29,6 @@ impl Clock for FixedClock {
 }
 
 #[derive(Debug, Default)]
-struct AgingClock;
-
-impl Clock for AgingClock {
-    fn now(&self) -> MonotonicNanos {
-        match thread::current().name() {
-            Some("novasight-targeting" | "novasight-control") => MonotonicNanos(1_008_000_000),
-            Some("novasight-device") => MonotonicNanos(1_100_000_000),
-            _ => MonotonicNanos(1_008_000_000),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
 struct BlockingClock {
     state: Mutex<(u64, bool, bool)>,
     changed: Condvar,
@@ -642,35 +629,6 @@ fn device_worker_panic_immediately_faults_and_closes_output() {
     runtime
         .shutdown()
         .expect("panic is contained inside worker");
-}
-
-#[test]
-fn device_lane_drops_a_command_that_expired_after_control() {
-    let epoch = RuntimeEpoch(6);
-    let clock: Arc<dyn Clock> = Arc::new(AgingClock);
-    let device = Arc::new(RecordingPointerDevice::default());
-    let pointer: Arc<dyn PointerDevice> = device.clone();
-    let (mut runtime, ingress) = PipelineRuntime::start(
-        PipelineConfig {
-            epoch,
-            max_command_age_ns: 55_000_000,
-            ..PipelineConfig::default()
-        },
-        clock,
-        pointer,
-    )
-    .expect("pipeline starts");
-    ingress.set_trigger_active(true);
-    ingress.submit(batch(epoch, 1)).expect("batch accepted");
-
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while runtime.metrics().stale_commands == 0 && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-
-    assert!(device.receipts().is_empty());
-    assert_eq!(runtime.metrics().stale_commands, 1);
-    runtime.shutdown().expect("workers join");
 }
 
 #[test]

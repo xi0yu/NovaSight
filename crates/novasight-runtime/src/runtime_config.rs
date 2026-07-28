@@ -82,7 +82,6 @@ pub fn compose_pipeline_config(
             observation_height: 0,
             residual_cap: adapters.pipeline.residual_cap,
         },
-        max_command_age_ns: adapters.pipeline.max_command_age_ms * 1_000_000,
         output_interval_ms: adapters.pipeline.output_interval_ms,
         actuation_feedback_delay_ns: (adapters.pipeline.actuation_feedback_delay_ms * 1_000_000.0)
             .round() as u64,

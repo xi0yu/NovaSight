@@ -494,13 +494,6 @@ impl ConfigSchemaResponse {
                             None,
                         ),
                         integer(
-                            "pipeline.max_command_age_ms",
-                            "设备命令最大年龄",
-                            1.0,
-                            1_000.0,
-                            Some("ms"),
-                        ),
-                        integer(
                             "pipeline.output_interval_ms",
                             "空闲／后坐力调度间隔",
                             1.0,
@@ -795,7 +788,6 @@ mod tests {
 
         assert_eq!(value["version"], 7);
         assert_eq!(value["values"]["server"]["port"], 5174);
-        assert_eq!(value["values"]["pipeline"]["max_command_age_ms"], 55);
         assert_eq!(value["values"]["pipeline"]["arrival_radius_counts"], 3.0);
         assert_eq!(
             value["values"]["pipeline"]["actuation_feedback_delay_ms"],

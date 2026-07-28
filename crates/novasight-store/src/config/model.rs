@@ -623,8 +623,6 @@ pub struct PipelineRuntimeConfig {
     pub target_class_aim_y_ratios: String,
     #[serde(default = "default_candidate_max_aspect_ratio")]
     pub candidate_max_aspect_ratio: f64,
-    #[serde(default = "default_max_command_age_ms")]
-    pub max_command_age_ms: u64,
     #[serde(default = "default_output_interval_ms")]
     pub output_interval_ms: u64,
     #[serde(default = "default_actuation_feedback_delay_ms")]
@@ -683,7 +681,6 @@ impl Default for PipelineRuntimeConfig {
             target_aim_y_ratio: default_target_aim_y_ratio(),
             target_class_aim_y_ratios: String::new(),
             candidate_max_aspect_ratio: default_candidate_max_aspect_ratio(),
-            max_command_age_ms: default_max_command_age_ms(),
             output_interval_ms: default_output_interval_ms(),
             actuation_feedback_delay_ms: default_actuation_feedback_delay_ms(),
             production_fields_explicit: false,
@@ -926,12 +923,6 @@ impl PipelineRuntimeConfig {
             1.0,
             100.0,
         )?;
-        if !(1..=1_000).contains(&self.max_command_age_ms) {
-            return Err(ConfigValidationError::new(
-                "pipeline.max_command_age_ms",
-                "must be within 1..=1000 ms",
-            ));
-        }
         if !(1..=10).contains(&self.output_interval_ms) {
             return Err(ConfigValidationError::new(
                 "pipeline.output_interval_ms",
@@ -1231,10 +1222,6 @@ const fn default_target_aim_y_ratio() -> f64 {
 
 const fn default_candidate_max_aspect_ratio() -> f64 {
     6.0
-}
-
-const fn default_max_command_age_ms() -> u64 {
-    55
 }
 
 const fn default_output_interval_ms() -> u64 {

@@ -78,9 +78,6 @@ pub struct PipelineConfig {
     pub epoch: RuntimeEpoch,
     pub targeting: TargetingConfig,
     pub control: DualPhaseConfig,
-    /// Commands older than this many monotonic nanoseconds are dropped
-    /// immediately before the device call.
-    pub max_command_age_ns: u64,
     /// Idle/recoil scheduler cadence. Tracking commands bypass this interval
     /// and wake the device lane immediately.
     pub output_interval_ms: u64,
@@ -103,7 +100,6 @@ pub struct PipelineConfig {
 #[derive(Clone, Copy, Debug)]
 struct DeviceWorkerConfig {
     epoch: RuntimeEpoch,
-    max_command_age_ns: u64,
     output_interval_ms: u64,
     recoil: RecoilConfig,
 }
@@ -121,7 +117,6 @@ impl Default for PipelineConfig {
             epoch: RuntimeEpoch(1),
             targeting: TargetingConfig::default(),
             control: DualPhaseConfig::default(),
-            max_command_age_ns: 55_000_000,
             output_interval_ms: 4,
             trigger_poll_interval_ms: None,
             trigger_mode: TriggerMode::Always,
@@ -142,7 +137,6 @@ pub struct PipelineMetrics {
     pub blocked_decisions: u64,
     pub command_overwrites: u64,
     pub superseded_commands: u64,
-    pub stale_commands: u64,
     pub device_receipts: u64,
     #[serde(default)]
     pub last_device_receipt: Option<DeviceReceipt>,
@@ -228,7 +222,6 @@ struct AtomicMetrics {
     control_decisions: AtomicU64,
     blocked_decisions: AtomicU64,
     superseded_commands: AtomicU64,
-    stale_commands: AtomicU64,
     device_error_count: AtomicU64,
     device_recovery_count: AtomicU64,
     live_workers: AtomicU64,
@@ -964,7 +957,6 @@ impl PipelineRuntime {
             Arc::clone(&device),
             DeviceWorkerConfig {
                 epoch: config.epoch,
-                max_command_age_ns: config.max_command_age_ns,
                 output_interval_ms: config.output_interval_ms,
                 recoil: config.recoil,
             },
@@ -1638,14 +1630,6 @@ fn spawn_device_worker(
                         ));
                         break;
                     }
-                    let age = now_ns.saturating_sub(command.source_captured_at.0);
-                    if age > config.max_command_age_ns {
-                        shared
-                            .metrics
-                            .stale_commands
-                            .fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
                     let latest_generation = *shared
                         .metrics
                         .last_generation
@@ -1752,7 +1736,6 @@ fn snapshot_metrics(
         blocked_decisions: shared.metrics.blocked_decisions.load(Ordering::Relaxed),
         command_overwrites: commands.metrics().overwritten,
         superseded_commands: shared.metrics.superseded_commands.load(Ordering::Relaxed),
-        stale_commands: shared.metrics.stale_commands.load(Ordering::Relaxed),
         device_receipts: last_device_receipt.map_or(0, |(count, _)| count),
         last_device_receipt: last_device_receipt.map(|(_, receipt)| receipt),
         device_connected: shared.device_connected.load(Ordering::Acquire),

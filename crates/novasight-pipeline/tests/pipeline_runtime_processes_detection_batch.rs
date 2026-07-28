@@ -382,9 +382,7 @@ fn control_lane_rejects_an_observation_that_aged_while_waiting_for_control() {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
         let metrics = runtime.metrics();
-        if metrics.control_decisions == 1
-            && (metrics.blocked_decisions == 1 || metrics.stale_commands == 1)
-        {
+        if metrics.control_decisions == 1 && metrics.blocked_decisions == 1 {
             break;
         }
         assert!(
@@ -396,7 +394,7 @@ fn control_lane_rejects_an_observation_that_aged_while_waiting_for_control() {
 
     let metrics = runtime.metrics();
     assert!(device.receipts().is_empty());
-    assert_eq!((metrics.blocked_decisions, metrics.stale_commands), (1, 0));
+    assert_eq!(metrics.blocked_decisions, 1);
     runtime.shutdown().expect("workers join");
 }
 
