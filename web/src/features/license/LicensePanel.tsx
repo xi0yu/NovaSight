@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   type LicenseStatus,
@@ -15,6 +15,8 @@ import {
   type LicenseActionFailure
 } from "./connectionIssue";
 
+const LICENSE_CLEAR_CONFIRMATION_MESSAGE = "再次点击将在当前设备退出授权；5 秒后自动取消确认。";
+
 export function LicensePanel({
   license,
   onLicenseChange
@@ -25,6 +27,8 @@ export function LicensePanel({
   const [licenseInput, setLicenseInput] = useState("");
   const [requesting, setRequesting] = useState(false);
   const [activating, setActivating] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearArmed, setClearArmed] = useState(false);
   const [message, setMessage] = useState<string | undefined>();
   const [failure, setFailure] = useState<LicenseActionFailure | null>(null);
   const currentTime = new Date().toLocaleString("zh-CN", { hour12: false });
@@ -101,9 +105,28 @@ export function LicensePanel({
     }
   }, [licenseInput, onLicenseChange]);
 
+  useEffect(() => {
+    if (!clearArmed) return undefined;
+    const timeout = window.setTimeout(() => {
+      setClearArmed(false);
+      setMessage((current) => current === LICENSE_CLEAR_CONFIRMATION_MESSAGE ? undefined : current);
+    }, 5000);
+    return () => window.clearTimeout(timeout);
+  }, [clearArmed]);
+
+  useEffect(() => {
+    setClearArmed(false);
+  }, [license?.token_id, license?.valid]);
+
   const clearLicense = useCallback(async () => {
+    if (!clearArmed) {
+      setClearArmed(true);
+      setMessage(LICENSE_CLEAR_CONFIRMATION_MESSAGE);
+      return;
+    }
     setFailure(null);
     setMessage(undefined);
+    setClearing(true);
     try {
       const status = await clearLicenseKey();
       onLicenseChange(status);
@@ -117,8 +140,11 @@ export function LicensePanel({
         publicDetail: nextFailure.message,
         exposeStatus: false
       });
+    } finally {
+      setClearing(false);
+      setClearArmed(false);
     }
-  }, [onLicenseChange]);
+  }, [clearArmed, onLicenseChange]);
 
   return (
     <div className="license-panel">
@@ -201,8 +227,8 @@ export function LicensePanel({
         </div>
       </div>
       {license?.configured ? (
-        <button className="button compact-button" type="button" onClick={clearLicense}>
-          退出当前授权
+        <button className="button compact-button" disabled={clearing} type="button" onClick={clearLicense}>
+          {clearing ? "正在退出…" : clearArmed ? "确认退出授权" : "退出当前授权"}
         </button>
       ) : null}
       <div className="license-features">

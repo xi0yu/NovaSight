@@ -627,6 +627,7 @@ export const API_PATHS = {
   runtimeState: "/api/runtime/state",
   runtimeStart: "/api/runtime/start",
   runtimeStop: "/api/runtime/stop",
+  runtimeEmergencyStop: "/api/v1/runtime/emergency-stop",
   config: "/api/config",
   configSchema: "/api/config/schema",
   captureCapabilities: "/api/capture/capabilities",
@@ -812,6 +813,12 @@ export function startRuntimePipeline(): Promise<Record<string, RuntimeConfigValu
 
 export function stopRuntimePipeline(): Promise<RuntimeState> {
   return requestJson<RuntimeState>(API_PATHS.runtimeStop, {
+    method: "POST"
+  });
+}
+
+export function emergencyStopRuntimePipeline(): Promise<Record<string, RuntimeConfigValue>> {
+  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.runtimeEmergencyStop, {
     method: "POST"
   });
 }

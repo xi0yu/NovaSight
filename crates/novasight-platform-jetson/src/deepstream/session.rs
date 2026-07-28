@@ -622,6 +622,12 @@ fn run_session(
     state: Arc<ProbeState>,
     latest_frames: LatestFrameExchange,
 ) -> Result<(), SessionError> {
+    // `startup_timeout` is one user-visible readiness budget. Pipeline
+    // construction, the Playing transition, and the first admitted batch must
+    // share it instead of each receiving a fresh full timeout.
+    let startup_deadline = Instant::now()
+        .checked_add(config.startup_timeout)
+        .unwrap_or_else(Instant::now);
     let startup_result = start_pipeline(
         &config,
         epoch,
@@ -629,6 +635,7 @@ fn run_session(
         clock,
         Arc::clone(&state),
         latest_frames,
+        startup_deadline,
     );
     let StartedPipeline {
         pipeline,
@@ -655,7 +662,14 @@ fn run_session(
     });
     let mut perception_worker = Some(perception_worker);
 
-    let ready = wait_until_ready(&pipeline, &bus, &commands, &state, config.startup_timeout);
+    let ready = wait_until_ready(
+        &pipeline,
+        &bus,
+        &commands,
+        &state,
+        startup_deadline,
+        config.startup_timeout,
+    );
     if let Err(error) = ready {
         let error = combine_with_cleanup(
             error,
@@ -746,6 +760,7 @@ fn start_pipeline(
     monotonic_clock: Arc<dyn Clock>,
     state: Arc<ProbeState>,
     latest_frames: LatestFrameExchange,
+    startup_deadline: Instant,
 ) -> Result<StartedPipeline, SessionError> {
     let PreparedPipeline {
         pipeline,
@@ -953,6 +968,7 @@ fn start_pipeline(
         probe_id,
         bus,
         exchange,
+        startup_deadline,
     )
 }
 
@@ -1024,6 +1040,7 @@ fn finish_started_pipeline(
     probe_id: gst::PadProbeId,
     bus: gst::Bus,
     exchange: Arc<SnapshotExchange>,
+    startup_deadline: Instant,
 ) -> Result<StartedPipeline, SessionError> {
     let preview_probe = match install_preview_probe(&pipeline, config.preview.as_ref(), epoch) {
         Ok(probe) => probe,
@@ -1094,9 +1111,66 @@ fn finish_started_pipeline(
             }
         };
 
-    if let Err(error) = pipeline.set_state(gst::State::Playing) {
+    let state_wait = startup_deadline.saturating_duration_since(Instant::now());
+    if state_wait.is_zero() {
         return Err(combine_with_cleanup(
-            SessionError::StateChange(error.to_string()),
+            startup_timeout_error(
+                config.startup_timeout,
+                "before requesting PLAYING",
+                pipeline.current_state(),
+            ),
+            cleanup_pipeline(
+                &pipeline,
+                &inference_input_pad,
+                inference_input_probe_id,
+                &probe_pad,
+                probe_id,
+                preview_probe,
+                crosshair_probe,
+                &mut crosshair_epoch,
+                config.shutdown_timeout,
+                &state,
+                &exchange,
+                &mut perception_worker,
+            ),
+        ));
+    }
+    if let Err(error) = pipeline.set_state(gst::State::Playing) {
+        let error = if Instant::now() >= startup_deadline {
+            startup_timeout_error(
+                config.startup_timeout,
+                "requesting PLAYING",
+                pipeline.current_state(),
+            )
+        } else {
+            SessionError::StateChange(error.to_string())
+        };
+        return Err(combine_with_cleanup(
+            error,
+            cleanup_pipeline(
+                &pipeline,
+                &inference_input_pad,
+                inference_input_probe_id,
+                &probe_pad,
+                probe_id,
+                preview_probe,
+                crosshair_probe,
+                &mut crosshair_epoch,
+                config.shutdown_timeout,
+                &state,
+                &exchange,
+                &mut perception_worker,
+            ),
+        ));
+    }
+    let state_wait = startup_deadline.saturating_duration_since(Instant::now());
+    if state_wait.is_zero() {
+        return Err(combine_with_cleanup(
+            startup_timeout_error(
+                config.startup_timeout,
+                "waiting for PLAYING",
+                pipeline.current_state(),
+            ),
             cleanup_pipeline(
                 &pipeline,
                 &inference_input_pad,
@@ -1114,10 +1188,15 @@ fn finish_started_pipeline(
         ));
     }
     let (state_result, current, _pending) =
-        pipeline.state(Some(duration_to_clock_time(config.startup_timeout)));
+        pipeline.state(Some(duration_to_clock_time(state_wait)));
     if let Err(error) = state_result {
+        let error = if Instant::now() >= startup_deadline {
+            startup_timeout_error(config.startup_timeout, "waiting for PLAYING", current)
+        } else {
+            SessionError::StateChange(error.to_string())
+        };
         return Err(combine_with_cleanup(
-            SessionError::StateChange(error.to_string()),
+            error,
             cleanup_pipeline(
                 &pipeline,
                 &inference_input_pad,
@@ -1135,8 +1214,13 @@ fn finish_started_pipeline(
         ));
     }
     if current != gst::State::Playing {
+        let error = if Instant::now() >= startup_deadline {
+            startup_timeout_error(config.startup_timeout, "waiting for PLAYING", current)
+        } else {
+            SessionError::DidNotReachPlaying { current }
+        };
         return Err(combine_with_cleanup(
-            SessionError::DidNotReachPlaying { current },
+            error,
             cleanup_pipeline(
                 &pipeline,
                 &inference_input_pad,
@@ -1425,9 +1509,9 @@ fn wait_until_ready(
     bus: &gst::Bus,
     commands: &Receiver<SessionCommand>,
     state: &ProbeState,
-    timeout: Duration,
+    deadline: Instant,
+    configured_timeout: Duration,
 ) -> Result<(), SessionError> {
-    let deadline = Instant::now() + timeout;
     loop {
         if state.first_published.load(Ordering::Acquire) {
             return Ok(());
@@ -1447,7 +1531,7 @@ fn wait_until_ready(
         if Instant::now() >= deadline {
             let metrics = state.metrics.snapshot();
             return Err(SessionError::FirstBatchTimeout {
-                timeout_ms: timeout.as_millis().min(u64::MAX as u128) as u64,
+                timeout_ms: configured_timeout.as_millis().min(u64::MAX as u128) as u64,
                 current: pipeline.current_state(),
                 metrics,
                 last_rejection: state.last_rejection(),
@@ -1582,6 +1666,18 @@ fn duration_to_clock_time(duration: Duration) -> gst::ClockTime {
     gst::ClockTime::from_nseconds(duration.as_nanos().min((u64::MAX - 1) as u128) as u64)
 }
 
+fn startup_timeout_error(
+    configured_timeout: Duration,
+    stage: &'static str,
+    current: gst::State,
+) -> SessionError {
+    SessionError::StartupTimeout {
+        stage,
+        timeout_ms: configured_timeout.as_millis().min(u64::MAX as u128) as u64,
+        current,
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SessionError {
     #[error(transparent)]
@@ -1638,6 +1734,14 @@ pub enum SessionError {
     CleanupAfterFailure { primary: String, cleanup: String },
     #[error("DeepStream pipeline did not reach PLAYING; current state is {current:?}")]
     DidNotReachPlaying { current: gst::State },
+    #[error(
+        "DeepStream startup exceeded the shared {timeout_ms} ms readiness budget during {stage}; current state is {current:?}"
+    )]
+    StartupTimeout {
+        stage: &'static str,
+        timeout_ms: u64,
+        current: gst::State,
+    },
     #[error(
         "DeepStream pipeline produced no admitted batch within {timeout_ms} ms; current state is {current:?}; metrics={{probed_buffers:{}, published_batches:{}, busy_dropped_batches:{}, extraction_rejections:{}, admission_rejections:{}, ingress_rejections:{}, unavailable_snapshot_slots:{}, overwritten_snapshots:{}}}; last rejection: {last_rejection}",
         metrics.probed_buffers,

@@ -13,6 +13,7 @@ export function AdvancedSettingsDialog({
   saving = false,
   saveError = null,
   onClose,
+  onSave,
   children
 }: {
   open: boolean;
@@ -24,6 +25,7 @@ export function AdvancedSettingsDialog({
   saving?: boolean;
   saveError?: string | null;
   onClose: () => void;
+  onSave: () => void;
   children: ReactNode;
 }) {
   const titleId = useId();
@@ -93,11 +95,11 @@ export function AdvancedSettingsDialog({
             <p>{description}</p>
           </div>
           <button
-            aria-label={dirty ? `保存并关闭${title}` : `关闭${title}`}
+            aria-label={`关闭${title}`}
             className="launch-dialog-close"
             disabled={saving}
             onClick={onClose}
-            title={dirty ? "关闭并保存本次修改" : "关闭"}
+            title={dirty ? "关闭；未保存修改会先请求确认" : "关闭"}
             type="button"
           >
             <NovaIcon name="x-circle" size={18} />
@@ -116,16 +118,16 @@ export function AdvancedSettingsDialog({
               : saveError
                 ? `保存失败 · ${saveError}`
                 : dirty
-                  ? "有未保存修改 · 关闭时将一次同步到运行配置。"
+                  ? "有未保存修改 · 保存后才会同步到运行配置。"
                   : `未修改 · ${footerNote}`}
           </span>
           <button
             className={`console-button ${dirty ? "primary dialog-save-button" : "dialog-close-button"}`}
             disabled={saving}
-            onClick={onClose}
+            onClick={dirty ? onSave : onClose}
             type="button"
           >
-            {dirty ? "关闭并保存" : "关闭"}
+            {dirty ? "保存并关闭" : "关闭"}
           </button>
         </footer>
       </section>

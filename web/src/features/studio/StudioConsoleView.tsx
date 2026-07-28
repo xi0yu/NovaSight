@@ -11,6 +11,7 @@ import {
   disconnectKmNet,
   clearCrosshairTemplate,
   crosshairTemplatePreviewUrl,
+  emergencyStopRuntimePipeline,
   getRuntimeState,
   getRuntimeConfig,
   learnCrosshair,
@@ -56,6 +57,10 @@ import {
   type RuntimeDeliveryStatus
 } from "../shared/runtimeDelivery";
 import { AdvancedSettingsDialog } from "./AdvancedSettingsDialog";
+import {
+  ActionConfirmationDialog,
+  type ActionConfirmationRequest
+} from "./ActionConfirmationDialog";
 import { AimTargetRange, type AimRole, type AimRoleRatios } from "./AimTargetRange";
 import { CommitNumberControl, InlineTextControl, NumberControl, TextControl } from "./StudioControls";
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
@@ -601,6 +606,26 @@ function runtimeConfigsEqual(left: RuntimeConfig | null, right: RuntimeConfig | 
   return runtimeConfigValuesEqual(left, right);
 }
 
+const CONFIG_SECTION_LABELS: Record<string, string> = {
+  capture: "采集与 ROI",
+  inference: "模型推理",
+  preprocess: "预处理",
+  pipeline: "目标选择与控制算法",
+  control: "控制输出",
+  hardware: "kmNet 硬件",
+  crosshair: "准星学习",
+  limits: "安全限制",
+  consumers: "数据消费",
+  server: "后端服务"
+};
+
+function changedRuntimeConfigSections(current: RuntimeConfig, candidate: RuntimeConfig): string[] {
+  const ignored = new Set(["revision", "version", "roi_size"]);
+  return Array.from(new Set([...Object.keys(current), ...Object.keys(candidate)]))
+    .filter((key) => !ignored.has(key) && !runtimeConfigValuesEqual(current[key], candidate[key]))
+    .map((key) => CONFIG_SECTION_LABELS[key] ?? key);
+}
+
 export function StudioConsoleView({
   health,
   runtime,
@@ -675,6 +700,9 @@ export function StudioConsoleView({
   const [algorithmSettingsDialogOpen, setAlgorithmSettingsDialogOpen] = useState(false);
   const [targetAdvancedDialogOpen, setTargetAdvancedDialogOpen] = useState(false);
   const [trackerSettingsDialogOpen, setTrackerSettingsDialogOpen] = useState(false);
+  const [confirmationRequest, setConfirmationRequest] = useState<ActionConfirmationRequest | null>(null);
+  const [confirmationBusy, setConfirmationBusy] = useState(false);
+  const [confirmationError, setConfirmationError] = useState<string | null>(null);
   const [newClassProfileName, setNewClassProfileName] = useState("");
   const [renamedClassProfileName, setRenamedClassProfileName] = useState("");
   const [classProfileDeleteArmed, setClassProfileDeleteArmed] = useState(false);
@@ -749,7 +777,7 @@ export function StudioConsoleView({
     setConfigDialogVisibility(dialog, true);
   }, [setConfigDialogVisibility]);
 
-  const requestCloseConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
+  const saveConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
     if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
       return;
     }
@@ -800,6 +828,72 @@ export function StudioConsoleView({
       setBusy(null);
     }
   }, [finishConfigDialog, onRuntimeConfigChange]);
+
+  const requestDismissConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
+    if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
+      return;
+    }
+
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+      await Promise.resolve();
+    }
+
+    const draft = configDraftRef.current;
+    const baseline = configDialogBaselineRef.current;
+    if (!draft || !baseline || runtimeConfigsEqual(draft, baseline)) {
+      const latest = cloneRuntimeConfig(runtimeConfigLatestRef.current) ?? draft;
+      configDraftRef.current = latest;
+      setConfigDraft(latest);
+      finishConfigDialog(dialog);
+      return;
+    }
+
+    setConfirmationRequest({
+      eyebrow: "未保存修改",
+      title: "放弃这次参数修改？",
+      description: "关闭或按 Esc 不再隐式保存。只有点击“保存并关闭”才会把草稿写入后端。",
+      details: [
+        "放弃后，本次弹窗内的修改会恢复为打开前的配置。",
+        "运行中的采集、推理和控制主链不会因此改变。"
+      ],
+      confirmLabel: "放弃修改",
+      cancelLabel: "继续编辑",
+      danger: true,
+      onConfirm: () => {
+        const restored = structuredClone(baseline) as RuntimeConfig;
+        configDraftRef.current = restored;
+        setConfigDraft(restored);
+        finishConfigDialog(dialog);
+      }
+    });
+  }, [finishConfigDialog]);
+
+  const confirmPendingAction = useCallback(async () => {
+    const request = confirmationRequest;
+    if (!request || confirmationBusy) return;
+    setConfirmationError(null);
+    setConfirmationBusy(true);
+    try {
+      if (request.handoffOnConfirm) {
+        setConfirmationRequest(null);
+      }
+      const completed = await request.onConfirm();
+      if (!request.handoffOnConfirm && completed !== false) {
+        setConfirmationRequest(null);
+      }
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setConfirmationError(message);
+      setLocalError((current) => current ?? `当前操作未完成：${message}`);
+    } finally {
+      setConfirmationBusy(false);
+    }
+  }, [confirmationBusy, confirmationRequest]);
+
+  useEffect(() => {
+    setConfirmationError(null);
+  }, [confirmationRequest]);
 
   const stageConfigDialogDraft = useCallback((next: RuntimeConfig) => {
     configDraftRef.current = next;
@@ -910,7 +1004,7 @@ export function StudioConsoleView({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (!dialogSavingRef.current) {
-          void requestCloseConfigDialog("class-config");
+          void requestDismissConfigDialog("class-config");
         }
       } else {
         trapDialogTabKey(event, classConfigDialogRef.current);
@@ -922,7 +1016,7 @@ export function StudioConsoleView({
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };
-  }, [classConfigDialogOpen, requestCloseConfigDialog]);
+  }, [classConfigDialogOpen, requestDismissConfigDialog]);
 
   useEffect(() => {
     if (!targetWeightsDialogOpen) {
@@ -935,7 +1029,7 @@ export function StudioConsoleView({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (!dialogSavingRef.current) {
-          void requestCloseConfigDialog("target-weights");
+          void requestDismissConfigDialog("target-weights");
         }
       } else {
         trapDialogTabKey(event, targetWeightsDialogRef.current);
@@ -947,7 +1041,7 @@ export function StudioConsoleView({
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };
-  }, [requestCloseConfigDialog, targetWeightsDialogOpen]);
+  }, [requestDismissConfigDialog, targetWeightsDialogOpen]);
 
   useEffect(() => {
     if (!launchDialogOpen || launchStatus === "running") {
@@ -2200,13 +2294,15 @@ export function StudioConsoleView({
     }
     setLaunchStatus("cancelled");
     setLaunchError("");
-    setLaunchProgressDetail("启动已取消，已向后端发送停止主链请求。");
+    setLaunchProgressDetail("正在请求后端立即停止输出并中止启动，不再等待普通生命周期锁。");
     setMainlineLaunchAccepted(false);
     setMainlineLaunchMessage("");
     setBusy(null);
     try {
-      const stoppedState = await stopRuntimePipeline();
+      await emergencyStopRuntimePipeline();
+      const stoppedState = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
       onRuntimeStateChange(stoppedState);
+      setLaunchProgressDetail("后端已确认紧急停止；旧输出已失效，启动流程已取消。");
       await onRefresh();
     } catch (err) {
       setLocalError(`取消启动失败：${getErrorMessage(err)}`);
@@ -2302,6 +2398,36 @@ export function StudioConsoleView({
     },
     [onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
   );
+
+  const requestOutputGateChange = useCallback((enabled: boolean) => {
+    if (!enabled) {
+      return updateConfigField(
+        "control",
+        "output_enabled",
+        false,
+        { optimistic: false, rethrow: true }
+      );
+      return;
+    }
+    setConfirmationRequest({
+      eyebrow: "物理输出",
+      title: "允许发送鼠标偏移？",
+      description: "开启后，Rust 控制链产生的新鲜控制量可以通过当前 kmNet 会话发送到物理设备。",
+      details: [
+        `设备：${kmnetHost || "未填写"}:${kmnetPort || "未填写"} · ${kmnetRuntimeConnected ? "当前已连接" : "当前未连接"}`,
+        "旧命令不会补发；暂停输出或断开 kmNet 会立即清空待发送命令。"
+      ],
+      confirmLabel: "确认开启输出",
+      danger: true,
+      onConfirm: () => updateConfigField(
+        "control",
+        "output_enabled",
+        true,
+        { optimistic: false, rethrow: true }
+      )
+    });
+    return false;
+  }, [kmnetHost, kmnetPort, kmnetRuntimeConnected, updateConfigField]);
 
   const updateConfigSection = useCallback(
     async (
@@ -2463,7 +2589,7 @@ export function StudioConsoleView({
     }
   }, [onRefresh]);
 
-  const handleClearCrosshair = useCallback(async () => {
+  const performClearCrosshair = useCallback(async () => {
     setBusy("crosshair.clear");
     setCrosshairMessage("");
     setLocalError(null);
@@ -2480,6 +2606,18 @@ export function StudioConsoleView({
       setBusy(null);
     }
   }, [onRefresh]);
+
+  const requestClearCrosshair = useCallback(() => {
+    setConfirmationRequest({
+      eyebrow: "准星学习",
+      title: "清除当前准星模板？",
+      description: "清除后，控制基准会立即回退到 ROI 几何中心；以后需要重新采样并学习模板。",
+      details: ["采集、推理与目标跟踪不会停止。", "已学习的模板内容无法从后端恢复。"],
+      confirmLabel: "确认清除模板",
+      danger: true,
+      onConfirm: performClearCrosshair
+    });
+  }, [performClearCrosshair]);
 
   useEffect(() => {
     const onCrosshairShortcut = (event: KeyboardEvent) => {
@@ -2818,6 +2956,21 @@ export function StudioConsoleView({
     }
   }, [onRefresh, updateConfigSection]);
 
+  const requestApplyKmNetRecommended = useCallback(() => {
+    setConfirmationRequest({
+      eyebrow: "kmNet 配置",
+      title: "覆盖当前 kmNet 参数？",
+      description: "推荐参数会替换当前地址、端口、UUID、监听端口和自动连接设置。保存后通常需要重启 novasightd。",
+      details: [
+        `当前：${kmnetHost || "未填写"}:${kmnetPort || "未填写"} · UUID ${kmnetUuid || "未填写"}`,
+        `将改为：${KMNET_RECOMMENDED.host}:${KMNET_RECOMMENDED.port} · UUID ${KMNET_RECOMMENDED.uuid}`
+      ],
+      confirmLabel: "确认覆盖参数",
+      danger: true,
+      onConfirm: applyKmNetRecommended
+    });
+  }, [applyKmNetRecommended, kmnetHost, kmnetPort, kmnetUuid]);
+
   const setKmNetConnection = useCallback(async (connect: boolean) => {
     setBusy(connect ? "kmnet.connect" : "kmnet.disconnect");
     setLocalError(null);
@@ -2825,12 +2978,7 @@ export function StudioConsoleView({
     let physicalDisconnectCompleted = false;
     try {
       if (connect && !kmnetAutoConnect) {
-        const result = await updateConfigSection("hardware", KMNET_RECOMMENDED);
-        setKmnetTestMessage(
-          result?.restart_required
-            ? "kmNet 配置已保存；重启 novasightd 后会自动连接。"
-            : "kmNet 已完成委任；启动主链后会自动连接。"
-        );
+        throw new Error("请先检查地址、端口和 UUID，并开启“主链启动时连接设备”；连接操作不会替你覆盖参数。");
       } else if (!connect) {
         // Physical stop comes first. Persisting the fail-closed output gate is
         // still attempted afterwards, but a storage error cannot keep an
@@ -2869,7 +3017,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [kmnetAutoConnect, onRefresh, onRuntimeConfigChange, outputEnabled, updateConfigSection]);
+  }, [kmnetAutoConnect, onRefresh, onRuntimeConfigChange, outputEnabled]);
 
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
@@ -2918,24 +3066,114 @@ export function StudioConsoleView({
     URL.revokeObjectURL(url);
   };
 
+  const requestConfigImportConfirmation = (
+    fileName: string,
+    imported: RuntimeConfig,
+    baseline: RuntimeConfig,
+    canonicalChanged = false
+  ): void => {
+    const changedSections = changedRuntimeConfigSections(baseline, imported);
+    setConfirmationRequest({
+      eyebrow: canonicalChanged ? "配置已在后台更新" : "导入运行配置",
+      title: canonicalChanged ? "请按最新配置重新确认" : `应用 ${fileName}？`,
+      description: canonicalChanged
+        ? "你确认前，后端配置已被其他操作更新。NovaSight 没有覆盖新 revision，下面的差异已按最新配置重新计算。"
+        : "导入会在确认时重新读取后端 canonical revision，再以该事务基线替换整份运行配置。",
+      details: [
+        `将修改：${changedSections.join("、") || "没有差异"}`,
+        "保存成功后，后端会明确返回是否需要重启 novasightd。"
+      ],
+      confirmLabel: canonicalChanged ? "按最新配置导入" : "确认导入配置",
+      danger: true,
+      onConfirm: async () => {
+        setBusy("import");
+        const executeImport = async (): Promise<boolean> => {
+          try {
+            const canonical = normalizeRuntimeConfig(await getRuntimeConfig());
+            if (!runtimeConfigValuesEqual(canonical.revision, baseline.revision)) {
+              runtimeConfigLatestRef.current = canonical;
+              configDraftRef.current = canonical;
+              setConfigDraft(canonical);
+              onRuntimeConfigChange(canonical);
+              if (changedRuntimeConfigSections(canonical, imported).length === 0) {
+                reportSuccess("无需导入配置", "后端最新配置已经与导入文件一致。", "config-import");
+                return true;
+              }
+              requestConfigImportConfirmation(fileName, imported, canonical, true);
+              return false;
+            }
+            const payload = normalizeRuntimeConfig(imported);
+            payload.revision = canonical.revision;
+            const result = await updateRuntimeConfig(payload);
+            const applied = normalizeRuntimeConfig(result.config);
+            runtimeConfigLatestRef.current = applied;
+            configDraftRef.current = applied;
+            setConfigDraft(applied);
+            onRuntimeConfigChange(applied);
+            reportSuccess(
+              "配置导入成功",
+              result.restart_required ? "配置已保存；重启 novasightd 后全部生效。" : "配置已经进入当前后端。",
+              "config-import"
+            );
+            return true;
+          } catch (error) {
+            if (getApiErrorCode(error) === "CONFIG_REVISION_CONFLICT") {
+              const canonical = normalizeRuntimeConfig(await getRuntimeConfig());
+              runtimeConfigLatestRef.current = canonical;
+              configDraftRef.current = canonical;
+              setConfigDraft(canonical);
+              onRuntimeConfigChange(canonical);
+              if (changedRuntimeConfigSections(canonical, imported).length === 0) {
+                reportSuccess("无需导入配置", "后端最新配置已经与导入文件一致。", "config-import");
+                return true;
+              }
+              requestConfigImportConfirmation(fileName, imported, canonical, true);
+              return false;
+            }
+            throw error;
+          }
+        };
+        const request = configWriteQueueRef.current.then(executeImport);
+        configWriteQueueRef.current = request.then(
+          () => undefined,
+          () => undefined
+        );
+        try {
+          return await request;
+        } finally {
+          setBusy(null);
+        }
+      }
+    });
+  };
+
   const importConfig = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) {
       return;
     }
-    setBusy("import");
     setLocalError(null);
     try {
-      const payload = JSON.parse(await file.text()) as RuntimeConfig;
-      await updateRuntimeConfig(payload);
-      await onRefresh();
+      const decoded = JSON.parse(await file.text()) as unknown;
+      if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+        throw new Error("配置文件根节点必须是 JSON 对象。");
+      }
+      const current = cloneRuntimeConfig(runtimeConfigLatestRef.current);
+      if (!current) {
+        throw new Error("尚未读取后端当前配置，不能安全导入。");
+      }
+      const payload = normalizeRuntimeConfig(decoded as RuntimeConfig);
+      const changedSections = changedRuntimeConfigSections(current, payload);
+      if (changedSections.length === 0) {
+        setLocalError("导入文件与当前配置一致，没有需要应用的修改。");
+        return;
+      }
+      requestConfigImportConfirmation(file.name, payload, current);
     } catch (err) {
       setLocalError(`导入失败：${getErrorMessage(err)}`);
 
       reportError(err, { source: 'studio', title: '操作失败' });
-    } finally {
-      setBusy(null);
     }
   };
 
@@ -2985,7 +3223,7 @@ export function StudioConsoleView({
     try {
       const { artifactId } = await ensureCatalogModelRegistration(selectedCatalogModel);
       await updateModelArtifactMetadata(artifactId, recommendation, tags);
-      const updatedCatalog = await getModelCatalog(true);
+      const updatedCatalog = await getModelCatalog(false);
       applyModelCatalogResult(updatedCatalog);
       setModelCatalogMessage(`已保存 ${selectedCatalogModel.name} 的推荐状态与 ${tags.length} 个标签。`);
       setModelDetailsRefreshKey((current) => current + 1);
@@ -2998,7 +3236,7 @@ export function StudioConsoleView({
     }
   };
 
-  const switchModel = async () => {
+  const performModelSwitch = async () => {
     if (!selectedCatalogModel || selectedCatalogModel.kind !== "engine") {
       setLocalError("请选择 TensorRT engine 产物。");
       return;
@@ -3071,18 +3309,43 @@ export function StudioConsoleView({
     }
   };
 
+  const switchModel = () => {
+    if (!selectedCatalogModel || selectedCatalogModel.kind !== "engine") {
+      setLocalError("请选择 TensorRT engine 产物。");
+      return;
+    }
+    if (!runtimeMainlineRunning) {
+      void performModelSwitch();
+      return;
+    }
+    const candidatePath = selectedCatalogModel.relative_path;
+    setConfirmationRequest({
+      eyebrow: "运行中切换模型",
+      title: "停止并重启推理主链？",
+      description: "当前主链正在运行。模型发布会停止现有管线、验证所选 Engine，并在成功后使用新模型重新启动。",
+      details: [
+        `所选模型：${candidatePath}`,
+        "切换期间 DetectionBatch 与物理输出会短暂停止；失败时后端会回滚原部署。"
+      ],
+      confirmLabel: "确认切换模型",
+      danger: true,
+      handoffOnConfirm: true,
+      onConfirm: performModelSwitch
+    });
+  };
+
   const refreshModelCatalog = async () => {
     setBusy("model.refresh");
     setLocalError(null);
     setModelCatalogMessage("");
     preferLatestModelVersionRef.current = true;
     try {
-      const result = await getModelCatalog(true);
+      const result = await getModelCatalog(false);
       applyModelCatalogResult(result);
       setModelDetailsRefreshKey((current) => current + 1);
       await onRefresh();
       setModelCatalogMessage(
-        `刷新完成：发现 ${result.model_count} 个模型文件；列表直接读取原文件，未复制模型。`
+        `刷新完成：发现 ${result.model_count} 个模型文件；仅刷新目录与元数据，未读取 Engine 内容。`
       );
     } catch (err) {
       preferLatestModelVersionRef.current = false;
@@ -3660,12 +3923,7 @@ export function StudioConsoleView({
                 disabled={busy !== null || kmnetRestartRequired || (!outputEnabled && (!kmnetAutoConnect || !kmnetExecutorAvailable || !kmnetRuntimeConnected))}
                 enabled={outputEnabled}
                 optimistic={false}
-                onToggle={(enabled) => updateConfigField(
-                  "control",
-                  "output_enabled",
-                  enabled,
-                  { optimistic: false, rethrow: true }
-                )}
+                onToggle={requestOutputGateChange}
               />
             </div>
             <div className="console-card motion-control-mode-card static">
@@ -3809,7 +4067,7 @@ export function StudioConsoleView({
                   <button
                     className="console-button"
                     disabled={!crosshairTemplateId || busy === "crosshair.clear"}
-                    onClick={() => void handleClearCrosshair()}
+                    onClick={requestClearCrosshair}
                     type="button"
                   >
                     清除模板
@@ -3993,9 +4251,8 @@ export function StudioConsoleView({
                   disabled={
                     busy !== null ||
                     kmnetRestartRequired ||
-                    (!kmnetAutoConnect
-                      ? runtimeConfig === null
-                      : !kmnetCanConnect)
+                    !kmnetAutoConnect ||
+                    !kmnetCanConnect
                   }
                   onClick={() => void setKmNetConnection(true)}
                   type="button"
@@ -4010,7 +4267,7 @@ export function StudioConsoleView({
                           ? "立即重试连接"
                           : kmnetAutoConnect
                             ? "连接 kmNet"
-                            : "保存 kmNet 配置"}
+                            : "请先启用自动连接"}
                 </button>
                 <button
                   className="console-button danger"
@@ -4056,7 +4313,7 @@ export function StudioConsoleView({
                 <button
                   className="console-button"
                   disabled={busy === "kmnet.defaults"}
-                  onClick={() => void applyKmNetRecommended()}
+                  onClick={requestApplyKmNetRecommended}
                   type="button"
                 >
                   应用推荐参数
@@ -4156,7 +4413,8 @@ export function StudioConsoleView({
         dirty={configDialogDirty}
         eyebrow="参数设置 / 控制算法"
         footerNote={`当前算法：${controlModeLabel}`}
-        onClose={() => void requestCloseConfigDialog("algorithm")}
+        onClose={() => void requestDismissConfigDialog("algorithm")}
+        onSave={() => void saveConfigDialog("algorithm")}
         open={algorithmSettingsDialogOpen}
         saveError={dialogSaveError}
         saving={dialogSaving}
@@ -4201,7 +4459,8 @@ export function StudioConsoleView({
         dirty={configDialogDirty}
         eyebrow="参数设置 / 目标选择"
         footerNote="这些设置不会改变框内 aim Y，只影响选择与切换。"
-        onClose={() => void requestCloseConfigDialog("target-advanced")}
+        onClose={() => void requestDismissConfigDialog("target-advanced")}
+        onSave={() => void saveConfigDialog("target-advanced")}
         open={targetAdvancedDialogOpen}
         saveError={dialogSaveError}
         saving={dialogSaving}
@@ -4221,7 +4480,8 @@ export function StudioConsoleView({
         dirty={configDialogDirty}
         eyebrow="参数设置 / Tracker"
         footerNote="关联算法固定为 Hungarian；仅输出 ACTIVE Track。"
-        onClose={() => void requestCloseConfigDialog("tracker")}
+        onClose={() => void requestDismissConfigDialog("tracker")}
+        onSave={() => void saveConfigDialog("tracker")}
         open={trackerSettingsDialogOpen}
         saveError={dialogSaveError}
         saving={dialogSaving}
@@ -4248,7 +4508,7 @@ export function StudioConsoleView({
           className="target-weight-dialog-layer"
           onClick={(event) => {
             if (event.target === event.currentTarget && !dialogSaving) {
-              void requestCloseConfigDialog("target-weights");
+              void requestDismissConfigDialog("target-weights");
             }
           }}
         >
@@ -4268,11 +4528,11 @@ export function StudioConsoleView({
                 <p>比例决定多个候选同时出现时，类别顺序与准星距离各自占多大影响；置信度只负责候选准入，不参与排序。</p>
               </div>
               <button
-                aria-label={configDialogDirty ? "保存并关闭权重调整" : "关闭权重调整"}
+                aria-label="关闭权重调整"
                 className="launch-dialog-close"
                 disabled={dialogSaving}
-                onClick={() => void requestCloseConfigDialog("target-weights")}
-                title={configDialogDirty ? "关闭并保存本次修改" : "关闭"}
+                onClick={() => void requestDismissConfigDialog("target-weights")}
+                title={configDialogDirty ? "关闭；未保存修改会先请求确认" : "关闭"}
                 type="button"
               >
                 <NovaIcon name="x-circle" size={18} />
@@ -4313,16 +4573,16 @@ export function StudioConsoleView({
                   : dialogSaveError
                     ? `保存失败 · ${dialogSaveError}`
                     : configDialogDirty
-                      ? "有未保存修改 · 关闭时将一次同步到运行配置。"
+                      ? "有未保存修改 · 保存后才会同步到运行配置。"
                       : "未修改 · 关闭不会请求后端。"}
               </span>
               <button
                 className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}
                 disabled={dialogSaving}
-                onClick={() => void requestCloseConfigDialog("target-weights")}
+                onClick={() => void saveConfigDialog("target-weights")}
                 type="button"
               >
-                {configDialogDirty ? "关闭并保存" : "关闭"}
+                {configDialogDirty ? "保存并关闭" : "关闭"}
               </button>
             </footer>
           </section>
@@ -4334,7 +4594,7 @@ export function StudioConsoleView({
           className="class-config-dialog-layer"
           onClick={(event) => {
             if (event.target === event.currentTarget && !dialogSaving) {
-              void requestCloseConfigDialog("class-config");
+              void requestDismissConfigDialog("class-config");
             }
           }}
         >
@@ -4354,11 +4614,11 @@ export function StudioConsoleView({
                 <p>把模型类别归入头部、身体或其他瞄点类型，再在人物靶上统一标定三条垂直瞄点线。</p>
               </div>
               <button
-                aria-label={configDialogDirty ? "保存并关闭类别配置" : "关闭类别配置"}
+                aria-label="关闭类别配置"
                 className="launch-dialog-close"
                 disabled={dialogSaving}
-                onClick={() => void requestCloseConfigDialog("class-config")}
-                title={configDialogDirty ? "关闭并保存本次修改" : "关闭"}
+                onClick={() => void requestDismissConfigDialog("class-config")}
+                title={configDialogDirty ? "关闭；未保存修改会先请求确认" : "关闭"}
                 type="button"
               >
                 <NovaIcon name="x-circle" size={18} />
@@ -4586,16 +4846,16 @@ export function StudioConsoleView({
                   : dialogSaveError
                     ? `保存失败 · ${dialogSaveError}`
                     : configDialogDirty
-                      ? "有未保存修改 · 关闭时将整份类别配置一次保存。"
+                      ? "有未保存修改 · 保存后才会同步整份类别配置。"
                       : `未修改 · 当前配置：${activeDetectionProfile}`}
               </span>
               <button
                 className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}
                 disabled={dialogSaving}
-                onClick={() => void requestCloseConfigDialog("class-config")}
+                onClick={() => void saveConfigDialog("class-config")}
                 type="button"
               >
-                {configDialogDirty ? "关闭并保存" : "关闭"}
+                {configDialogDirty ? "保存并关闭" : "关闭"}
               </button>
             </footer>
           </section>
@@ -4704,6 +4964,16 @@ export function StudioConsoleView({
         onClose={() => setModelSwitchDialogOpen(false)}
         open={modelSwitchDialogOpen}
         status={modelSwitchDialogStatus}
+      />
+
+      <ActionConfirmationDialog
+        busy={confirmationBusy}
+        error={confirmationError}
+        onCancel={() => {
+          if (!confirmationBusy) setConfirmationRequest(null);
+        }}
+        onConfirm={() => void confirmPendingAction()}
+        request={confirmationRequest}
       />
 
       {launchDialogOpen ? (
@@ -4873,7 +5143,7 @@ function ModuleSwitch({
   enabled: boolean;
   disabled?: boolean;
   optimistic?: boolean;
-  onToggle: (enabled: boolean) => Promise<void> | void;
+  onToggle: (enabled: boolean) => Promise<void | boolean> | void | boolean;
 }) {
   const [visualEnabled, setVisualEnabled] = useState(enabled);
   const [pending, setPending] = useState(false);
@@ -4894,8 +5164,8 @@ function ModuleSwitch({
     }
     setPending(true);
     try {
-      await onToggle(next);
-      if (!optimistic) {
+      const applied = await onToggle(next);
+      if (!optimistic && applied !== false) {
         setVisualEnabled(next);
       }
     } catch {
