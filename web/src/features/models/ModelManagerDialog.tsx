@@ -5,13 +5,11 @@ import { trapDialogTabKey } from "../studio/dialogFocus";
 import { ModelSelectionPanel, type ModelSelectionPanelProps } from "./ModelSelectionPanel";
 
 export function ModelManagerDialog({
-  activeArtifactLabel,
   activeModelName,
   onClose,
   open,
   panelProps
 }: {
-  activeArtifactLabel: string;
   activeModelName: string;
   onClose: () => void;
   open: boolean;
@@ -76,7 +74,7 @@ export function ModelManagerDialog({
               <p>浏览本机 Engine；确认切换后才读取 TensorRT 契约。</p>
             </div>
           </div>
-          <div className="model-manager-active-pill" title={activeArtifactLabel}>
+          <div className="model-manager-active-pill">
             <i aria-hidden="true" />
             <span>当前</span>
             <b>{activeModelName}</b>

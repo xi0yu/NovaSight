@@ -1088,7 +1088,13 @@ impl CompatibilityRuntimeState {
                         actuation_pending_y: control_sample
                             .then_some(dual_phase.actuation_pending_y),
                         block_reason: control_reason,
-                        recoil_mode: "independent_target_relative_rate",
+                        recoil_mode: config.map_or("triggered_rate", |config| {
+                            if config.control.recoil.require_target {
+                                "target_guarded_rate"
+                            } else {
+                                "triggered_rate"
+                            }
+                        }),
                         recoil_enabled: config.is_some_and(|config| config.control.recoil.enabled),
                         recoil_active: snapshot.pipeline_metrics.recoil.engaged(),
                         recoil_state: snapshot.pipeline_metrics.recoil.state,

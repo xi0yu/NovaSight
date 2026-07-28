@@ -3,8 +3,6 @@ import { NovaIcon } from "../../components/visual";
 
 export function CurrentModelSummary({
   active,
-  artifactLabel,
-  backend,
   inputShape,
   modelName,
   outputShape,
@@ -12,8 +10,6 @@ export function CurrentModelSummary({
   onOpenManager
 }: {
   active: boolean;
-  artifactLabel: string;
-  backend: string;
   inputShape: string;
   modelName: string;
   outputShape: string;
@@ -29,14 +25,12 @@ export function CurrentModelSummary({
         <div>
           <span className="class-config-eyebrow">ACTIVE INFERENCE MODEL</span>
           <h3 title={modelName}>{modelName}</h3>
-          <p title={artifactLabel}>{artifactLabel}</p>
         </div>
         <StatusIndicator tone={active ? "good" : "idle"}>
           {active ? "当前使用" : "未加载"}
         </StatusIndicator>
       </div>
       <dl className="current-model-runtime-facts">
-        <div><dt>运行后端</dt><dd>{backend || "-"}</dd></div>
         <div><dt>模型输入</dt><dd>{inputShape || "-"}</dd></div>
         <div><dt>输出形状</dt><dd>{outputShape || "-"}</dd></div>
         <div><dt>精度声明</dt><dd>{precision || "-"}</dd></div>

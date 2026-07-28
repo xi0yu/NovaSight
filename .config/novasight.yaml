@@ -67,6 +67,8 @@ control:
   trigger_mode: hardware
   recoil:
     enabled: false
+    # true: 必须存在有效目标；false: 真实左键按下且总输出开启时也允许补偿。
+    require_target: true
     base_rate_counts_s: 0.0
     max_rate_counts_s: 0.0
     startup_ms: 35.0

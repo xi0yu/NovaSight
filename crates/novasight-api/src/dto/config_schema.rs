@@ -151,6 +151,7 @@ impl ConfigSchemaResponse {
                     "独立压枪",
                     vec![
                         boolean("control.recoil.enabled", "启用独立 Y 轴压枪"),
+                        boolean("control.recoil.require_target", "只在检测到目标时压枪"),
                         float(
                             "control.recoil.base_rate_counts_s",
                             "基础压枪速率",

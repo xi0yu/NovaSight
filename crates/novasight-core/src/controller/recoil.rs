@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RecoilConfig {
     pub enabled: bool,
+    pub require_target: bool,
     pub base_rate_counts_s: f64,
     pub max_rate_counts_s: f64,
     pub startup_ms: f64,
@@ -20,6 +21,7 @@ impl Default for RecoilConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            require_target: true,
             base_rate_counts_s: 0.0,
             max_rate_counts_s: 0.0,
             startup_ms: 35.0,
@@ -178,23 +180,21 @@ impl TargetRelativeRecoilController {
             self.reset();
             return self.blocked(RecoilBlockReason::DtInvalid, input);
         }
+        if config.require_target && !input.target_valid {
+            self.state = RecoilState::Stale;
+            self.residual = 0.0;
+            return self.blocked(RecoilBlockReason::TargetInvalid, input);
+        }
         if !input.observation_age_ms.is_finite() || input.observation_age_ms < 0.0 {
             self.reset();
             return self.blocked(RecoilBlockReason::ObservationAgeInvalid, input);
         }
-        if input.observation_age_ms > config.stale_threshold_ms || !input.target_valid {
+        if input.observation_age_ms > config.stale_threshold_ms {
             self.state = RecoilState::Stale;
             self.residual = 0.0;
-            return self.blocked(
-                if input.target_valid {
-                    RecoilBlockReason::TargetStale
-                } else {
-                    RecoilBlockReason::TargetInvalid
-                },
-                input,
-            );
+            return self.blocked(RecoilBlockReason::TargetStale, input);
         }
-        if !input.error_y_norm.is_finite() {
+        if input.target_valid && !input.error_y_norm.is_finite() {
             self.state = RecoilState::Stale;
             self.residual = 0.0;
             return self.blocked(RecoilBlockReason::ErrorInvalid, input);
@@ -210,8 +210,14 @@ impl TargetRelativeRecoilController {
         } else {
             ((elapsed_ms + input.dt_s * 1_000.0) / config.startup_ms).clamp(0.0, 1.0)
         };
-        let error = input.error_y_norm;
-        let gate = if error <= -config.full_brake_error_norm {
+        let error = if input.target_valid {
+            input.error_y_norm
+        } else {
+            0.0
+        };
+        let gate = if !input.target_valid {
+            1.0
+        } else if error <= -config.full_brake_error_norm {
             0.0
         } else if error < -config.negative_deadzone_norm {
             1.0 - (-error - config.negative_deadzone_norm)
@@ -219,7 +225,9 @@ impl TargetRelativeRecoilController {
         } else {
             1.0
         };
-        self.state = if error < -config.negative_deadzone_norm {
+        self.state = if !input.target_valid && startup_gate >= 1.0 {
+            RecoilState::Active
+        } else if error < -config.negative_deadzone_norm {
             RecoilState::Brake
         } else if startup_gate < 1.0 {
             RecoilState::Startup
@@ -228,7 +236,8 @@ impl TargetRelativeRecoilController {
         } else {
             RecoilState::Active
         };
-        let fast_add_rate_counts_s = if error > config.positive_deadzone_norm {
+        let fast_add_rate_counts_s = if input.target_valid && error > config.positive_deadzone_norm
+        {
             (config.fast_add_gain_counts_s * (error - config.positive_deadzone_norm))
                 .min(config.max_rate_counts_s * config.max_fast_add_ratio)
         } else {
@@ -250,7 +259,7 @@ impl TargetRelativeRecoilController {
             requested_counts_y,
             emitted_counts_y,
             residual_counts_y: self.residual,
-            error_y_norm: Some(error),
+            error_y_norm: input.target_valid.then_some(error),
             observation_age_ms: Some(input.observation_age_ms),
             source_generation: input.source_generation,
             block_reason: if gate <= 0.0 {

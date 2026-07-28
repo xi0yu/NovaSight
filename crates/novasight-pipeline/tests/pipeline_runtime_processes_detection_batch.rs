@@ -482,6 +482,7 @@ fn recoil_runs_on_the_output_tick_without_a_tracking_command() {
             epoch,
             recoil: RecoilConfig {
                 enabled: true,
+                require_target: false,
                 base_rate_counts_s: 600.0,
                 max_rate_counts_s: 600.0,
                 startup_ms: 0.0,
@@ -496,13 +497,8 @@ fn recoil_runs_on_the_output_tick_without_a_tracking_command() {
     ingress.set_trigger_active(true);
     ingress
         .submit(
-            DetectionBatch::new(
-                FrameStamp::new(epoch, 1, 1_000_000_000),
-                640,
-                640,
-                vec![Detection::new(1, 0, 300.0, 311.2, 40.0, 40.0, 0.95).unwrap()],
-            )
-            .unwrap(),
+            DetectionBatch::new(FrameStamp::new(epoch, 1, 1_000_000_000), 640, 640, vec![])
+                .unwrap(),
         )
         .unwrap();
 
@@ -514,8 +510,10 @@ fn recoil_runs_on_the_output_tick_without_a_tracking_command() {
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].delta_x_counts, 0);
     assert_eq!(receipts[0].delta_y_counts, 2);
+    assert_eq!(receipts[0].target_object_id, 0);
     let telemetry = runtime.metrics().recoil;
-    assert_eq!(telemetry.state, RecoilState::Hold);
+    assert_eq!(telemetry.state, RecoilState::Active);
+    assert_eq!(telemetry.error_y_norm, None);
     assert_eq!(telemetry.source_generation, Some(1));
     assert_eq!(telemetry.emitted_counts_y, 2);
 

@@ -208,6 +208,7 @@ pub async fn entry() -> ExitCode {
         .with_output_enabled(loaded.config().control.output_enabled)
         .with_recoil(RecoilConfig {
             enabled: loaded.config().control.recoil.enabled,
+            require_target: loaded.config().control.recoil.require_target,
             base_rate_counts_s: loaded.config().control.recoil.base_rate_counts_s,
             max_rate_counts_s: loaded.config().control.recoil.max_rate_counts_s,
             startup_ms: loaded.config().control.recoil.startup_ms,

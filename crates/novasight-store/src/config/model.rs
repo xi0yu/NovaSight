@@ -236,6 +236,8 @@ pub enum TriggerMode {
 pub struct RecoilConfig {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_recoil_require_target")]
+    pub require_target: bool,
     #[serde(default)]
     pub base_rate_counts_s: f64,
     #[serde(default)]
@@ -262,6 +264,7 @@ impl Default for RecoilConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            require_target: default_recoil_require_target(),
             base_rate_counts_s: 0.0,
             max_rate_counts_s: 0.0,
             startup_ms: default_recoil_startup_ms(),
@@ -349,6 +352,9 @@ impl RecoilConfig {
 
 const fn default_recoil_startup_ms() -> f64 {
     35.0
+}
+const fn default_recoil_require_target() -> bool {
+    true
 }
 const fn default_recoil_positive_deadzone() -> f64 {
     0.04

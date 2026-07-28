@@ -769,7 +769,7 @@ struct TargetedObservation {
 #[derive(Clone, Copy, Debug)]
 struct RecoilObservation {
     generation: Generation,
-    target_id: u64,
+    target_id: Option<u64>,
     capture_ts_ns: u64,
     error_y_norm: f64,
 }
@@ -1299,7 +1299,7 @@ fn spawn_targeting_worker(
                     };
                     let (crosshair_x, crosshair_y) = targeting_center;
                     let now = clock.now().0;
-                    let recoil_observation = target_id.map(|target_id| {
+                    let recoil_observation = if let Some(target_id) = target_id {
                         if recoil_target_id != Some(target_id) {
                             recoil_heights.clear();
                             recoil_target_id = Some(target_id);
@@ -1311,15 +1311,25 @@ fn spawn_targeting_worker(
                         let stable_height = median_height(&recoil_heights);
                         RecoilObservation {
                             generation: batch.stamp().generation,
-                            target_id,
+                            target_id: Some(target_id),
                             capture_ts_ns: batch.stamp().captured_at.0,
                             error_y_norm: ((aim_y - crosshair_y) / stable_height).clamp(-1.0, 1.0),
                         }
-                    });
+                    } else {
+                        recoil_target_id = None;
+                        recoil_heights.clear();
+                        RecoilObservation {
+                            generation: batch.stamp().generation,
+                            target_id: None,
+                            capture_ts_ns: batch.stamp().captured_at.0,
+                            error_y_norm: 0.0,
+                        }
+                    };
                     *shared
                         .latest_recoil_observation
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = recoil_observation;
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some(recoil_observation);
                     let observation = TargetedObservation {
                         stamp: batch.stamp(),
                         target_id,
@@ -1509,8 +1519,8 @@ fn spawn_device_worker(
                             && shared.status() == PipelineStatus::Running,
                         now_ns,
                         dt_s,
-                        target_valid: observation.is_some(),
-                        target_id: observation.map(|value| value.target_id),
+                        target_valid: observation.and_then(|value| value.target_id).is_some(),
+                        target_id: observation.and_then(|value| value.target_id),
                         source_generation: observation.map(|value| value.generation.0),
                         observation_age_ms,
                         error_y_norm: observation.map_or(0.0, |value| value.error_y_norm),
@@ -1561,7 +1571,9 @@ fn spawn_device_worker(
                                     observation.capture_ts_ns,
                                 ),
                                 issued_at: novasight_core::MonotonicNanos(now_ns),
-                                target_object_id: observation.target_id,
+                                // Track ids start at one. Zero is the established sentinel for
+                                // an output command that is not associated with a target.
+                                target_object_id: observation.target_id.unwrap_or(0),
                                 delta_x_counts: 0,
                                 delta_y_counts: recoil_decision.emitted_counts_y,
                             }

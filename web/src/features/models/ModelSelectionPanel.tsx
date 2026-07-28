@@ -26,6 +26,7 @@ export interface ModelSelectionPanelProps {
   selectedArtifact: ModelArtifact | null;
   selectedVersion: ModelVersion | null;
   activeArtifactId: number | null;
+  activeArtifactPath: string;
   runtimeBackend: string;
   runtimeInputShape: string;
   catalogMessage: string;
@@ -51,6 +52,7 @@ export function ModelSelectionPanel({
   selectedArtifact,
   selectedVersion,
   activeArtifactId,
+  activeArtifactPath,
   runtimeBackend,
   runtimeInputShape,
   catalogMessage,
@@ -141,7 +143,11 @@ export function ModelSelectionPanel({
 
           <dl className="model-selection-facts">
             <div className="wide">
-              <dt>文件路径</dt>
+              <dt>当前使用路径</dt>
+              <dd title={activeArtifactPath}>{activeArtifactPath || "未加载产物"}</dd>
+            </div>
+            <div className="wide">
+              <dt>所选文件路径</dt>
               <dd title={selectedModel?.relative_path ?? selectedArtifact?.path ?? ""}>
                 {selectedModel?.relative_path ?? selectedArtifact?.path ?? "-"}
               </dd>

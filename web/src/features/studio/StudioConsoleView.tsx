@@ -199,7 +199,7 @@ const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
   },
   {
     title: "启动主链运行管线",
-    caption: "请求后端启动采集、ROI、推理与 DetectionBatch 数据通路。"
+    caption: "请求后端启动采集、画面识别与控制功能。"
   },
   {
     title: "激活鼠标算法",
@@ -241,22 +241,6 @@ function writePageToUrl(page: ConsolePage, mode: "push" | "replace" = "push") {
 }
 
 const ROI_SIZE_CHOICES = [256, 320, 480, 640];
-type CaptureBackendMode = "deepstream_nvinfer";
-const CAPTURE_BACKEND_CHOICES: {
-  value: CaptureBackendMode;
-  label: string;
-  memory: "nvmm";
-  inferenceBackend: "deepstream_nvinfer";
-  preprocessBackend: "cuda";
-}[] = [
-  {
-    value: "deepstream_nvinfer",
-    label: "DeepStream nvinfer",
-    memory: "nvmm",
-    inferenceBackend: "deepstream_nvinfer",
-    preprocessBackend: "cuda"
-  }
-];
 const KMNET_RECOMMENDED = {
   auto_connect: true,
   backend: "native_udp",
@@ -1033,13 +1017,7 @@ export function StudioConsoleView({
   const runtimeInference = asRecord(runtime?.inference);
   const pipeline = asRecord(runtime?.pipeline);
   const deepstreamStatus = asRecord(pipeline.deepstream);
-  const deepstreamMailbox = asRecord(deepstreamStatus.detection_batch_mailbox);
-  const deepstreamNvmmOutput = asRecord(deepstreamStatus.nvmm_output);
-  const captureBackendMode: CaptureBackendMode = "deepstream_nvinfer";
-  const captureBackendChoice = CAPTURE_BACKEND_CHOICES[0];
-  const configuredCaptureMemory = readString(captureConfig.memory, captureBackendChoice.memory);
-  const configuredPreprocessBackend = readString(preprocessConfig.backend, captureBackendChoice.preprocessBackend);
-  const configuredInferenceBackend = readString(inferenceConfig.backend, captureBackendChoice.inferenceBackend);
+  const configuredInferenceBackend = readString(inferenceConfig.backend, "deepstream_nvinfer");
   const selectedRuntimeBackend = readString(runtimeInference.selected, configuredInferenceBackend);
   const deepstreamNvinferSelected = selectedRuntimeBackend === "deepstream_nvinfer";
   const mainlineRuntimeSelected = RUNTIME_MAINLINE_BACKENDS.has(selectedRuntimeBackend);
@@ -1299,6 +1277,7 @@ export function StudioConsoleView({
   const targetStickyBias = readNumber(rustPipelineConfig.target_sticky_bias, 0.25);
   const recoilConfig = (controlConfig.recoil ?? {}) as Record<string, unknown>;
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
+  const recoilRequireTarget = readBoolean(recoilConfig.require_target, true);
   const recoilStartupRampMs = readNumber(recoilConfig.startup_ms, 35);
   const recoilBaseRate = readNumber(recoilConfig.base_rate_counts_s, 0);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
@@ -1376,7 +1355,6 @@ export function StudioConsoleView({
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
-  const activeArtifactLabel = artifact ? `${artifact.kind.toUpperCase()} · ${artifact.path}` : "未加载产物";
   const lastModelSwitchError = readString(runtime?.inference?.last_switch_error, "");
   const runtimeInputShape = readString(runtime?.inference?.input_shape, "");
   const registeredInputShape = version?.input_shape === "engine-probe-required"
@@ -1660,39 +1638,10 @@ export function StudioConsoleView({
     inferenceTrace.result_age_ms ?? inferenceTrace.detection_batch_result_age_ms,
     Number.NaN
   );
-  const latestFrameBroker = asRecord(pipeline.latest_frame_broker);
-  const latestCaptureFrameId = readNullableNumber(
-    latestFrameBroker.published_frame_id
-  );
-  const latestCaptureGeneration = readNullableNumber(
-    latestFrameBroker.published_generation ?? deepstreamMailbox.latest_generation
-  );
-  const latestCaptureTsNs = readNullableNumber(
-    latestFrameBroker.published_capture_ts_ns ?? deepstreamStatus.last_capture_ts_ns
-  );
   const latestCaptureAgeMs = readNullableNumber(
-    latestFrameBroker.published_frame_age_ms ?? deepstreamStatus.latest_frame_age_ms ?? captureStatistics.latest_frame_age_ms
-  );
-  const latestCaptureOutputWidth = readNullableNumber(
-    latestFrameBroker.published_width ?? deepstreamNvmmOutput.width
-  );
-  const latestCaptureOutputHeight = readNullableNumber(
-    latestFrameBroker.published_height ?? deepstreamNvmmOutput.height
-  );
-  const latestCaptureOutputFormat = readString(
-    latestFrameBroker.published_format ?? deepstreamNvmmOutput.pixel_format,
-    ""
-  );
-  const latestCaptureOutputMemory = readString(
-    latestFrameBroker.published_resource_memory ?? deepstreamNvmmOutput.memory,
-    ""
-  );
-  const latestCaptureTimestampSource = readString(
-    latestFrameBroker.published_capture_ts_source ?? deepstreamStatus.timestamp_source,
-    ""
-  );
-  const capturePublishedFrames = readNullableNumber(
-    latestFrameBroker.published_frames ?? deepstreamStatus.capture_frames ?? captureStatistics.published_frames
+    asRecord(pipeline.latest_frame_broker).published_frame_age_ms
+      ?? deepstreamStatus.latest_frame_age_ms
+      ?? captureStatistics.latest_frame_age_ms
   );
   const captureDroppedFrames = readNullableNumber(
     deepstreamStatus.stale_dropped_batches ?? capture?.frames_dropped
@@ -1714,11 +1663,7 @@ export function StudioConsoleView({
   const detectionDataAgeMs = readNullableNumber(
     statistics?.detection_data_age_ms ?? inferenceResultAgeMs
   );
-  const telemetryWindowMs = readNullableNumber(statistics?.telemetry_window_ms);
   const detectionFreshness = freshnessSummary(detectionDataAgeMs, detectionBatchFps);
-  const captureBackendLabel = deepstreamNvinferSelected
-    ? "deepstream_nvinfer"
-    : readString(capture?.backend, captureBackendMode);
   const captureReason = deepstreamNvinferSelected
     ? readString(
         deepstreamStatus.last_error,
@@ -3415,10 +3360,10 @@ export function StudioConsoleView({
 
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="采集状态" value={captureStatusText} small={captureBackendLabel || NO_SAMPLE} />
+            <Metric title="采集状态" value={captureStatusText} small={capture?.device || configuredCaptureDevice || "等待设备"} />
             <Metric title="采集 FPS" value={formatOptionalNumber(nvinferInputFps)} small={`有效输入 · 配置 ${formatOptionalNumber(configuredCaptureFps, 0, "FPS")}`} />
-            <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="nvinfer 实际输出" />
-            <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
+            <Metric title="画面帧龄" value={formatOptionalNumber(latestCaptureAgeMs)} small="距最近采集帧 · ms" />
+            <Metric title="帧间隔" value={formatOptionalNumber(captureFramePeriodMs)} small="相邻采集帧 · ms" />
           </div>
           <div className="console-grid2 capture-config-grid compact-content-grid">
               <div className="console-card">
@@ -3432,16 +3377,6 @@ export function StudioConsoleView({
                     setSelectedChoiceId("");
                   }}
                 />
-                <label>数据通路</label>
-                <select value="deepstream_nvinfer" disabled aria-label="采集数据通路">
-                  <option value="deepstream_nvinfer">DeepStream nvinfer</option>
-                </select>
-                <div className="console-kv compact-kv">
-                  <span>backend</span><b>{captureBackendMode}</b>
-                  <span>memory</span><b>{configuredCaptureMemory}</b>
-                  <span>preprocess</span><b>{configuredPreprocessBackend}</b>
-                  <span>inference</span><b>{configuredInferenceBackend}</b>
-                </div>
                 <label>采集格式</label>
                 <div className="capture-format-control">
                   <select value={selectedChoice ? choiceId(selectedChoice) : ""} onChange={(event) => setSelectedChoiceId(event.target.value)}>
@@ -3460,10 +3395,6 @@ export function StudioConsoleView({
                     ? `已读取 ${choices.length} 组设备格式；更换采集卡或设备路径后请重新检测。`
                     : "当前使用已保存的采集格式，不会在打开页面时自动探测设备。"}
                 </p>
-                <label>缓冲策略</label>
-                <select value="latest-frame" disabled>
-                  <option value="latest-frame">最新帧优先 / 单槽覆盖</option>
-                </select>
                 <label>推理画面预览</label>
                 <div className="mini-segmented" role="group" aria-label="推理画面预览帧率">
                   {[15, 30].map((fps) => (
@@ -3512,7 +3443,6 @@ export function StudioConsoleView({
                   <span>配置 ROI</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}, ${rustControlPlane ? `${configuredRoiWidth}x${configuredRoiHeight}` : `${roiSize}x${roiSize}`}` : NO_SAMPLE}</b>
                   <span>运行 ROI</span><b>{runtimeRoiAvailable ? `x=${runtimeRoiLeft}, y=${runtimeRoiTop}, ${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
                   <span>应用状态</span><b>{roiApplyLabel}</b>
-                  <span>坐标系</span><b>推理 / 预览 / 控制统一 ROI</b>
                 </div>
               </div>
           </div>
@@ -3524,46 +3454,19 @@ export function StudioConsoleView({
                 <span>采集状态</span><b>{captureStatusText}</b>
                 <span>采集原因</span><b>{captureReason || NO_SAMPLE}</b>
                 <span>采集设备</span><b>{capture?.device || configuredCaptureDevice || NO_SAMPLE}</b>
-                <span>采集后端</span><b>{captureBackendLabel || NO_SAMPLE}</b>
                 <span>输入格式</span><b>{displayCaptureProfile?.pixel_format || NO_SAMPLE}</b>
                 <span>输入分辨率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.width}x${displayCaptureProfile.height}` : NO_SAMPLE}</b>
                 <span>配置输入帧率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.fps.toFixed(STANDARD_DECIMAL_DIGITS)} FPS` : NO_SAMPLE}</b>
               </div>
             </div>
             <div className="console-card">
-              <SectionTitle title="ROI 与输出帧" />
+              <SectionTitle title="画面健康" />
               <div className="console-kv">
-                <span>ROI 原点</span><b>{sourceWidth > 0 ? `${roiX}, ${roiY}` : NO_SAMPLE}</b>
-                <span>ROI 尺寸</span><b>{`${roiSize}x${roiSize}`}</b>
-                <span>采集输出尺寸</span><b>{latestCaptureOutputWidth !== null && latestCaptureOutputHeight !== null && latestCaptureOutputWidth > 0 && latestCaptureOutputHeight > 0 ? `${latestCaptureOutputWidth}x${latestCaptureOutputHeight}` : NO_SAMPLE}</b>
-                <span>输出像素格式</span><b>{latestCaptureOutputFormat || NO_SAMPLE}</b>
-                <span>内存类型</span><b>{latestCaptureOutputMemory || NO_SAMPLE}</b>
-                <span>{deepstreamNvinferSelected ? "输出契约" : "appsink caps"}</span><b>{deepstreamNvinferSelected ? "NVMM NV12" : readString(captureStatistics.appsink_caps, "") || NO_SAMPLE}</b>
-              </div>
-            </div>
-            <div className="console-card">
-              <SectionTitle title="最新画面状态" />
-              <div className="console-kv">
-                <span>最新 frame_id</span><b>{formatOptionalInteger(latestCaptureFrameId)}</b>
-                <span>最新 generation</span><b>{formatOptionalInteger(latestCaptureGeneration)}</b>
-                <span>最新帧时间戳</span><b>{latestCaptureTsNs !== null && latestCaptureTsNs > 0 ? `${Math.trunc(latestCaptureTsNs)} ns` : NO_SAMPLE}</b>
-                <span>时间戳来源</span><b>{latestCaptureTimestampSource || NO_SAMPLE}</b>
-                <span>数据距当前时间</span><b>{formatOptionalNumber(latestCaptureAgeMs, 2, "ms")}</b>
+                <span>画面帧龄</span><b>{formatOptionalNumber(latestCaptureAgeMs, 2, "ms")}</b>
                 <span>帧到达间隔</span><b>{formatOptionalNumber(captureFramePeriodMs, 2, "ms")}</b>
-                <span>{deepstreamNvinferSelected ? "stale 拒绝数" : "采集丢帧数"}</span><b>{formatOptionalInteger(captureDroppedFrames)}</b>
-                <span>已发布 / 已取得</span><b>{`${formatOptionalInteger(capturePublishedFrames)} / ${formatOptionalInteger(deepstreamNvinferSelected ? deepstreamMailbox.acquired_batches : latestFrameBroker.acquired_frames)}`}</b>
-              </div>
-            </div>
-            <div className="console-card">
-              <SectionTitle title="采集性能" />
-              <div className="console-kv">
                 <span>采集源 FPS</span><b>{formatOptionalNumber(captureSourceFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
-                <span>{deepstreamNvinferSelected ? "nvinfer 输入 FPS" : "appsink 到达 FPS"}</span><b>{formatOptionalNumber(deepstreamNvinferSelected ? nvinferInputFps : captureSourceFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
-                <span>nvinfer 输出 FPS</span><b>{formatOptionalNumber(nvinferOutputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
-                <span>DetectionBatch 结果 FPS</span><b>{formatOptionalNumber(detectionBatchFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
-                <span>结果新鲜度</span><b>{`${formatOptionalNumber(detectionDataAgeMs, STANDARD_DECIMAL_DIGITS, "ms")} · ${detectionFreshness}`}</b>
-                <span>速率采样窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
-                <span>采集等待调用</span><b>{formatOptionalNumber(capture?.capture_wait_ms, 2, "ms")}</b>
+                <span>有效输入 FPS</span><b>{formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
+                <span>过期画面丢弃</span><b>{formatOptionalInteger(captureDroppedFrames)}</b>
               </div>
             </div>
           </div>
@@ -3580,8 +3483,6 @@ export function StudioConsoleView({
             <SectionTitle title="模型设置" />
             <CurrentModelSummary
               active={artifact !== null && artifact !== undefined}
-              artifactLabel={activeArtifactLabel}
-              backend={selectedRuntimeBackend}
               inputShape={displayedInputShape}
               modelName={activeModelName}
               outputShape={deepstreamModelOutputSummary}
@@ -3619,7 +3520,6 @@ export function StudioConsoleView({
                 <summary>当前模型工程详情</summary>
                 <div className="model-debug-grid">
                   <span>当前模型</span><b>{activeModelName}</b>
-                  <span>当前产物</span><b>{activeArtifactLabel}</b>
                   <span>运行输入</span><b>{runtimeInputShape || "-"}</b>
                   <span>登记输入</span><b>{registeredInputShape || "-"}</b>
                   <span>运行输出</span><b>{deepstreamModelOutputSummary}</b>
@@ -3649,13 +3549,10 @@ export function StudioConsoleView({
                 previewFps={previewFps}
               />
               <div className="console-kv">
-                <span>画面阶段</span><b>{deepstreamNvinferSelected ? "nvinfer 前 NVMM ROI" : "推理输入 ROI"}</b>
                 <span>ROI 输入</span><b>{`${roiInputWidth || "-"}x${roiInputHeight || "-"}`}</b>
                 <span>模型输入</span><b>{modelInputWidth && modelInputHeight ? `${modelInputWidth}x${modelInputHeight}` : "-"}</b>
                 <span>压缩倍率</span><b>{inputDownscaleFactor ? `${formatNumber(inputDownscaleFactor, 2)}x` : "-"}</b>
                 <span>有效像素</span><b>{inputPixelRatio ? formatPercent(inputPixelRatio) : "-"}</b>
-                <span>输入资源</span><b>{readString(inferenceTrace.input_resource_memory, "") || NO_SAMPLE}</b>
-                <span>坐标空间</span><b>{readString(inferenceTrace.detection_coordinate_space, "") || NO_SAMPLE}</b>
               </div>
               {inputDensityWarning ? (
                 <div className="inference-density-warning">
@@ -3711,7 +3608,6 @@ export function StudioConsoleView({
                 <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
                 <span>输入 Tensor 类型</span><b>{inferenceInputDtype || NO_SAMPLE}</b>
                 <span>Engine 精度声明</span><b>{inferenceRuntimePrecision ? `${inferenceRuntimePrecision}（manifest）` : NO_SAMPLE}</b>
-                <span>内部逐层精度</span><b>未实时检测</b>
                 <span>输入布局</span><b>{inferenceInputLayout || UNAVAILABLE}</b>
                 <span>输入准备耗时</span><b>{formatOptionalNumber(inferencePreprocessMs, 3, "ms")}</b>
                 <span>CUDA 上传耗时</span><b>{formatOptionalNumber(inferenceUploadMs, 3, "ms")}</b>
@@ -4094,15 +3990,20 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                  <SectionTitle title="独立 Y 轴压枪 · 所有控制算法" />
-                  <ModuleSwitch label="启用独立压枪" detail="开火后按独立速率曲线输出 Y 轴补偿；与目标跟踪分开计算。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
+                  <SectionTitle title="Y 轴压枪" />
+                  <ModuleSwitch label="启用压枪" detail="仅在总输出已开启、设备可用且检测到真实左键按下时输出。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
+                  <ModuleSwitch label="只在检测到目标时压枪" detail="开启后没有有效目标就停止压枪；关闭后即使没有目标，真实开火期间也会按补偿速率输出。" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
                   {recoilEnabled ? (
-                    <>
-                      <NumberControl label="压枪启动斜坡 ms" detail="从真实左键按下开始，压枪速率逐步进入基础速率。" value={recoilStartupRampMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("recoil", "startup_ms", value)} />
-                      <NumberControl label="基础压枪速率 counts/s" detail="与观测 FPS 无关的时间速率。" value={recoilBaseRate} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "base_rate_counts_s", value)} />
-                      <NumberControl label="最大压枪速率 counts/s" value={readNumber(recoilConfig.max_rate_counts_s, 0)} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "max_rate_counts_s", value)} />
-                      <NumberControl label="追加强度 counts/s" value={readNumber(recoilConfig.fast_add_gain_counts_s, 0)} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "fast_add_gain_counts_s", value)} />
-                    </>
+                    <details className="crosshair-advanced-settings">
+                      <summary>当前速率补偿参数</summary>
+                      <p className="console-section-note">这些参数只控制现有时间速率补偿。枪械轨迹采集会作为独立校准流程生成前馈曲线，不会复用目标误差追加强度。</p>
+                      <div className="advanced-settings-grid">
+                        <NumberControl label="压枪启动斜坡 ms" detail="从真实左键按下开始，压枪速率逐步进入基础速率。" value={recoilStartupRampMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("recoil", "startup_ms", value)} />
+                        <NumberControl label="基础压枪速率 counts/s" detail="与观测 FPS 无关的时间速率。" value={recoilBaseRate} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "base_rate_counts_s", value)} />
+                        <NumberControl label="最大压枪速率 counts/s" value={readNumber(recoilConfig.max_rate_counts_s, 0)} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "max_rate_counts_s", value)} />
+                        <NumberControl label="目标误差追加强度 counts/s" value={readNumber(recoilConfig.fast_add_gain_counts_s, 0)} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "fast_add_gain_counts_s", value)} />
+                      </div>
+                    </details>
                   ) : null}
                 </div>
 
@@ -4926,7 +4827,6 @@ export function StudioConsoleView({
       {modelManagerDialogOpen ? (
         <Suspense fallback={<ModelManagerLoadingDialog onClose={closeModelManager} />}>
           <ModelManagerDialog
-            activeArtifactLabel={activeArtifactLabel}
             activeModelName={activeModelName}
             onClose={closeModelManager}
             open
@@ -4941,6 +4841,7 @@ export function StudioConsoleView({
           selectedArtifact: selectedPreviewArtifact,
           selectedVersion: selectedPreviewVersion,
           activeArtifactId: artifact?.id ?? null,
+          activeArtifactPath: artifact?.path ?? "",
           runtimeBackend: readString(runtime?.inference?.selected, ""),
           runtimeInputShape: displayedInputShape,
           catalogMessage: modelCatalogMessage,
