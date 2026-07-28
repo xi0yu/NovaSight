@@ -77,7 +77,9 @@ pub struct RuntimeTelemetrySnapshot {
     #[serde(default)]
     pub nvinfer_output_fps: Option<f64>,
     pub detection_batch_fps: Option<f64>,
-    pub control_observation_fps: Option<f64>,
+    /// Detection batches entering target selection per second. This is not a
+    /// count of emitted control decisions or device commands.
+    pub targeting_batch_fps: Option<f64>,
     pub detection_data_age_ms: Option<f64>,
     /// Latest correlated nvinfer sink-to-src duration. This includes the
     /// element's preprocessing, TensorRT execution, and parser work.

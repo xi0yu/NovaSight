@@ -58,7 +58,7 @@ import { AimTargetRange, type AimRole, type AimRoleRatios } from "./AimTargetRan
 import { CommitNumberControl, InlineTextControl, NumberControl, TextControl } from "./StudioControls";
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
 import { StudioPageHeader } from "./StudioPageHeader";
-import { Event, KvCard, Metric, SectionTitle } from "./StudioPresentation";
+import { KvCard, Metric, SectionTitle } from "./StudioPresentation";
 import { trapDialogTabKey } from "./dialogFocus";
 import "./studio-settings.css";
 
@@ -427,7 +427,6 @@ function clampPercent(value: number): number {
 }
 
 const NO_SAMPLE = "—";
-const UNAVAILABLE = "不可用";
 const STANDARD_DECIMAL_DIGITS = 2;
 
 function formatNumber(value: unknown, digits = STANDARD_DECIMAL_DIGITS): string {
@@ -438,14 +437,6 @@ function formatNumber(value: unknown, digits = STANDARD_DECIMAL_DIGITS): string 
 function formatPercent(value: unknown, digits = STANDARD_DECIMAL_DIGITS): string {
   const number = readNumber(value, Number.NaN);
   return Number.isFinite(number) ? `${(number * 100).toFixed(digits)}%` : NO_SAMPLE;
-}
-
-function formatShape(value: unknown): string {
-  if (Array.isArray(value) && value.length > 0) {
-    return value.map((item) => String(item)).join("x");
-  }
-  const text = readString(value, "").trim();
-  return text || NO_SAMPLE;
 }
 
 function formatOptionalNumber(value: unknown, digits = STANDARD_DECIMAL_DIGITS, unit = ""): string {
@@ -461,20 +452,39 @@ function formatOptionalInteger(value: unknown): string {
   return number === null || number < 0 ? NO_SAMPLE : Math.trunc(number).toString();
 }
 
-function freshnessSummary(ageMs: number | null, resultFps: number | null): string {
+function readNullableBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function formatAxisSettlement(x: unknown, y: unknown): string {
+  const settledX = readNullableBoolean(x);
+  const settledY = readNullableBoolean(y);
+  if (settledX === null || settledY === null) {
+    return NO_SAMPLE;
+  }
+  return `${settledX ? "X 已到位" : "X 调整中"} / ${settledY ? "Y 已到位" : "Y 调整中"}`;
+}
+
+function formatFeedbackGate(x: unknown, y: unknown): string {
+  const pendingX = readNullableBoolean(x);
+  const pendingY = readNullableBoolean(y);
+  if (pendingX === null || pendingY === null) {
+    return NO_SAMPLE;
+  }
+  return pendingX || pendingY ? "等待新画面" : "允许闭环更新";
+}
+
+function freshnessSummary(ageMs: number | null, thresholdMs: number | null): string {
   if (ageMs === null) {
     return "等待结果样本";
   }
-  const expectedPeriodMs = resultFps !== null && resultFps > 0 ? 1000 / resultFps : null;
-  const realtimeLimitMs = Math.max(50, (expectedPeriodMs ?? 0) * 3);
-  const delayedLimitMs = Math.max(150, (expectedPeriodMs ?? 0) * 10);
-  if (ageMs <= realtimeLimitMs) {
-    return "实时";
+  if (thresholdMs === null || thresholdMs <= 0) {
+    return "阈值不可用";
   }
-  if (ageMs <= delayedLimitMs) {
-    return "有延迟";
+  if (ageMs <= thresholdMs) {
+    return "控制可用";
   }
-  return "明显滞后";
+  return ageMs <= thresholdMs * 2 ? "超过控制阈值" : "严重过期";
 }
 
 function formatPoint(x: unknown, y: unknown, digits = STANDARD_DECIMAL_DIGITS, unit = ""): string {
@@ -485,22 +495,6 @@ function formatPoint(x: unknown, y: unknown, digits = STANDARD_DECIMAL_DIGITS, u
   }
   const suffix = unit ? ` ${unit}` : "";
   return `${xNumber.toFixed(digits)}, ${yNumber.toFixed(digits)}${suffix}`;
-}
-
-function shortTimestampSource(value: string): string {
-  if (value === "gst_clock_base_time_pts") {
-    return "GstClock";
-  }
-  if (value === "first_probe_offset_pts") {
-    return "Probe校准";
-  }
-  if (value === "observed_probe_time_invalid_pts") {
-    return "Probe时间";
-  }
-  if (!value || value === "uninitialized") {
-    return "-";
-  }
-  return value.length > 12 ? `${value.slice(0, 12)}...` : value;
 }
 
 function formatDate(value: Date | null): string {
@@ -985,8 +979,7 @@ export function StudioConsoleView({
   }, []);
 
   const capture = runtime?.capture;
-  const statistics = runtime?.statistics ?? capture?.statistics;
-  const captureStatistics = asRecord(statistics);
+  const statistics = runtime?.statistics;
   const config = configDraft ?? runtimeConfig;
   const captureConfig = nestedRecord(config, "capture");
   const configuredCaptureDevice = readString(captureConfig.device, "");
@@ -1040,21 +1033,15 @@ export function StudioConsoleView({
     ? (!runtimeMainlineStatus.failed && runtimeMainlineRunning) || mainlineLaunchPending
     : capture?.available === true;
   const captureMainConfigured = capture?.available === true || runtimeInferenceConfigured;
-  const captureStatusText = runtimeMainlineSelected
-    ? runtimeMainlineStatus.failed
-      ? runtimeMainlineStatus.readinessLabel
-      : runtimeMainlineRunning
-        ? runtimeMainlineStatus.readinessLabel
-      : mainlineLaunchPending
-        ? "启动确认中"
-        : runtimeInferenceConfigured
-          ? "主链待启动"
-          : "未配置"
-    : captureMainRunning
+  const captureStatusText = capture?.state === "failed" || capture?.state === "unavailable"
+    ? "采集异常"
+    : capture?.running === true
       ? "运行中"
-      : captureMainConfigured
-        ? "已配置"
-        : "已停止";
+      : mainlineLaunchPending || capture?.state === "starting"
+        ? "启动中"
+        : captureMainConfigured
+          ? "待启动"
+          : "未配置";
   const inferenceStatusText = runtimeMainlineSelected
     ? runtimeMainlineStatus.failed
       ? "管线故障"
@@ -1073,9 +1060,7 @@ export function StudioConsoleView({
       ? "运行中"
       : "已停止";
   const runtimeControlRequested = captureMainRunning;
-  const runtimeModelOutput = asRecord(runtimeInference.model_output);
   const runtimePostprocess = asRecord(runtimeInference.postprocess);
-  const runtimeModelOutputClassNames = stringArray(runtimeModelOutput.class_names);
   const executorStatus = asRecord(runtime?.executor);
   const executors = asRecord(executorStatus.executors);
   const kmnetStatus = asRecord(executors.kmnet);
@@ -1100,6 +1085,11 @@ export function StudioConsoleView({
     ? `${selectedProfile.pixel_format.toUpperCase()}:${selectedProfile.width}x${selectedProfile.height}@${selectedProfile.fps}`
     : "";
   const displayCaptureProfile = configuredCaptureProfile ?? selectedProfile ?? null;
+  const displayCaptureProfileSource = configuredCaptureProfile
+    ? "已保存配置"
+    : selectedProfile?.source === "configured"
+      ? "当前生效配置"
+      : selectedProfile?.source || NO_SAMPLE;
   const detectedChoices = useMemo(() => groupCapabilities(caps?.capabilities ?? []), [caps]);
   const choices = useMemo(() => {
     if (detectedChoices.length > 0) {
@@ -1304,7 +1294,7 @@ export function StudioConsoleView({
   const kmnetConnected = kmnetStatus.connected === true;
   const kmnetRuntimeConnected = kmnetStatus.runtime_connected === true;
   const kmnetConnecting = kmnetStatus.connecting === true;
-  const kmnetDriverAvailable = kmnetStatus.available === true;
+  const kmnetExecutorAvailable = kmnetStatus.available === true;
   const kmnetConnectionState = readString(
     kmnetStatus.connection_state,
     kmnetConnected ? "connected" : kmnetConnecting ? "connecting" : "disconnected"
@@ -1348,7 +1338,7 @@ export function StudioConsoleView({
       : kmnetRuntimeConnected ? "已连接" : "未连接"
     : "主链未运行";
   const kmnetDiagnosticDisabled = kmnetRestartRequired
-    || !kmnetDriverAvailable
+    || !kmnetExecutorAvailable
     || runtime?.running === true
     || busy === "kmnet.diagnostic";
   const kmnetButtonLeft = kmnetStatus.button_left === true;
@@ -1357,19 +1347,10 @@ export function StudioConsoleView({
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
-  const lastModelSwitchError = readString(runtime?.inference?.last_switch_error, "");
-  const runtimeInputShape = readString(runtime?.inference?.input_shape, "");
   const registeredInputShape = version?.input_shape === "engine-probe-required"
     ? "等待 TensorRT engine 探测"
     : version?.input_shape ?? "";
-  const displayedInputShape = runtimeInputShape || registeredInputShape;
-  const deepstreamModelOutputSummary = formatShape(runtimeModelOutput.shape);
-  const deepstreamClassNamesSummary =
-    runtimeModelOutputClassNames.length > 0
-      ? runtimeModelOutputClassNames.slice(0, 8).join(", ") +
-        (runtimeModelOutputClassNames.length > 8 ? ` +${runtimeModelOutputClassNames.length - 8}` : "")
-      : "-";
-  const runtimePostprocessParser = readString(runtimePostprocess.parser, "-");
+  const displayedInputShape = registeredInputShape;
   const runtimePostprocessConfidence = readNumber(runtimePostprocess.confidence_threshold, Number.NaN);
   const runtimePostprocessNms = readNumber(runtimePostprocess.nms_threshold, Number.NaN);
   const runtimeRoiLeft = readNumber(inferenceTrace.roi_offset_x, Number.NaN);
@@ -1439,9 +1420,9 @@ export function StudioConsoleView({
   const detectionCount = readNullableNumber(vision.detections);
   const target = asRecord(vision.target);
   const activeRuntimeClassId = readNullableNumber(target.cls ?? target.class_id);
-  const activeRuntimeClassLabel = readString(target.class_name, "") || (
-    activeRuntimeClassId !== null ? `cls ${Math.round(activeRuntimeClassId)}` : ""
-  );
+  const activeRuntimeClassLabel = activeRuntimeClassId !== null
+    ? `cls ${Math.round(activeRuntimeClassId)}`
+    : "";
   const runtimeDetectionItems = recordArray(vision.detection_items);
   const runtimeDetectionClassIds = runtimeDetectionItems.flatMap((item) => {
     const classId = readNullableNumber(item.cls ?? item.class_id);
@@ -1477,7 +1458,6 @@ export function StudioConsoleView({
     targetPipelineCounts.eligible_candidates ?? targetPipelineCounts.inside_fov
   );
   const selectedTargetCount = readNullableNumber(targetPipelineCounts.selected_targets);
-  const selectorDebug = asRecord(control.selector_debug);
   const controlCandidateFilter = asRecord(control.candidate_filter);
   const basicCandidateFilter = asRecord(controlCandidateFilter.basic);
   const effectiveClassFilter = readString(controlCandidateFilter.effective_class_filter, activeDetectionClass);
@@ -1493,40 +1473,20 @@ export function StudioConsoleView({
   const detectedClassFilterValue = orderedClassEditorIds
     .filter((classId) => recoveryClassIdSet.has(classId))
     .join(",");
-  const selectionCenter = asRecord(controlCandidateFilter.selection_center_px);
-  const rejectedControlCandidates = recordArray(controlCandidateFilter.rejected);
-  const firstRejectedControlCandidate = rejectedControlCandidates[0] ?? {};
-  const trackerRuntimeDebug = asRecord(selectorDebug.tracker);
-  const trackerTiming = asRecord(trackerRuntimeDebug.timing);
-  const trackDiagnostics = asRecord(control.track_diagnostics ?? target.track_diagnostics);
-  const diagnosticTracks = recordArray(trackDiagnostics.tracks);
-  const selectedTrackId = finiteNumber(trackDiagnostics.selected_track_id);
-  const selectedTrackDebug =
-    selectedTrackId === null
-      ? {}
-      : diagnosticTracks.find((item) => readNumber(item.track_id, Number.NaN) === selectedTrackId) ?? {};
-  const selectedTrackEstimate = asRecord(selectedTrackDebug.estimate);
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
-  const mouseObservation = asRecord(control.mouse_observation ?? target.mouse_observation);
-  const rawAimDebug = asRecord(mouseObservation.raw_aim);
-  const controlHasSample = rustControlPlane
-    ? readString(control.global_state, "IDLE") !== "IDLE"
-    : Object.keys(control).length > 0;
+  const mouseObservation = asRecord(control.mouse_observation);
+  const controlHasSample = readString(control.global_state, "IDLE") !== "IDLE";
   const controlHasTarget = Object.keys(target).length > 0;
-  const controlCandidateCount = readNullableNumber(
-    control.candidates ?? selectorDebug.filtered_candidates
-  );
-  const controlTrackId = readNullableNumber(
-    target.track_id ?? trackDiagnostics.selected_track_id
-  );
+  const controlCandidateCount = readNullableNumber(control.candidates);
+  const controlTrackId = readNullableNumber(target.track_id);
   const controlWidthPx = readNullableNumber(mouseObservation.control_width_px);
   const controlHeightPx = readNullableNumber(mouseObservation.control_height_px);
   const controlCenterX = controlWidthPx === null ? null : controlWidthPx * 0.5;
   const controlCenterY = controlHeightPx === null ? null : controlHeightPx * 0.5;
   const predictedAimX = readNullableNumber(mouseObservation.predicted_x_px ?? control.aim_x);
   const predictedAimY = readNullableNumber(mouseObservation.predicted_y_px ?? control.aim_y);
-  const observedAimX = readNullableNumber(mouseObservation.observed_x_px ?? target.observed_aim_x);
-  const observedAimY = readNullableNumber(mouseObservation.observed_y_px ?? target.observed_aim_y);
+  const observedAimX = readNullableNumber(mouseObservation.observed_x_px);
+  const observedAimY = readNullableNumber(mouseObservation.observed_y_px);
   const predictedErrorXPx =
     predictedAimX !== null && controlCenterX !== null ? predictedAimX - controlCenterX : null;
   const predictedErrorYPx =
@@ -1536,6 +1496,7 @@ export function StudioConsoleView({
       ? Math.hypot(predictedErrorXPx, predictedErrorYPx)
       : null;
   const controlMeasurementDtS = readNullableNumber(controlPipeline.measurement_dt_s ?? mouseObservation.measurement_dt_s);
+  const controlFrameAgeMs = readNullableNumber(controlPipeline.frame_age_ms);
   const acceptedCommandCount = readNullableNumber(kmnetStatus.accepted_command_count);
   const hasAcceptedCommand = (acceptedCommandCount ?? 0) > 0;
   const lastAcceptedCommand = formatPoint(
@@ -1547,7 +1508,7 @@ export function StudioConsoleView({
   const controlNoSendReason = !controlHasTarget
       ? targetPipelineMessage || readString(control.selection_reason, "无目标")
       : control.will_emit !== true
-        ? readString(control.no_send_reason, readString(control.trigger_reason, readString(control.reason, "控制门控未通过")))
+        ? readString(control.no_send_reason, readString(control.reason, "控制门控未通过"))
         : !kmnetRuntimeConnected
           ? "主链设备通道未连接"
           : "命令已获准进入设备通道";
@@ -1555,18 +1516,14 @@ export function StudioConsoleView({
   const deepstreamOutputBuffers = readNullableNumber(runtimeInference.output_buffers);
   const deepstreamMetadataExtractions = runtimeMainlineStatus.metadataExtractions;
   const deepstreamPublishedBatches = runtimeMainlineStatus.publishedBatches;
-  const deepstreamParserStatus = asRecord(runtimeInference.parser);
   const deepstreamInferenceCompleted =
     (deepstreamOutputBuffers ?? 0) > 0 ||
     (deepstreamPublishedBatches ?? 0) > 0;
-  const inferenceRan =
-    inferenceTrace.ran === true || (deepstreamNvinferSelected && deepstreamInferenceCompleted);
-  const inferenceReason = inferenceTrace.ran === true
-    ? readString(inferenceTrace.reason, readString(vision.inference_reason, ""))
-    : readString(
-        runtimeInference.inference_reason,
-        readString(inferenceTrace.reason, readString(vision.inference_reason, ""))
-      );
+  const inferenceRan = deepstreamNvinferSelected && deepstreamInferenceCompleted;
+  const inferenceReason = readString(
+    runtimeInference.inference_reason,
+    readString(runtimeInference.reason, "")
+  );
   const deepstreamPreviewStreamReady =
     deepstreamNvinferSelected &&
     previewEnabled &&
@@ -1598,7 +1555,7 @@ export function StudioConsoleView({
     setPreviewTogglePending(true);
     setPreviewActiveOverride(enabled);
     try {
-      const inference = await setCapturePreviewEnabled(enabled, {
+      const preview = await setCapturePreviewEnabled(enabled, {
         keepalive: options?.keepalive
       });
       if (runtime) {
@@ -1606,7 +1563,14 @@ export function StudioConsoleView({
           ...runtime,
           inference: {
             ...runtime.inference,
-            ...inference
+            preview_enabled: preview.preview_enabled,
+            preview_active: preview.preview_active,
+            preview_encoder_active: preview.preview_encoder_active,
+            preview_consumers: preview.preview_consumers,
+            preview_available: preview.preview_available,
+            preview_sequence: preview.preview_sequence,
+            preview_reason: preview.preview_reason,
+            preview_transport: preview.preview_transport
           }
         });
       }
@@ -1626,145 +1590,61 @@ export function StudioConsoleView({
     runtime
   ]);
 
-  const inferenceBatchGeneration = readNumber(
-    inferenceTrace.generation ?? inferenceTrace.detection_batch_generation ?? pipeline.last_generation,
-    Number.NaN
-  );
-  const inferenceAcquiredGeneration = readNumber(inferenceTrace.acquired_generation, Number.NaN);
-  const inferenceLatestGeneration = readNumber(inferenceTrace.latest_generation, Number.NaN);
-  const inferenceBrokerPublishedGeneration = readNumber(inferenceTrace.broker_published_generation, Number.NaN);
-  const inferenceGenerationLag = readNumber(inferenceTrace.generation_lag, Number.NaN);
-  const inferenceFrameIdLag = readNumber(inferenceTrace.frame_id_lag, Number.NaN);
-  const inferencePublishedSinceAcquire = readNumber(inferenceTrace.published_since_acquire, Number.NaN);
-  const inferenceResultAgeMs = readNumber(
-    inferenceTrace.result_age_ms ?? inferenceTrace.detection_batch_result_age_ms,
-    Number.NaN
-  );
-  const latestCaptureAgeMs = readNullableNumber(
-    asRecord(pipeline.latest_frame_broker).published_frame_age_ms
-      ?? deepstreamStatus.latest_frame_age_ms
-      ?? captureStatistics.latest_frame_age_ms
-  );
-  const captureDroppedFrames = readNullableNumber(
-    deepstreamStatus.stale_dropped_batches ?? capture?.frames_dropped
-  );
-  const captureFramePeriodMs = readNullableNumber(
-    deepstreamStatus.last_capture_interval_ms ?? capture?.frame_period_ms
-  );
-  const captureSourceFps = readNullableNumber(
-    deepstreamStatus.capture_fps ?? capture?.fps_capture ?? captureStatistics.capture_fps
-  );
-  const nvinferInputFps = readNullableNumber(
-    deepstreamStatus.input_fps ?? captureStatistics.nvinfer_input_fps
-  );
-  const nvinferOutputFps = readNullableNumber(
-    deepstreamStatus.inference_fps ?? captureStatistics.nvinfer_output_fps
-  );
+  const nvinferInputFps = readNullableNumber(statistics?.nvinfer_input_fps);
+  const nvinferOutputFps = readNullableNumber(statistics?.nvinfer_output_fps);
   const detectionBatchFps = readNullableNumber(statistics?.detection_batch_fps);
-  const controlObservationFps = readNullableNumber(statistics?.control_observation_fps);
-  const detectionDataAgeMs = readNullableNumber(
-    statistics?.detection_data_age_ms ?? inferenceResultAgeMs
+  const targetingBatchFps = readNullableNumber(statistics?.targeting_batch_fps);
+  const detectionDataAgeMs = readNullableNumber(statistics?.detection_data_age_ms);
+  const detectionFreshnessThresholdMs = readNullableNumber(
+    statistics?.detection_freshness_threshold_ms
   );
-  const detectionFreshness = freshnessSummary(detectionDataAgeMs, detectionBatchFps);
-  const captureReason = deepstreamNvinferSelected
-    ? readString(
-        deepstreamStatus.last_error,
-        runtimeMainlineRunning ? "NVMM 管线持续向 nvinfer 输入帧" : "等待 DeepStream 主链启动"
-      )
-    : readString(
-        capture?.last_error,
-        capture?.available === true
-          ? readString(capture?.profile?.selection_reason, "采集帧持续到达")
-          : "尚无采集样本"
-      );
-  const inferenceDebug = asRecord(inferenceTrace.debug);
-  const decodeDebug = asRecord(inferenceDebug.decode);
-  const inferenceTimings = asRecord(inferenceDebug.timings);
-  const trtTimings = asRecord(decodeDebug.timings);
-  const preprocessDebug = asRecord(inferenceDebug.preprocess);
-  const detectionBatchMetadata = asRecord(inferenceTrace.detection_batch_metadata);
-  const nativeParserTelemetry = Object.keys(asRecord(detectionBatchMetadata.parser)).length > 0
-    ? asRecord(detectionBatchMetadata.parser)
-    : deepstreamParserStatus;
-  const roiInputWidth = readNumber(inferenceTrace.input_width, readNumber(preprocessDebug.roi_width, roiSize));
-  const roiInputHeight = readNumber(inferenceTrace.input_height, readNumber(preprocessDebug.roi_height, roiSize));
-  const modelInputWidth = readNumber(inferenceTrace.model_input_width, readNumber(preprocessDebug.model_width, 0));
-  const modelInputHeight = readNumber(inferenceTrace.model_input_height, readNumber(preprocessDebug.model_height, 0));
-  const inputDownscaleFactor = readNumber(
-    inferenceTrace.input_downscale_factor,
-    readNumber(preprocessDebug.downscale_factor, 0)
+  const detectionFreshness = freshnessSummary(
+    detectionDataAgeMs,
+    detectionFreshnessThresholdMs
   );
-  const inputPixelRatio = readNumber(inferenceTrace.input_pixel_ratio, readNumber(preprocessDebug.pixel_ratio, 0));
-  const inputDensityWarning =
-    inferenceTrace.input_density_warning === true || preprocessDebug.density_warning === true;
-  const sampledDetectionGeneration = readNullableNumber(
-    inferenceTrace.detection_batch_generation ?? runtimeInference.sampled_detection_generation
+  const captureReason = capture?.last_error || (
+    capture?.running !== true
+      ? "采集尚未启动"
+      : nvinferInputFps !== null && nvinferInputFps > 0
+        ? "nvinfer 正在接收有效输入"
+        : (statistics?.nvinfer_input_counter ?? 0) > 0
+          ? "已收到输入帧，正在建立速率窗口"
+          : "采集已启动，等待第一帧"
   );
-  const inferenceCaptureTsNs = readNullableNumber(inferenceTrace.capture_ts_ns);
-  const inferenceStartTsNs = readNullableNumber(inferenceTrace.inference_start_ts_ns);
-  const inferenceEndTsNs = readNullableNumber(inferenceTrace.inference_end_ts_ns);
-  const inferenceStartAgeMs =
-    inferenceStartTsNs !== null && inferenceCaptureTsNs !== null && inferenceStartTsNs >= inferenceCaptureTsNs
-      ? (inferenceStartTsNs - inferenceCaptureTsNs) / 1e6
+  const roiInputWidth = readNumber(inferenceTrace.input_width, 0);
+  const roiInputHeight = readNumber(inferenceTrace.input_height, 0);
+  const modelInputWidth = readNumber(inferenceTrace.model_input_width, 0);
+  const modelInputHeight = readNumber(inferenceTrace.model_input_height, 0);
+  const inputDownscaleFactor =
+    roiInputWidth > 0 && roiInputHeight > 0 && modelInputWidth > 0 && modelInputHeight > 0
+      ? Math.max(roiInputWidth / modelInputWidth, roiInputHeight / modelInputHeight)
       : null;
-  const inferenceEndAgeMs =
-    inferenceEndTsNs !== null && inferenceCaptureTsNs !== null && inferenceEndTsNs >= inferenceCaptureTsNs
-      ? (inferenceEndTsNs - inferenceCaptureTsNs) / 1e6
-      : readNullableNumber(inferenceResultAgeMs);
-  const inferenceInputDtype = readString(runtimeInference.input_dtype, "");
-  const inferenceRuntimePrecision = readString(
-    runtimeInference.runtime_precision,
-    readString(deepstreamStatus.runtime_precision, "")
+  const inputAreaRatio =
+    roiInputWidth > 0 && roiInputHeight > 0 && modelInputWidth > 0 && modelInputHeight > 0
+      ? (modelInputWidth * modelInputHeight) / (roiInputWidth * roiInputHeight)
+      : null;
+  const inputDensityWarning = inputDownscaleFactor !== null && inputDownscaleFactor > 1;
+  const sampledDetectionGeneration = readNullableNumber(
+    inferenceTrace.generation ?? runtimeInference.sampled_detection_generation
   );
-  const inferenceInputLayout = readString(
-    inferenceDebug.input_layout,
-    readString(runtimeInference.input_layout, "")
-  );
-  const inferencePreprocessMs = readNullableNumber(
-    inferenceTrace.preprocess_ms ?? inferenceTimings.native_preprocess_total_ms ?? inferenceTimings.numpy_tensor_ms
-  );
-  const inferenceUploadMs = readNullableNumber(
-    inferenceTrace.h2d_ms ?? trtTimings.h2d_enqueue_ms
-  );
-  const inferenceEnqueueMs = readNullableNumber(trtTimings.execute_enqueue_ms);
-  const inferenceSyncWaitMs = readNullableNumber(trtTimings.stream_sync_ms);
-  const inferenceTotalMs = readNullableNumber(
-    inferenceTrace.detection_batch_inference_latency_ms ??
-      inferenceTimings.execute_total_ms ??
-      statistics?.inference_latency_ms ??
-      statistics?.stage_engine_ms
-  );
-  const inferencePostprocessMs = readNullableNumber(
-    trtTimings.decode_ms ?? nativeParserTelemetry.decode_ms ?? statistics?.stage_postprocess_ms
-  );
-  const inferenceRawCandidateCount = readNullableNumber(
-    decodeDebug.raw_candidates ?? nativeParserTelemetry.input_candidates ?? rawCandidateCount
-  );
-  const inferenceThresholdCandidateCount = readNullableNumber(
-    decodeDebug.threshold_candidates ?? nativeParserTelemetry.decoded_candidates ?? eligibleCandidateCount
-  );
-  const inferenceNmsDetectionCount = readNullableNumber(
-    decodeDebug.nms_detections ?? inferenceTrace.mapped_detections ?? detectionCount
-  );
-  const inferenceHighestConfidence = readNullableNumber(decodeDebug.max_score) ?? runtimeDetectionItems.reduce<number | null>(
+  const inferenceTotalMs = readNullableNumber(statistics?.inference_latency_ms);
+  const inferenceHighestConfidence = runtimeDetectionItems.reduce<number | null>(
     (highest, item) => {
       const score = readNullableNumber(item.score);
       return score === null ? highest : highest === null ? score : Math.max(highest, score);
     },
     null
   );
-  const inferenceOutputName = readString(runtimeInference.output_name, readString(runtimeModelOutput.name, ""));
-  const inferenceOutputShape = formatShape(
-    decodeDebug.output_shape ?? inferenceDebug.output_shape ?? runtimeInference.output_shape ?? runtimeModelOutput.shape
-  );
-  const inferenceParser = readString(
-    runtimePostprocess.parser,
-    readString(decodeDebug.selected_layout, deepstreamNvinferSelected ? "NvDsInferParseNovaSight" : "")
-  );
-  const inferenceBatchPublished =
-    (readNullableNumber(inferenceTrace.publish_ts_ns) ?? 0) > 0 || (deepstreamPublishedBatches ?? 0) > 0;
-  const inferenceBatchStale =
-    inferenceTrace.is_stale === true || inferenceTrace.stale_rejected === true || inferenceTrace.latest_rejected === true;
+  const inferenceBatchPublished = (deepstreamPublishedBatches ?? 0) > 0;
+  const inferenceBatchState = !inferenceRan
+    ? NO_SAMPLE
+    : !inferenceBatchPublished
+      ? "尚未发布"
+      : detectionDataAgeMs === null || detectionFreshnessThresholdMs === null
+        ? "等待帧龄样本"
+        : detectionDataAgeMs <= detectionFreshnessThresholdMs
+          ? "新鲜 · 控制可用"
+          : "已超过控制阈值";
   const currentErrorDetails = useMemo(() => {
     const items: Array<{ key: string; title: string; detail: string; time?: number }> = [];
     for (const notice of errorNotices) {
@@ -1780,11 +1660,10 @@ export function StudioConsoleView({
     }
     if (localError) items.push({ key: "local", title: "当前操作未完成", detail: localError });
     if (capture?.last_error) items.push({ key: "capture", title: "采集链路异常", detail: capture.last_error });
-    if (lastModelSwitchError) items.push({ key: "model-switch", title: "模型切换异常", detail: lastModelSwitchError });
     return items.filter((item, index, all) => (
       all.findIndex((candidate) => candidate.title === item.title && candidate.detail === item.detail) === index
     ));
-  }, [capture?.last_error, errorNotices, errors, lastModelSwitchError, localError]);
+  }, [capture?.last_error, errorNotices, errors, localError]);
 
   useEffect(() => {
     if (configuredCaptureDevice) {
@@ -2181,12 +2060,8 @@ export function StudioConsoleView({
   }, []);
 
   const captureLaunchFailureMessage = useCallback((state: CaptureState): string => {
-    const report = asRecord(state.report);
-    const sections = Array.isArray(report.sections) ? report.sections.map(asRecord) : [];
     return (
       readString(state.last_error, "") ||
-      readString(report.message, "") ||
-      sections.map((section) => readString(section.message, "")).find(Boolean) ||
       "采集配置未进入可用状态。"
     );
   }, []);
@@ -3263,23 +3138,12 @@ export function StudioConsoleView({
       : health === null
         ? "后端检查中"
         : "后端异常";
-  const latencyStages = [
-    { label: "采集 / 解码 / ROI / 排队", value: readNullableNumber(statistics?.stage_ingress_ms), digits: STANDARD_DECIMAL_DIGITS },
-    { label: "nvinfer（含 parser）", value: readNullableNumber(statistics?.stage_engine_ms), digits: STANDARD_DECIMAL_DIGITS },
-    { label: "Batch 构建", value: readNullableNumber(statistics?.stage_batch_build_ms), digits: 2 },
-    { label: "控制等待", value: readNullableNumber(statistics?.stage_control_wait_ms), digits: 2 },
-    { label: "控制计算", value: readNullableNumber(statistics?.stage_control_ms), digits: 2 }
-  ];
-  const latencyStageTotal = latencyStages.reduce(
-    (total, stage) => total + (stage.value !== null && stage.value > 0 ? stage.value : 0),
-    0
-  );
-  const nvinferTimingScope = readString(statistics?.stage_engine_scope, "");
-  const nvinferTimingScopeLabel = nvinferTimingScope === "sink_to_src_including_parser"
-    ? "sink → src（包含 parser）"
-    : nvinferTimingScope || "sink → src（包含 parser）";
-  const latencyUnattributedMs = readNullableNumber(statistics?.stage_unattributed_ms);
-  const latencyTimelineClosed = latencyUnattributedMs !== null && Math.abs(latencyUnattributedMs) <= 0.01;
+  const telemetryWindowMs = readNullableNumber(statistics?.telemetry_window_ms);
+  const runtimeMetricsStatus = statistics?.metrics_available === true
+    ? telemetryWindowMs === null
+      ? "已有样本 · 正在建立速率窗口"
+      : "真实样本可用"
+    : "等待首个运行样本";
 
   return (
     <section className="console-app">
@@ -3396,9 +3260,9 @@ export function StudioConsoleView({
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="采集状态" value={captureStatusText} small={capture?.device || configuredCaptureDevice || "等待设备"} />
-            <Metric title="采集 FPS" value={formatOptionalNumber(nvinferInputFps)} small={`有效输入 · 配置 ${formatOptionalNumber(configuredCaptureFps, 0, "FPS")}`} />
-            <Metric title="画面帧龄" value={formatOptionalNumber(latestCaptureAgeMs)} small="距最近采集帧 · ms" />
-            <Metric title="帧间隔" value={formatOptionalNumber(captureFramePeriodMs)} small="相邻采集帧 · ms" />
+            <Metric title="主链输入 FPS" value={formatOptionalNumber(nvinferInputFps)} small="nvinfer sink 有效输入" />
+            <Metric title="配置输入 FPS" value={formatOptionalNumber(configuredCaptureFps, 0)} small="配置值 · 非实时测量" />
+            <Metric title="输入累计" value={formatOptionalInteger(statistics?.nvinfer_input_counter)} small="当前运行周期" />
           </div>
           <div className="console-grid2 capture-config-grid compact-content-grid">
               <div className="console-card">
@@ -3489,19 +3353,20 @@ export function StudioConsoleView({
                 <span>采集状态</span><b>{captureStatusText}</b>
                 <span>采集原因</span><b>{captureReason || NO_SAMPLE}</b>
                 <span>采集设备</span><b>{capture?.device || configuredCaptureDevice || NO_SAMPLE}</b>
-                <span>输入格式</span><b>{displayCaptureProfile?.pixel_format || NO_SAMPLE}</b>
-                <span>输入分辨率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.width}x${displayCaptureProfile.height}` : NO_SAMPLE}</b>
+                <span>参数来源</span><b>{displayCaptureProfileSource}</b>
+                <span>配置输入格式</span><b>{displayCaptureProfile?.pixel_format || NO_SAMPLE}</b>
+                <span>配置输入分辨率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.width}x${displayCaptureProfile.height}` : NO_SAMPLE}</b>
                 <span>配置输入帧率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.fps.toFixed(STANDARD_DECIMAL_DIGITS)} FPS` : NO_SAMPLE}</b>
               </div>
             </div>
             <div className="console-card">
-              <SectionTitle title="画面健康" />
+              <SectionTitle title="主链输入健康" />
               <div className="console-kv">
-                <span>画面帧龄</span><b>{formatOptionalNumber(latestCaptureAgeMs, 2, "ms")}</b>
-                <span>帧到达间隔</span><b>{formatOptionalNumber(captureFramePeriodMs, 2, "ms")}</b>
-                <span>采集源 FPS</span><b>{formatOptionalNumber(captureSourceFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
-                <span>有效输入 FPS</span><b>{formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
-                <span>过期画面丢弃</span><b>{formatOptionalInteger(captureDroppedFrames)}</b>
+                <span>nvinfer 输入 FPS</span><b>{formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
+                <span>nvinfer 输入累计</span><b>{formatOptionalInteger(statistics?.nvinfer_input_counter)}</b>
+                <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
+                <span>统计状态</span><b>{runtimeMetricsStatus}</b>
+                <span>说明</span><b>当前后端未提供采集卡原始 FPS 与协商 Caps</b>
               </div>
             </div>
           </div>
@@ -3512,16 +3377,16 @@ export function StudioConsoleView({
             <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="nvinfer 实际完成" />
             <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="DetectionBatch 有效产出" />
             <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
-            <Metric title="当前检测" value={formatOptionalInteger(inferenceNmsDetectionCount)} small="post-parser" />
+            <Metric title="最近检测" value={formatOptionalInteger(detectionCount)} small="最近遥测 · 最多 5Hz" />
           </div>
           <div className="console-card model-selection-card">
             <SectionTitle title="模型设置" />
             <CurrentModelSummary
-              active={artifact !== null && artifact !== undefined}
+              artifactKind={artifact?.kind ?? ""}
+              deployed={artifact !== null && artifact !== undefined}
               inputShape={displayedInputShape}
+              loaded={runtimeInference.loaded === true}
               modelName={activeModelName}
-              outputShape={deepstreamModelOutputSummary}
-              precision={inferenceRuntimePrecision}
               onOpenManager={openModelManager}
             />
           </div>
@@ -3555,18 +3420,17 @@ export function StudioConsoleView({
                 <summary>当前模型工程详情</summary>
                 <div className="model-debug-grid">
                   <span>当前模型</span><b>{activeModelName}</b>
-                  <span>运行输入</span><b>{runtimeInputShape || "-"}</b>
+                  <span>运行装载</span><b>{runtimeInference.loaded === true ? "已装载" : "未装载"}</b>
                   <span>登记输入</span><b>{registeredInputShape || "-"}</b>
-                  <span>运行输出</span><b>{deepstreamModelOutputSummary}</b>
-                  <span>输出层</span><b>{readString(runtimeModelOutput.name, "-")}</b>
-                  <span>运行类别</span><b>{formatNumber(runtimeModelOutput.class_count, 0)}</b>
-                  <span>解析器</span><b>{runtimePostprocessParser}</b>
-                  <span>运行置信度</span><b>{formatNumber(runtimePostprocessConfidence, 2)}</b>
-                  <span>运行 NMS</span><b>{formatNumber(runtimePostprocessNms, 2)}</b>
-                  <span>ROI</span><b>{roiSize} · 自动缩放</b>
+                  <span>运行输入</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : NO_SAMPLE}</b>
+                  <span>Artifact</span><b>{artifact ? `${artifact.kind} · ${artifact.status}` : NO_SAMPLE}</b>
+                  <span>部署版本</span><b>{version?.version || NO_SAMPLE}</b>
+                  <span>运行置信度</span><b>{formatOptionalNumber(runtimePostprocessConfidence, 2)}</b>
+                  <span>运行 NMS</span><b>{formatOptionalNumber(runtimePostprocessNms, 2)}</b>
+                  <span>运行 ROI</span><b>{runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
                   <span>后端</span><b>{readString(runtime?.inference?.selected, "auto")}</b>
                   <span>类别数量</span><b>{String(version?.classes.length ?? 0)}</b>
-                  <span className="wide">类别名</span><b className="wide">{deepstreamClassNamesSummary}</b>
+                  <span className="wide">类别名</span><b className="wide">{version?.classes.length ? version.classes.join(", ") : NO_SAMPLE}</b>
                 </div>
               </details>
             </div>
@@ -3586,8 +3450,8 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>ROI 输入</span><b>{`${roiInputWidth || "-"}x${roiInputHeight || "-"}`}</b>
                 <span>模型输入</span><b>{modelInputWidth && modelInputHeight ? `${modelInputWidth}x${modelInputHeight}` : "-"}</b>
-                <span>压缩倍率</span><b>{inputDownscaleFactor ? `${formatNumber(inputDownscaleFactor, 2)}x` : "-"}</b>
-                <span>有效像素</span><b>{inputPixelRatio ? formatPercent(inputPixelRatio) : "-"}</b>
+                <span>缩放倍率</span><b>{inputDownscaleFactor === null ? NO_SAMPLE : `${formatNumber(inputDownscaleFactor, 2)}x`}</b>
+                <span>输入面积比例</span><b>{inputAreaRatio === null ? NO_SAMPLE : formatPercent(inputAreaRatio)}</b>
               </div>
               {inputDensityWarning ? (
                 <div className="inference-density-warning">
@@ -3607,75 +3471,48 @@ export function StudioConsoleView({
                 <span>元数据提取成功</span><b>{formatOptionalInteger(deepstreamMetadataExtractions)}</b>
                 <span>DetectionBatch 已发布</span><b>{formatOptionalInteger(deepstreamPublishedBatches)}</b>
                 <span>DetectionBatch 已消费</span><b>{formatOptionalInteger(runtimeMainlineStatus.consumedBatches)}</b>
-                <span>控制观测样本</span><b>{formatOptionalInteger(runtimeMainlineStatus.controlObservations)}</b>
-                {Object.keys(deepstreamParserStatus).length > 0 ? (
-                  <>
-                    <span>Parser 调用</span><b>{formatOptionalInteger(deepstreamParserStatus.decode_calls)}</b>
-                    <span>Parser 失败</span><b>{formatOptionalInteger(deepstreamParserStatus.parse_failures)}</b>
-                    <span>Parser 错误码</span><b>{formatOptionalInteger(deepstreamParserStatus.last_error_code)}</b>
-                  </>
-                ) : null}
+                <span>目标选择输入</span><b>{formatOptionalInteger(runtimeMainlineStatus.targetingBatches)}</b>
                 <span>Buffer PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_buffer_pts_matches)}</b>
                 <span>FrameMeta PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_frame_meta_pts_matches)}</b>
                 <span>PTS 关联失败</span><b>{formatOptionalInteger(runtimeInference.timestamp_correlation_misses)}</b>
                 <span>采样 Detection generation</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
-                {!rustControlPlane ? (
-                  <>
-                    <span>Acquire generation</span><b>{formatOptionalInteger(inferenceAcquiredGeneration)}</b>
-                    <span>Batch generation</span><b>{formatOptionalInteger(inferenceBatchGeneration)}</b>
-                    <span>推理开始帧龄</span><b>{formatOptionalNumber(inferenceStartAgeMs, 2, "ms")}</b>
-                    <span>推理结束帧龄</span><b>{formatOptionalNumber(inferenceEndAgeMs, 2, "ms")}</b>
-                    <span>推理期间到达新帧数</span><b>{formatOptionalInteger(inferencePublishedSinceAcquire)}</b>
-                    <span>结束时 generation 差</span><b>{formatOptionalInteger(inferenceGenerationLag)}</b>
-                    <span>结束时 frame_id 差</span><b>{formatOptionalInteger(inferenceFrameIdLag)}</b>
-                    <span>过期结果丢弃次数</span><b>{formatOptionalInteger(statistics?.stale_drop_count)}</b>
-                  </>
-                ) : null}
+                <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
               </div>
             </div>
             <div className="console-card">
               <SectionTitle title="模型输入" />
-              <p className="console-section-note">输入 Tensor 类型来自当前 Engine 契约；运行精度来自已应用的模型 manifest。两者可以不同，float32 输入不代表 Engine 内部使用 FP32 计算。</p>
+              <p className="console-section-note">这里只展示当前 Rust 运行态能够证明的尺寸；Tensor 类型、精度和布局未进入运行状态契约时不作推断。</p>
               <div className="console-kv">
                 <span>模型名称</span><b>{activeModelName || NO_SAMPLE}</b>
                 <span>推理后端</span><b>{selectedRuntimeBackend || NO_SAMPLE}</b>
                 <span>ROI 输入尺寸</span><b>{roiInputWidth > 0 && roiInputHeight > 0 ? `${roiInputWidth}x${roiInputHeight}` : NO_SAMPLE}</b>
                 <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
-                <span>输入 Tensor 类型</span><b>{inferenceInputDtype || NO_SAMPLE}</b>
-                <span>Engine 精度声明</span><b>{inferenceRuntimePrecision ? `${inferenceRuntimePrecision}（manifest）` : NO_SAMPLE}</b>
-                <span>输入布局</span><b>{inferenceInputLayout || UNAVAILABLE}</b>
-                <span>输入准备耗时</span><b>{formatOptionalNumber(inferencePreprocessMs, 3, "ms")}</b>
-                <span>CUDA 上传耗时</span><b>{formatOptionalNumber(inferenceUploadMs, 3, "ms")}</b>
+                <span>运行 ROI</span><b>{runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
+                <span>运行 generation</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
               </div>
             </div>
             <div className="console-card">
               <SectionTitle title="推理引擎阶段" />
               <p className="console-section-note">从数据进入 nvinfer 到输出离开：包含 DeepStream 输入预处理、TensorRT 执行和自定义 parser 解析；不包含目标跟踪与鼠标控制。</p>
               <div className="console-kv">
-                <span>TensorRT enqueue 耗时</span><b>{formatOptionalNumber(inferenceEnqueueMs, 3, "ms")}</b>
-                <span>CUDA stream 同步等待</span><b>{formatOptionalNumber(inferenceSyncWaitMs, 3, "ms")}</b>
                 <span>sink → src 总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 2, "ms")}</b>
                 <span>有效计时样本</span><b>{formatOptionalInteger(statistics?.inference_latency_samples)}</b>
                 <span>计时范围</span><b>预处理 + TensorRT + parser</b>
+                <span>说明</span><b>不包含目标选择、跟踪与控制计算</b>
               </div>
             </div>
             <div className="console-card">
               <SectionTitle title="输出与后处理" />
               <div className="console-kv">
-                <span>输出 Tensor 名称</span><b>{inferenceOutputName || NO_SAMPLE}</b>
-                <span>输出形状</span><b>{inferenceOutputShape}</b>
-                <span>输出布局 / 解析器</span><b>{inferenceParser || NO_SAMPLE}</b>
                 <span>置信度阈值</span><b>{formatOptionalNumber(runtimePostprocessConfidence, 2)}</b>
                 <span>NMS IoU 阈值</span><b>{formatOptionalNumber(runtimePostprocessNms, 2)}</b>
-                <span>解析前候选数</span><b>{formatOptionalInteger(inferenceRawCandidateCount)}</b>
-                <span>置信度过滤后候选数</span><b>{formatOptionalInteger(inferenceThresholdCandidateCount)}</b>
-                <span>NMS 后检测数</span><b>{formatOptionalInteger(inferenceNmsDetectionCount)}</b>
+                <span>最近检测数</span><b>{formatOptionalInteger(detectionCount)}</b>
                 <span>遥测列表截断</span><b>{formatOptionalInteger(vision.detection_items_truncated)}</b>
                 <span>最高检测置信度</span><b>{formatOptionalNumber(inferenceHighestConfidence, 3)}</b>
-                <span>后处理耗时</span><b>{formatOptionalNumber(inferencePostprocessMs, 3, "ms")}</b>
-                <span>DetectionBatch 状态</span><b>{!inferenceRan ? NO_SAMPLE : !inferenceBatchPublished ? "未发布" : inferenceBatchStale ? "已过期" : "可消费"}</b>
+                <span>DetectionBatch 状态</span><b>{inferenceBatchState}</b>
                 <span>DetectionBatch published</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchPublished ? "是" : "否"}</b>
-                <span>DetectionBatch age</span><b>{formatOptionalNumber(inferenceResultAgeMs, 2, "ms")}</b>
+                <span>DetectionBatch age</span><b>{formatOptionalNumber(detectionDataAgeMs, 2, "ms")}</b>
+                <span>控制新鲜度阈值</span><b>{formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")}</b>
               </div>
             </div>
           </div>
@@ -3684,8 +3521,9 @@ export function StudioConsoleView({
         <section className={activePage === "control" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
-            <Metric title="控制更新率" value={formatOptionalNumber(controlObservationFps)} small="每秒有效观测" />
-            <Metric title="当前 Track" value={formatOptionalInteger(controlTrackId)} small={activeRuntimeClassLabel || "target"} />
+            <Metric title="目标选择输入率" value={formatOptionalNumber(targetingBatchFps)} small="DetectionBatch/s" />
+            <Metric title="控制观测帧龄" value={formatOptionalNumber(controlFrameAgeMs)} small="当前控制样本 · ms" />
+            <Metric title="最近 Track" value={formatOptionalInteger(controlTrackId)} small={`${activeRuntimeClassLabel || "target"} · 最多 5Hz 遥测`} />
             <Metric title="控制误差" value={formatOptionalNumber(predictedErrorDistancePx)} small="px" />
             <Metric title="最近设备接受" value={hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE} small="与当前样本独立" />
           </div>
@@ -3703,10 +3541,8 @@ export function StudioConsoleView({
                 <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
                 <span>生效类别过滤</span><b>{effectiveClassFilter === "all" ? "全部类别" : effectiveClassFilter === "none" ? "未选择任何类别" : `cls ${effectiveClassFilter}`}</b>
                 <span>被类别过滤的 cls</span><b>{rejectedBasicClassIds.length > 0 ? rejectedBasicClassIds.join(", ") : NO_SAMPLE}</b>
-                <span>选择 FOV 中心</span><b>{formatPoint(selectionCenter.x, selectionCenter.y, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                <span>选择 FOV 半径</span><b>{formatOptionalNumber(controlCandidateFilter.selection_radius_px, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                <span>被拒绝瞄点</span><b>{formatPoint(firstRejectedControlCandidate.aim_x, firstRejectedControlCandidate.aim_y, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                <span>瞄点距中心</span><b>{formatOptionalNumber(firstRejectedControlCandidate.distance_px, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                <span>基础过滤前 / 后</span><b>{`${formatOptionalInteger(basicCandidateFilter.raw_candidates)} / ${formatOptionalInteger(basicCandidateFilter.filtered_candidates)}`}</b>
+                <span>基础过滤拒绝</span><b>{formatOptionalInteger(basicCandidateFilter.rejected_candidates)}</b>
                 <span>候选目标数量</span><b>{formatOptionalInteger(controlCandidateCount)}</b>
                 <span>最终选择数量</span><b>{controlHasTarget ? "1" : controlHasSample ? "0" : NO_SAMPLE}</b>
                 <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
@@ -3717,18 +3553,7 @@ export function StudioConsoleView({
                 <span>目标选择原因</span><b>{readString(control.selection_reason, "") || NO_SAMPLE}</b>
                 <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target.x1, target.y1)} -> ${formatPoint(target.x2, target.y2)}` : NO_SAMPLE}</b>
                 <span>目标框中心</span><b>{formatPoint(target.box_cx ?? target.cx, target.box_cy ?? target.cy, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                {!rustControlPlane ? (
-                  <>
-                    <span>Tracker 关联</span><b>{readString(trackerRuntimeDebug.association_algorithm, "") || NO_SAMPLE}</b>
-                    <span>关联输入 / 截断</span><b>{`${formatOptionalInteger(trackerRuntimeDebug.input_candidates)} / ${formatOptionalInteger(trackerRuntimeDebug.association_candidates_dropped)}`}</b>
-                    <span>轨迹 / 检测上限</span><b>{`${formatOptionalInteger(trackerRuntimeDebug.max_active_tracks)} / ${formatOptionalInteger(trackerRuntimeDebug.max_detections_for_association)}`}</b>
-                    <span>CONFIRMED / TENTATIVE / LOST</span><b>{`${formatOptionalInteger(trackerRuntimeDebug.confirmed_tracks ?? trackerRuntimeDebug.active_tracks)} / ${formatOptionalInteger(trackerRuntimeDebug.tentative_tracks)} / ${formatOptionalInteger(trackerRuntimeDebug.lost_track_count)}`}</b>
-                    <span>本轮恢复 track</span><b>{Array.isArray(trackerRuntimeDebug.restored_track_ids) && trackerRuntimeDebug.restored_track_ids.length > 0 ? trackerRuntimeDebug.restored_track_ids.join(", ") : NO_SAMPLE}</b>
-                    <span>Predict / Matrix</span><b>{formatPoint(trackerTiming.tracker_predict_us, trackerTiming.association_matrix_us, 2, "us")}</b>
-                    <span>Hungarian / Update</span><b>{formatPoint(trackerTiming.hungarian_us, trackerTiming.tracker_update_us, 2, "us")}</b>
-                    <span>Tracker total</span><b>{formatOptionalNumber(trackerTiming.tracker_total_us, 2, "us")}</b>
-                  </>
-                ) : null}
+                <span>遥测说明</span><b>目标与框为最近采样快照，最多约 5Hz</b>
               </div>
               {targetPipelineCode === "BASIC_CANDIDATE_REJECTED" && targetPipelineRejections.includes("class_filter") && detectedClassFilterValue ? (
                 <div className="control-filter-recovery">
@@ -3752,23 +3577,20 @@ export function StudioConsoleView({
               <SectionTitle title="瞄准点" />
               <div className="console-kv">
                 <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                <span>类别配置 / 瞄点类型</span><b>{`${readString(controlPipeline.active_class_profile, activeDetectionProfile)} / ${readString(controlPipeline.effective_aim_role, "other")}`}</b>
-                <span>aim_y_ratio</span><b>{formatOptionalNumber(control.aim_y_ratio ?? rawAimDebug.y_ratio, 2)}</b>
+                <span>目标类别</span><b>{activeRuntimeClassLabel || NO_SAMPLE}</b>
                 <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                 <span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b>
               </div>
             </div>
             <div className="console-card">
-              <SectionTitle title="误差与角度" />
+              <SectionTitle title="观测与控制误差" />
               <div className="console-kv">
                 <span>屏幕中心</span><b>{formatPoint(controlCenterX, controlCenterY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                 <span>observed error px</span><b>{formatPoint(controlPipeline.observed_error_x_px, controlPipeline.observed_error_y_px, 2, "px")}</b>
                 <span>control error px</span><b>{formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px")}</b>
-                <span>observed error rad</span><b>{formatPoint(controlPipeline.observed_error_x_rad, controlPipeline.observed_error_y_rad, 6, "rad")}</b>
-                <span>control error rad</span><b>{formatPoint(controlPipeline.predicted_error_x_rad, controlPipeline.predicted_error_y_rad, 6, "rad")}</b>
                 <span>误差距离</span><b>{formatOptionalNumber(predictedErrorDistancePx, 2, "px")}</b>
                 <span>控制 dt</span><b>{controlMeasurementDtS === null ? NO_SAMPLE : `${(controlMeasurementDtS * 1000).toFixed(3)} ms`}</b>
-                <span>焦距 X / Y</span><b>{formatPoint(controlPipeline.focal_x_px, controlPipeline.focal_y_px, 2, "px")}</b>
+                <span>控制观测帧龄</span><b>{formatOptionalNumber(controlFrameAgeMs, 2, "ms")}</b>
               </div>
             </div>
             <div className="console-card">
@@ -3776,20 +3598,19 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>控制模式</span><b>{controlModeLabel}</b>
                 <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
-                <span>FAR / NEAR</span><b>{readString(controlPipeline.mode, readString(controlPipeline.control_mode, "")) || NO_SAMPLE}</b>
+                <span>FAR / NEAR</span><b>{readString(controlPipeline.mode, "") || NO_SAMPLE}</b>
                 <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
                 <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
                 <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
                 <span>量化余量</span><b>{formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts")}</b>
                 <span>到位区（进入 / 退出）</span><b>{formatPoint(controlPipeline.arrival_enter_counts, controlPipeline.arrival_exit_counts, 2, "counts")}</b>
-                <span>每轴到位</span><b>{`${readBoolean(controlPipeline.arrival_settled_x, false) ? "X 已到位" : "X 调整中"} / ${readBoolean(controlPipeline.arrival_settled_y, false) ? "Y 已到位" : "Y 调整中"}`}</b>
-                <span>视觉反馈门控</span><b>{readBoolean(controlPipeline.actuation_pending_x, false) || readBoolean(controlPipeline.actuation_pending_y, false) ? "等待新画面" : "允许闭环更新"}</b>
+                <span>每轴到位</span><b>{formatAxisSettlement(controlPipeline.arrival_settled_x, controlPipeline.arrival_settled_y)}</b>
+                <span>视觉反馈门控</span><b>{formatFeedbackGate(controlPipeline.actuation_pending_x, controlPipeline.actuation_pending_y)}</b>
                 <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
                 <span>基础 / 追加速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_base_rate_counts_s, 0)} / ${formatOptionalNumber(controlPipeline.recoil_fast_add_rate_counts_s, 0)} counts/s`}</b>
                 <span>门控 / 最终速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_position_gate, 2)} / ${formatOptionalNumber(controlPipeline.recoil_final_rate_counts_s, 0)} `}counts/s</b>
                 <span>请求 / 实际输出</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 2)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 2)} counts`}</b>
                 <span>误差归一化</span><b>{formatOptionalNumber(controlPipeline.recoil_error_y_norm, 3)}</b>
-                <span>硬件触发持续</span><b>{formatOptionalNumber(control.trigger_hold_ms, STANDARD_DECIMAL_DIGITS, "ms")}</b>
                 <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
               </div>
             </div>
@@ -3799,6 +3620,7 @@ export function StudioConsoleView({
               <div className="console-kv">
                 <span>触发状态</span><b>{control.trigger_active === true ? "按下" : control.trigger_active === false ? "未按下" : NO_SAMPLE}</b>
                 <span>是否允许发包</span><b>{control.will_emit === true ? "是" : control.will_emit === false ? "否" : NO_SAMPLE}</b>
+                <span>运行输出门</span><b>{control.output_enabled === true ? "已打开" : control.output_enabled === false ? "已关闭" : NO_SAMPLE}</b>
                 <span>不发包原因</span><b>{controlNoSendReason || NO_SAMPLE}</b>
                 <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
                 <span>发送语义</span><b>仅保留最新观测</b>
@@ -3818,7 +3640,7 @@ export function StudioConsoleView({
               <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
               <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
               <Metric title="位置预测" value={dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"} small={dualPhasePredictionEnabled ? "单目标真实帧间速度" : "当前观测 Atan 反馈"} />
-              <Metric title="偏移输出" value={outputEnabled ? "已允许" : "已暂停"} small={outputEnabled ? "可发送至设备" : "算法仍继续计算"} />
+              <Metric title="偏移输出配置" value={outputEnabled ? "允许" : "暂停"} small={outputEnabled ? "实际发送状态见控制页" : "算法仍继续计算"} />
               <Metric title="发送方式" value="最新覆盖" small={`${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms 单槽`} />
             </div>
             <div className={outputEnabled ? "console-card control-output-gate-card enabled" : "console-card control-output-gate-card paused"}>
@@ -3842,12 +3664,12 @@ export function StudioConsoleView({
                     ? "重启 novasightd 装载 kmNet 新配置后才能打开输出"
                   : !kmnetAutoConnect
                     ? "请先保存 kmNet 配置，并按提示重启 novasightd"
-                    : !kmnetDriverAvailable
+                    : !kmnetExecutorAvailable
                       ? "dry-run 不允许物理输出；请以生产模式启动 novasightd"
                       : !kmnetRuntimeConnected
                         ? "请先连接 kmNet，再打开偏移输出"
                         : "开启后只发送新的实时观测"}
-                disabled={busy !== null || kmnetRestartRequired || (!outputEnabled && (!kmnetAutoConnect || !kmnetDriverAvailable || !kmnetRuntimeConnected))}
+                disabled={busy !== null || kmnetRestartRequired || (!outputEnabled && (!kmnetAutoConnect || !kmnetExecutorAvailable || !kmnetRuntimeConnected))}
                 enabled={outputEnabled}
                 optimistic={false}
                 onToggle={(enabled) => updateConfigField(
@@ -4089,9 +3911,9 @@ export function StudioConsoleView({
           ) : (
           <>
           <div className="console-metrics">
-            <Metric title="设备能力" value={kmnetConnectionLabel} small={kmnetRestartRequired ? `运行 ${effectiveConfigRevision} · 已保存 ${desiredConfigRevision}` : kmnetConnected ? "ready" : kmnetConnecting ? "connecting" : kmnetRetryable ? "retry available" : "unavailable"} />
-            <Metric title="驱动状态" value={kmnetRestartRequired ? "等待装载" : kmnetDriverAvailable ? "可用" : "不可用"} small="kmNet" />
-            <Metric title="按键监听" value={kmnetStatus.monitoring === true ? "监听中" : "未监听"} small="monitor" />
+            <Metric title="设备连接" value={kmnetConnectionLabel} small={kmnetRestartRequired ? `运行 ${effectiveConfigRevision} · 已保存 ${desiredConfigRevision}` : kmnetConnected ? "ready" : kmnetConnecting ? "connecting" : kmnetRetryable ? "retry available" : "unavailable"} />
+            <Metric title="执行器可用" value={kmnetRestartRequired ? "等待装载" : kmnetExecutorAvailable ? "可用" : "不可用"} small="kmNet" />
+            <Metric title="按键数据" value={kmnetStatus.buttons_available === true ? "可用" : "不可用"} small="最近轮询" />
             <Metric title="自动连接" value={kmnetAutoConnect ? kmnetRestartRequired ? "重启后启用" : "已启用" : "已关闭"} small="startup" />
             <Metric title="主链接受命令" value={formatOptionalInteger(kmnetStatus.accepted_command_count)} small="device receipts" />
             <Metric title="最近接受位移" value={formatPoint(kmnetStatus.last_accepted_dx, kmnetStatus.last_accepted_dy, 0)} small="dx / dy" />
@@ -4104,13 +3926,13 @@ export function StudioConsoleView({
                   <span>连接</span>
                   <b>{kmnetConnectionLabel}</b>
                 </div>
-                <div className={kmnetStatus.monitoring === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
+                <div className={kmnetStatus.buttons_available === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>按键</span>
-                  <b>{kmnetStatus.monitoring === true ? `${kmnetButtonLeft ? "左键" : "-"} / ${kmnetButtonRight ? "右键" : "-"}` : "未监听"}</b>
+                  <b>{kmnetStatus.buttons_available === true ? `${kmnetButtonLeft ? "左键" : "-"} / ${kmnetButtonRight ? "右键" : "-"}` : "数据不可用"}</b>
                 </div>
-                <div className={kmnetDriverAvailable ? "kmnet-status-tile good" : "kmnet-status-tile bad"}>
-                  <span>驱动</span>
-                  <b>{kmnetDriverAvailable ? "可用" : "不可用"}</b>
+                <div className={kmnetExecutorAvailable ? "kmnet-status-tile good" : "kmnet-status-tile bad"}>
+                  <span>执行器</span>
+                  <b>{kmnetExecutorAvailable ? "可用" : "不可用"}</b>
                 </div>
                 <div className="kmnet-status-tile">
                   <span>执行器</span>
@@ -4134,7 +3956,7 @@ export function StudioConsoleView({
                 </div>
                 <div className="kmnet-status-tile">
                   <span>设备接受状态</span>
-                  <b>{acceptedCommandCount === null ? NO_SAMPLE : hasAcceptedCommand ? "已有真实回执" : "尚无回执"}</b>
+                  <b>{acceptedCommandCount === null ? NO_SAMPLE : hasAcceptedCommand ? "已有协议回执" : "尚无回执"}</b>
                 </div>
                 <div className="kmnet-status-tile">
                   <span>连接阶段</span>
@@ -4213,7 +4035,7 @@ export function StudioConsoleView({
                 <span>
                   {kmnetRestartRequired
                     ? "新配置尚未进入当前进程；请停止并重新运行 novasightd。"
-                    : !kmnetDriverAvailable
+                    : !kmnetExecutorAvailable
                     ? "当前是 dry-run 或硬件输出不可用；物理发送必须使用不带 --dry-run 的生产模式启动。"
                     : runtime?.running
                       ? kmnetBlockedReason === "already_connected"
@@ -4306,39 +4128,34 @@ export function StudioConsoleView({
 
         <section className={activePage === "latency" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="进入 nvinfer" value={formatOptionalNumber(statistics?.stage_ingress_ms)} small="ms" />
-            <Metric title="完整链路" value={formatOptionalNumber(statistics?.stage_total_ms, 2)} small="采集→控制 ms" />
-            <Metric title="Batch 发布龄" value={formatOptionalNumber(statistics?.e2e_latency)} small="ms" />
-            <Metric title="控制计算" value={formatOptionalNumber(statistics?.stage_control_ms, 2)} small="ms" />
+            <Metric title="nvinfer sink → src" value={formatOptionalNumber(inferenceTotalMs)} small="预处理 + TensorRT + parser · ms" />
+            <Metric title="结果帧龄" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
+            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="DetectionBatch/s" />
+            <Metric title="统计窗口" value={formatOptionalNumber(telemetryWindowMs, 0)} small="ms" />
           </div>
           <div className="console-grid2 latency-analysis-grid">
-            <div className="console-card">
-              <SectionTitle title="延迟链路" />
-              <p className="console-section-note">只累加互不重叠的真实测量区间；没有运行样本时不绘制比例。</p>
-              <div className="console-timeline">
-                {latencyStages.map((stage) => (
-                  <Event
-                    key={stage.label}
-                    label={stage.label}
-                    value={stage.value === null ? NO_SAMPLE : stage.value.toFixed(stage.digits)}
-                    width={stage.value !== null && latencyStageTotal > 0 ? (Math.max(0, stage.value) / latencyStageTotal) * 100 : null}
-                  />
-                ))}
-              </div>
-            </div>
+            <KvCard
+              title="当前真实测量"
+              rows={[
+                ["统计状态", runtimeMetricsStatus],
+                ["nvinfer 输入 FPS", formatOptionalNumber(nvinferInputFps, 2, "FPS")],
+                ["nvinfer 输出 FPS", formatOptionalNumber(nvinferOutputFps, 2, "FPS")],
+                ["DetectionBatch FPS", formatOptionalNumber(detectionBatchFps, 2, "FPS")],
+                ["目标选择输入 FPS", formatOptionalNumber(targetingBatchFps, 2, "FPS")],
+                ["sink → src 样本", formatOptionalInteger(statistics?.inference_latency_samples)],
+                ["控制新鲜度阈值", formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")]
+              ]}
+              notice={<p className="latency-boundary-note">这些值来自 supervisor 低频统计窗口，不在采集推理热路径中为 UI 增加工作。</p>}
+            />
             <KvCard
               title="测量边界"
               rows={[
-                ["采集 / 解码 / ROI / 排队", "合并测量到 nvinfer sink"],
-                ["ROI 独立耗时", "当前未单独打点"],
-                ["nvinfer 范围", nvinferTimingScopeLabel],
-                ["解码 / NMS", "parser 已包含在 nvinfer，不重复累加"],
-                ["Batch 发布龄范围", "采集时间戳 → DetectionBatch 发布"],
-                ["完整链路范围", "采集时间戳 → 控制计算完成"],
-                ["阶段完整性", latencyTimelineClosed ? "已闭合 · 未归因 0.00ms" : `未归因 ${formatOptionalNumber(latencyUnattributedMs, 2, "ms")}`],
-                ["时间戳来源", shortTimestampSource(readString(statistics?.timestamp_source, "暂无样本"))]
+                ["nvinfer sink → src", "包含 DeepStream 预处理、TensorRT 与 parser"],
+                ["结果帧龄", "当前时刻 − 最新已发布 DetectionBatch 的采集时间"],
+                ["结果 FPS", "统计窗口内已发布 DetectionBatch 增量 / 实际秒数"],
+                ["未提供", "采集、解码、ROI、排队、控制计算的独立阶段耗时"]
               ]}
-              notice={<p className="latency-boundary-note">DeepStream 当前没有在解码器、ROI 和内部队列之间分别打点，因此不能诚实拆成三个独立数字。</p>}
+              notice={<p className="latency-boundary-note">未打点的阶段不展示 0、不估算，也不拼成所谓完整链路。</p>}
             />
           </div>
         </section>

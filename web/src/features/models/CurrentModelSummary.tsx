@@ -2,18 +2,18 @@ import { StatusIndicator } from "../../components/ui";
 import { NovaIcon } from "../../components/visual";
 
 export function CurrentModelSummary({
-  active,
+  artifactKind,
+  deployed,
   inputShape,
+  loaded,
   modelName,
-  outputShape,
-  precision,
   onOpenManager
 }: {
-  active: boolean;
+  artifactKind: string;
+  deployed: boolean;
   inputShape: string;
+  loaded: boolean;
   modelName: string;
-  outputShape: string;
-  precision: string;
   onOpenManager: () => void;
 }) {
   return (
@@ -26,14 +26,14 @@ export function CurrentModelSummary({
           <span className="class-config-eyebrow">ACTIVE INFERENCE MODEL</span>
           <h3 title={modelName}>{modelName}</h3>
         </div>
-        <StatusIndicator tone={active ? "good" : "idle"}>
-          {active ? "当前使用" : "未加载"}
+        <StatusIndicator tone={loaded ? "good" : "idle"}>
+          {loaded ? "运行已装载" : deployed ? "已部署 · 未装载" : "未部署"}
         </StatusIndicator>
       </div>
       <dl className="current-model-runtime-facts">
-        <div><dt>模型输入</dt><dd>{inputShape || "-"}</dd></div>
-        <div><dt>输出形状</dt><dd>{outputShape || "-"}</dd></div>
-        <div><dt>精度声明</dt><dd>{precision || "-"}</dd></div>
+        <div><dt>登记输入</dt><dd>{inputShape || "-"}</dd></div>
+        <div><dt>运行状态</dt><dd>{loaded ? "已装载" : "未装载"}</dd></div>
+        <div><dt>模型文件</dt><dd>{artifactKind || "-"}</dd></div>
       </dl>
       <button className="console-button primary current-model-manage-button" onClick={onOpenManager} type="button">
         <NovaIcon name="model-switch" size={16} />

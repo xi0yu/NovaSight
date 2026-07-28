@@ -130,22 +130,7 @@ function mergeRuntimePatch(current: RuntimeState, patch: Partial<RuntimeState>):
       ? { ...current.inference, ...patch.inference }
       : current.inference,
     config: patch.config ? { ...current.config, ...patch.config } : current.config,
-    pipeline: patch.pipeline
-      ? {
-          ...current.pipeline,
-          ...patch.pipeline,
-          ...(typeof patch.pipeline.deepstream === "object" && patch.pipeline.deepstream !== null
-            ? {
-                deepstream: {
-                  ...((typeof current.pipeline.deepstream === "object" && current.pipeline.deepstream !== null)
-                    ? current.pipeline.deepstream as Record<string, unknown>
-                    : {}),
-                  ...patch.pipeline.deepstream as Record<string, unknown>
-                }
-              }
-            : {})
-        }
-      : current.pipeline,
+    pipeline: patch.pipeline ?? current.pipeline,
     vision: patch.vision ?? current.vision
   };
 }

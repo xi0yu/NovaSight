@@ -407,7 +407,7 @@ struct TelemetrySample {
     nvinfer_inputs: u64,
     nvinfer_outputs: u64,
     detection_batches: u64,
-    control_observations: u64,
+    targeting_batches: u64,
 }
 
 const TELEMETRY_RATE_WINDOW_NS: u64 = 1_000_000_000;
@@ -489,7 +489,7 @@ impl SupervisorState {
             nvinfer_inputs: perception.input_buffers,
             nvinfer_outputs: perception.probed_buffers,
             detection_batches: perception.published_batches,
-            control_observations: pipeline.targeting_batches,
+            targeting_batches: pipeline.targeting_batches,
         };
 
         let counters_reset = self.telemetry_samples.back().is_some_and(|last| {
@@ -497,7 +497,7 @@ impl SupervisorState {
                 || sample.nvinfer_inputs < last.nvinfer_inputs
                 || sample.nvinfer_outputs < last.nvinfer_outputs
                 || sample.detection_batches < last.detection_batches
-                || sample.control_observations < last.control_observations
+                || sample.targeting_batches < last.targeting_batches
         });
         if counters_reset {
             self.telemetry_samples.clear();
@@ -543,10 +543,10 @@ impl SupervisorState {
                     .saturating_sub(baseline.detection_batches) as f64
                     / elapsed_seconds,
             );
-            self.telemetry.control_observation_fps = Some(
+            self.telemetry.targeting_batch_fps = Some(
                 sample
-                    .control_observations
-                    .saturating_sub(baseline.control_observations) as f64
+                    .targeting_batches
+                    .saturating_sub(baseline.targeting_batches) as f64
                     / elapsed_seconds,
             );
         }

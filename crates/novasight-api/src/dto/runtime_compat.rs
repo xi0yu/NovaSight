@@ -190,7 +190,6 @@ pub(crate) struct Availability {
     pub connected: bool,
     pub runtime_connected: bool,
     pub connecting: bool,
-    pub monitoring: bool,
     pub buttons_available: bool,
     pub button_left: bool,
     pub button_right: bool,
@@ -235,12 +234,13 @@ pub(crate) struct StatisticsState {
     pub nvinfer_input_counter: u64,
     pub detection_batch_counter: u64,
     pub detection_batch_consumed_counter: u64,
-    pub control_observation_counter: u64,
+    pub targeting_batch_counter: u64,
     pub nvinfer_input_fps: Option<f64>,
     pub nvinfer_output_fps: Option<f64>,
     pub detection_batch_fps: Option<f64>,
-    pub control_observation_fps: Option<f64>,
+    pub targeting_batch_fps: Option<f64>,
     pub detection_data_age_ms: Option<f64>,
+    pub detection_freshness_threshold_ms: Option<f64>,
     pub inference_latency_ms: Option<f64>,
     pub inference_latency_samples: u64,
     pub telemetry_window_ms: Option<u64>,
@@ -639,7 +639,6 @@ impl CompatibilityRuntimeState {
                 connected: false,
                 runtime_connected: false,
                 connecting: false,
-                monitoring: false,
                 buttons_available: false,
                 button_left: false,
                 button_right: false,
@@ -716,7 +715,6 @@ impl CompatibilityRuntimeState {
                 runtime_connected: hardware_output_enabled
                     && snapshot.pipeline_metrics.device_connected,
                 connecting: hardware_output_enabled && device_state == SubsystemState::Starting,
-                monitoring: snapshot.pipeline_metrics.buttons_available,
                 buttons_available: snapshot.pipeline_metrics.buttons_available,
                 button_left: snapshot.pipeline_metrics.button_left,
                 button_right: snapshot.pipeline_metrics.button_right,
@@ -833,12 +831,14 @@ impl CompatibilityRuntimeState {
                 nvinfer_input_counter: metrics.input_buffers,
                 detection_batch_counter: metrics.published_batches,
                 detection_batch_consumed_counter: snapshot.pipeline_metrics.received_batches,
-                control_observation_counter: snapshot.pipeline_metrics.targeting_batches,
+                targeting_batch_counter: snapshot.pipeline_metrics.targeting_batches,
                 nvinfer_input_fps: snapshot.telemetry.nvinfer_input_fps,
                 nvinfer_output_fps: snapshot.telemetry.nvinfer_output_fps,
                 detection_batch_fps: snapshot.telemetry.detection_batch_fps,
-                control_observation_fps: snapshot.telemetry.control_observation_fps,
+                targeting_batch_fps: snapshot.telemetry.targeting_batch_fps,
                 detection_data_age_ms: snapshot.telemetry.detection_data_age_ms,
+                detection_freshness_threshold_ms: runtime_config
+                    .map(|config| config.pipeline.freshness_threshold_ms),
                 inference_latency_ms: snapshot.telemetry.inference_latency_ms,
                 inference_latency_samples: metrics.inference_duration_samples,
                 telemetry_window_ms: snapshot.telemetry.sample_window_ms,
@@ -1349,7 +1349,7 @@ mod tests {
         let kmnet = &value["executor"]["executors"]["kmnet"];
         assert_eq!(kmnet["available"], true);
         assert_eq!(kmnet["connected"], false);
-        assert_eq!(kmnet["monitoring"], false);
+        assert_eq!(kmnet["buttons_available"], false);
         assert_eq!(kmnet["connection_state"], "degraded");
         assert_eq!(kmnet["retryable"], true);
         assert_eq!(kmnet["last_error"], "kmNet helper timed out");

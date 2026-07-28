@@ -5,37 +5,53 @@ export type HealthResponse = {
 export type ExecutorStatus = {
   selected: string;
   executors: Record<string, ExecutorAvailability>;
+  state: RuntimeSubsystemState;
+  last_error: RuntimeErrorSummary | null;
 };
 
 export type ExecutorAvailability = {
   available: boolean;
-  configuration_state?: "not_applicable" | "uncommissioned" | "restart_required" | "ready" | (string & {});
-  configuration_ready?: boolean;
-  restart_required?: boolean;
-  can_connect?: boolean;
-  can_disconnect?: boolean;
-  blocked_reason?: string | null;
-  connected?: boolean;
-  runtime_connected?: boolean;
-  connecting?: boolean;
-  monitoring?: boolean;
-  buttons_available?: boolean;
-  button_left?: boolean;
-  button_right?: boolean;
-  connection_state?: string;
-  retryable?: boolean;
-  last_error?: string | null;
-  managed_by_runtime?: boolean;
-  accepted_command_count?: number;
-  last_accepted_dx?: number | null;
-  last_accepted_dy?: number | null;
-  diagnostic_move_count?: number;
-  last_diagnostic_dx?: number | null;
-  last_diagnostic_dy?: number | null;
-  device_error_count?: number;
-  device_recovery_count?: number;
-  last_device_error?: string | null;
-  [key: string]: unknown;
+  configuration_state: "not_applicable" | "uncommissioned" | "restart_required" | "ready" | (string & {});
+  configuration_ready: boolean;
+  restart_required: boolean;
+  can_connect: boolean;
+  can_disconnect: boolean;
+  blocked_reason: string | null;
+  connected: boolean;
+  runtime_connected: boolean;
+  connecting: boolean;
+  buttons_available: boolean;
+  button_left: boolean;
+  button_right: boolean;
+  connection_state: string;
+  retryable: boolean;
+  last_error: string | null;
+  managed_by_runtime: boolean;
+  accepted_command_count: number;
+  last_accepted_dx: number | null;
+  last_accepted_dy: number | null;
+  diagnostic_move_count: number;
+  last_diagnostic_dx: number | null;
+  last_diagnostic_dy: number | null;
+  device_error_count: number;
+  device_recovery_count: number;
+  last_device_error: string | null;
+};
+
+export type RuntimeSubsystemState =
+  | "stopped"
+  | "starting"
+  | "ready"
+  | "running"
+  | "degraded"
+  | "stopping"
+  | "failed"
+  | "unavailable";
+
+export type RuntimeErrorSummary = {
+  code: string;
+  message: string;
+  subsystem: string | null;
 };
 
 export type ModelProject = {
@@ -330,8 +346,8 @@ export type ModelProbeResponse = ModelProfileResponse & {
 
 export type CaptureState = {
   available: boolean;
-  running?: boolean;
-  state?: string;
+  running: boolean;
+  state: RuntimeSubsystemState;
   device: string;
   profile: null | {
     pixel_format: string;
@@ -339,80 +355,93 @@ export type CaptureState = {
     height: number;
     fps: number;
     preference: string;
-    source?: "configured" | string;
-    selection_reason?: string;
+    source: "configured" | string;
   };
   backend: string | null;
-  fps_capture?: number;
-  frame_period_ms?: number;
-  capture_wait_ms?: number;
-  frames_dropped?: number;
-  preview_target_fps?: number;
-  preview_fps?: number;
-  preview_frames?: number;
-  preview_output_frames?: number;
-  preview_dropped?: number;
-  recoveries?: number;
   last_error: string | null;
-  statistics?: Statistics;
-  report?: ConfigUpdateResponse;
 };
 
 export type Statistics = {
-  nvinfer_input_counter?: number;
-  detection_batch_counter?: number;
-  detection_batch_consumed_counter?: number;
-  control_observation_counter?: number;
-  metrics_available?: boolean;
-  skipped_counter?: number;
-  stale_dropped_batches?: number;
-  timestamp_rejected_batches?: number;
-  non_monotonic_dropped_batches?: number;
-  mailbox_overwritten_batches?: number;
-  published_frames?: number;
-  overwritten_frames?: number;
-  acquired_frames?: number;
-  capture_fps?: number;
-  nvinfer_input_fps?: number;
-  nvinfer_output_fps?: number;
-  detection_data_age_ms?: number;
-  inference_latency_ms?: number;
-  inference_latency_samples?: number;
-  telemetry_window_ms?: number;
-  inference_fps?: number;
-  queue_latency?: number;
-  inference_latency?: number;
-  stale_drop_count?: number;
-  stage_ingress_ms?: number;
-  stage_roi_ms?: number;
-  stage_engine_ms?: number;
-  stage_engine_scope?: string;
-  stage_engine_execute_ms?: number | null;
-  stage_decode_ms?: number;
-  stage_batch_build_ms?: number;
-  stage_handoff_ms?: number;
-  stage_control_wait_ms?: number;
-  stage_postprocess_ms?: number;
-  stage_control_ms?: number;
-  stage_publish_age_ms?: number;
-  stage_accounted_ms?: number;
-  stage_unattributed_ms?: number;
-  stage_total_ms?: number;
-  e2e_latency?: number;
-  detection_batch_fps?: number;
-  control_observation_fps?: number;
-  timestamp_source?: string;
-  last_raw_pts_ns?: number;
-  last_capture_ts_ns?: number;
-  last_probe_observed_ts_ns?: number;
-  last_pts_to_probe_ms?: number;
-  last_frame_age_ms?: number;
-  latest_frame_age_ms?: number;
-  batch_age_ms?: number;
-  appsink_caps?: string;
-  actual_pipeline_string?: string;
-  last_inference_latency_ms?: number;
-  last_detection_count?: number;
+  nvinfer_input_counter: number;
+  detection_batch_counter: number;
+  detection_batch_consumed_counter: number;
+  targeting_batch_counter: number;
+  nvinfer_input_fps: number | null;
+  nvinfer_output_fps: number | null;
+  detection_batch_fps: number | null;
+  targeting_batch_fps: number | null;
+  detection_data_age_ms: number | null;
+  detection_freshness_threshold_ms: number | null;
+  inference_latency_ms: number | null;
+  inference_latency_samples: number;
+  telemetry_window_ms: number | null;
+  metrics_available: boolean;
+};
+
+export type RuntimeInferenceState = {
+  available: boolean;
+  configured: boolean;
+  loaded: boolean;
+  running: boolean;
+  terminal_error: boolean;
+  state: RuntimeSubsystemState;
+  selected: string | null;
+  reason: string | null;
+  detail: string | null;
+  inference_reason: string | null;
+  input_frames: number;
+  output_buffers: number;
+  metadata_extractions: number;
+  published_batches: number;
+  timestamp_buffer_pts_matches: number;
+  timestamp_frame_meta_pts_matches: number;
+  timestamp_correlation_misses: number;
+  sampled_detection_generation: number | null;
+  preview_enabled: boolean;
+  preview_active: boolean;
+  preview_encoder_active: boolean;
+  preview_consumers: number;
+  preview_available: boolean;
+  preview_sequence: number;
+  preview_reason: string;
+  preview_transport: string | null;
+  postprocess: {
+    confidence_threshold: number;
+    nms_threshold: number;
+  } | null;
+};
+
+export type PreviewSnapshotState = {
+  preview_enabled: boolean;
+  preview_running: boolean;
+  preview_active: boolean;
+  preview_encoder_active: boolean;
+  preview_consumers: number;
+  preview_available: boolean;
+  preview_sequence: number;
+  preview_reason: string;
+  preview_transport: string;
+};
+
+export type RuntimeDeepStreamState = {
+  running: boolean;
+  terminal_error: boolean;
+  last_error: string | null;
+  input_frames: number;
+  metadata_extractions: number;
+  published_batches: number;
+  crosshair_active: boolean;
+  crosshair_reason: string;
+};
+
+export type RuntimePipelineSummary = {
+  running: boolean;
+  state: "stopped" | "starting" | "running" | "standby" | "stopping" | "faulted";
+  epoch: number | null;
+  started_at_ms: number | null;
+  mode: string;
+  last_error: RuntimeErrorSummary | null;
+  deepstream: RuntimeDeepStreamState;
 };
 
 export type CaptureCapability = {
@@ -440,29 +469,24 @@ export type CaptureSelectPayload = {
 
 export type RuntimeConfigSummary = {
   version: number;
-  schema_version?: number;
-  effective_version?: number;
-  restart_required?: boolean;
-  source?: Record<string, unknown>;
-  capture?: Record<string, unknown>;
-  roi?: Record<string, unknown>;
-  roi_size?: number;
-  calibration?: Record<string, unknown>;
-  consumers?: Record<string, unknown>;
+  schema_version: number;
+  effective_version: number;
+  restart_required: boolean;
 };
 
 export type RuntimeState = {
   running: boolean;
   source: string;
   active_model: ActiveModel | null;
+  model_catalog_error: string | null;
   executor: ExecutorStatus;
   capture: CaptureState;
-  statistics?: Statistics;
-  inference: Record<string, unknown>;
+  statistics: Statistics;
+  inference: RuntimeInferenceState;
   config: RuntimeConfigSummary;
-  pipeline: Record<string, unknown>;
-  vision?: Record<string, unknown>;
-  fatal_error: Record<string, unknown> | null;
+  pipeline: RuntimePipelineSummary;
+  vision: Record<string, unknown>;
+  fatal_error: RuntimeErrorSummary | null;
 };
 
 export type RuntimeStatusTopic =
@@ -917,8 +941,8 @@ export function stopCapture(reason = "用户停止采集"): Promise<CaptureState
 export function setCapturePreviewEnabled(
   enabled: boolean,
   options?: { keepalive?: boolean }
-): Promise<Record<string, unknown>> {
-  return requestJson<Record<string, unknown>>(API_PATHS.capturePreview, {
+): Promise<PreviewSnapshotState> {
+  return requestJson<PreviewSnapshotState>(API_PATHS.capturePreview, {
     method: "POST",
     keepalive: options?.keepalive,
     headers: {

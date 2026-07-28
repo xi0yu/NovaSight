@@ -10,9 +10,14 @@ export type RuntimeMainlineStatus = {
   metadataExtractions: number | null;
   publishedBatches: number | null;
   consumedBatches: number | null;
-  controlObservations: number | null;
+  targetingBatches: number | null;
+  nvinferInputFps: number | null;
+  detectionBatchFps: number | null;
+  detectionDataAgeMs: number | null;
+  detectionFreshnessThresholdMs: number | null;
   hasInferenceSignal: boolean;
   hasRuntimeConsumption: boolean;
+  hasFreshDetectionData: boolean;
   progressSummary: string;
   readinessCode:
     | "stopped"
@@ -74,7 +79,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
   const pipeline = asRecord(runtime?.pipeline);
   const deepstream = asRecord(pipeline.deepstream);
   const inference = asRecord(runtime?.inference);
-  const statistics = asRecord(runtime?.statistics);
+  const statistics = runtime?.statistics;
   const fatal = asRecord(runtime?.fatal_error);
   const terminalError = readBoolean(inference.terminal_error) || readBoolean(deepstream.terminal_error);
   const pipelineLastError =
@@ -85,7 +90,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     fatalMessage ||
     (terminalError ? readString(inference.detail) || readString(inference.reason) : "");
   const nvinferInputFrames = firstNumber(
-    statistics.nvinfer_input_counter,
+    statistics?.nvinfer_input_counter,
     deepstream.input_frames,
     inference.input_frames
   );
@@ -94,31 +99,41 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     inference.metadata_extractions
   );
   const publishedBatches = firstNumber(
-    statistics.detection_batch_counter,
+    statistics?.detection_batch_counter,
     deepstream.published_batches,
     inference.published_batches
   );
   const consumedBatches = firstNumber(
-    statistics.detection_batch_consumed_counter,
+    statistics?.detection_batch_consumed_counter,
     pipeline.consumed_detection_batches
   );
-  const controlObservations = firstNumber(
-    statistics.control_observation_counter,
-    pipeline.control_observations
+  const targetingBatches = firstNumber(
+    statistics?.targeting_batch_counter
+  );
+  const detectionBatchFps = readOptionalNumber(statistics?.detection_batch_fps);
+  const nvinferInputFps = readOptionalNumber(statistics?.nvinfer_input_fps);
+  const telemetryWindowMs = readOptionalNumber(statistics?.telemetry_window_ms);
+  const detectionDataAgeMs = readOptionalNumber(statistics?.detection_data_age_ms);
+  const detectionFreshnessThresholdMs = readOptionalNumber(
+    statistics?.detection_freshness_threshold_ms
   );
   const hasInferenceSignal =
     positive(nvinferInputFrames) ||
     positive(metadataExtractions) ||
     positive(publishedBatches);
   const hasRuntimeConsumption =
-    positive(consumedBatches) || positive(controlObservations);
+    positive(consumedBatches) || positive(targetingBatches);
+  const hasFreshDetectionData =
+    detectionDataAgeMs !== null &&
+    detectionFreshnessThresholdMs !== null &&
+    detectionDataAgeMs <= detectionFreshnessThresholdMs;
   const resolvedFailureMessage = failureMessage;
   const progressSummary = [
     `nvinfer=${counterLabel(nvinferInputFrames)}`,
     `metadata=${counterLabel(metadataExtractions)}`,
     `published=${counterLabel(publishedBatches)}`,
     `consumed=${counterLabel(consumedBatches)}`,
-    `control=${counterLabel(controlObservations)}`
+    `targeting=${counterLabel(targetingBatches)}`
   ].join(" · ");
   const running = runtime?.running === true || pipeline.running === true || deepstream.running === true;
   const failed =
@@ -182,18 +197,33 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     readinessCode = "no_video";
     readinessLabel = "未检测到画面";
     readinessDetail = "主链已运行，但尚未收到有效采集帧；请检查采集卡信号和输入配置。";
+  } else if (running && telemetryWindowMs !== null && nvinferInputFps === 0) {
+    readinessCode = "no_video";
+    readinessLabel = "画面输入已停止";
+    readinessDetail = "历史上收到过采集帧，但当前统计窗口内没有新的 nvinfer 输入。";
+  } else if (
+    running &&
+    detectionDataAgeMs !== null &&
+    detectionFreshnessThresholdMs !== null &&
+    detectionDataAgeMs > detectionFreshnessThresholdMs
+  ) {
+    readinessCode = "frame_latency_high";
+    readinessLabel = "当前画面延迟过高";
+    readinessDetail = `最新结果帧龄 ${detectionDataAgeMs.toFixed(2)} ms，已超过控制安全阈值 ${detectionFreshnessThresholdMs.toFixed(2)} ms。`;
   } else if (controlDeviceDisconnected) {
     readinessCode = "control_device_disconnected";
     readinessLabel = "视觉已就绪 · 控制设备未连接";
     readinessDetail = "采集与推理继续运行，鼠标输出保持安全禁用；控制设备恢复后会自动重连。";
-  } else if (running && hasRuntimeConsumption) {
+  } else if (running && hasRuntimeConsumption && hasFreshDetectionData) {
     readinessCode = "ready";
     readinessLabel = "已就绪";
-    readinessDetail = "采集、推理和运行时消费链路均已产生真实数据。";
+    readinessDetail = "采集、推理和运行时消费链路正在产生新鲜的真实数据。";
   } else if (running) {
     readinessCode = "starting";
     readinessLabel = "等待运行数据";
-    readinessDetail = "推理链已启动，正在等待 DetectionBatch 被目标与控制算法消费。";
+    readinessDetail = positive(publishedBatches)
+      ? "已收到 DetectionBatch，正在等待新鲜度与运行时消费状态确认。"
+      : "推理链已启动，正在等待首个 DetectionBatch。";
   }
 
   return {
@@ -206,9 +236,14 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     metadataExtractions,
     publishedBatches,
     consumedBatches,
-    controlObservations,
+    targetingBatches,
+    nvinferInputFps,
+    detectionBatchFps,
+    detectionDataAgeMs,
+    detectionFreshnessThresholdMs,
     hasInferenceSignal,
     hasRuntimeConsumption,
+    hasFreshDetectionData,
     progressSummary,
     readinessCode,
     readinessLabel,

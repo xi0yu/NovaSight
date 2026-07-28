@@ -94,7 +94,6 @@ pub struct ExecutorAvailability {
     pub connected: bool,
     pub runtime_connected: bool,
     pub connecting: bool,
-    pub monitoring: bool,
     pub buttons_available: bool,
     pub button_left: bool,
     pub button_right: bool,
