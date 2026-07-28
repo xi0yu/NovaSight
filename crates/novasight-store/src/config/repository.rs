@@ -26,6 +26,7 @@ use super::{AppConfig, ConfigValidationError};
 
 const CONFIG_LOCK_WAIT: Duration = Duration::from_millis(250);
 const CONFIG_LOCK_RETRY: Duration = Duration::from_millis(2);
+const DEFAULT_RUNTIME_CONFIG: &str = include_str!("bootstrap.yaml");
 
 pub trait ConfigRepository {
     type Error: Error + Send + Sync + 'static;
@@ -57,6 +58,26 @@ impl YamlConfigRepository {
         load_document(path.as_ref()).map(|(_, _, config)| config)
     }
 
+    /// Load the canonical runtime configuration, creating it exactly once
+    /// when the default local file has not been initialized yet.
+    ///
+    /// Ordinary `load` remains strict so a misspelled custom `--config` path
+    /// is never replaced by an invented file.
+    pub fn load_or_initialize_default(path: impl AsRef<Path>) -> Result<AppConfig, ConfigError> {
+        let path = path.as_ref();
+        match Self::load(path) {
+            Ok(config) => Ok(config),
+            Err(ConfigError::NotFound { .. }) => initialize_default_document(path),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Materialize the bundled Jetson baseline without overwriting an
+    /// existing local configuration.
+    pub fn initialize_default(path: impl AsRef<Path>) -> Result<AppConfig, ConfigError> {
+        initialize_default_document(path.as_ref())
+    }
+
     pub fn save(
         path: impl AsRef<Path>,
         config: &AppConfig,
@@ -82,6 +103,57 @@ impl YamlConfigRepository {
     ) -> Result<AppConfig, ConfigError> {
         replace_document(&self.path, replacement, expected_revision)
     }
+}
+
+fn initialize_default_document(path: &Path) -> Result<AppConfig, ConfigError> {
+    ensure_save_supported(path)?;
+    let parent = parent_directory(path);
+    fs::create_dir_all(parent)
+        .map_err(|source| io_error("create parent directory", parent, source))?;
+    let directory =
+        File::open(parent).map_err(|source| io_error("open parent directory", parent, source))?;
+    try_lock_parent(&directory, path, parent)?;
+
+    match load_document(path) {
+        Ok((_, _, config)) => return Ok(config),
+        Err(ConfigError::NotFound { .. }) => {}
+        Err(error) => return Err(error),
+    }
+
+    let (temporary_path, mut temporary_file) = create_temporary_file(parent, path.file_name())?;
+    let mut cleanup = TemporaryCleanup::new(temporary_path.clone());
+    temporary_file
+        .write_all(DEFAULT_RUNTIME_CONFIG.as_bytes())
+        .map_err(|source| io_error("write default", &temporary_path, source))?;
+    temporary_file
+        .flush()
+        .map_err(|source| io_error("flush default", &temporary_path, source))?;
+    temporary_file
+        .sync_all()
+        .map_err(|source| io_error("sync default", &temporary_path, source))?;
+
+    let (_, _, candidate) = load_document(&temporary_path)?;
+    candidate
+        .require_production_adapters()
+        .map_err(|source| ConfigError::Validation {
+            path: path.to_owned(),
+            source,
+        })?;
+
+    match fs::hard_link(&temporary_path, path) {
+        Ok(()) => {}
+        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+            return load_document(path).map(|(_, _, config)| config);
+        }
+        Err(source) => return Err(io_error("publish default", path, source)),
+    }
+    fs::remove_file(&temporary_path)
+        .map_err(|source| io_error("remove initialization temporary", &temporary_path, source))?;
+    cleanup.disarm();
+    directory
+        .sync_all()
+        .map_err(|source| io_error("sync parent directory", parent, source))?;
+    load_document(path).map(|(_, _, config)| config)
 }
 
 impl ConfigRepository for YamlConfigRepository {

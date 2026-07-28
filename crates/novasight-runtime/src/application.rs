@@ -26,6 +26,24 @@ impl LoadedApplication {
         })
     }
 
+    /// Load the one canonical local configuration, materializing the bundled
+    /// baseline on first start. Custom paths deliberately use `load` instead.
+    pub async fn load_or_initialize_default(
+        config_path: impl AsRef<Path>,
+    ) -> Result<Self, ApplicationError> {
+        let config_path = config_path.as_ref().to_path_buf();
+        let load_path = config_path.clone();
+        let config = tokio::task::spawn_blocking(move || {
+            YamlConfigRepository::load_or_initialize_default(load_path)
+        })
+        .await
+        .map_err(ApplicationError::ConfigLoadTask)??;
+        Ok(Self {
+            config_path,
+            config,
+        })
+    }
+
     pub fn config_path(&self) -> &Path {
         &self.config_path
     }

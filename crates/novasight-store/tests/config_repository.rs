@@ -37,9 +37,17 @@ impl Drop for TempDirectory {
     }
 }
 
+fn default_runtime_config(directory: &TempDirectory) -> PathBuf {
+    let path = directory.join("novasight.yaml");
+    YamlConfigRepository::initialize_default(&path)
+        .expect("initialize bundled runtime configuration");
+    path
+}
+
 #[test]
-fn loads_the_single_project_runtime_config() {
-    let runtime_config = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
+fn initializes_the_single_local_runtime_config() {
+    let directory = TempDirectory::new();
+    let runtime_config = default_runtime_config(&directory);
 
     let config = YamlConfigRepository::load(runtime_config).unwrap();
 
@@ -73,9 +81,25 @@ fn loads_the_single_project_runtime_config() {
 }
 
 #[test]
+fn default_initialization_never_overwrites_an_existing_local_config() {
+    let directory = TempDirectory::new();
+    let path = default_runtime_config(&directory);
+    let updated = YamlConfigRepository::new(&path)
+        .save_field("server", "port", Value::Number(5_275_u64.into()), 0)
+        .unwrap();
+    let before = fs::read(&path).unwrap();
+
+    let loaded = YamlConfigRepository::load_or_initialize_default(&path).unwrap();
+
+    assert_eq!(loaded.revision, updated.revision);
+    assert_eq!(loaded.server.port, 5_275);
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
 fn production_output_cannot_open_before_hardware_is_commissioned() {
     let directory = TempDirectory::new();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
+    let source = default_runtime_config(&directory);
     let path = directory.join("unsafe-output.yaml");
     let document = fs::read_to_string(source)
         .unwrap()
@@ -158,7 +182,7 @@ fn document_replacement_cannot_remove_hardware_while_output_is_enabled() {
 #[test]
 fn production_preflight_rejects_an_unauthenticated_public_http_binding() {
     let directory = TempDirectory::new();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
+    let source = default_runtime_config(&directory);
     let path = directory.join("public-http.yaml");
     let document = fs::read_to_string(source)
         .unwrap()
@@ -175,7 +199,7 @@ fn production_preflight_rejects_an_unauthenticated_public_http_binding() {
 #[test]
 fn production_does_not_silently_invent_rust_pipeline_parameters() {
     let directory = TempDirectory::new();
-    let runtime_config = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
+    let runtime_config = default_runtime_config(&directory);
     let mut document: Value =
         serde_yaml::from_str(&fs::read_to_string(runtime_config).unwrap()).unwrap();
     document
@@ -382,7 +406,7 @@ fn saving_partial_adapter_sections_cannot_materialize_defaults() {
 #[test]
 fn whitespace_only_parser_library_fails_closed() {
     let directory = TempDirectory::new();
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
+    let source = default_runtime_config(&directory);
     let path = directory.join("blank-parser.yaml");
     let document = fs::read_to_string(source).unwrap().replace(
         "deepstream_parser_library: auto",

@@ -15,7 +15,7 @@ NovaSight/
 ├── crates/                    # Rust domain and platform modules
 ├── native/                    # Narrow C/C++ seams for NVIDIA SDKs
 ├── .config/
-│   └── novasight.yaml          # Single runtime configuration
+│   └── novasight.yaml          # Generated local runtime configuration (Git-ignored)
 └── web/                       # React Web UI
 ```
 
@@ -25,12 +25,16 @@ longer require entering a `rust/` directory or passing `--manifest-path`.
 ## Jetson development run
 
 Install the JetPack/DeepStream development packages and Rust toolchain first.
-Review capture, model, ROI, and kmNet values in `.config/novasight.yaml`, then
-run the real Jetson backend from the repository root:
+On first start NovaSight creates the Git-ignored `.config/novasight.yaml` from
+its bundled Jetson baseline and continues startup. Run the real Jetson backend
+from the repository root:
 
 ```bash
 cargo run -p novasightd --features deepstream
 ```
+
+After the first launch, review the generated capture, model, ROI, and kmNet
+values through the Web UI or the local configuration file.
 
 Live DeepStream perception is the normal Jetson path. It does not need a
 `--live-perception` switch, a preparatory build script, or Python. Cargo builds
@@ -43,8 +47,10 @@ cargo run -p novasightd -- --dry-run
 ```
 
 Without `--config`, NovaSight reads exactly `.config/novasight.yaml` relative
-to the directory where it was started. `--config` remains available only as an
-explicit path override. The backend listens on `127.0.0.1:5174` by default.
+to the directory where it was started, creating that one file when it is
+missing. `--config` remains available only as an explicit path override and a
+missing custom path still fails with `CONFIG_NOT_FOUND`. The backend listens on
+`127.0.0.1:5174` by default.
 Debug builds expose process-local development access through the Web UI and
 `POST /api/license/temporary`. The daemon decides this from its compiled build
 profile, makes no external authorization request, and writes no license file;

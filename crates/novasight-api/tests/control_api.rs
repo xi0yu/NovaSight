@@ -203,7 +203,7 @@ async fn versioned_config_api_preserves_pending_restart_while_hot_applying_outpu
 async fn runtime_start_loads_pending_visual_pipeline_configuration_into_the_next_epoch() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");
-    fs::write(&path, include_str!("../../../.config/novasight.yaml")).unwrap();
+    YamlConfigRepository::initialize_default(&path).unwrap();
     let initial = YamlConfigRepository::load(&path).unwrap();
     let config = ConfigService::new(&path, initial);
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
@@ -281,7 +281,7 @@ async fn runtime_start_loads_pending_visual_pipeline_configuration_into_the_next
 async fn runtime_start_keeps_process_owned_hardware_changes_behind_daemon_restart() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");
-    fs::write(&path, include_str!("../../../.config/novasight.yaml")).unwrap();
+    YamlConfigRepository::initialize_default(&path).unwrap();
     let initial = YamlConfigRepository::load(&path).unwrap();
     let config = ConfigService::new(&path, initial);
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();

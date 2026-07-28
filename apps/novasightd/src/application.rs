@@ -21,11 +21,13 @@ use crate::server;
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
 use crate::live_perception;
 
+const DEFAULT_CONFIG_PATH: &str = ".config/novasight.yaml";
+
 #[derive(Parser, Debug)]
 #[command(about = "NovaSight runtime daemon")]
 struct Args {
     /// Path to the external NovaSight YAML configuration.
-    #[arg(long, default_value = ".config/novasight.yaml")]
+    #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
     config: PathBuf,
 
     /// Run preflight checks and exit; do not start the pipeline.
@@ -49,7 +51,12 @@ fn init_logging() {
 pub async fn entry() -> ExitCode {
     init_logging();
     let args = Args::parse();
-    let loaded = match LoadedApplication::load(&args.config).await {
+    let load = if args.config == Path::new(DEFAULT_CONFIG_PATH) {
+        LoadedApplication::load_or_initialize_default(&args.config).await
+    } else {
+        LoadedApplication::load(&args.config).await
+    };
+    let loaded = match load {
         Ok(loaded) => loaded,
         Err(error) => {
             eprintln!("{}: {error}", error.code());

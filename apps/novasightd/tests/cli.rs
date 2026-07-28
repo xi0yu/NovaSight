@@ -58,6 +58,14 @@ fn temp_config() -> (TempDirectory, PathBuf) {
     (directory, path)
 }
 
+fn production_config() -> (TempDirectory, PathBuf) {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    novasight_store::config::YamlConfigRepository::initialize_default(&path)
+        .expect("initialize bundled production configuration");
+    (directory, path)
+}
+
 #[test]
 fn help_documents_yaml_check_and_explicit_dry_run() {
     let output = daemon_command().arg("--help").output().expect("run help");
@@ -115,6 +123,31 @@ fn missing_config_exits_nonzero_with_stable_code() {
 }
 
 #[test]
+fn missing_default_config_is_created_before_preflight() {
+    let directory = TempDirectory::new();
+    let output = daemon_command()
+        .current_dir(&directory.0)
+        .args(["--check", "--dry-run"])
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
+        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
+        .output()
+        .expect("run first-start preflight");
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+    let config_path = directory.join(".config/novasight.yaml");
+
+    assert!(
+        output.status.success(),
+        "first start should create the default configuration: {stderr}"
+    );
+    assert!(config_path.is_file());
+    let config = novasight_store::config::YamlConfigRepository::load(config_path)
+        .expect("load generated default configuration");
+    config
+        .require_production_adapters()
+        .expect("generated configuration must contain the explicit Jetson contract");
+}
+
+#[test]
 fn check_loads_config_and_exits_without_starting_the_daemon() {
     let (_directory, path) = temp_config();
     let output = daemon_command()
@@ -166,7 +199,7 @@ fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
 
 #[test]
 fn development_hardware_check_is_not_blocked_by_formal_license_configuration() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
+    let (_directory, path) = production_config();
     let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
         .env("NOVASIGHT_LICENSE_PUBLIC_KEY", "not a PEM public key")
@@ -182,7 +215,7 @@ fn development_hardware_check_is_not_blocked_by_formal_license_configuration() {
 
 #[test]
 fn development_hardware_check_ignores_an_unreadable_formal_key_file() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
+    let (_directory, path) = production_config();
     let missing_key = path.with_file_name("missing-license-public.pem");
     let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
@@ -199,7 +232,7 @@ fn development_hardware_check_ignores_an_unreadable_formal_key_file() {
 
 #[test]
 fn valid_production_authority_reaches_the_platform_build_boundary() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.config/novasight.yaml");
+    let (_directory, path) = production_config();
     let output = daemon_command()
         .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
