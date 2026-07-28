@@ -574,6 +574,16 @@ export class ApiError extends Error {
   }
 }
 
+export function getApiErrorCode(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    return "";
+  }
+  const detail = typeof error.detail === "object" && error.detail !== null
+    ? error.detail as Record<string, unknown>
+    : {};
+  return typeof detail.code === "string" ? detail.code : "";
+}
+
 export const API_PATHS = {
   health: "/healthz",
   runtimeState: "/api/runtime/state",

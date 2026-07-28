@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 
 import { StatusIndicator } from "./components/ui";
 import {
+  ApiError,
   HealthResponse,
   LicenseStatus,
   ModelProject,
@@ -10,10 +11,12 @@ import {
   RuntimeStatusFrame,
   RuntimeStatusTopic,
   getHealth,
+  getApiErrorCode,
   getLicenseStatus,
   getModelProjects,
   getRuntimeConfig,
   getRuntimeState,
+  requestTemporaryLicense,
   statusWebSocketUrl,
 } from "./api";
 import { ToastHost } from "./components/ToastHost";
@@ -63,6 +66,7 @@ const STATUS_STALE_AFTER_MS = 3000;
 const STATUS_FIRST_MESSAGE_TIMEOUT_MS = 8000;
 const STATUS_RECONNECT_BASE_MS = 1000;
 const STATUS_RECONNECT_MAX_MS = 15000;
+const LICENSE_STARTUP_RETRY_DELAYS_MS = [250, 750] as const;
 
 function withoutError(
   errors: LoadState["errors"],
@@ -75,6 +79,27 @@ function withoutError(
 
 function isAbortError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
+}
+
+function isTransientLicenseTransportError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return getApiErrorCode(error) === "" && (error.status === 408 || error.status >= 500);
+  }
+  return error instanceof TypeError;
+}
+
+async function getLicenseStatusWithStartupRetry(): Promise<LicenseStatus> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await getLicenseStatus();
+    } catch (error) {
+      const delay = LICENSE_STARTUP_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !isTransientLicenseTransportError(error)) {
+        throw error;
+      }
+      await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+    }
+  }
 }
 
 function statusTopicFromPage(): RuntimeStatusTopic {
@@ -175,6 +200,7 @@ function StudioApp() {
   const runtimeFallbackAbortRef = useRef<AbortController | null>(null);
   const healthRefreshAbortRef = useRef<AbortController | null>(null);
   const [licenseLoading, setLicenseLoading] = useState(true);
+  const [licenseRecoveryLoading, setLicenseRecoveryLoading] = useState(false);
   const [licenseIssue, setLicenseIssue] = useState<LicenseConnectionIssue | null>(null);
 
   const applyRuntimeState = useCallback((runtime: RuntimeState) => {
@@ -224,7 +250,7 @@ function StudioApp() {
     setLicenseIssue(null);
     try {
       const cached = localStorage.getItem(LICENSE_CACHE_KEY) === "1";
-      const status = await getLicenseStatus();
+      const status = await getLicenseStatusWithStartupRetry();
       if (requestSeq !== licenseRequestSeqRef.current) {
         return status;
       }
@@ -284,6 +310,39 @@ function StudioApp() {
       clearWebSocketFailure("status");
     }
   }, []);
+
+  const recoverTemporaryLicense = useCallback(async () => {
+    setLicenseRecoveryLoading(true);
+    try {
+      const response = await requestTemporaryLicense();
+      setLicenseIssue(null);
+      handleLicenseChange(response.status);
+      if (!response.supported) {
+        reportInfo(
+          "当前构建不支持临时权限",
+          "Release 后端需要正式签名授权；请使用 Debug 构建进行开发验证。",
+          "license-recovery"
+        );
+      } else if (!response.granted || !response.status.valid) {
+        reportError(new Error(response.status.message || "临时权限未获批准"), {
+          source: "license-recovery",
+          title: "临时权限未生效",
+          publicDetail: response.status.message || "请确认正在运行 Debug 后端。"
+        });
+      }
+    } catch (error) {
+      const issue = describeLicenseConnectionIssue(error);
+      setLicenseIssue(issue);
+      reportError(error, {
+        source: "license-recovery",
+        title: "临时权限恢复失败",
+        publicDetail: `${issue.description} ${issue.recovery}`,
+        exposeStatus: false
+      });
+    } finally {
+      setLicenseRecoveryLoading(false);
+    }
+  }, [handleLicenseChange]);
 
   const loadProjects = useCallback(async (force = false): Promise<ModelProject[]> => {
     if (!force && projectsLoadedRef.current) {
@@ -673,6 +732,8 @@ function StudioApp() {
         loading={licenseLoading}
         issue={licenseIssue}
         onRefresh={() => void loadLicense()}
+        onTemporaryRecovery={() => void recoverTemporaryLicense()}
+        temporaryRecoveryLoading={licenseRecoveryLoading}
         onLicenseChange={handleLicenseChange}
       />
     );

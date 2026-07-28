@@ -1,4 +1,4 @@
-import { ApiError } from "../../api";
+import { ApiError, getApiErrorCode } from "../../api";
 
 export type LicenseConnectionIssue = {
   kind: "unreachable" | "timeout" | "incompatible" | "service-error";
@@ -12,16 +12,9 @@ export type LicenseActionFailure = {
   message: string;
 };
 
-function apiErrorCode(error: ApiError): string {
-  const detail = typeof error.detail === "object" && error.detail !== null
-    ? error.detail as Record<string, unknown>
-    : {};
-  return typeof detail.code === "string" ? detail.code : "";
-}
-
 export function describeLicenseConnectionIssue(error: unknown): LicenseConnectionIssue {
   if (error instanceof ApiError) {
-    const code = apiErrorCode(error);
+    const code = getApiErrorCode(error);
     if (code === "LICENSE_STORAGE_FAILED" || code === "LICENSE_TASK_FAILED") {
       return {
         kind: "service-error",
@@ -60,6 +53,14 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
         title: "NovaSight 后端接口不可用",
         description: "前端已连接到本机服务，但当前后端没有提供所需的授权接口。",
         recovery: "请确认前端与 novasightd 来自同一版本，然后重新启动后端。"
+      };
+    }
+    if (error.status >= 500 && code === "") {
+      return {
+        kind: "service-error",
+        title: "NovaSight 后端连接仍在建立",
+        description: "Web 前端在线，但代理这次没有收到 novasightd 的业务响应；这不是授权凭证错误。",
+        recovery: "后端刚启动或重启时会短暂出现；可重新连接，Debug 开发环境也可直接尝试进程内临时权限。"
       };
     }
     if (error.status >= 500) {

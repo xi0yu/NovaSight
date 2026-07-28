@@ -10,6 +10,8 @@ type LicenseProps = {
   loading?: boolean;
   issue?: LicenseConnectionIssue | null;
   onRefresh?: () => void;
+  onTemporaryRecovery?: () => void;
+  temporaryRecoveryLoading?: boolean;
   onLicenseChange: (license: LicenseStatus) => void;
 };
 
@@ -18,8 +20,10 @@ export function LicenseGate({
   loading,
   issue,
   onRefresh,
+  onTemporaryRecovery,
+  temporaryRecoveryLoading,
   onLicenseChange
-}: Required<Pick<LicenseProps, "loading" | "onRefresh">> &
+}: Required<Pick<LicenseProps, "loading" | "onRefresh" | "onTemporaryRecovery" | "temporaryRecoveryLoading">> &
   Pick<LicenseProps, "license" | "issue" | "onLicenseChange">) {
   const serviceUnavailable = !loading && license === null && issue !== null;
 
@@ -48,7 +52,19 @@ export function LicenseGate({
                 <strong>建议操作</strong>
                 <span>{issue?.recovery}</span>
               </div>
-              <button className="button" type="button" onClick={onRefresh}>重新连接</button>
+              <div className="service-connection-actions">
+                <button className="button" type="button" onClick={onRefresh}>重新连接</button>
+                {issue?.kind === "service-error" ? (
+                  <button
+                    className="button compact-button"
+                    type="button"
+                    disabled={temporaryRecoveryLoading}
+                    onClick={onTemporaryRecovery}
+                  >
+                    {temporaryRecoveryLoading ? "正在尝试…" : "尝试 Debug 临时权限"}
+                  </button>
+                ) : null}
+              </div>
             </div>
           </section>
         ) : loading ? (

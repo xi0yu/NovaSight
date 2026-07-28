@@ -5,12 +5,14 @@ import {
   CaptureCapability,
   CaptureState,
   CaptureSelectPayload,
+  getApiErrorCode,
   connectKmNet,
   diagnosticMoveKmNet,
   disconnectKmNet,
   clearCrosshairTemplate,
   crosshairTemplatePreviewUrl,
   getRuntimeState,
+  getRuntimeConfig,
   learnCrosshair,
   HealthResponse,
   ModelArtifact,
@@ -2294,6 +2296,10 @@ export function StudioConsoleView({
       setLaunchCompletedStages(MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT.length);
 
       setLaunchProgressDetail((detail) => detail || "主链启动完成，后端运行态已确认。");
+      // Capture selection may persist a newer configuration revision. Refresh
+      // after successful launch so subsequent editors start from that exact
+      // canonical revision instead of the pre-launch snapshot.
+      await onRefresh();
       showLaunchToast();
     } catch (err) {
       if (launchCancelledRef.current) {
@@ -2454,8 +2460,8 @@ export function StudioConsoleView({
       section: string,
       values: Record<string, RuntimeConfigValue>
     ) => {
-      const request = configWriteQueueRef.current.then(async () => {
-        const current = cloneRuntimeConfig(runtimeConfigLatestRef.current);
+      const persistSection = async (source: RuntimeConfig) => {
+        const current = cloneRuntimeConfig(source);
         if (!current) {
           throw new Error("尚未读取运行配置。");
         }
@@ -2469,6 +2475,29 @@ export function StudioConsoleView({
         }
         current[section] = nextSection as RuntimeConfig[string];
         return updateRuntimeConfig(current);
+      };
+      const request = configWriteQueueRef.current.then(async () => {
+        const current = cloneRuntimeConfig(runtimeConfigLatestRef.current);
+        if (!current) {
+          throw new Error("尚未读取运行配置。");
+        }
+        try {
+          return await persistSection(current);
+        } catch (error) {
+          if (getApiErrorCode(error) !== "CONFIG_REVISION_CONFLICT") {
+            throw error;
+          }
+          // Capture selection and other backend-owned transactions may have
+          // advanced the revision after this view was rendered. Re-read the
+          // canonical document and replay only this section's intended keys;
+          // never resend an entire stale configuration.
+          const latest = normalizeRuntimeConfig(await getRuntimeConfig());
+          runtimeConfigLatestRef.current = latest;
+          configDraftRef.current = latest;
+          setConfigDraft(latest);
+          onRuntimeConfigChange(latest);
+          return persistSection(latest);
+        }
       });
       configWriteQueueRef.current = request.then(
         () => undefined,
@@ -2506,12 +2535,18 @@ export function StudioConsoleView({
         return;
       }
       setLocalError(null);
-      await updateConfigSection("capture", {
-        roi_left: Math.floor((width - size) / 2),
-        roi_top: Math.floor((height - size) / 2),
-        roi_width: size,
-        roi_height: size
-      });
+      try {
+        await updateConfigSection("capture", {
+          roi_left: Math.floor((width - size) / 2),
+          roi_top: Math.floor((height - size) / 2),
+          roi_width: size,
+          roi_height: size
+        });
+      } catch (error) {
+        const message = getErrorMessage(error);
+        setLocalError(`ROI 配置同步失败：${message}`);
+        reportError(error, { source: "capture-roi", title: "ROI 配置未保存" });
+      }
     },
     [
       configuredCaptureHeight,
