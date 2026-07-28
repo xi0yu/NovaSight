@@ -1,110 +1,60 @@
-# Fixed Y Recoil Plan
+# Interval-Gated +Y Recoil
 
-Date: 2026-07-16
+Date: 2026-07-28
 
-Status: implemented.
+Status: implemented in the Rust backend.
 
 ## Contract
 
-After the real left button has remained down for a configurable delay, every
-fresh valid control observation adds one configurable fixed reverse-Y amount to
-the existing visual Y feedback.
+Recoil is a contribution to an existing tracking command, never an independent
+device command:
 
 ```text
-if recoil enabled
-and real left button is fresh and down
-and left_hold_ms >= start_delay_ms
-and current target is a fresh observed target:
-    recoil_y = quantize(configured fixed counts per observation)
-else:
-    recoil_y = 0
-
-final_y = clamp(quantized_visual_feedback_y + signed(recoil_y), active_mode_y_limit)
+current tracking move
+        +
+if real left button is down
+and the optional target guard passes
+and elapsed since the last successful recoil move >= interval_ms:
+    + y_counts
+        ↓
+one combined kmNet move
 ```
 
-There is no recoil prediction, integral, curve, ramp, learning, output-tick
-generator, or historical repayment.
+The first eligible command after a new press starts the cadence and does not
+receive recoil until one complete interval has elapsed. A late command receives
+one `+Y` contribution only; missed intervals are not accumulated or repaid.
 
-## Why Per Observation
-
-The V2 controller creates at most one current command per new DetectionBatch.
-Binding fixed counts to that same observation preserves latest-replace semantics
-and avoids sending the configured count at the independent 4ms tick rate.
-
-The tradeoff is explicit:
-
-```text
-approximate recoil counts per second
-    = fixed counts per observation * control observation FPS
-```
-
-This is simpler but not frame-rate invariant. Studio must display the current
-control observation FPS and estimated counts/s next to the setting so the user
-can see the consequence rather than treating the number as a universal rate.
+The cadence advances only after the combined command is accepted by the pointer
+adapter. A rejected send therefore leaves the contribution due for the next
+eligible command.
 
 ## Configuration
 
-Replace the current rate/ramp fields with:
-
 ```yaml
 control:
-  shared:
-    recoil_enabled: false
-    recoil_start_delay_ms: 0
-    recoil_y_counts_per_observation: 0.0
+  recoil:
+    enabled: false
+    require_target: true
+    interval_ms: 16
+    y_counts: 1
 ```
 
-`recoil_y_counts_per_observation` is non-negative and may be fractional. A
-dedicated recoil quantizer accumulates only its sub-count residual, so values
-such as 0.5 produce one device count every two accepted observations. Keeping
-that residual separate from visual feedback lets release, target loss, stale
-input, and send failure clear recoil immediately without deleting or repaying
-visual error. The two integer contributions are added once and then clamped.
+- `interval_ms`: minimum time between successful moves that contain recoil.
+- `y_counts`: positive Y value added to the current command when due.
+- `require_target`: requires the current command to own a valid target. Turning
+  it off removes this check but still does not create a standalone recoil move.
 
-The reverse-Y device sign is derived once from the active effective Y direction.
-Studio displays the resulting `+Y` or `-Y` direction; the amount field itself
-remains non-negative.
+Schema 7 rate/ramp recoil settings cannot be converted without changing the
+physical output. Migration to schema 8 therefore removes those retired fields
+and closes `enabled`; the user must confirm the new interval and +Y values
+before enabling recoil again.
 
-## Reset Rules
+## Safety And Performance
 
-Immediately output no recoil and clear its fractional residual on:
-
-- real left-button release or stale/unavailable button state;
-- target loss, target switch, predicted-only Track, or track rebuild;
-- stale/non-monotonic DetectionBatch;
-- runtime/capture/inference stop;
-- algorithm, geometry, calibration, or recoil configuration change;
-- kmNet disconnect or send block.
-
-No release smoothing and no counts debt are allowed.
-
-## Composition And Telemetry
-
-Keep the decomposition visible:
-
-```text
-feedback_demand_y
-recoil_y_counts_float
-combined_demand_y
-integer_command_y
-driver_y_counts
-recoil_left_hold_ms
-recoil_active
-recoil_block_reason
-```
-
-Studio derives `estimated_recoil_counts_s` from the live control-observation
-FPS for presentation; it is not persisted as another controller state field.
-
-This does not solve automatic weapon adaptation. It gives the user one stable,
-understandable delay and one understandable strength parameter while preserving
-enough evidence to diagnose over-pressure.
-
-## Focused Tests
-
-1. no output before `start_delay_ms`, fixed output at and after the boundary;
-2. requires fresh real left button and a fresh observed target;
-3. fractional setting quantizes deterministically and independently from visual feedback;
-4. release/target switch/stale/config change clears residual immediately;
-5. fixed recoil and visual feedback are separately reported before final clamp;
-6. latest-replace still sends at most one command for one observation.
+- Left-button release, reconnect state changes and live recoil reconfiguration
+  reset the cadence.
+- The final Y value is clamped to the signed 16-bit kmNet range.
+- The targeting hot path no longer calculates recoil geometry or writes a
+  recoil observation mutex.
+- The device worker is event-driven and has no idle/recoil polling wake-up.
+- Every accepted tracking command produces at most one device send.

@@ -13,6 +13,7 @@ use novasight_api::{
     build_control_router_with_platform_queries, build_control_router_with_services,
     build_control_router_with_shutdown,
 };
+use novasight_core::controller::recoil::RecoilConfig;
 use novasight_core::{
     CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError, Clock,
     Detection, DetectionBatch, FrameStamp, MonotonicNanos, PointerDevice, RecordingPointerDevice,
@@ -503,7 +504,7 @@ async fn recoil_config_is_applied_to_the_running_pipeline_without_restart() {
                 .uri("/api/v1/config")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"section":"control","key":"recoil","value":{"enabled":true,"require_target":false,"base_rate_counts_s":600.0,"max_rate_counts_s":600.0,"startup_ms":0.0}}"#,
+                    r#"{"section":"control","key":"recoil","value":{"enabled":true,"require_target":true,"interval_ms":4,"y_counts":2}}"#,
                 ))
                 .unwrap(),
         )
@@ -512,32 +513,43 @@ async fn recoil_config_is_applied_to_the_running_pipeline_without_restart() {
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(body["config"]["control"]["recoil"]["require_target"], false);
+    assert_eq!(body["config"]["control"]["recoil"]["interval_ms"], 4);
+    assert_eq!(body["config"]["control"]["recoil"]["y_counts"], 2);
     assert_eq!(body["applied"], true);
     assert_eq!(body["restart_required"], false);
     assert_eq!(config.effective_revision(), 1);
 
-    clock.0.store(1_012_000_000, Ordering::Release);
     runtime.set_trigger_active(true).await.unwrap();
     let epoch = started.pipeline.epoch.unwrap();
-    runtime
-        .submit_detection_batch(
-            DetectionBatch::new(FrameStamp::new(epoch, 1, 1_000_000_000), 640, 640, vec![])
+    for (generation, capture_ts, now_ns) in [
+        (1, 1_000_000_000, 1_008_000_000),
+        (2, 1_070_000_000, 1_078_000_000),
+    ] {
+        clock.0.store(now_ns, Ordering::Release);
+        runtime
+            .submit_detection_batch(
+                DetectionBatch::new(
+                    FrameStamp::new(epoch, generation, capture_ts),
+                    640,
+                    640,
+                    vec![Detection::new(1, 0, 310.0, 311.2, 40.0, 40.0, 0.95).unwrap()],
+                )
                 .unwrap(),
-        )
-        .unwrap();
+            )
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let deadline = Instant::now() + Duration::from_secs(1);
-    while device.receipts().is_empty() && Instant::now() < deadline {
-        clock.0.fetch_add(4_000_000, Ordering::AcqRel);
+    while device.receipts().len() < 2 && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     assert_eq!(
         device.receipts().len(),
-        1,
+        2,
         "pipeline metrics: {:?}",
         runtime.snapshot().pipeline_metrics
     );
-    assert_eq!(device.receipts()[0].target_object_id, 0);
+    assert_eq!(device.receipts()[1].delta_y_counts, 2);
 
     shutdown(supervisor, &runtime).await;
 }
@@ -879,7 +891,7 @@ inference:
     assert_eq!(response.status(), StatusCode::OK);
     let schema: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(schema["version"], 7);
+    assert_eq!(schema["version"], 8);
     assert_eq!(schema["values"]["revision"], 4);
     assert_eq!(schema["values"]["server"]["port"], 6000);
     assert_eq!(
@@ -1565,7 +1577,10 @@ async fn internal_pipeline_start_failure_is_not_misreported_as_a_client_conflict
         clock,
         device,
         PipelineConfig {
-            output_interval_ms: 0,
+            recoil: RecoilConfig {
+                interval_ms: 0,
+                ..RecoilConfig::default()
+            },
             ..PipelineConfig::default()
         },
     );

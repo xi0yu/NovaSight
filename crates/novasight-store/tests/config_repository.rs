@@ -51,7 +51,7 @@ fn initializes_the_single_local_runtime_config() {
 
     let config = YamlConfigRepository::load(runtime_config).unwrap();
 
-    assert_eq!(config.schema_version, 7);
+    assert_eq!(config.schema_version, 8);
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
@@ -74,7 +74,8 @@ fn initializes_the_single_local_runtime_config() {
     assert_eq!(adapters.device.uuid, "12345678");
     assert_eq!(adapters.device.send_timeout_ms, 25);
     assert_eq!(adapters.pipeline.freshness_threshold_ms, 55.0);
-    assert_eq!(adapters.pipeline.output_interval_ms, 4);
+    assert_eq!(config.control.recoil.interval_ms, 16);
+    assert_eq!(config.control.recoil.y_counts, 1);
     assert_eq!(config.paths.database, Path::new("data/novasight.db"));
     assert_eq!(config.paths.license, Path::new("data/license.json"));
 }
@@ -216,15 +217,15 @@ fn production_does_not_silently_invent_rust_pipeline_parameters() {
 }
 
 #[test]
-fn invalid_rust_pipeline_safety_bounds_fail_during_load() {
+fn invalid_recoil_cadence_fails_during_load() {
     let directory = TempDirectory::new();
     let path = directory.join("invalid-pipeline.yaml");
-    fs::write(&path, "pipeline:\n  output_interval_ms: 11\n").unwrap();
+    fs::write(&path, "control:\n  recoil:\n    interval_ms: 0\n").unwrap();
 
     let error = YamlConfigRepository::load(path).unwrap_err();
 
     assert_eq!(error.code(), "CONFIG_VALIDATION_ERROR");
-    assert!(error.to_string().contains("pipeline.output_interval_ms"));
+    assert!(error.to_string().contains("control.recoil.interval_ms"));
 }
 
 #[test]
@@ -243,7 +244,7 @@ fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
 
     let config = YamlConfigRepository::load(path).unwrap();
 
-    assert_eq!(config.schema_version, 7);
+    assert_eq!(config.schema_version, 8);
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
@@ -284,7 +285,7 @@ pipeline:
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 7);
+    assert_eq!(config.schema_version, 8);
     assert!(!config.pipeline.prediction_enabled);
     assert_eq!(config.pipeline.atan_scale_counts, 256.0);
     assert_eq!(config.pipeline.far_kp, 0.22);
@@ -296,7 +297,7 @@ pipeline:
         .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["schema_version"], 7);
+    assert_eq!(persisted["schema_version"], 8);
     assert_eq!(persisted["pipeline"]["prediction_enabled"], false);
     assert_eq!(persisted["pipeline"]["atan_scale_counts"], 256.0);
     assert_eq!(persisted["pipeline"]["far_kp"], 0.22);
@@ -323,7 +324,7 @@ pipeline:
     )
     .unwrap();
     let migrated = YamlConfigRepository::load(generated_path).unwrap();
-    assert_eq!(migrated.schema_version, 7);
+    assert_eq!(migrated.schema_version, 8);
     assert_eq!(migrated.pipeline.far_kp, 0.22);
     assert_eq!(migrated.pipeline.near_kp, 0.20);
 
@@ -341,7 +342,7 @@ pipeline:
     )
     .unwrap();
     let custom = YamlConfigRepository::load(custom_path).unwrap();
-    assert_eq!(custom.schema_version, 7);
+    assert_eq!(custom.schema_version, 8);
     assert_eq!(custom.pipeline.far_kp, 0.30);
 }
 
@@ -446,6 +447,69 @@ pipeline:
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert!(persisted["pipeline"].get("max_command_age_ms").is_none());
+}
+
+#[test]
+fn legacy_rate_recoil_is_disabled_until_interval_recoil_is_recommissioned() {
+    let directory = TempDirectory::new();
+    let path = directory.join("legacy-rate-recoil.yaml");
+    fs::write(
+        &path,
+        r#"schema_version: 7
+revision: 0
+control:
+  recoil:
+    enabled: true
+    require_target: true
+    base_rate_counts_s: 600.0
+    max_rate_counts_s: 1000.0
+    startup_ms: 35.0
+"#,
+    )
+    .unwrap();
+
+    let config = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(config.schema_version, 8);
+    assert!(!config.control.recoil.enabled);
+    assert_eq!(config.control.recoil.interval_ms, 16);
+    assert_eq!(config.control.recoil.y_counts, 1);
+    assert!(config.control.recoil.legacy.is_empty());
+
+    YamlConfigRepository::new(&path)
+        .save_field("server", "port", Value::Number(5_175_u64.into()), 0)
+        .unwrap();
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let recoil = &persisted["control"]["recoil"];
+    assert_eq!(recoil["enabled"], false);
+    assert_eq!(recoil["interval_ms"], 16);
+    assert_eq!(recoil["y_counts"], 1);
+    assert!(recoil.get("base_rate_counts_s").is_none());
+    assert!(recoil.get("max_rate_counts_s").is_none());
+    assert!(recoil.get("startup_ms").is_none());
+}
+
+#[test]
+fn legacy_rate_recoil_cannot_bypass_recommissioning_with_an_untrusted_schema_version() {
+    for (case, schema) in [
+        ("missing", ""),
+        ("incorrect-current", "schema_version: 8\n"),
+    ] {
+        let directory = TempDirectory::new();
+        let path = directory.join(format!("{case}-schema-rate-recoil.yaml"));
+        fs::write(
+            &path,
+            format!(
+                "{schema}revision: 0\ncontrol:\n  recoil:\n    enabled: true\n    base_rate_counts_s: 600.0\n"
+            ),
+        )
+        .unwrap();
+
+        let config = YamlConfigRepository::load(&path).unwrap();
+        assert!(!config.control.recoil.enabled, "schema case: {case}");
+        assert_eq!(config.control.recoil.interval_ms, 16);
+        assert_eq!(config.control.recoil.y_counts, 1);
+        assert!(config.control.recoil.legacy.is_empty());
+    }
 }
 
 #[test]
@@ -1006,7 +1070,7 @@ fn document_replacement_uses_revision_guard_and_preserves_unsubmitted_extensions
         .replace_document(replacement, 5)
         .unwrap();
 
-    assert_eq!(saved.schema_version, 7);
+    assert_eq!(saved.schema_version, 8);
     assert_eq!(saved.revision, 6);
     assert_eq!(saved.server.port, 7000);
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();

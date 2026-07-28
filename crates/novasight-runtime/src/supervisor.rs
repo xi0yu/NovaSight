@@ -2795,15 +2795,8 @@ fn runtime_recoil_config(config: &ConfigRecoilConfig) -> RecoilConfig {
     RecoilConfig {
         enabled: config.enabled,
         require_target: config.require_target,
-        base_rate_counts_s: config.base_rate_counts_s,
-        max_rate_counts_s: config.max_rate_counts_s,
-        startup_ms: config.startup_ms,
-        positive_deadzone_norm: config.positive_deadzone_norm,
-        negative_deadzone_norm: config.negative_deadzone_norm,
-        full_brake_error_norm: config.full_brake_error_norm,
-        fast_add_gain_counts_s: config.fast_add_gain_counts_s,
-        max_fast_add_ratio: config.max_fast_add_ratio,
-        stale_threshold_ms: config.stale_threshold_ms,
+        interval_ms: config.interval_ms,
+        y_counts: config.y_counts,
     }
 }
 

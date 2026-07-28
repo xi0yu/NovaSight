@@ -5,6 +5,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use novasight_core::controller::recoil::RecoilConfig;
 use novasight_core::{
     Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, PointerButtons, PointerDevice,
     RecordingPointerDevice, RuntimeEpoch,
@@ -654,7 +655,10 @@ async fn pipeline_start_failure_is_published_as_faulted_not_left_starting() {
         clock,
         pointer,
         PipelineConfig {
-            output_interval_ms: 0,
+            recoil: RecoilConfig {
+                interval_ms: 0,
+                ..RecoilConfig::default()
+            },
             ..PipelineConfig::default()
         },
     );

@@ -469,7 +469,7 @@ fn vision_verified_crosshair_changes_the_real_control_origin() {
 }
 
 #[test]
-fn recoil_runs_on_the_output_tick_without_a_tracking_command() {
+fn recoil_is_added_to_an_existing_tracking_command_after_its_interval() {
     let epoch = RuntimeEpoch(14);
     let clock = Arc::new(ManualClock::new(1_008_000_000));
     let daemon_clock: Arc<dyn Clock> = clock.clone();
@@ -480,10 +480,9 @@ fn recoil_runs_on_the_output_tick_without_a_tracking_command() {
             epoch,
             recoil: RecoilConfig {
                 enabled: true,
-                require_target: false,
-                base_rate_counts_s: 600.0,
-                max_rate_counts_s: 600.0,
-                startup_ms: 0.0,
+                require_target: true,
+                interval_ms: 8,
+                y_counts: 2,
                 ..RecoilConfig::default()
             },
             ..PipelineConfig::default()
@@ -495,8 +494,13 @@ fn recoil_runs_on_the_output_tick_without_a_tracking_command() {
     ingress.set_trigger_active(true);
     ingress
         .submit(
-            DetectionBatch::new(FrameStamp::new(epoch, 1, 1_000_000_000), 640, 640, vec![])
-                .unwrap(),
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 1, 1_000_000_000),
+                640,
+                640,
+                vec![Detection::new(1, 0, 310.0, 311.2, 40.0, 40.0, 0.95).unwrap()],
+            )
+            .unwrap(),
         )
         .unwrap();
 
@@ -504,24 +508,35 @@ fn recoil_runs_on_the_output_tick_without_a_tracking_command() {
     while device.receipts().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
+    assert_eq!(device.receipts()[0].delta_y_counts, 0);
+
+    clock.0.store(1_078_000_000, Ordering::Release);
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 2, 1_070_000_000),
+                640,
+                640,
+                vec![Detection::new(1, 0, 310.0, 311.2, 40.0, 40.0, 0.95).unwrap()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().len() < 2 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
     let receipts = device.receipts();
-    assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].delta_x_counts, 0);
-    assert_eq!(receipts[0].delta_y_counts, 2);
-    assert_eq!(receipts[0].target_object_id, 0);
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[1].delta_y_counts, 2);
     let telemetry = runtime.metrics().recoil;
-    assert_eq!(telemetry.state, RecoilState::Active);
-    assert_eq!(telemetry.error_y_norm, None);
-    assert_eq!(telemetry.source_generation, Some(1));
+    assert_eq!(telemetry.state, RecoilState::Applied);
+    assert_eq!(telemetry.source_generation, Some(2));
     assert_eq!(telemetry.emitted_counts_y, 2);
 
     clock.0.store(1_100_000_000, Ordering::Release);
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while runtime.metrics().recoil.state != RecoilState::Stale && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(runtime.metrics().recoil.state, RecoilState::Stale);
-    assert_eq!(device.receipts().len(), 1);
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(device.receipts().len(), 2);
     runtime.shutdown().unwrap();
 }
 

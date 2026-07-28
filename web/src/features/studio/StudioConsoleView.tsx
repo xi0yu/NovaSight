@@ -163,7 +163,6 @@ type DualPhasePipelineField =
   | "prediction_near_relative_cap"
   | "arrival_radius_counts"
   | "residual_cap"
-  | "output_interval_ms"
   | "actuation_feedback_delay_ms";
 
 type TargetingPipelineField =
@@ -1353,8 +1352,8 @@ export function StudioConsoleView({
   const recoilConfig = (controlConfig.recoil ?? {}) as Record<string, unknown>;
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
   const recoilRequireTarget = readBoolean(recoilConfig.require_target, true);
-  const recoilStartupRampMs = readNumber(recoilConfig.startup_ms, 35);
-  const recoilBaseRate = readNumber(recoilConfig.base_rate_counts_s, 0);
+  const recoilIntervalMs = readNumber(recoilConfig.interval_ms, 16);
+  const recoilYCounts = readNumber(recoilConfig.y_counts, 1);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
@@ -1362,7 +1361,6 @@ export function StudioConsoleView({
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
   const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, true);
   const outputEnabled = readBoolean(controlConfig.output_enabled, true);
-  const schedulerIntervalMs = readNumber(rustPipelineConfig.output_interval_ms, 4);
   const controlModeLabel = CONTROL_ALGORITHM_LABEL;
 
   useEffect(() => {
@@ -3858,10 +3856,9 @@ export function StudioConsoleView({
                 <span>每轴到位</span><b>{formatAxisSettlement(controlPipeline.arrival_settled_x, controlPipeline.arrival_settled_y)}</b>
                 <span>视觉反馈门控</span><b>{formatFeedbackGate(controlPipeline.actuation_pending_x, controlPipeline.actuation_pending_y)}</b>
                 <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
-                <span>基础 / 追加速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_base_rate_counts_s, 0)} / ${formatOptionalNumber(controlPipeline.recoil_fast_add_rate_counts_s, 0)} counts/s`}</b>
-                <span>门控 / 最终速率</span><b>{`${formatOptionalNumber(controlPipeline.recoil_position_gate, 2)} / ${formatOptionalNumber(controlPipeline.recoil_final_rate_counts_s, 0)} `}counts/s</b>
-                <span>请求 / 实际输出</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 2)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 2)} counts`}</b>
-                <span>误差归一化</span><b>{formatOptionalNumber(controlPipeline.recoil_error_y_norm, 3)}</b>
+                <span>叠加间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_y_counts, 0)} counts`}</b>
+                <span>已等待 / 剩余</span><b>{`${formatOptionalNumber(controlPipeline.recoil_elapsed_since_output_ms, 2)} / ${formatOptionalNumber(controlPipeline.recoil_remaining_ms, 2)} ms`}</b>
+                <span>本轮请求 / 已发送</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 0)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 0)} counts`}</b>
                 <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
               </div>
             </div>
@@ -3892,7 +3889,7 @@ export function StudioConsoleView({
               <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
               <Metric title="位置预测" value={dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"} small={dualPhasePredictionEnabled ? "单目标真实帧间速度" : "当前观测 Atan 反馈"} />
               <Metric title="偏移输出配置" value={outputEnabled ? "允许" : "暂停"} small={outputEnabled ? "实际发送状态见控制页" : "算法仍继续计算"} />
-              <Metric title="发送方式" value="最新覆盖" small={`${schedulerIntervalMs.toFixed(STANDARD_DECIMAL_DIGITS)} ms 单槽`} />
+              <Metric title="发送方式" value="最新覆盖" small="事件驱动单槽" />
             </div>
             <div className={outputEnabled ? "console-card control-output-gate-card enabled" : "console-card control-output-gate-card paused"}>
               <div className="control-output-gate-identity">
@@ -4094,17 +4091,15 @@ export function StudioConsoleView({
 
               <div className="console-card">
                   <SectionTitle title="Y 轴压枪" />
-                  <ModuleSwitch label="启用压枪" detail="仅在总输出已开启、设备可用且检测到真实左键按下时输出。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
-                  <ModuleSwitch label="只在检测到目标时压枪" detail="开启后没有有效目标就停止压枪；关闭后即使没有目标，真实开火期间也会按补偿速率输出。" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
+                  <ModuleSwitch label="启用压枪" detail="真实左键按下后按设定间隔，把 +Y 合入当轮控制命令；不会额外发送第二条 move。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
+                  <ModuleSwitch label="只在检测到目标时压枪" detail="开启后，当轮命令必须包含有效目标。关闭只取消目标校验，压枪仍不会创建独立 move。" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
                   {recoilEnabled ? (
                     <details className="crosshair-advanced-settings">
-                      <summary>当前速率补偿参数</summary>
-                      <p className="console-section-note">这些参数只控制现有时间速率补偿。枪械轨迹采集会作为独立校准流程生成前馈曲线，不会复用目标误差追加强度。</p>
+                      <summary>间隔叠加参数</summary>
+                      <p className="console-section-note">首次开火先等待一个完整间隔；达到间隔后只叠加一次，不补发错过的次数。发送失败也不会提前消耗本次压枪机会。</p>
                       <div className="advanced-settings-grid">
-                        <NumberControl label="压枪启动斜坡 ms" detail="从真实左键按下开始，压枪速率逐步进入基础速率。" value={recoilStartupRampMs} min={0} max={1000} step={1} onCommit={(value) => updateControlGroupField("recoil", "startup_ms", value)} />
-                        <NumberControl label="基础压枪速率 counts/s" detail="与观测 FPS 无关的时间速率。" value={recoilBaseRate} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "base_rate_counts_s", value)} />
-                        <NumberControl label="最大压枪速率 counts/s" value={readNumber(recoilConfig.max_rate_counts_s, 0)} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "max_rate_counts_s", value)} />
-                        <NumberControl label="目标误差追加强度 counts/s" value={readNumber(recoilConfig.fast_add_gain_counts_s, 0)} min={0} max={20000} step={1} onCommit={(value) => updateControlGroupField("recoil", "fast_add_gain_counts_s", value)} />
+                        <NumberControl label="压枪叠加间隔 ms" detail="距离上一次成功包含压枪量的 move 达到该时长后，下一条控制命令才允许再次叠加。" value={recoilIntervalMs} min={1} max={5000} step={1} onCommit={(value) => updateControlGroupField("recoil", "interval_ms", Math.round(value))} />
+                        <NumberControl label="每次叠加 +Y counts" detail="达到间隔时合入当轮 Y 输出的正向压枪量。" value={recoilYCounts} min={1} max={32767} step={1} onCommit={(value) => updateControlGroupField("recoil", "y_counts", Math.round(value))} />
                       </div>
                     </details>
                   ) : null}
@@ -4308,7 +4303,6 @@ export function StudioConsoleView({
                 <span>待发送容量</span><b>1 条完整命令</b>
                 <span>最终校验</span><b>Rust DeviceLane</b>
               </div>
-              <NumberControl label="空闲 / 压枪调度间隔 ms" detail="目标跟踪命令不等待此间隔；该值只控制空闲设备轮询与独立压枪节拍。" value={schedulerIntervalMs} min={1} max={10} step={1} onCommit={(value) => updateDualPhaseField("output_interval_ms", Math.round(value))} />
               <div className="console-action-row">
                 <button
                   className="console-button"

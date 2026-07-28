@@ -206,13 +206,16 @@ fn batch(epoch: RuntimeEpoch, generation: u64) -> DetectionBatch {
 }
 
 #[test]
-fn output_scheduler_rejects_cadence_outside_one_to_ten_ms() {
-    for output_interval_ms in [0, 11] {
+fn recoil_rejects_cadence_outside_one_to_five_thousand_ms() {
+    for interval_ms in [0, 5_001] {
         let clock: Arc<dyn Clock> = Arc::new(FixedClock::new(1_008_000_000));
         let device: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
         let result = PipelineRuntime::start(
             PipelineConfig {
-                output_interval_ms,
+                recoil: novasight_core::controller::recoil::RecoilConfig {
+                    interval_ms,
+                    ..Default::default()
+                },
                 ..PipelineConfig::default()
             },
             clock,
@@ -220,8 +223,7 @@ fn output_scheduler_rejects_cadence_outside_one_to_ten_ms() {
         );
         assert!(matches!(
             result,
-            Err(PipelineError::InvalidOutputInterval { actual_ms })
-                if actual_ms == output_interval_ms
+            Err(PipelineError::InvalidRecoilConfig { .. })
         ));
     }
 }

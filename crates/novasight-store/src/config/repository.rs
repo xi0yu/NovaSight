@@ -440,9 +440,34 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 }
 
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
+    let schema_version = config.schema_version;
+    let interval_recoil_explicit =
+        nested_section_has_fields(document, "control", "recoil", &["interval_ms", "y_counts"]);
     let removed_humanized_motion = config.control.legacy.remove("humanized_motion").is_some();
     config.pipeline.legacy.remove("projection_invert_y");
     config.pipeline.legacy.remove("max_command_age_ms");
+    config.pipeline.legacy.remove("output_interval_ms");
+    let mut removed_legacy_recoil = false;
+    for field in [
+        "base_rate_counts_s",
+        "max_rate_counts_s",
+        "startup_ms",
+        "positive_deadzone_norm",
+        "negative_deadzone_norm",
+        "full_brake_error_norm",
+        "fast_add_gain_counts_s",
+        "max_fast_add_ratio",
+        "stale_threshold_ms",
+    ] {
+        removed_legacy_recoil |= config.control.recoil.legacy.remove(field).is_some();
+    }
+    // Physical output migration must follow the fields that are actually present,
+    // not a missing or incorrectly declared schema version. A legacy rate-based
+    // profile has no safe, behavior-preserving conversion to interval/count steps.
+    let recoil_requires_recommission = removed_legacy_recoil && !interval_recoil_explicit;
+    if recoil_requires_recommission {
+        config.control.recoil.enabled = false;
+    }
     let legacy_class_weight = config
         .pipeline
         .legacy
@@ -507,6 +532,23 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
             "target_selection_distance_weight",
             "target_sticky_bias",
             "max_command_age_ms",
+            "output_interval_ms",
+        ],
+    );
+    remove_nested_section_fields(
+        document,
+        "control",
+        "recoil",
+        &[
+            "base_rate_counts_s",
+            "max_rate_counts_s",
+            "startup_ms",
+            "positive_deadzone_norm",
+            "negative_deadzone_norm",
+            "full_brake_error_norm",
+            "fast_add_gain_counts_s",
+            "max_fast_add_ratio",
+            "stale_threshold_ms",
         ],
     );
     remove_section_fields(
@@ -514,17 +556,16 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         "hardware",
         &["helper_module", "reconnect_cooldown_ms"],
     );
-    if config.schema_version >= 7 {
-        if removed_humanized_motion
-            && let Value::Mapping(root) = document
-            && let Some(Value::Mapping(control)) = root.get_mut(Value::String("control".to_owned()))
-        {
-            control.remove(Value::String("humanized_motion".to_owned()));
-        }
+    if removed_humanized_motion
+        && let Value::Mapping(root) = document
+        && let Some(Value::Mapping(control)) = root.get_mut(Value::String("control".to_owned()))
+    {
+        control.remove(Value::String("humanized_motion".to_owned()));
+    }
+    if schema_version >= 8 {
         return;
     }
 
-    let schema_version = config.schema_version;
     let mut migrated_aggressive_profile = false;
     let mut migrated_delay_unstable_far_gain = false;
     if schema_version < 6 {
@@ -553,14 +594,14 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         }
         pipeline.prediction_enabled = false;
     }
-    config.schema_version = 7;
+    config.schema_version = 8;
 
     let Value::Mapping(root) = document else {
         return;
     };
     root.insert(
         Value::String("schema_version".to_owned()),
-        Value::Number(7_u64.into()),
+        Value::Number(8_u64.into()),
     );
     if schema_version < 6 {
         let pipeline = root
@@ -600,7 +641,47 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         .or_insert_with(|| Value::Mapping(Default::default()));
     if let Value::Mapping(control) = control {
         control.remove(Value::String("humanized_motion".to_owned()));
+        let recoil = control
+            .entry(Value::String("recoil".to_owned()))
+            .or_insert_with(|| Value::Mapping(Default::default()));
+        if let Value::Mapping(recoil) = recoil {
+            if recoil_requires_recommission {
+                recoil.insert(Value::String("enabled".to_owned()), Value::Bool(false));
+            }
+            recoil
+                .entry(Value::String("interval_ms".to_owned()))
+                .or_insert_with(|| Value::Number(config.control.recoil.interval_ms.into()));
+            recoil
+                .entry(Value::String("y_counts".to_owned()))
+                .or_insert_with(|| Value::Number(config.control.recoil.y_counts.into()));
+        }
     }
+}
+
+fn nested_section_has_fields(
+    document: &Value,
+    section: &str,
+    nested: &str,
+    fields: &[&str],
+) -> bool {
+    let Some(root) = document.as_mapping() else {
+        return false;
+    };
+    let Some(section) = root
+        .get(Value::String(section.to_owned()))
+        .and_then(Value::as_mapping)
+    else {
+        return false;
+    };
+    let Some(nested) = section
+        .get(Value::String(nested.to_owned()))
+        .and_then(Value::as_mapping)
+    else {
+        return false;
+    };
+    fields
+        .iter()
+        .all(|field| nested.contains_key(Value::String((*field).to_owned())))
 }
 
 fn remove_section_fields(document: &mut Value, section: &str, fields: &[&str]) {
@@ -612,6 +693,26 @@ fn remove_section_fields(document: &mut Value, section: &str, fields: &[&str]) {
     };
     for field in fields {
         mapping.remove(Value::String((*field).to_owned()));
+    }
+}
+
+fn remove_nested_section_fields(
+    document: &mut Value,
+    section: &str,
+    nested: &str,
+    fields: &[&str],
+) {
+    let Value::Mapping(root) = document else {
+        return;
+    };
+    let Some(Value::Mapping(section)) = root.get_mut(Value::String(section.to_owned())) else {
+        return;
+    };
+    let Some(Value::Mapping(nested)) = section.get_mut(Value::String(nested.to_owned())) else {
+        return;
+    };
+    for field in fields {
+        nested.remove(Value::String((*field).to_owned()));
     }
 }
 
@@ -649,7 +750,6 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "target_aim_y_ratio",
             "target_class_aim_y_ratios",
             "candidate_max_aspect_ratio",
-            "output_interval_ms",
         ],
     );
     if let Some(capture) = &mut config.capture {

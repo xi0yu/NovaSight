@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex, TryLockError,
     atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence},
@@ -8,8 +7,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use novasight_core::controller::recoil::{
-    RecoilConfig, RecoilDecision, RecoilInput, TargetRelativeRecoilController,
-    mix_tracking_and_recoil,
+    IntervalRecoilController, RecoilConfig, RecoilDecision, RecoilInput, mix_tracking_and_recoil,
 };
 use novasight_core::controller::{
     ActuationFeedback, ControlDecision as DualPhaseDecision, ControlObservation, DualPhaseConfig,
@@ -78,9 +76,6 @@ pub struct PipelineConfig {
     pub epoch: RuntimeEpoch,
     pub targeting: TargetingConfig,
     pub control: DualPhaseConfig,
-    /// Idle/recoil scheduler cadence. Tracking commands bypass this interval
-    /// and wake the device lane immediately.
-    pub output_interval_ms: u64,
     /// Hardware trigger polling cadence. `None` leaves trigger ownership with
     /// the control plane (recording/replay); production devices set this.
     pub trigger_poll_interval_ms: Option<u64>,
@@ -92,15 +87,13 @@ pub struct PipelineConfig {
     /// Optional vision-verified control origin. The hub owns its template and
     /// observation state; targeting only performs a cheap resolved-point read.
     pub crosshair: Option<CrosshairHub>,
-    /// Independent target-relative recoil branch, evaluated at the output
-    /// scheduler cadence rather than the detector cadence.
+    /// Positive-Y recoil contribution mixed into existing tracking commands.
     pub recoil: RecoilConfig,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct DeviceWorkerConfig {
     epoch: RuntimeEpoch,
-    output_interval_ms: u64,
     recoil: RecoilConfig,
 }
 
@@ -117,7 +110,6 @@ impl Default for PipelineConfig {
             epoch: RuntimeEpoch(1),
             targeting: TargetingConfig::default(),
             control: DualPhaseConfig::default(),
-            output_interval_ms: 4,
             trigger_poll_interval_ms: None,
             trigger_mode: TriggerMode::Always,
             actuation_feedback_delay_ns: 4_000_000,
@@ -193,8 +185,6 @@ pub enum PipelineError {
     NonMonotonicGeneration { previous: u64, actual: u64 },
     #[error("pipeline ingress is busy; realtime producer must drop this batch")]
     IngressBusy,
-    #[error("idle/recoil scheduler interval must be within 1..=10 ms, got {actual_ms}")]
-    InvalidOutputInterval { actual_ms: u64 },
     #[error("trigger polling interval must be within 1..=50 ms, got {actual_ms}")]
     InvalidTriggerPollInterval { actual_ms: u64 },
     #[error("actuation feedback delay must be within 0..=100 ms, got {actual_ns} ns")]
@@ -324,6 +314,7 @@ struct SharedState {
     trigger_active: AtomicBool,
     buttons_available: AtomicBool,
     button_left: AtomicBool,
+    button_left_epoch: AtomicU64,
     button_right: AtomicBool,
     device_connected: AtomicBool,
     device_connection_enabled: AtomicBool,
@@ -335,7 +326,6 @@ struct SharedState {
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
-    latest_recoil_observation: Mutex<Option<RecoilObservation>>,
     recoil_config: Mutex<RecoilConfig>,
 }
 
@@ -370,6 +360,7 @@ impl SharedState {
             trigger_active: AtomicBool::new(false),
             buttons_available: AtomicBool::new(false),
             button_left: AtomicBool::new(false),
+            button_left_epoch: AtomicU64::new(1),
             button_right: AtomicBool::new(false),
             device_connected: AtomicBool::new(device_connected),
             device_connection_enabled: AtomicBool::new(true),
@@ -381,13 +372,18 @@ impl SharedState {
             device_lane: Mutex::new(()),
             event_tx,
             metrics,
-            latest_recoil_observation: Mutex::new(None),
             recoil_config: Mutex::new(recoil_config),
         }
     }
 
     fn status(&self) -> PipelineStatus {
         PipelineStatus::from_atomic(self.status.load(Ordering::Acquire))
+    }
+
+    fn set_button_left(&self, pressed: bool) {
+        if self.button_left.swap(pressed, Ordering::AcqRel) != pressed {
+            self.button_left_epoch.fetch_add(1, Ordering::Release);
+        }
     }
 
     /// Telemetry must never stall the realtime control lane. A concurrent
@@ -477,7 +473,7 @@ impl SharedState {
         self.output_gate.store(false, Ordering::Release);
         self.trigger_active.store(false, Ordering::Release);
         self.buttons_available.store(false, Ordering::Release);
-        self.button_left.store(false, Ordering::Release);
+        self.set_button_left(false);
         self.button_right.store(false, Ordering::Release);
         self.device_connected.store(false, Ordering::Release);
         self.clear_control_telemetry();
@@ -500,7 +496,7 @@ impl SharedState {
         self.output_gate.store(false, Ordering::Release);
         self.trigger_active.store(false, Ordering::Release);
         self.buttons_available.store(false, Ordering::Release);
-        self.button_left.store(false, Ordering::Release);
+        self.set_button_left(false);
         self.button_right.store(false, Ordering::Release);
         self.device_connected.store(false, Ordering::Release);
         self.clear_control_telemetry();
@@ -555,7 +551,7 @@ impl SharedState {
         self.device_connected.store(false, Ordering::Release);
         self.trigger_active.store(false, Ordering::Release);
         self.buttons_available.store(false, Ordering::Release);
-        self.button_left.store(false, Ordering::Release);
+        self.set_button_left(false);
         self.button_right.store(false, Ordering::Release);
         self.clear_control_telemetry();
     }
@@ -602,7 +598,7 @@ impl PipelineIngress {
         self.shared
             .buttons_available
             .store(false, Ordering::Release);
-        self.shared.button_left.store(false, Ordering::Release);
+        self.shared.set_button_left(false);
         self.shared.button_right.store(false, Ordering::Release);
         self.shared.clear_control_telemetry();
     }
@@ -619,7 +615,7 @@ impl PipelineIngress {
     pub fn set_trigger_active(&self, active: bool) {
         self.shared.trigger_active.store(active, Ordering::Release);
         self.shared.buttons_available.store(true, Ordering::Release);
-        self.shared.button_left.store(active, Ordering::Release);
+        self.shared.set_button_left(active);
         self.shared.button_right.store(false, Ordering::Release);
         if !active {
             // Returning from trigger release is a synchronization point:
@@ -788,14 +784,6 @@ struct TargetedObservation {
     inference_end_ns: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct RecoilObservation {
-    generation: Generation,
-    target_id: Option<u64>,
-    capture_ts_ns: u64,
-    error_y_norm: f64,
-}
-
 /// Owns the post-inference real-time lanes. Capture/DeepStream keeps
 /// ownership of vendor objects and submits caller-owned batches through
 /// [`PipelineIngress`]; targeting, control, and device calls each run on
@@ -873,11 +861,6 @@ impl PipelineRuntime {
         output_gate_open: bool,
         external_stop: Arc<AtomicUsize>,
     ) -> Result<(Self, PipelineIngress), PipelineError> {
-        if !(1..=10).contains(&config.output_interval_ms) {
-            return Err(PipelineError::InvalidOutputInterval {
-                actual_ms: config.output_interval_ms,
-            });
-        }
         if let Some(actual_ms) = config.trigger_poll_interval_ms
             && !(1..=50).contains(&actual_ms)
         {
@@ -957,7 +940,6 @@ impl PipelineRuntime {
             Arc::clone(&device),
             DeviceWorkerConfig {
                 epoch: config.epoch,
-                output_interval_ms: config.output_interval_ms,
                 recoil: config.recoil,
             },
         ) {
@@ -1168,7 +1150,7 @@ fn spawn_trigger_worker(
                             let active = buttons.trigger_active();
                             shared.trigger_active.store(active, Ordering::Release);
                             shared.buttons_available.store(true, Ordering::Release);
-                            shared.button_left.store(buttons.left, Ordering::Release);
+                            shared.set_button_left(buttons.left);
                             shared.button_right.store(buttons.right, Ordering::Release);
                             if !active {
                                 drop(
@@ -1192,7 +1174,7 @@ fn spawn_trigger_worker(
                             shared.trigger_active.store(false, Ordering::Release);
                             shared.clear_control_telemetry();
                             shared.buttons_available.store(false, Ordering::Release);
-                            shared.button_left.store(false, Ordering::Release);
+                            shared.set_button_left(false);
                             shared.button_right.store(false, Ordering::Release);
                             if !is_recoverable_pointer_error(&error) {
                                 shared.fault(format!("pointer trigger failed: {error}"));
@@ -1238,8 +1220,6 @@ fn spawn_targeting_worker(
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "targeting", || {
                 let mut targeting = TargetingCore::new(config);
-                let mut recoil_target_id = None;
-                let mut recoil_heights = VecDeque::with_capacity(3);
                 while let Some(batch) = input.wait_take() {
                     if shared.status() != PipelineStatus::Running {
                         break;
@@ -1273,14 +1253,7 @@ fn spawn_targeting_worker(
                     } else {
                         0.0
                     };
-                    let (
-                        target_id,
-                        aim_x,
-                        aim_y,
-                        detection_confidence,
-                        _target_width_px,
-                        target_height_px,
-                    ) = match (
+                    let (target_id, aim_x, aim_y, detection_confidence) = match (
                         selection.target_object_id,
                         selection.target_track_id,
                         selection.target_class_id,
@@ -1302,8 +1275,6 @@ fn spawn_targeting_worker(
                                     aim_x,
                                     aim_y,
                                     f64::from(target.confidence()),
-                                    f64::from(target.width()),
-                                    f64::from(target.height()),
                                 ),
                                 None => {
                                     shared.fault(
@@ -1316,42 +1287,11 @@ fn spawn_targeting_worker(
                         }
                         _ => {
                             let (center_x, center_y) = targeting_center;
-                            (None, center_x, center_y, 0.0, 1.0, 1.0)
+                            (None, center_x, center_y, 0.0)
                         }
                     };
                     let (crosshair_x, crosshair_y) = targeting_center;
                     let now = clock.now().0;
-                    let recoil_observation = if let Some(target_id) = target_id {
-                        if recoil_target_id != Some(target_id) {
-                            recoil_heights.clear();
-                            recoil_target_id = Some(target_id);
-                        }
-                        if recoil_heights.len() == 3 {
-                            recoil_heights.pop_front();
-                        }
-                        recoil_heights.push_back(target_height_px.max(1.0));
-                        let stable_height = median_height(&recoil_heights);
-                        RecoilObservation {
-                            generation: batch.stamp().generation,
-                            target_id: Some(target_id),
-                            capture_ts_ns: batch.stamp().captured_at.0,
-                            error_y_norm: ((aim_y - crosshair_y) / stable_height).clamp(-1.0, 1.0),
-                        }
-                    } else {
-                        recoil_target_id = None;
-                        recoil_heights.clear();
-                        RecoilObservation {
-                            generation: batch.stamp().generation,
-                            target_id: None,
-                            capture_ts_ns: batch.stamp().captured_at.0,
-                            error_y_norm: 0.0,
-                        }
-                    };
-                    *shared
-                        .latest_recoil_observation
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                        Some(recoil_observation);
                     let observation = TargetedObservation {
                         stamp: batch.stamp(),
                         target_id,
@@ -1375,17 +1315,6 @@ fn spawn_targeting_worker(
             worker: "targeting",
             source,
         })
-}
-
-fn median_height(values: &VecDeque<f64>) -> f64 {
-    let mut ordered = values.iter().copied().collect::<Vec<_>>();
-    ordered.sort_by(f64::total_cmp);
-    let middle = ordered.len() / 2;
-    if ordered.len() % 2 == 0 {
-        (ordered[middle - 1] + ordered[middle]) * 0.5
-    } else {
-        ordered[middle]
-    }
 }
 
 fn spawn_control_worker(
@@ -1513,14 +1442,12 @@ fn spawn_device_worker(
         .spawn(move || {
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "device", || {
-                let interval = Duration::from_millis(config.output_interval_ms);
-                let interval_s = config.output_interval_ms as f64 / 1_000.0;
-                let mut last_tick_ns = None;
-                let mut recoil = TargetRelativeRecoilController::new(config.recoil)
+                let mut recoil = IntervalRecoilController::new(config.recoil)
                     .expect("pipeline validates recoil config before worker startup");
                 let mut recoil_config_version =
                     shared.recoil_config_version.load(Ordering::Acquire);
-                while let Ok(command) = input.wait_take_or_timeout(interval) {
+                let mut button_left_epoch = shared.button_left_epoch.load(Ordering::Acquire);
+                while let Some(command) = input.wait_take() {
                     let latest_recoil_config_version =
                         shared.recoil_config_version.load(Ordering::Acquire);
                     if latest_recoil_config_version != recoil_config_version {
@@ -1528,40 +1455,10 @@ fn spawn_device_worker(
                             .recoil_config
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        recoil = TargetRelativeRecoilController::new(config)
+                        recoil = IntervalRecoilController::new(config)
                             .expect("live recoil config is validated before publication");
                         recoil_config_version = latest_recoil_config_version;
                     }
-                    let tracking = command.map(|command| *command);
-                    let now_ns = clock.now().0;
-                    let dt_s = last_tick_ns.map_or(interval_s, |last_tick_ns| {
-                        (now_ns.saturating_sub(last_tick_ns) as f64 / 1_000_000_000.0)
-                            .clamp(0.0, interval_s * 2.0)
-                    });
-                    last_tick_ns = Some(now_ns);
-                    let observation = *shared
-                        .latest_recoil_observation
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    let observation_age_ms = observation.map_or(0.0, |observation| {
-                        now_ns.saturating_sub(observation.capture_ts_ns) as f64 / 1_000_000.0
-                    });
-                    let recoil_decision = recoil.calculate(RecoilInput {
-                        firing: shared.buttons_available.load(Ordering::Acquire)
-                            && shared.button_left.load(Ordering::Acquire)
-                            && shared.output_gate.load(Ordering::Acquire)
-                            && shared.external_stop.load(Ordering::Acquire) == 0
-                            && shared.status() == PipelineStatus::Running,
-                        now_ns,
-                        dt_s,
-                        target_valid: observation.and_then(|value| value.target_id).is_some(),
-                        target_id: observation.and_then(|value| value.target_id),
-                        source_generation: observation.map(|value| value.generation.0),
-                        observation_age_ms,
-                        error_y_norm: observation.map_or(0.0, |value| value.error_y_norm),
-                    });
-                    shared.record_recoil(recoil_decision);
-
                     let _lane = shared
                         .device_lane
                         .lock()
@@ -1586,38 +1483,7 @@ fn spawn_device_worker(
                     {
                         continue;
                     }
-                    let command = match tracking {
-                        Some(mut command) => {
-                            if recoil_decision.source_generation == Some(command.generation.0) {
-                                command.delta_y_counts = mix_tracking_and_recoil(
-                                    command.delta_y_counts,
-                                    recoil_decision,
-                                );
-                            }
-                            command
-                        }
-                        None => {
-                            let Some(observation) = observation else {
-                                continue;
-                            };
-                            if !recoil_decision.engaged() || recoil_decision.emitted_counts_y == 0 {
-                                continue;
-                            }
-                            DeviceCommand {
-                                epoch: config.epoch,
-                                generation: observation.generation,
-                                source_captured_at: novasight_core::MonotonicNanos(
-                                    observation.capture_ts_ns,
-                                ),
-                                issued_at: novasight_core::MonotonicNanos(now_ns),
-                                // Track ids start at one. Zero is the established sentinel for
-                                // an output command that is not associated with a target.
-                                target_object_id: observation.target_id.unwrap_or(0),
-                                delta_x_counts: 0,
-                                delta_y_counts: recoil_decision.emitted_counts_y,
-                            }
-                        }
-                    };
+                    let mut command = *command;
                     if command.generation.0
                         < shared.output_gate_min_generation.load(Ordering::Acquire)
                     {
@@ -1630,6 +1496,28 @@ fn spawn_device_worker(
                         ));
                         break;
                     }
+                    if shared.hardware_trigger_required.load(Ordering::Acquire)
+                        && !shared.trigger_active.load(Ordering::Acquire)
+                    {
+                        continue;
+                    }
+
+                    let latest_button_left_epoch = shared.button_left_epoch.load(Ordering::Acquire);
+                    if latest_button_left_epoch != button_left_epoch {
+                        recoil.reset();
+                        button_left_epoch = latest_button_left_epoch;
+                    }
+                    let now_ns = clock.now().0;
+                    let mut recoil_decision = recoil.calculate(RecoilInput {
+                        firing: shared.buttons_available.load(Ordering::Acquire)
+                            && shared.button_left.load(Ordering::Acquire),
+                        now_ns,
+                        target_valid: command.target_object_id != 0,
+                        source_generation: Some(command.generation.0),
+                    });
+                    let recoil_mix =
+                        mix_tracking_and_recoil(command.delta_y_counts, recoil_decision);
+                    command.delta_y_counts = recoil_mix.command_y;
                     let latest_generation = *shared
                         .metrics
                         .last_generation
@@ -1642,19 +1530,21 @@ fn spawn_device_worker(
                             .fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
-                    if shared.hardware_trigger_required.load(Ordering::Acquire)
-                        && !shared.trigger_active.load(Ordering::Acquire)
-                    {
-                        continue;
-                    }
                     match device.send(command) {
                         Ok(receipt) => {
+                            let accepted_at_ns = clock.now().0;
+                            if recoil_decision.mark_output_result(recoil_mix.applied_counts_y) {
+                                recoil.mark_output_sent(accepted_at_ns);
+                            }
+                            shared.record_recoil(recoil_decision);
                             shared.record_device_success();
-                            shared.record_device_receipt(receipt, clock.now().0);
+                            shared.record_device_receipt(receipt, accepted_at_ns);
                         }
                         Err(error) => {
+                            shared.record_recoil(recoil_decision);
                             shared.record_device_error(&error);
                             shared.trigger_active.store(false, Ordering::Release);
+                            shared.set_button_left(false);
                             shared.clear_control_telemetry();
                             if !is_recoverable_pointer_error(&error) {
                                 shared.fault(format!("pointer device failed: {error}"));

@@ -1,4 +1,7 @@
-//! Target-relative recoil controller and tracking/recoil mixer.
+//! Interval-gated recoil contribution for the final pointer command.
+//!
+//! Recoil never emits a device command by itself. When its cadence is due it
+//! contributes one positive-Y value to the already-planned tracking command.
 
 use serde::{Deserialize, Serialize};
 
@@ -6,15 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct RecoilConfig {
     pub enabled: bool,
     pub require_target: bool,
-    pub base_rate_counts_s: f64,
-    pub max_rate_counts_s: f64,
-    pub startup_ms: f64,
-    pub positive_deadzone_norm: f64,
-    pub negative_deadzone_norm: f64,
-    pub full_brake_error_norm: f64,
-    pub fast_add_gain_counts_s: f64,
-    pub max_fast_add_ratio: f64,
-    pub stale_threshold_ms: f64,
+    pub interval_ms: u64,
+    pub y_counts: i32,
 }
 
 impl Default for RecoilConfig {
@@ -22,51 +18,19 @@ impl Default for RecoilConfig {
         Self {
             enabled: false,
             require_target: true,
-            base_rate_counts_s: 0.0,
-            max_rate_counts_s: 0.0,
-            startup_ms: 35.0,
-            positive_deadzone_norm: 0.04,
-            negative_deadzone_norm: 0.04,
-            full_brake_error_norm: 0.12,
-            fast_add_gain_counts_s: 0.0,
-            max_fast_add_ratio: 0.30,
-            stale_threshold_ms: 55.0,
+            interval_ms: 16,
+            y_counts: 1,
         }
     }
 }
 
 impl RecoilConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
-        for value in [
-            self.base_rate_counts_s,
-            self.max_rate_counts_s,
-            self.startup_ms,
-            self.positive_deadzone_norm,
-            self.negative_deadzone_norm,
-            self.full_brake_error_norm,
-            self.fast_add_gain_counts_s,
-            self.max_fast_add_ratio,
-            self.stale_threshold_ms,
-        ] {
-            if !value.is_finite() || value < 0.0 {
-                return Err("recoil values must be finite and non-negative");
-            }
+        if !(1..=5_000).contains(&self.interval_ms) {
+            return Err("recoil interval must be within 1..=5000 ms");
         }
-        if self.max_rate_counts_s < self.base_rate_counts_s {
-            return Err("recoil max rate must be at least the base rate");
-        }
-        for value in [
-            self.positive_deadzone_norm,
-            self.negative_deadzone_norm,
-            self.full_brake_error_norm,
-            self.max_fast_add_ratio,
-        ] {
-            if value > 1.0 {
-                return Err("normalized recoil values must not exceed one");
-            }
-        }
-        if self.full_brake_error_norm <= self.negative_deadzone_norm {
-            return Err("recoil full brake threshold must exceed the negative deadzone");
+        if !(1..=i16::MAX as i32).contains(&self.y_counts) {
+            return Err("recoil positive-Y contribution must be within 1..=32767 counts");
         }
         Ok(())
     }
@@ -77,11 +41,9 @@ impl RecoilConfig {
 pub enum RecoilState {
     #[default]
     Idle,
-    Startup,
-    Active,
-    Hold,
-    Brake,
-    Stale,
+    Waiting,
+    Ready,
+    Applied,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -90,13 +52,9 @@ pub enum RecoilBlockReason {
     #[default]
     RecoilDisabled,
     FiringInactive,
-    DtInvalid,
-    ObservationAgeInvalid,
-    TargetStale,
-    TargetInvalid,
-    ErrorInvalid,
-    PositionBrake,
-    RecoilRateZero,
+    TargetRequired,
+    IntervalPending,
+    OutputSaturated,
     #[serde(rename = "")]
     None,
 }
@@ -105,26 +63,19 @@ pub enum RecoilBlockReason {
 pub struct RecoilInput {
     pub firing: bool,
     pub now_ns: u64,
-    pub dt_s: f64,
     pub target_valid: bool,
-    pub target_id: Option<u64>,
     pub source_generation: Option<u64>,
-    pub observation_age_ms: f64,
-    pub error_y_norm: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecoilDecision {
     pub state: RecoilState,
-    pub base_rate_counts_s: f64,
-    pub fast_add_rate_counts_s: f64,
-    pub gate: f64,
-    pub final_rate_counts_s: f64,
-    pub requested_counts_y: f64,
+    pub interval_ms: u64,
+    pub configured_y_counts: i32,
+    pub elapsed_since_output_ms: Option<f64>,
+    pub remaining_ms: f64,
+    pub requested_counts_y: i32,
     pub emitted_counts_y: i32,
-    pub residual_counts_y: f64,
-    pub error_y_norm: Option<f64>,
-    pub observation_age_ms: Option<f64>,
     pub source_generation: Option<u64>,
     pub block_reason: RecoilBlockReason,
 }
@@ -133,39 +84,55 @@ impl RecoilDecision {
     pub fn engaged(self) -> bool {
         matches!(
             self.state,
-            RecoilState::Startup | RecoilState::Active | RecoilState::Hold | RecoilState::Brake
-        ) && (self.gate > 0.0 || self.final_rate_counts_s > 0.0 || self.residual_counts_y > 0.0)
+            RecoilState::Waiting | RecoilState::Ready | RecoilState::Applied
+        )
+    }
+
+    pub fn should_add(self) -> bool {
+        self.state == RecoilState::Ready && self.requested_counts_y > 0
+    }
+
+    pub fn mark_output_result(&mut self, applied_counts_y: i32) -> bool {
+        if self.should_add() && applied_counts_y > 0 {
+            self.state = RecoilState::Applied;
+            self.emitted_counts_y = applied_counts_y;
+            true
+        } else if self.should_add() {
+            self.block_reason = RecoilBlockReason::OutputSaturated;
+            false
+        } else {
+            false
+        }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct TargetRelativeRecoilController {
+pub struct IntervalRecoilController {
     config: RecoilConfig,
-    state: RecoilState,
-    fire_start_ns: Option<u64>,
-    residual: f64,
-    target_id: Option<u64>,
+    cadence_started_ns: Option<u64>,
+    last_output_ns: Option<u64>,
 }
 
-impl TargetRelativeRecoilController {
+impl IntervalRecoilController {
     pub fn new(config: RecoilConfig) -> Result<Self, &'static str> {
         config.validate()?;
         Ok(Self {
             config,
-            state: RecoilState::Idle,
-            fire_start_ns: None,
-            residual: 0.0,
-            target_id: None,
+            cadence_started_ns: None,
+            last_output_ns: None,
         })
     }
 
     pub fn reset(&mut self) {
-        self.state = RecoilState::Idle;
-        self.fire_start_ns = None;
-        self.residual = 0.0;
-        self.target_id = None;
+        self.cadence_started_ns = None;
+        self.last_output_ns = None;
     }
 
+    /// Decide whether the current tracking command should receive +Y.
+    ///
+    /// This method never consumes a due recoil step. Call `mark_output_sent`
+    /// only after the combined device command has been accepted, so a failed
+    /// send cannot advance the cadence or lose a recoil step.
     pub fn calculate(&mut self, input: RecoilInput) -> RecoilDecision {
         let config = self.config;
         if !config.enabled {
@@ -176,111 +143,60 @@ impl TargetRelativeRecoilController {
             self.reset();
             return self.blocked(RecoilBlockReason::FiringInactive, input);
         }
-        if !input.dt_s.is_finite() || input.dt_s < 0.0 {
-            self.reset();
-            return self.blocked(RecoilBlockReason::DtInvalid, input);
-        }
+
+        let cadence_start = *self.cadence_started_ns.get_or_insert(input.now_ns);
+        let baseline = self.last_output_ns.unwrap_or(cadence_start);
+        let elapsed_ns = input.now_ns.saturating_sub(baseline);
+        let elapsed_ms = elapsed_ns as f64 / 1_000_000.0;
+        let interval_ns = config.interval_ms.saturating_mul(1_000_000);
+        let remaining_ms = interval_ns.saturating_sub(elapsed_ns) as f64 / 1_000_000.0;
+
         if config.require_target && !input.target_valid {
-            self.state = RecoilState::Stale;
-            self.residual = 0.0;
-            return self.blocked(RecoilBlockReason::TargetInvalid, input);
+            return RecoilDecision {
+                state: RecoilState::Waiting,
+                interval_ms: config.interval_ms,
+                configured_y_counts: config.y_counts,
+                elapsed_since_output_ms: Some(elapsed_ms),
+                remaining_ms,
+                source_generation: input.source_generation,
+                block_reason: RecoilBlockReason::TargetRequired,
+                ..RecoilDecision::default()
+            };
         }
-        if !input.observation_age_ms.is_finite() || input.observation_age_ms < 0.0 {
-            self.reset();
-            return self.blocked(RecoilBlockReason::ObservationAgeInvalid, input);
+        if elapsed_ns < interval_ns {
+            return RecoilDecision {
+                state: RecoilState::Waiting,
+                interval_ms: config.interval_ms,
+                configured_y_counts: config.y_counts,
+                elapsed_since_output_ms: Some(elapsed_ms),
+                remaining_ms,
+                source_generation: input.source_generation,
+                block_reason: RecoilBlockReason::IntervalPending,
+                ..RecoilDecision::default()
+            };
         }
-        if input.observation_age_ms > config.stale_threshold_ms {
-            self.state = RecoilState::Stale;
-            self.residual = 0.0;
-            return self.blocked(RecoilBlockReason::TargetStale, input);
-        }
-        if input.target_valid && !input.error_y_norm.is_finite() {
-            self.state = RecoilState::Stale;
-            self.residual = 0.0;
-            return self.blocked(RecoilBlockReason::ErrorInvalid, input);
-        }
-        let fire_start_ns = *self.fire_start_ns.get_or_insert(input.now_ns);
-        if self.target_id.is_some() && input.target_id != self.target_id {
-            self.residual = 0.0;
-        }
-        self.target_id = input.target_id;
-        let elapsed_ms = input.now_ns.saturating_sub(fire_start_ns) as f64 / 1_000_000.0;
-        let startup_gate = if config.startup_ms <= 0.0 {
-            1.0
-        } else {
-            ((elapsed_ms + input.dt_s * 1_000.0) / config.startup_ms).clamp(0.0, 1.0)
-        };
-        let error = if input.target_valid {
-            input.error_y_norm
-        } else {
-            0.0
-        };
-        let gate = if !input.target_valid {
-            1.0
-        } else if error <= -config.full_brake_error_norm {
-            0.0
-        } else if error < -config.negative_deadzone_norm {
-            1.0 - (-error - config.negative_deadzone_norm)
-                / (config.full_brake_error_norm - config.negative_deadzone_norm)
-        } else {
-            1.0
-        };
-        self.state = if !input.target_valid && startup_gate >= 1.0 {
-            RecoilState::Active
-        } else if error < -config.negative_deadzone_norm {
-            RecoilState::Brake
-        } else if startup_gate < 1.0 {
-            RecoilState::Startup
-        } else if error <= config.positive_deadzone_norm {
-            RecoilState::Hold
-        } else {
-            RecoilState::Active
-        };
-        let fast_add_rate_counts_s = if input.target_valid && error > config.positive_deadzone_norm
-        {
-            (config.fast_add_gain_counts_s * (error - config.positive_deadzone_norm))
-                .min(config.max_rate_counts_s * config.max_fast_add_ratio)
-        } else {
-            0.0
-        };
-        let final_rate_counts_s =
-            ((config.base_rate_counts_s + fast_add_rate_counts_s) * gate * startup_gate)
-                .clamp(0.0, config.max_rate_counts_s);
-        let requested_counts_y = final_rate_counts_s * input.dt_s;
-        let accumulated = self.residual + requested_counts_y;
-        let emitted_counts_y = accumulated.trunc().max(0.0) as i32;
-        self.residual = accumulated - f64::from(emitted_counts_y);
+
         RecoilDecision {
-            state: self.state,
-            base_rate_counts_s: config.base_rate_counts_s,
-            fast_add_rate_counts_s,
-            gate,
-            final_rate_counts_s,
-            requested_counts_y,
-            emitted_counts_y,
-            residual_counts_y: self.residual,
-            error_y_norm: input.target_valid.then_some(error),
-            observation_age_ms: Some(input.observation_age_ms),
+            state: RecoilState::Ready,
+            interval_ms: config.interval_ms,
+            configured_y_counts: config.y_counts,
+            elapsed_since_output_ms: Some(elapsed_ms),
+            remaining_ms: 0.0,
+            requested_counts_y: config.y_counts,
             source_generation: input.source_generation,
-            block_reason: if gate <= 0.0 {
-                RecoilBlockReason::PositionBrake
-            } else if final_rate_counts_s <= 0.0 {
-                RecoilBlockReason::RecoilRateZero
-            } else {
-                RecoilBlockReason::None
-            },
+            block_reason: RecoilBlockReason::None,
+            ..RecoilDecision::default()
         }
+    }
+
+    pub fn mark_output_sent(&mut self, now_ns: u64) {
+        self.last_output_ns = Some(now_ns);
     }
 
     fn blocked(&self, reason: RecoilBlockReason, input: RecoilInput) -> RecoilDecision {
         RecoilDecision {
-            state: self.state,
-            residual_counts_y: self.residual,
-            error_y_norm: input.error_y_norm.is_finite().then_some(input.error_y_norm),
-            observation_age_ms: input
-                .observation_age_ms
-                .is_finite()
-                .then_some(input.observation_age_ms),
+            interval_ms: self.config.interval_ms,
+            configured_y_counts: self.config.y_counts,
             source_generation: input.source_generation,
             block_reason: reason,
             ..RecoilDecision::default()
@@ -288,14 +204,25 @@ impl TargetRelativeRecoilController {
     }
 }
 
-pub fn mix_tracking_and_recoil(tracking_y: i32, recoil: RecoilDecision) -> i32 {
-    if recoil.engaged() {
-        recoil
-            .emitted_counts_y
-            .max(tracking_y.max(0))
-            .saturating_add(tracking_y.min(0))
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecoilMix {
+    pub command_y: i32,
+    pub applied_counts_y: i32,
+}
+
+/// Mix the recoil contribution into the current command exactly once and
+/// report how much positive Y survived the device-range clamp.
+pub fn mix_tracking_and_recoil(tracking_y: i32, recoil: RecoilDecision) -> RecoilMix {
+    let command_y = if recoil.should_add() {
+        tracking_y
+            .saturating_add(recoil.requested_counts_y)
+            .clamp(i16::MIN as i32, i16::MAX as i32)
     } else {
         tracking_y
+    };
+    RecoilMix {
+        command_y,
+        applied_counts_y: command_y.saturating_sub(tracking_y).max(0),
     }
 }
 
@@ -306,82 +233,100 @@ mod tests {
     fn enabled() -> RecoilConfig {
         RecoilConfig {
             enabled: true,
-            base_rate_counts_s: 600.0,
-            max_rate_counts_s: 1_000.0,
-            startup_ms: 0.0,
-            fast_add_gain_counts_s: 500.0,
+            interval_ms: 10,
+            y_counts: 3,
             ..RecoilConfig::default()
         }
     }
 
-    fn input(now_ns: u64, dt_s: f64, error_y_norm: f64) -> RecoilInput {
+    fn input(now_ns: u64) -> RecoilInput {
         RecoilInput {
             firing: true,
             now_ns,
-            dt_s,
             target_valid: true,
-            target_id: Some(7),
             source_generation: Some(1),
-            observation_age_ms: 4.0,
-            error_y_norm,
         }
     }
 
     #[test]
-    fn rate_integration_is_independent_of_tick_frequency() {
-        for hz in [60_u64, 120] {
-            let mut controller = TargetRelativeRecoilController::new(enabled()).unwrap();
-            let dt = 1.0 / hz as f64;
-            let mut now = 1_000_000_000;
-            let mut total = 0.0;
-            for tick in 0..hz {
-                now += 1_000_000_000 / hz;
-                let decision = controller.calculate(input(now, dt, 0.0));
-                total += f64::from(decision.emitted_counts_y);
-                if tick == hz - 1 {
-                    total += decision.residual_counts_y;
-                }
-            }
-            assert!((total - 600.0).abs() < 1e-6);
-        }
+    fn waits_for_interval_and_never_catches_up_multiple_steps() {
+        let mut controller = IntervalRecoilController::new(enabled()).unwrap();
+        let first = controller.calculate(input(1_000_000_000));
+        assert_eq!(first.state, RecoilState::Waiting);
+        assert_eq!(first.remaining_ms, 10.0);
+
+        let due = controller.calculate(input(1_010_000_000));
+        assert!(due.should_add());
+        assert_eq!(mix_tracking_and_recoil(-2, due).command_y, 1);
+        controller.mark_output_sent(1_010_000_000);
+
+        let late = controller.calculate(input(1_035_000_000));
+        assert_eq!(late.requested_counts_y, 3);
     }
 
     #[test]
-    fn target_error_brakes_and_mixer_keeps_upward_recovery() {
-        let mut controller = TargetRelativeRecoilController::new(enabled()).unwrap();
-        let active = controller.calculate(input(1_000_000_000, 0.004, 0.20));
-        let brake = controller.calculate(input(1_004_000_000, 0.004, -0.08));
-        let stopped = controller.calculate(input(1_008_000_000, 0.004, -0.12));
-        assert_eq!(active.state, RecoilState::Active);
-        assert!(active.fast_add_rate_counts_s > 0.0);
-        assert_eq!(brake.state, RecoilState::Brake);
-        assert!(brake.gate > 0.0 && brake.gate < 1.0);
-        assert_eq!(stopped.final_rate_counts_s, 0.0);
-        assert_eq!(mix_tracking_and_recoil(-3, active), -1);
-        assert_eq!(mix_tracking_and_recoil(4, active), 4);
+    fn failed_send_does_not_consume_a_due_step() {
+        let mut controller = IntervalRecoilController::new(enabled()).unwrap();
+        controller.calculate(input(1_000_000_000));
+        let first_attempt = controller.calculate(input(1_010_000_000));
+        let retry = controller.calculate(input(1_011_000_000));
+        assert!(first_attempt.should_add());
+        assert!(retry.should_add());
+
+        controller.mark_output_sent(1_011_000_000);
+        assert!(!controller.calculate(input(1_012_000_000)).should_add());
     }
 
     #[test]
-    fn target_switch_clears_fractional_debt_and_release_resets_fire_state() {
-        let mut config = enabled();
-        config.base_rate_counts_s = 125.0;
-        config.max_rate_counts_s = 125.0;
-        let mut controller = TargetRelativeRecoilController::new(config).unwrap();
-        let first = controller.calculate(input(1_000_000_000, 0.004, 0.0));
-        assert_eq!(first.emitted_counts_y, 0);
-        assert_eq!(first.residual_counts_y, 0.5);
+    fn target_gate_blocks_addition_without_resetting_elapsed_time() {
+        let mut controller = IntervalRecoilController::new(enabled()).unwrap();
+        let mut no_target = input(1_000_000_000);
+        no_target.target_valid = false;
+        controller.calculate(no_target);
+        no_target.now_ns = 1_020_000_000;
+        let blocked = controller.calculate(no_target);
+        assert_eq!(blocked.block_reason, RecoilBlockReason::TargetRequired);
 
-        let mut switched = input(1_004_000_000, 0.004, 0.0);
-        switched.target_id = Some(8);
-        let switched = controller.calculate(switched);
-        assert_eq!(switched.emitted_counts_y, 0);
-        assert_eq!(switched.residual_counts_y, 0.5);
+        let ready = controller.calculate(input(1_021_000_000));
+        assert!(ready.should_add());
+    }
 
-        let mut released = input(1_008_000_000, 0.004, 0.0);
+    #[test]
+    fn release_resets_the_first_interval() {
+        let mut controller = IntervalRecoilController::new(enabled()).unwrap();
+        controller.calculate(input(1_000_000_000));
+        let mut released = input(1_020_000_000);
         released.firing = false;
-        let released = controller.calculate(released);
-        assert_eq!(released.state, RecoilState::Idle);
-        assert_eq!(released.residual_counts_y, 0.0);
-        assert_eq!(released.block_reason, RecoilBlockReason::FiringInactive);
+        assert_eq!(
+            controller.calculate(released).block_reason,
+            RecoilBlockReason::FiringInactive
+        );
+
+        let pressed_again = controller.calculate(input(1_030_000_000));
+        assert_eq!(pressed_again.remaining_ms, 10.0);
+        assert!(!pressed_again.should_add());
+    }
+
+    #[test]
+    fn saturation_reports_only_the_contribution_that_reaches_the_command() {
+        let ready = RecoilDecision {
+            state: RecoilState::Ready,
+            requested_counts_y: 3,
+            ..RecoilDecision::default()
+        };
+        assert_eq!(
+            mix_tracking_and_recoil(i16::MAX as i32, ready),
+            RecoilMix {
+                command_y: i16::MAX as i32,
+                applied_counts_y: 0,
+            }
+        );
+        assert_eq!(
+            mix_tracking_and_recoil(i16::MAX as i32 - 1, ready),
+            RecoilMix {
+                command_y: i16::MAX as i32,
+                applied_counts_y: 1,
+            }
+        );
     }
 }

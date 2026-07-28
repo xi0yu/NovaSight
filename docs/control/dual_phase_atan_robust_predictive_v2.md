@@ -82,9 +82,10 @@ and does not split it into a trajectory. `MouseCommandExecutor` rechecks the
 trigger snapshot, freshness deadline, generation and signed 16-bit device range
 before invoking the driver.
 
-Shared recoil is independent from target prediction. When enabled, it adds its
-configured reverse-Y contribution per fresh accepted observation and owns a
-separate fractional residual.
+Shared recoil is independent from target prediction. When its configured time
+interval is due, it adds one integer `+Y` contribution to the current command.
+It never creates a second move, accumulates missed intervals, or owns a
+fractional residual.
 
 ## Configuration Contract
 

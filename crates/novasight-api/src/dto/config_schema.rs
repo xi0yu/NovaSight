@@ -152,68 +152,19 @@ impl ConfigSchemaResponse {
                     vec![
                         boolean("control.recoil.enabled", "启用独立 Y 轴压枪"),
                         boolean("control.recoil.require_target", "只在检测到目标时压枪"),
-                        float(
-                            "control.recoil.base_rate_counts_s",
-                            "基础压枪速率",
-                            0.0,
-                            20_000.0,
-                            Some("counts/s"),
-                        ),
-                        float(
-                            "control.recoil.max_rate_counts_s",
-                            "最大压枪速率",
-                            0.0,
-                            20_000.0,
-                            Some("counts/s"),
-                        ),
-                        float(
-                            "control.recoil.startup_ms",
-                            "启动斜坡",
-                            0.0,
-                            1_000.0,
-                            Some("ms"),
-                        ),
-                        float(
-                            "control.recoil.positive_deadzone_norm",
-                            "追加起点",
-                            0.0,
+                        integer(
+                            "control.recoil.interval_ms",
+                            "压枪叠加间隔",
                             1.0,
-                            None,
-                        ),
-                        float(
-                            "control.recoil.negative_deadzone_norm",
-                            "刹车起点",
-                            0.0,
-                            1.0,
-                            None,
-                        ),
-                        float(
-                            "control.recoil.full_brake_error_norm",
-                            "完全刹车误差",
-                            0.0,
-                            1.0,
-                            None,
-                        ),
-                        float(
-                            "control.recoil.fast_add_gain_counts_s",
-                            "目标误差追加强度",
-                            0.0,
-                            20_000.0,
-                            Some("counts/s"),
-                        ),
-                        float(
-                            "control.recoil.max_fast_add_ratio",
-                            "追加速率上限比例",
-                            0.0,
-                            1.0,
-                            None,
-                        ),
-                        float(
-                            "control.recoil.stale_threshold_ms",
-                            "目标观测有效期",
-                            0.0,
                             5_000.0,
                             Some("ms"),
+                        ),
+                        integer(
+                            "control.recoil.y_counts",
+                            "每次叠加 +Y",
+                            1.0,
+                            i16::MAX as f64,
+                            Some("counts"),
                         ),
                     ],
                 ),
@@ -492,13 +443,6 @@ impl ConfigSchemaResponse {
                             1.0,
                             100.0,
                             None,
-                        ),
-                        integer(
-                            "pipeline.output_interval_ms",
-                            "空闲／后坐力调度间隔",
-                            1.0,
-                            10.0,
-                            Some("ms"),
                         ),
                         float(
                             "pipeline.actuation_feedback_delay_ms",
@@ -786,7 +730,7 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 7);
+        assert_eq!(value["version"], 8);
         assert_eq!(value["values"]["server"]["port"], 5174);
         assert_eq!(value["values"]["pipeline"]["arrival_radius_counts"], 3.0);
         assert_eq!(
@@ -802,11 +746,11 @@ mod tests {
                 })
         }));
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
-            section["id"] == "pipeline"
+            section["id"] == "control.recoil"
                 && section["fields"].as_array().unwrap().iter().any(|field| {
-                    field["path"] == "pipeline.output_interval_ms"
+                    field["path"] == "control.recoil.interval_ms"
                         && field["min"] == 1.0
-                        && field["max"] == 10.0
+                        && field["max"] == 5_000.0
                 })
         }));
         let output_gate = value["sections"]

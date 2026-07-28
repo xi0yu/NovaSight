@@ -82,7 +82,6 @@ pub fn compose_pipeline_config(
             observation_height: 0,
             residual_cap: adapters.pipeline.residual_cap,
         },
-        output_interval_ms: adapters.pipeline.output_interval_ms,
         actuation_feedback_delay_ns: (adapters.pipeline.actuation_feedback_delay_ms * 1_000_000.0)
             .round() as u64,
         trigger_poll_interval_ms,
@@ -93,15 +92,8 @@ pub fn compose_pipeline_config(
         recoil: RecoilConfig {
             enabled: config.control.recoil.enabled,
             require_target: config.control.recoil.require_target,
-            base_rate_counts_s: config.control.recoil.base_rate_counts_s,
-            max_rate_counts_s: config.control.recoil.max_rate_counts_s,
-            startup_ms: config.control.recoil.startup_ms,
-            positive_deadzone_norm: config.control.recoil.positive_deadzone_norm,
-            negative_deadzone_norm: config.control.recoil.negative_deadzone_norm,
-            full_brake_error_norm: config.control.recoil.full_brake_error_norm,
-            fast_add_gain_counts_s: config.control.recoil.fast_add_gain_counts_s,
-            max_fast_add_ratio: config.control.recoil.max_fast_add_ratio,
-            stale_threshold_ms: config.control.recoil.stale_threshold_ms,
+            interval_ms: config.control.recoil.interval_ms,
+            y_counts: config.control.recoil.y_counts,
         },
         ..PipelineConfig::default()
     })

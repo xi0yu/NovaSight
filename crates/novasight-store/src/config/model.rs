@@ -238,24 +238,10 @@ pub struct RecoilConfig {
     pub enabled: bool,
     #[serde(default = "default_recoil_require_target")]
     pub require_target: bool,
-    #[serde(default)]
-    pub base_rate_counts_s: f64,
-    #[serde(default)]
-    pub max_rate_counts_s: f64,
-    #[serde(default = "default_recoil_startup_ms")]
-    pub startup_ms: f64,
-    #[serde(default = "default_recoil_positive_deadzone")]
-    pub positive_deadzone_norm: f64,
-    #[serde(default = "default_recoil_negative_deadzone")]
-    pub negative_deadzone_norm: f64,
-    #[serde(default = "default_recoil_full_brake")]
-    pub full_brake_error_norm: f64,
-    #[serde(default)]
-    pub fast_add_gain_counts_s: f64,
-    #[serde(default = "default_recoil_fast_add_ratio")]
-    pub max_fast_add_ratio: f64,
-    #[serde(default = "default_recoil_stale_threshold_ms")]
-    pub stale_threshold_ms: f64,
+    #[serde(default = "default_recoil_interval_ms")]
+    pub interval_ms: u64,
+    #[serde(default = "default_recoil_y_counts")]
+    pub y_counts: i32,
     #[serde(default, flatten)]
     pub legacy: BTreeMap<String, Value>,
 }
@@ -265,15 +251,8 @@ impl Default for RecoilConfig {
         Self {
             enabled: false,
             require_target: default_recoil_require_target(),
-            base_rate_counts_s: 0.0,
-            max_rate_counts_s: 0.0,
-            startup_ms: default_recoil_startup_ms(),
-            positive_deadzone_norm: default_recoil_positive_deadzone(),
-            negative_deadzone_norm: default_recoil_negative_deadzone(),
-            full_brake_error_norm: default_recoil_full_brake(),
-            fast_add_gain_counts_s: 0.0,
-            max_fast_add_ratio: default_recoil_fast_add_ratio(),
-            stale_threshold_ms: default_recoil_stale_threshold_ms(),
+            interval_ms: default_recoil_interval_ms(),
+            y_counts: default_recoil_y_counts(),
             legacy: BTreeMap::new(),
         }
     }
@@ -281,95 +260,30 @@ impl Default for RecoilConfig {
 
 impl RecoilConfig {
     fn validate(&self) -> Result<(), ConfigValidationError> {
-        for (field, value, lower, upper) in [
-            (
-                "control.recoil.base_rate_counts_s",
-                self.base_rate_counts_s,
-                0.0,
-                20_000.0,
-            ),
-            (
-                "control.recoil.max_rate_counts_s",
-                self.max_rate_counts_s,
-                0.0,
-                20_000.0,
-            ),
-            ("control.recoil.startup_ms", self.startup_ms, 0.0, 1_000.0),
-            (
-                "control.recoil.positive_deadzone_norm",
-                self.positive_deadzone_norm,
-                0.0,
-                1.0,
-            ),
-            (
-                "control.recoil.negative_deadzone_norm",
-                self.negative_deadzone_norm,
-                0.0,
-                1.0,
-            ),
-            (
-                "control.recoil.full_brake_error_norm",
-                self.full_brake_error_norm,
-                0.0,
-                1.0,
-            ),
-            (
-                "control.recoil.fast_add_gain_counts_s",
-                self.fast_add_gain_counts_s,
-                0.0,
-                20_000.0,
-            ),
-            (
-                "control.recoil.max_fast_add_ratio",
-                self.max_fast_add_ratio,
-                0.0,
-                1.0,
-            ),
-            (
-                "control.recoil.stale_threshold_ms",
-                self.stale_threshold_ms,
-                0.0,
-                5_000.0,
-            ),
-        ] {
-            validate_finite_range(field, value, lower, upper)?;
-        }
-        if self.max_rate_counts_s < self.base_rate_counts_s {
+        if !(1..=5_000).contains(&self.interval_ms) {
             return Err(ConfigValidationError::new(
-                "control.recoil.max_rate_counts_s",
-                "must be at least base_rate_counts_s",
+                "control.recoil.interval_ms",
+                "must be within 1..=5000 ms",
             ));
         }
-        if self.full_brake_error_norm <= self.negative_deadzone_norm {
+        if !(1..=i16::MAX as i32).contains(&self.y_counts) {
             return Err(ConfigValidationError::new(
-                "control.recoil.full_brake_error_norm",
-                "must exceed negative_deadzone_norm",
+                "control.recoil.y_counts",
+                "must be within 1..=32767 positive-Y counts",
             ));
         }
         Ok(())
     }
 }
 
-const fn default_recoil_startup_ms() -> f64 {
-    35.0
-}
 const fn default_recoil_require_target() -> bool {
     true
 }
-const fn default_recoil_positive_deadzone() -> f64 {
-    0.04
+const fn default_recoil_interval_ms() -> u64 {
+    16
 }
-const fn default_recoil_negative_deadzone() -> f64 {
-    0.04
-}
-const fn default_recoil_full_brake() -> f64 {
-    0.12
-}
-const fn default_recoil_fast_add_ratio() -> f64 {
-    0.30
-}
-const fn default_recoil_stale_threshold_ms() -> f64 {
-    55.0
+const fn default_recoil_y_counts() -> i32 {
+    1
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -623,8 +537,6 @@ pub struct PipelineRuntimeConfig {
     pub target_class_aim_y_ratios: String,
     #[serde(default = "default_candidate_max_aspect_ratio")]
     pub candidate_max_aspect_ratio: f64,
-    #[serde(default = "default_output_interval_ms")]
-    pub output_interval_ms: u64,
     #[serde(default = "default_actuation_feedback_delay_ms")]
     pub actuation_feedback_delay_ms: f64,
     #[serde(skip)]
@@ -681,7 +593,6 @@ impl Default for PipelineRuntimeConfig {
             target_aim_y_ratio: default_target_aim_y_ratio(),
             target_class_aim_y_ratios: String::new(),
             candidate_max_aspect_ratio: default_candidate_max_aspect_ratio(),
-            output_interval_ms: default_output_interval_ms(),
             actuation_feedback_delay_ms: default_actuation_feedback_delay_ms(),
             production_fields_explicit: false,
             legacy: BTreeMap::new(),
@@ -923,12 +834,6 @@ impl PipelineRuntimeConfig {
             1.0,
             100.0,
         )?;
-        if !(1..=10).contains(&self.output_interval_ms) {
-            return Err(ConfigValidationError::new(
-                "pipeline.output_interval_ms",
-                "must be within 1..=10 ms; tracking commands bypass this idle/recoil cadence",
-            ));
-        }
         validate_finite_range(
             "pipeline.actuation_feedback_delay_ms",
             self.actuation_feedback_delay_ms,
@@ -1222,10 +1127,6 @@ const fn default_target_aim_y_ratio() -> f64 {
 
 const fn default_candidate_max_aspect_ratio() -> f64 {
     6.0
-}
-
-const fn default_output_interval_ms() -> u64 {
-    4
 }
 
 const fn default_actuation_feedback_delay_ms() -> f64 {
@@ -1768,7 +1669,7 @@ impl Default for PathConfig {
 }
 
 const fn default_schema_version() -> u32 {
-    7
+    8
 }
 
 fn default_server_host() -> String {
@@ -2007,18 +1908,19 @@ mod tests {
     }
 
     #[test]
-    fn recoil_configuration_is_typed_and_fails_closed_on_unsafe_rates() {
+    fn recoil_configuration_is_typed_and_bounded() {
         let mut config: AppConfig = serde_yaml::from_str(
-            "control:\n  recoil:\n    enabled: true\n    base_rate_counts_s: 600\n    max_rate_counts_s: 1000\n    startup_ms: 35\n",
+            "control:\n  recoil:\n    enabled: true\n    interval_ms: 20\n    y_counts: 3\n",
         )
         .unwrap();
         assert!(config.control.recoil.enabled);
-        assert_eq!(config.control.recoil.stale_threshold_ms, 55.0);
+        assert_eq!(config.control.recoil.interval_ms, 20);
+        assert_eq!(config.control.recoil.y_counts, 3);
         config.validate_configured_adapters().unwrap();
 
-        config.control.recoil.max_rate_counts_s = 599.0;
+        config.control.recoil.y_counts = 0;
         let error = config.validate_configured_adapters().unwrap_err();
-        assert_eq!(error.field, "control.recoil.max_rate_counts_s");
+        assert_eq!(error.field, "control.recoil.y_counts");
     }
 
     #[test]

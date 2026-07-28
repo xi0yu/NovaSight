@@ -500,15 +500,12 @@ pub(crate) struct ControlPipelineState {
     pub recoil_enabled: bool,
     pub recoil_active: bool,
     pub recoil_state: RecoilState,
-    pub recoil_base_rate_counts_s: f64,
-    pub recoil_fast_add_rate_counts_s: f64,
-    pub recoil_position_gate: f64,
-    pub recoil_final_rate_counts_s: f64,
-    pub recoil_requested_counts_y: f64,
+    pub recoil_interval_ms: u64,
+    pub recoil_y_counts: i32,
+    pub recoil_elapsed_since_output_ms: Option<f64>,
+    pub recoil_remaining_ms: f64,
+    pub recoil_requested_counts_y: i32,
     pub recoil_emitted_counts_y: i32,
-    pub recoil_residual_counts_y: f64,
-    pub recoil_error_y_norm: Option<f64>,
-    pub recoil_observation_age_ms: Option<f64>,
     pub recoil_source_generation: Option<u64>,
     pub recoil_block_reason: RecoilBlockReason,
 }
@@ -1088,43 +1085,28 @@ impl CompatibilityRuntimeState {
                         actuation_pending_y: control_sample
                             .then_some(dual_phase.actuation_pending_y),
                         block_reason: control_reason,
-                        recoil_mode: config.map_or("triggered_rate", |config| {
+                        recoil_mode: config.map_or("interval_additive", |config| {
                             if config.control.recoil.require_target {
-                                "target_guarded_rate"
+                                "target_guarded_interval_additive"
                             } else {
-                                "triggered_rate"
+                                "interval_additive"
                             }
                         }),
                         recoil_enabled: config.is_some_and(|config| config.control.recoil.enabled),
                         recoil_active: snapshot.pipeline_metrics.recoil.engaged(),
                         recoil_state: snapshot.pipeline_metrics.recoil.state,
-                        recoil_base_rate_counts_s: snapshot
+                        recoil_interval_ms: snapshot.pipeline_metrics.recoil.interval_ms,
+                        recoil_y_counts: snapshot.pipeline_metrics.recoil.configured_y_counts,
+                        recoil_elapsed_since_output_ms: snapshot
                             .pipeline_metrics
                             .recoil
-                            .base_rate_counts_s,
-                        recoil_fast_add_rate_counts_s: snapshot
-                            .pipeline_metrics
-                            .recoil
-                            .fast_add_rate_counts_s,
-                        recoil_position_gate: snapshot.pipeline_metrics.recoil.gate,
-                        recoil_final_rate_counts_s: snapshot
-                            .pipeline_metrics
-                            .recoil
-                            .final_rate_counts_s,
+                            .elapsed_since_output_ms,
+                        recoil_remaining_ms: snapshot.pipeline_metrics.recoil.remaining_ms,
                         recoil_requested_counts_y: snapshot
                             .pipeline_metrics
                             .recoil
                             .requested_counts_y,
                         recoil_emitted_counts_y: snapshot.pipeline_metrics.recoil.emitted_counts_y,
-                        recoil_residual_counts_y: snapshot
-                            .pipeline_metrics
-                            .recoil
-                            .residual_counts_y,
-                        recoil_error_y_norm: snapshot.pipeline_metrics.recoil.error_y_norm,
-                        recoil_observation_age_ms: snapshot
-                            .pipeline_metrics
-                            .recoil
-                            .observation_age_ms,
                         recoil_source_generation: snapshot
                             .pipeline_metrics
                             .recoil
@@ -1415,16 +1397,13 @@ mod tests {
             ..ControlDecision::default()
         };
         snapshot.pipeline_metrics.recoil = RecoilDecision {
-            state: RecoilState::Active,
-            base_rate_counts_s: 600.0,
-            fast_add_rate_counts_s: 25.0,
-            gate: 1.0,
-            final_rate_counts_s: 625.0,
-            requested_counts_y: 2.5,
+            state: RecoilState::Applied,
+            interval_ms: 16,
+            configured_y_counts: 2,
+            elapsed_since_output_ms: Some(17.0),
+            remaining_ms: 0.0,
+            requested_counts_y: 2,
             emitted_counts_y: 2,
-            residual_counts_y: 0.5,
-            error_y_norm: Some(0.1),
-            observation_age_ms: Some(7.0),
             source_generation: Some(9),
             block_reason: RecoilBlockReason::None,
         };
@@ -1509,9 +1488,11 @@ mod tests {
         assert_eq!(pipeline["arrival_exit_counts"], 4.5);
         assert_eq!(pipeline["actuation_pending_y"], true);
         assert_eq!(pipeline["block_reason"], "");
-        assert_eq!(pipeline["recoil_state"], "ACTIVE");
+        assert_eq!(pipeline["recoil_state"], "APPLIED");
         assert_eq!(pipeline["recoil_active"], true);
-        assert_eq!(pipeline["recoil_final_rate_counts_s"], 625.0);
+        assert_eq!(pipeline["recoil_interval_ms"], 16);
+        assert_eq!(pipeline["recoil_y_counts"], 2);
+        assert_eq!(pipeline["recoil_emitted_counts_y"], 2);
         assert_eq!(pipeline["recoil_source_generation"], 9);
         assert_eq!(pipeline["recoil_block_reason"], "");
     }
