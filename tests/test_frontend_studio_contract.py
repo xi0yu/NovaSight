@@ -555,11 +555,11 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
     assert 'updateConfigField("control", "active_algorithm", algorithm.id)' in studio
     assert "dual_phase_atan_predictive_v1" not in studio
     assert "ttbox_pid_atan" not in studio
-    assert 'label="NEAR 阈值 px"' in studio
+    assert 'label="近远过渡中心 px"' in studio
     assert 'label="共享 Atan 尺度 counts"' in studio
-    assert 'label="前瞻帧数"' not in studio
-    assert 'label="速度平滑帧数"' not in studio
-    assert 'label="启用位置预测"' not in studio
+    assert 'label="预测提前帧数"' in studio
+    assert 'label="预测速度平滑帧数"' in studio
+    assert 'label="启用 X / Y 目标预测"' in studio
     assert 'title="独立 Y 轴压枪 · 所有控制算法"' in studio
     assert 'updateControlGroupField("recoil", "enabled", enabled)' in studio
     assert 'updateControlGroupField("recoil", "base_rate_counts_s", value)' in studio
@@ -581,11 +581,17 @@ def test_studio_exposes_only_mutually_exclusive_control_modes() -> None:
 
 def test_studio_routes_rust_control_edits_to_typed_pipeline_fields() -> None:
     studio = STUDIO_CONSOLE.read_text(encoding="utf-8")
+    controls = STUDIO_CONTROLS.read_text(encoding="utf-8")
 
-    assert '"projection.fov_x_deg": "projection_fov_x_deg"' in studio
-    assert '"atan.far.kp": "far_kp"' in studio
-    assert '"prediction.lead_frames": "prediction_lead_frames"' not in studio
-    assert 'await updateConfigField("pipeline", rustField, value)' in studio
+    assert "updateDualPhasePath" not in studio
+    assert 'async (key: DualPhasePipelineField, value: RuntimeConfigValue)' in studio
+    assert 'await updateConfigField("pipeline", key, value)' in studio
+    assert 'updateDualPhaseField("projection_fov_x_deg", value)' in studio
+    assert 'updateDualPhaseField("far_kp", value)' in studio
+    assert 'updateDualPhaseField("prediction_lead_frames", value)' in studio
+    assert 'updateDualPhaseField("actuation_feedback_delay_ms", value)' in studio
+    assert "decimalPlacesForStep(step)" in controls
+    assert "step >= 1 ? 0 : 2" not in controls
     assert 'await updateConfigField("pipeline", pipelineKey, value)' in studio
     assert 'rustPipelineConfig.target_selection_class_weight' in studio
     assert 'rustPipelineConfig.target_track_max_age' in studio
@@ -599,9 +605,9 @@ def test_studio_routes_rust_control_edits_to_typed_pipeline_fields() -> None:
     assert "rustPipelineConfig.target_class_filter" in studio
     assert 'updateConfigField("pipeline", "target_class_filter", value)' in studio
     assert 'Rust 主链直接使用 daemon 缓存的 kmNet 硬件按键状态' in studio
-    assert 'Rust 主链使用有界关联保持目标身份；Atan 输出只读取当前测量误差。' in studio
+    assert 'Rust 主链使用有界关联保持目标身份；当前位置直接进入 Atan。' in studio
     assert 'min={rustControlPlane ? 1024 : 0}' in studio
     assert 'max={rustControlPlane ? 49151 : 65535}' in studio
     assert '"主链启动时连接设备"' in studio
-    assert '"修改配置并保存后，重启主链以创建新的设备会话。"' in studio
+    assert '"修改后需要重启 novasightd；连接失败时视觉主链继续运行，并由低频设备线程自动重连"' in studio
     assert 'availableControlAlgorithms.map' in studio

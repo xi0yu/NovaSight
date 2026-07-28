@@ -39,7 +39,7 @@ import {
   updateRuntimeConfig,
   updateRuntimeConfigField
 } from "../../api";
-import { reportError, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
+import { reportError, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeGallery, ThemeToggle } from "../../components/visual";
@@ -78,23 +78,6 @@ const CONTROL_ALGORITHM_OPTIONS = [
   }
 ] as const;
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
-const RUST_DUAL_PHASE_PATHS: Record<string, string> = {
-  "projection.fov_x_deg": "projection_fov_x_deg",
-  "projection.counts_per_360": "projection_counts_per_360",
-  "mode.near_threshold_px": "near_threshold_px",
-  "atan.far.kp": "far_kp",
-  "atan.near.kp": "near_kp",
-  "atan.scale_counts": "atan_scale_counts",
-  "atan.far.max_counts_per_update": "far_max_counts_per_update",
-  "atan.near.max_counts_per_update": "near_max_counts_per_update",
-  "arrival.radius_counts": "arrival_radius_counts",
-  "prediction.enabled": "prediction_enabled",
-  "prediction.smoothing_frames": "velocity_smoothing_frames",
-  "prediction.history_reset_gap_ms": "velocity_history_reset_gap_ms",
-  "prediction.lead_frames": "prediction_lead_frames",
-  "prediction.far_absolute_cap_px": "prediction_far_absolute_cap_px",
-  "prediction.near_absolute_cap_px": "prediction_near_absolute_cap_px",
-};
 const ModelManagerDialog = lazy(() =>
   import("../models/ModelManagerDialog").then((module) => ({
     default: module.ModelManagerDialog
@@ -160,6 +143,23 @@ type CapabilityChoice = {
 type LaunchStatus = "idle" | "running" | "success" | "failed" | "cancelled";
 type LaunchStepState = "pending" | "running" | "success" | "failed";
 type ConfigDialogId = "class-config" | "target-weights" | "algorithm" | "target-advanced" | "tracker";
+type DualPhasePipelineField =
+  | "projection_fov_x_deg"
+  | "projection_counts_per_360"
+  | "near_threshold_px"
+  | "far_kp"
+  | "near_kp"
+  | "atan_scale_counts"
+  | "far_max_counts_per_update"
+  | "near_max_counts_per_update"
+  | "prediction_enabled"
+  | "velocity_smoothing_frames"
+  | "velocity_history_reset_gap_ms"
+  | "prediction_lead_frames"
+  | "prediction_far_absolute_cap_px"
+  | "prediction_near_absolute_cap_px"
+  | "arrival_radius_counts"
+  | "actuation_feedback_delay_ms";
 
 type LaunchStage = {
   title: string;
@@ -789,6 +789,13 @@ export function StudioConsoleView({
       configDraftRef.current = applied;
       setConfigDraft(applied);
       onRuntimeConfigChange(applied);
+      reportSuccess(
+        "配置已保存",
+        result.restart_required
+          ? "新参数已写入配置；重启 novasightd 后进入运行主链。"
+          : "新参数已经应用。",
+        "config-dialog"
+      );
       finishConfigDialog(dialog);
     } catch (error) {
       const message = getErrorMessage(error);
@@ -2641,46 +2648,11 @@ export function StudioConsoleView({
     [runtimeConfig, updateConfigField]
   );
 
-  const updateDualPhasePath = useCallback(
-    async (path: string[], value: RuntimeConfigValue) => {
-      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
-      const pipelineConfig = nestedRecord(base, "pipeline");
-      const rustField = RUST_DUAL_PHASE_PATHS[path.join(".")];
-      if (
-        rustField
-        && Object.prototype.hasOwnProperty.call(pipelineConfig, "projection_fov_x_deg")
-      ) {
-        await updateConfigField("pipeline", rustField, value);
-        return;
-      }
-      const control = nestedRecord(base, "control");
-      const algorithms = nestedRecord(control, "algorithms");
-      const algorithmId = readString(
-        control.active_algorithm,
-        "dual_phase_atan_robust_predictive_v2"
-      );
-      const algorithm = nestedRecord(algorithms, algorithmId);
-      const writeNested = (
-        record: Record<string, unknown>,
-        remainingPath: string[]
-      ): Record<string, unknown> => {
-        const [head, ...rest] = remainingPath;
-        if (!head) {
-          return record;
-        }
-        return {
-          ...record,
-          [head]: rest.length > 0
-            ? writeNested(nestedRecord(record, head), rest)
-            : value
-        };
-      };
-      await updateConfigField("control", "algorithms", {
-        ...algorithms,
-        [algorithmId]: writeNested(algorithm, path)
-      } as RuntimeConfigValue);
+  const updateDualPhaseField = useCallback(
+    async (key: DualPhasePipelineField, value: RuntimeConfigValue) => {
+      await updateConfigField("pipeline", key, value);
     },
-    [runtimeConfig, updateConfigField]
+    [updateConfigField]
   );
 
   const handleLearnCrosshair = useCallback(async () => {
@@ -4042,7 +4014,7 @@ export function StudioConsoleView({
                   label="启用 X / Y 目标预测"
                   detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。保存后重启主链生效。"
                   enabled={dualPhasePredictionEnabled}
-                  onToggle={(enabled) => updateDualPhasePath(["prediction", "enabled"], enabled)}
+                  onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)}
                 />
               ) : null}
             </div>
@@ -4597,28 +4569,28 @@ export function StudioConsoleView({
         <div className="advanced-settings-grid">
           {dualPhaseActive ? (
             <>
-              <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhasePath(["projection", "fov_x_deg"], value)} />
-              <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhasePath(["projection", "counts_per_360"], value)} />
-              <NumberControl label="近远过渡中心 px" detail="以该误差距离为中心，在前后 25% 区间内平滑融合 NEAR 与 FAR Atan 响应，避免阈值附近突然换挡。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhasePath(["mode", "near_threshold_px"], value)} />
-              <NumberControl label="FAR Kp" detail="远距离闭环增益；不是 KMNet 设备能力上限。" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhasePath(["atan", "far", "kp"], value)} />
-              <NumberControl label="NEAR Kp" detail="接近准星后的闭环增益，过高会导致左右往返修正。" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhasePath(["atan", "near", "kp"], value)} />
-              <NumberControl label="共享 Atan 尺度 counts" detail="控制响应曲线尺度，不代表协议可发送的最大 counts。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhasePath(["atan", "scale_counts"], value)} />
-              <NumberControl label="FAR 单次上限 counts" detail="稳定性保护上限；KMNet 的 signed-16 能力独立校验。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "far", "max_counts_per_update"], value)} />
-              <NumberControl label="NEAR 单次上限 counts" detail="近目标单次修正上限，默认低于 FAR 以抑制过冲。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhasePath(["atan", "near", "max_counts_per_update"], value)} />
-              <ModuleSwitch label="启用 X / Y 目标预测" detail="使用唯一锁定目标的真实帧间速度；不会预测多个候选目标。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhasePath(["prediction", "enabled"], enabled)} />
+              <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhaseField("projection_fov_x_deg", value)} />
+              <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhaseField("projection_counts_per_360", value)} />
+              <NumberControl label="近远过渡中心 px" detail="以该误差距离为中心，在前后 25% 区间内平滑融合 NEAR 与 FAR Atan 响应，避免阈值附近突然换挡。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("near_threshold_px", value)} />
+              <NumberControl label="FAR Kp" detail="远距离闭环增益；不是 KMNet 设备能力上限。" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("far_kp", value)} />
+              <NumberControl label="NEAR Kp" detail="接近准星后的闭环增益，过高会导致左右往返修正。" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("near_kp", value)} />
+              <NumberControl label="共享 Atan 尺度 counts" detail="控制响应曲线尺度，不代表协议可发送的最大 counts。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("atan_scale_counts", value)} />
+              <NumberControl label="FAR 单次上限 counts" detail="稳定性保护上限；KMNet 的 signed-16 能力独立校验。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("far_max_counts_per_update", value)} />
+              <NumberControl label="NEAR 单次上限 counts" detail="近目标单次修正上限，默认低于 FAR 以抑制过冲。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("near_max_counts_per_update", value)} />
+              <ModuleSwitch label="启用 X / Y 目标预测" detail="使用唯一锁定目标的真实帧间速度；不会预测多个候选目标。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)} />
               {dualPhasePredictionEnabled ? (
                 <>
-                  <NumberControl label="预测速度平滑帧数" value={dualPhasePredictionSmoothingFrames} min={1} max={30} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "smoothing_frames"], value)} />
-                  <NumberControl label="预测历史重置间隔 ms" detail="相邻有效画面超过该时间后丢弃旧速度，避免断流后沿旧方向预测。" value={dualPhasePredictionHistoryResetGapMs} min={1} max={1000} step={1} onCommit={(value) => updateDualPhasePath(["prediction", "history_reset_gap_ms"], value)} />
-                  <NumberControl label="预测提前帧数" value={dualPhasePredictionLeadFrames} min={0} max={10} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "lead_frames"], value)} />
-                  <NumberControl label="FAR 预测上限 px" value={dualPhasePredictionFarCapPx} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "far_absolute_cap_px"], value)} />
-                  <NumberControl label="NEAR 预测上限 px" value={dualPhasePredictionNearCapPx} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhasePath(["prediction", "near_absolute_cap_px"], value)} />
+                  <NumberControl label="预测速度平滑帧数" value={dualPhasePredictionSmoothingFrames} min={1} max={30} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_smoothing_frames", value)} />
+                  <NumberControl label="预测历史重置间隔 ms" detail="相邻有效画面超过该时间后丢弃旧速度，避免断流后沿旧方向预测。" value={dualPhasePredictionHistoryResetGapMs} min={1} max={1000} step={1} onCommit={(value) => updateDualPhaseField("velocity_history_reset_gap_ms", value)} />
+                  <NumberControl label="预测提前帧数" value={dualPhasePredictionLeadFrames} min={0} max={10} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_lead_frames", value)} />
+                  <NumberControl label="FAR 预测上限 px" value={dualPhasePredictionFarCapPx} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_far_absolute_cap_px", value)} />
+                  <NumberControl label="NEAR 预测上限 px" value={dualPhasePredictionNearCapPx} min={0} max={100} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_near_absolute_cap_px", value)} />
                 </>
               ) : null}
               {rustControlPlane ? (
                 <>
-                  <NumberControl label="到位半径 counts" detail="误差先按 ROI、FOV 和每圈 counts 投影。每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞，避免目标附近 ±1 往返。" value={dualPhaseArrivalRadiusCounts} min={0.5} max={100} step={0.5} onCommit={(value) => updateDualPhasePath(["arrival", "radius_counts"], value)} />
-                  <NumberControl label="设备反馈等待 ms" detail="设备成功移动后额外等待的最小视觉反馈时间；运行时还会自动加一帧实测采集周期，避免同一旧画面重复驱动。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateControlOrPipelineField("actuation_feedback_delay_ms", "actuation_feedback_delay_ms", value)} />
+                  <NumberControl label="到位半径 counts" detail="误差先按 ROI、FOV 和每圈 counts 投影。每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞，避免目标附近 ±1 往返。" value={dualPhaseArrivalRadiusCounts} min={0.5} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("arrival_radius_counts", value)} />
+                  <NumberControl label="设备反馈等待 ms" detail="设备成功移动后额外等待的最小视觉反馈时间；运行时还会自动加一帧实测采集周期，避免同一旧画面重复驱动。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("actuation_feedback_delay_ms", value)} />
                 </>
               ) : null}
             </>

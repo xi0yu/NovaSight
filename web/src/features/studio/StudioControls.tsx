@@ -6,6 +6,17 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function decimalPlacesForStep(step: number): number {
+  if (!Number.isFinite(step) || step <= 0 || Number.isInteger(step)) {
+    return 0;
+  }
+  const scientificMatch = step.toString().match(/e-(\d+)$/i);
+  if (scientificMatch) {
+    return Number(scientificMatch[1]);
+  }
+  return Math.min(8, step.toString().split(".")[1]?.length ?? 0);
+}
+
 export function NumberControl({
   label,
   detail,
@@ -31,7 +42,7 @@ export function NumberControl({
         min={min}
         max={max}
         step={step}
-        digits={step >= 1 ? 0 : 2}
+        digits={decimalPlacesForStep(step)}
         onCommit={onCommit}
       />
     </div>
