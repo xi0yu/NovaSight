@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use novasight_store::model_catalog::{
-    ModelCatalogError, ModelIngressCatalogUpdate, SqliteModelCatalog,
+    ModelCatalogError, ModelIngressCatalogUpdate, ModelRecommendation, SqliteModelCatalog,
 };
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
@@ -128,6 +128,48 @@ fn catalog_engine_registration_is_reference_only_and_idempotent() {
     assert_eq!(catalog.list_versions(created.project.id).unwrap().len(), 1);
     assert_eq!(catalog.list_artifacts(created.version.id).unwrap().len(), 1);
     assert_eq!(fs::read(engine).unwrap(), b"opaque-tensorrt-engine");
+}
+
+#[test]
+fn artifact_metadata_persists_recommendation_and_tags_in_the_catalog_view() {
+    let directory = TestDirectory::new();
+    let model_root = directory.0.join("models");
+    fs::create_dir_all(&model_root).unwrap();
+    fs::write(model_root.join("detector.engine"), b"engine").unwrap();
+    let catalog =
+        SqliteModelCatalog::open_with_model_root(directory.0.join("novasight.db"), &model_root)
+            .unwrap();
+    let artifact = catalog
+        .register_catalog_engine("detector.engine")
+        .unwrap()
+        .artifact;
+
+    let before = catalog.catalog(false).unwrap();
+    assert_eq!(
+        before.root.children[0].model().recommendation,
+        ModelRecommendation::Unrated
+    );
+    assert!(before.root.children[0].model().tags.is_empty());
+
+    let metadata = catalog
+        .update_artifact_metadata(
+            artifact.id,
+            ModelRecommendation::Recommended,
+            vec![
+                " 高精度模型 ".to_owned(),
+                "延迟大".to_owned(),
+                "高精度模型".to_owned(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(metadata.recommendation, ModelRecommendation::Recommended);
+    assert_eq!(metadata.tags, ["高精度模型", "延迟大"]);
+    assert_eq!(catalog.artifact_metadata(artifact.id).unwrap(), metadata);
+
+    let refreshed = catalog.catalog(false).unwrap();
+    let model = refreshed.root.children[0].model();
+    assert_eq!(model.recommendation, ModelRecommendation::Recommended);
+    assert_eq!(model.tags, ["高精度模型", "延迟大"]);
 }
 
 #[test]
@@ -279,7 +321,7 @@ fn migrates_the_legacy_python_deployment_table_in_place() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(migration, 1);
+    assert_eq!(migration, 2);
 }
 
 #[test]

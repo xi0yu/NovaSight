@@ -152,6 +152,48 @@ async fn catalog_register_creates_an_idempotent_external_engine_reference() {
     assert_eq!(second["created"], false);
     assert_eq!(second["artifact"]["id"], first["artifact"]["id"]);
 
+    let artifact_id = first["artifact"]["id"].as_i64().unwrap();
+    let metadata = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/models/artifacts/{artifact_id}/metadata"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"recommendation":"recommended","tags":["高精度模型","延迟大"]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(metadata.status(), axum::http::StatusCode::OK);
+    let metadata: Value =
+        serde_json::from_slice(&to_bytes(metadata.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(metadata["recommendation"], "recommended");
+    assert_eq!(metadata["tags"], json!(["高精度模型", "延迟大"]));
+
+    let catalog_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/models/catalog")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(catalog_response.status(), axum::http::StatusCode::OK);
+    let catalog_body: Value = serde_json::from_slice(
+        &to_bytes(catalog_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let catalog_model = &catalog_body["root"]["children"][0]["children"][0];
+    assert_eq!(catalog_model["recommendation"], "recommended");
+    assert_eq!(catalog_model["tags"], json!(["高精度模型", "延迟大"]));
+
     let invalid = app
         .oneshot(
             Request::builder()

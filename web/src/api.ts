@@ -80,6 +80,14 @@ export type ModelArtifact = {
   size_bytes?: number | null;
 };
 
+export type ModelRecommendation = "recommended" | "not_recommended" | "unrated";
+
+export type ModelArtifactMetadata = {
+  artifact_id: number;
+  recommendation: ModelRecommendation;
+  tags: string[];
+};
+
 export type ModelCatalogModel = {
   type: "model";
   name: string;
@@ -94,6 +102,8 @@ export type ModelCatalogModel = {
   version_name?: string;
   artifact_id?: number;
   artifact_status?: ModelArtifact["status"];
+  recommendation: ModelRecommendation;
+  tags: string[];
 };
 
 export type ModelCatalogDirectory = {
@@ -980,6 +990,20 @@ export function registerCatalogModel(
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ relative_path: relativePath })
+  });
+}
+
+export function updateModelArtifactMetadata(
+  artifactId: number,
+  recommendation: ModelRecommendation,
+  tags: string[]
+): Promise<ModelArtifactMetadata> {
+  return requestJson<ModelArtifactMetadata>(`/api/models/artifacts/${artifactId}/metadata`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ recommendation, tags })
   });
 }
 

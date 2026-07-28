@@ -1586,6 +1586,11 @@ impl IntoResponse for ControlApiError {
                     "MODEL_CATALOG_PATH_INVALID",
                     error.to_string(),
                 ),
+                ModelCatalogError::InvalidArtifactTags(_) => (
+                    StatusCode::BAD_REQUEST,
+                    "MODEL_ARTIFACT_TAGS_INVALID",
+                    error.to_string(),
+                ),
                 ModelCatalogError::DeploymentChangedDuringActivation { .. } => (
                     StatusCode::CONFLICT,
                     "MODEL_DEPLOYMENT_CONFLICT",

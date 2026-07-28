@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -48,6 +48,41 @@ pub struct ModelArtifact {
     pub size_bytes: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRecommendation {
+    Recommended,
+    NotRecommended,
+    #[default]
+    Unrated,
+}
+
+impl ModelRecommendation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Recommended => "recommended",
+            Self::NotRecommended => "not_recommended",
+            Self::Unrated => "unrated",
+        }
+    }
+
+    fn from_database(value: &str) -> Option<Self> {
+        match value {
+            "recommended" => Some(Self::Recommended),
+            "not_recommended" => Some(Self::NotRecommended),
+            "unrated" => Some(Self::Unrated),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ModelArtifactMetadata {
+    pub artifact_id: i64,
+    pub recommendation: ModelRecommendation,
+    pub tags: Vec<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ModelCatalogResponse {
     pub root: ModelCatalogDirectory,
@@ -81,7 +116,7 @@ pub struct ModelCatalogDirectory {
 #[serde(untagged)]
 pub enum ModelCatalogNode {
     Directory(ModelCatalogDirectory),
-    Model(ModelCatalogModel),
+    Model(Box<ModelCatalogModel>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -106,6 +141,8 @@ pub struct ModelCatalogModel {
     pub artifact_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_status: Option<String>,
+    pub recommendation: ModelRecommendation,
+    pub tags: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -258,6 +295,66 @@ impl SqliteModelCatalog {
                 .map(|metadata| metadata.len());
         }
         Ok(artifacts)
+    }
+
+    pub fn artifact_metadata(
+        &self,
+        artifact_id: i64,
+    ) -> Result<ModelArtifactMetadata, ModelCatalogError> {
+        let connection = self.connect()?;
+        require_artifact(&connection, artifact_id)?;
+        connection
+            .query_row(
+                "SELECT artifact_id, recommendation, tags_json FROM model_artifact_metadata WHERE artifact_id = ?1",
+                [artifact_id],
+                model_artifact_metadata_from_row,
+            )
+            .optional()
+            .map_err(ModelCatalogError::Sqlite)
+            .map(|metadata| {
+                metadata.unwrap_or(ModelArtifactMetadata {
+                    artifact_id,
+                    recommendation: ModelRecommendation::Unrated,
+                    tags: Vec::new(),
+                })
+            })
+    }
+
+    pub fn update_artifact_metadata(
+        &self,
+        artifact_id: i64,
+        recommendation: ModelRecommendation,
+        tags: Vec<String>,
+    ) -> Result<ModelArtifactMetadata, ModelCatalogError> {
+        let tags = normalize_model_tags(tags)?;
+        let tags_json = serde_json::to_string(&tags).map_err(ModelCatalogError::EncodeJson)?;
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(ModelCatalogError::Sqlite)?;
+        require_artifact(&transaction, artifact_id)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO model_artifact_metadata(artifact_id, recommendation, tags_json)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(artifact_id) DO UPDATE SET
+                    recommendation = excluded.recommendation,
+                    tags_json = excluded.tags_json
+                "#,
+                params![artifact_id, recommendation.as_str(), tags_json],
+            )
+            .map_err(ModelCatalogError::Sqlite)?;
+        transaction.commit().map_err(ModelCatalogError::Sqlite)?;
+        *self
+            .catalog_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        Ok(ModelArtifactMetadata {
+            artifact_id,
+            recommendation,
+            tags,
+        })
     }
 
     pub fn list_jobs(
@@ -852,6 +949,11 @@ impl SqliteModelCatalog {
             .iter()
             .map(|version| (version.id, version))
             .collect::<HashMap<_, _>>();
+        let metadata = registry_rows
+            .metadata
+            .iter()
+            .map(|metadata| (metadata.artifact_id, metadata))
+            .collect::<HashMap<_, _>>();
         let mut registered = HashMap::new();
         for artifact in &registry_rows.artifacts {
             let Some(version) = versions.get(&artifact.version_id) else {
@@ -861,6 +963,7 @@ impl SqliteModelCatalog {
                 continue;
             };
             let path = self.resolve_artifact_path(&project.name, &version.version, &artifact.path);
+            let artifact_metadata = metadata.get(&artifact.id);
             registered.insert(
                 canonical_or_original(path),
                 RegisteredArtifact {
@@ -870,6 +973,12 @@ impl SqliteModelCatalog {
                     version_name: version.version.clone(),
                     artifact_id: artifact.id,
                     artifact_status: artifact.status.clone(),
+                    recommendation: artifact_metadata
+                        .map(|metadata| metadata.recommendation)
+                        .unwrap_or_default(),
+                    tags: artifact_metadata
+                        .map(|metadata| metadata.tags.clone())
+                        .unwrap_or_default(),
                 },
             );
         }
@@ -931,6 +1040,12 @@ impl SqliteModelCatalog {
                 version_name: registered_artifact.map(|entry| entry.version_name.clone()),
                 artifact_id: registered_artifact.map(|entry| entry.artifact_id),
                 artifact_status: registered_artifact.map(|entry| entry.artifact_status.clone()),
+                recommendation: registered_artifact
+                    .map(|entry| entry.recommendation)
+                    .unwrap_or_default(),
+                tags: registered_artifact
+                    .map(|entry| entry.tags.clone())
+                    .unwrap_or_default(),
             };
             insert_model_node(&mut root, relative, model);
         }
@@ -1131,11 +1246,18 @@ impl SqliteModelCatalog {
             [],
             model_artifact_from_row,
         )?;
+        let metadata = collect(
+            &transaction,
+            "SELECT artifact_id, recommendation, tags_json FROM model_artifact_metadata ORDER BY artifact_id",
+            [],
+            model_artifact_metadata_from_row,
+        )?;
         transaction.commit().map_err(ModelCatalogError::Sqlite)?;
         Ok(CatalogRegistryRows {
             projects,
             versions,
             artifacts,
+            metadata,
         })
     }
 
@@ -1422,6 +1544,31 @@ fn model_artifact_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelArt
     })
 }
 
+fn model_artifact_metadata_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<ModelArtifactMetadata> {
+    let recommendation: String = row.get(1)?;
+    let recommendation = ModelRecommendation::from_database(&recommendation).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid model recommendation {recommendation}"),
+            )),
+        )
+    })?;
+    let tags_json: String = row.get(2)?;
+    let tags = serde_json::from_str(&tags_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    Ok(ModelArtifactMetadata {
+        artifact_id: row.get(0)?,
+        recommendation,
+        tags,
+    })
+}
+
 #[derive(Clone, Debug)]
 struct RegisteredArtifact {
     project_id: i64,
@@ -1430,12 +1577,41 @@ struct RegisteredArtifact {
     version_name: String,
     artifact_id: i64,
     artifact_status: String,
+    recommendation: ModelRecommendation,
+    tags: Vec<String>,
 }
 
 struct CatalogRegistryRows {
     projects: Vec<ModelProject>,
     versions: Vec<ModelVersion>,
     artifacts: Vec<ModelArtifact>,
+    metadata: Vec<ModelArtifactMetadata>,
+}
+
+fn normalize_model_tags(tags: Vec<String>) -> Result<Vec<String>, ModelCatalogError> {
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+    for tag in tags {
+        let tag = tag.trim();
+        if tag.is_empty() {
+            continue;
+        }
+        if tag.chars().count() > 32 {
+            return Err(ModelCatalogError::InvalidArtifactTags(
+                "each tag must contain at most 32 characters".to_owned(),
+            ));
+        }
+        let identity = tag.to_lowercase();
+        if seen.insert(identity) {
+            normalized.push(tag.to_owned());
+        }
+    }
+    if normalized.len() > 32 {
+        return Err(ModelCatalogError::InvalidArtifactTags(
+            "an artifact can contain at most 32 tags".to_owned(),
+        ));
+    }
+    Ok(normalized)
 }
 
 fn validate_catalog_relative_path(value: &str) -> Result<PathBuf, ModelCatalogError> {
@@ -1955,7 +2131,9 @@ fn insert_model_node(
         };
         current = child;
     }
-    current.children.push(ModelCatalogNode::Model(model));
+    current
+        .children
+        .push(ModelCatalogNode::Model(Box::new(model)));
 }
 
 fn sort_catalog(directory: &mut ModelCatalogDirectory) {
@@ -2074,6 +2252,7 @@ fn migrate(connection: &mut Connection) -> Result<(), ModelCatalogError> {
         CREATE TABLE IF NOT EXISTS model_projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS model_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL REFERENCES model_projects(id), version TEXT NOT NULL, source_kind TEXT NOT NULL CHECK (source_kind IN ('pt','onnx')), source_path TEXT NOT NULL, classes_json TEXT NOT NULL, input_shape TEXT NOT NULL, UNIQUE(project_id, version));
         CREATE TABLE IF NOT EXISTS model_artifacts (id INTEGER PRIMARY KEY AUTOINCREMENT, version_id INTEGER NOT NULL REFERENCES model_versions(id), kind TEXT NOT NULL CHECK (kind IN ('pt','onnx','engine')), path TEXT NOT NULL, checksum TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','running','ready','failed')));
+        CREATE TABLE IF NOT EXISTS model_artifact_metadata (artifact_id INTEGER PRIMARY KEY REFERENCES model_artifacts(id) ON DELETE CASCADE, recommendation TEXT NOT NULL DEFAULT 'unrated' CHECK (recommendation IN ('recommended','not_recommended','unrated')), tags_json TEXT NOT NULL DEFAULT '[]');
         CREATE TABLE IF NOT EXISTS conversion_jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, version_id INTEGER NOT NULL REFERENCES model_versions(id), target_kind TEXT NOT NULL CHECK (target_kind IN ('onnx','engine')), command_json TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','running','failed','succeeded')), log TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deployments (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL UNIQUE REFERENCES model_projects(id), artifact_id INTEGER NOT NULL REFERENCES model_artifacts(id), previous_artifact_id INTEGER REFERENCES model_artifacts(id), updated_seq INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS registry_sequence (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
@@ -2103,7 +2282,7 @@ fn migrate(connection: &mut Connection) -> Result<(), ModelCatalogError> {
             r#"
             INSERT OR IGNORE INTO registry_sequence(name, value) SELECT 'deployment', COALESCE(MAX(updated_seq), 0) FROM deployments;
             UPDATE registry_sequence SET value = MAX(value, (SELECT COALESCE(MAX(updated_seq), 0) FROM deployments)) WHERE name = 'deployment';
-            INSERT INTO schema_migrations(name, version) VALUES ('model_catalog', 1)
+            INSERT INTO schema_migrations(name, version) VALUES ('model_catalog', 2)
             ON CONFLICT(name) DO UPDATE SET version = MAX(version, excluded.version);
             "#,
         )
@@ -2173,6 +2352,8 @@ pub enum ModelCatalogError {
     InvalidIngressClasses,
     #[error("model-ingress input shape must be non-empty")]
     InvalidIngressInputShape,
+    #[error("model artifact tags are invalid: {0}")]
+    InvalidArtifactTags(String),
     #[error("model-ingress requires TensorRT engine artifact {0}")]
     IngressRequiresEngine(i64),
     #[error("model artifact {0} is active in the runtime and cannot be mutated")]

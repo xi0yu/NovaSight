@@ -1,135 +1,147 @@
 import { memo } from "react";
 
-import type { ModelCatalogDirectory, ModelCatalogModel } from "../../api";
+import type {
+  ModelCatalogDirectory,
+  ModelCatalogModel,
+  ModelRecommendation
+} from "../../api";
 import { Badge, StatusIndicator } from "../../components/ui";
 import { NovaIcon } from "../../components/visual/NovaIcon";
 import { formatModelSize, modelStatusLabel, modelStatusTone } from "./modelPresentation";
 
+const SHELVES: Array<{
+  recommendation: ModelRecommendation;
+  label: string;
+  description: string;
+}> = [
+  {
+    recommendation: "recommended",
+    label: "推荐模型",
+    description: "优先用于实际运行"
+  },
+  {
+    recommendation: "unrated",
+    label: "待整理",
+    description: "尚未给出使用结论"
+  },
+  {
+    recommendation: "not_recommended",
+    label: "不推荐模型",
+    description: "保留文件，但降低选择优先级"
+  }
+];
+
 export const ModelCatalogTree = memo(function ModelCatalogTree({
-  root,
-  expandedDirectories,
+  models,
   selectedPath,
   activeArtifactId,
-  onToggleDirectory,
   onSelectModel
 }: {
-  root: ModelCatalogDirectory;
-  expandedDirectories: Set<string>;
+  models: ModelCatalogModel[];
   selectedPath: string | undefined;
   activeArtifactId: number | null;
-  onToggleDirectory: (relativePath: string) => void;
   onSelectModel: (model: ModelCatalogModel) => void;
 }) {
   return (
-    <div className="model-catalog" role="tree" aria-label="models 模型目录">
-      <CatalogNodes
-        nodes={root.children}
-        depth={0}
-        expandedDirectories={expandedDirectories}
-        selectedPath={selectedPath}
-        activeArtifactId={activeArtifactId}
-        onToggleDirectory={onToggleDirectory}
-        onSelectModel={onSelectModel}
-      />
-    </div>
-  );
-});
-
-function CatalogNodes({
-  nodes,
-  depth,
-  expandedDirectories,
-  selectedPath,
-  activeArtifactId,
-  onToggleDirectory,
-  onSelectModel
-}: {
-  nodes: Array<ModelCatalogDirectory | ModelCatalogModel>;
-  depth: number;
-  expandedDirectories: Set<string>;
-  selectedPath: string | undefined;
-  activeArtifactId: number | null;
-  onToggleDirectory: (relativePath: string) => void;
-  onSelectModel: (model: ModelCatalogModel) => void;
-}) {
-  return (
-    <div className="model-catalog-level" role="group">
-      {nodes.map((node) => {
-        if (node.type === "directory") {
-          const expanded = expandedDirectories.has(node.relative_path);
-          return (
-            <div className="model-catalog-branch" key={`directory:${node.relative_path}`}>
-              <button
-                type="button"
-                role="treeitem"
-                className="model-catalog-row directory"
-                style={{ paddingLeft: `${12 + depth * 18}px` }}
-                aria-expanded={expanded}
-                onClick={() => onToggleDirectory(node.relative_path)}
-              >
-                <NovaIcon
-                  className={`model-catalog-chevron ${expanded ? "expanded" : ""}`}
-                  name="collapse"
-                  size={14}
-                />
-                <NovaIcon name="batch" size={17} />
-                <strong>{node.name}</strong>
-                <span>{countModels(node)} 个模型</span>
-              </button>
-              {expanded ? (
-                <CatalogNodes
-                  nodes={node.children}
-                  depth={depth + 1}
-                  expandedDirectories={expandedDirectories}
-                  selectedPath={selectedPath}
-                  activeArtifactId={activeArtifactId}
-                  onToggleDirectory={onToggleDirectory}
-                  onSelectModel={onSelectModel}
-                />
-              ) : null}
-            </div>
-          );
-        }
-
-        const selected = node.relative_path === selectedPath;
-        const active = node.artifact_id === activeArtifactId;
-        const status = node.artifact_status ?? node.scan_status;
+    <div className="model-catalog model-vault-shelves" aria-label="按推荐状态整理的模型" role="list">
+      {SHELVES.map((shelf) => {
+        const shelfModels = models
+          .filter((model) => model.recommendation === shelf.recommendation)
+          .sort((left, right) => {
+            const activeOrder = Number(right.artifact_id === activeArtifactId) - Number(left.artifact_id === activeArtifactId);
+            return activeOrder || left.name.localeCompare(right.name);
+          });
+        if (shelfModels.length === 0) return null;
         return (
-          <button
-            type="button"
-            role="treeitem"
-            key={`model:${node.relative_path}`}
-            className={`model-catalog-row model ${selected ? "selected" : ""}`}
-            style={{ paddingLeft: `${30 + depth * 18}px` }}
-            aria-selected={selected}
-            data-active={active ? "true" : undefined}
-            aria-label={`${node.name}，${formatModelSize(node.size_bytes)}，${modelStatusLabel(status)}`}
-            onClick={() => onSelectModel(node)}
+          <section
+            className={`model-vault-shelf ${shelf.recommendation}`}
+            key={shelf.recommendation}
+            role="listitem"
           >
-            <NovaIcon name="models" size={17} />
-            <div className="model-catalog-copy">
-              <strong title={node.name}>{node.name}</strong>
-              <span className="model-catalog-meta">
-                <span>{node.kind.toUpperCase()}</span>
-                <span className="model-catalog-size">{formatModelSize(node.size_bytes)}</span>
-              </span>
+            <header className="model-vault-shelf-heading">
+              <span aria-hidden="true"><NovaIcon name="batch" size={17} /></span>
+              <div>
+                <strong>{shelf.label}</strong>
+                <small>{shelf.description}</small>
+              </div>
+              <b>{shelfModels.length}</b>
+            </header>
+            <div className="model-catalog-level" role="group">
+              {shelfModels.map((model) => (
+                <ModelCatalogRow
+                  activeArtifactId={activeArtifactId}
+                  key={model.relative_path}
+                  model={model}
+                  onSelectModel={onSelectModel}
+                  selectedPath={selectedPath}
+                />
+              ))}
             </div>
-            <aside>
-              {active ? <Badge tone="good">当前使用</Badge> : null}
-              <StatusIndicator tone={modelStatusTone(status)}>
-                {node.artifact_id ? modelStatusLabel(status) : "未登记"}
-              </StatusIndicator>
-            </aside>
-          </button>
+          </section>
         );
       })}
     </div>
   );
+});
+
+function ModelCatalogRow({
+  model,
+  selectedPath,
+  activeArtifactId,
+  onSelectModel
+}: {
+  model: ModelCatalogModel;
+  selectedPath: string | undefined;
+  activeArtifactId: number | null;
+  onSelectModel: (model: ModelCatalogModel) => void;
+}) {
+  const selected = model.relative_path === selectedPath;
+  const active = model.artifact_id === activeArtifactId;
+  const status = model.artifact_status ?? model.scan_status;
+  const recommendationLabel = model.recommendation === "recommended"
+    ? "推荐"
+    : model.recommendation === "not_recommended"
+      ? "不推荐"
+      : "待整理";
+  return (
+    <button
+      aria-label={`${model.name}，${recommendationLabel}，${formatModelSize(model.size_bytes)}，${modelStatusLabel(status)}`}
+      aria-pressed={selected}
+      className={`model-catalog-row model ${selected ? "selected" : ""}`}
+      data-active={active ? "true" : undefined}
+      onClick={() => onSelectModel(model)}
+      type="button"
+    >
+      <NovaIcon name="models" size={17} />
+      <div className="model-catalog-copy">
+        <strong title={model.name}>{model.name}</strong>
+        <span className="model-catalog-meta">
+          <span>{model.kind.toUpperCase()}</span>
+          <span className="model-catalog-size">{formatModelSize(model.size_bytes)}</span>
+          <span className="model-catalog-path" title={model.relative_path}>{model.relative_path}</span>
+        </span>
+        {model.tags.length > 0 ? (
+          <span className="model-catalog-tags" aria-label={`标签：${model.tags.join("、")}`}>
+            {model.tags.slice(0, 3).map((tag) => <i key={tag}>{tag}</i>)}
+            {model.tags.length > 3 ? <i>+{model.tags.length - 3}</i> : null}
+          </span>
+        ) : null}
+      </div>
+      <aside>
+        {active ? <Badge tone="good">当前使用</Badge> : null}
+        {model.recommendation === "recommended" ? <Badge tone="good">推荐</Badge> : null}
+        {model.recommendation === "not_recommended" ? <Badge tone="warn">不推荐</Badge> : null}
+        <StatusIndicator tone={modelStatusTone(status)}>
+          {model.artifact_id ? modelStatusLabel(status) : "未登记"}
+        </StatusIndicator>
+      </aside>
+    </button>
+  );
 }
 
-function countModels(directory: ModelCatalogDirectory): number {
-  return directory.children.reduce(
-    (total, child) => total + (child.type === "model" ? 1 : countModels(child)),
-    0
+export function flattenCatalogModels(root: ModelCatalogDirectory | null): ModelCatalogModel[] {
+  if (!root) return [];
+  return root.children.flatMap((node) =>
+    node.type === "model" ? [node] : flattenCatalogModels(node)
   );
 }

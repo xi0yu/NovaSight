@@ -8,8 +8,9 @@ use novasight_runtime::{
     ModelProbeInputMode, ModelProfileConfigureRequest,
 };
 use novasight_store::model_catalog::{
-    CatalogEngineRegistration, ConversionJob, Deployment, ModelArtifact, ModelCatalogError,
-    ModelCatalogResponse, ModelProject, ModelVersion, SqliteModelCatalog,
+    CatalogEngineRegistration, ConversionJob, Deployment, ModelArtifact, ModelArtifactMetadata,
+    ModelCatalogError, ModelCatalogResponse, ModelProject, ModelRecommendation, ModelVersion,
+    SqliteModelCatalog,
 };
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +21,10 @@ pub(super) fn routes() -> Router<ControlState> {
         .route("/api/models/projects", get(model_projects))
         .route("/api/models/catalog", get(get_model_catalog))
         .route("/api/models/catalog/register", post(register_catalog_model))
+        .route(
+            "/api/models/artifacts/{artifact_id}/metadata",
+            get(get_artifact_metadata).put(update_artifact_metadata),
+        )
         .route(
             "/api/models/projects/{project_id}/versions",
             get(model_versions),
@@ -392,6 +397,7 @@ async fn model_projects(
 
 #[derive(Default, Deserialize)]
 struct ModelCatalogQuery {
+    #[serde(default)]
     force: bool,
 }
 
@@ -417,6 +423,39 @@ async fn register_catalog_model(
     Ok(Json(
         run(&state, move |catalog| {
             catalog.register_catalog_engine(&request.relative_path)
+        })
+        .await?,
+    ))
+}
+
+async fn get_artifact_metadata(
+    Path(artifact_id): Path<i64>,
+    State(state): State<ControlState>,
+) -> Result<Json<ModelArtifactMetadata>, ControlApiError> {
+    Ok(Json(
+        run(&state, move |catalog| {
+            catalog.artifact_metadata(artifact_id)
+        })
+        .await?,
+    ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateArtifactMetadataRequest {
+    recommendation: ModelRecommendation,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+async fn update_artifact_metadata(
+    Path(artifact_id): Path<i64>,
+    State(state): State<ControlState>,
+    Json(request): Json<UpdateArtifactMetadataRequest>,
+) -> Result<Json<ModelArtifactMetadata>, ControlApiError> {
+    Ok(Json(
+        run(&state, move |catalog| {
+            catalog.update_artifact_metadata(artifact_id, request.recommendation, request.tags)
         })
         .await?,
     ))

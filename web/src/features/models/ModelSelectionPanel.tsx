@@ -1,13 +1,16 @@
+import { useEffect, useMemo, useState } from "react";
+
 import type {
   ModelArtifact,
   ModelCatalogDirectory,
   ModelCatalogModel,
+  ModelRecommendation,
   ParserPresetId,
   ModelVersion
 } from "../../api";
 import { StatusIndicator } from "../../components/ui";
 import { NovaIcon } from "../../components/visual";
-import { ModelCatalogTree } from "./ModelCatalogTree";
+import { flattenCatalogModels, ModelCatalogTree } from "./ModelCatalogTree";
 import {
   artifactStatus,
   formatModelSize,
@@ -20,7 +23,6 @@ export interface ModelSelectionPanelProps {
   loading: boolean;
   directoryCount: number;
   modelCount: number;
-  expandedDirectories: Set<string>;
   selectedPath: string | undefined;
   selectedModel: ModelCatalogModel | null;
   selectedArtifact: ModelArtifact | null;
@@ -36,8 +38,8 @@ export interface ModelSelectionPanelProps {
   parserPreset: ParserPresetId;
   onParserPresetChange: (preset: ParserPresetId) => void;
   onRefresh: () => void;
-  onToggleDirectory: (relativePath: string) => void;
   onSelectModel: (model: ModelCatalogModel) => void;
+  onSaveMetadata: (recommendation: ModelRecommendation, tags: string[]) => void;
   onSwitch: () => void;
 }
 
@@ -46,7 +48,6 @@ export function ModelSelectionPanel({
   loading,
   directoryCount,
   modelCount,
-  expandedDirectories,
   selectedPath,
   selectedModel,
   selectedArtifact,
@@ -62,10 +63,34 @@ export function ModelSelectionPanel({
   parserPreset,
   onParserPresetChange,
   onRefresh,
-  onToggleDirectory,
   onSelectModel,
+  onSaveMetadata,
   onSwitch
 }: ModelSelectionPanelProps) {
+  const [recommendationFilter, setRecommendationFilter] = useState<ModelRecommendation | "all">("all");
+  const [tagFilters, setTagFilters] = useState<Set<string>>(() => new Set());
+  const [draftRecommendation, setDraftRecommendation] = useState<ModelRecommendation>("unrated");
+  const [draftTags, setDraftTags] = useState<string[]>([]);
+  const [newTag, setNewTag] = useState("");
+  const models = useMemo(() => flattenCatalogModels(root), [root]);
+  const availableTags = useMemo(
+    () => Array.from(new Set(models.flatMap((model) => model.tags))).sort((left, right) => left.localeCompare(right)),
+    [models]
+  );
+  const filteredModels = useMemo(
+    () => models.filter((model) =>
+      (recommendationFilter === "all" || model.recommendation === recommendationFilter) &&
+      Array.from(tagFilters).every((tag) => model.tags.includes(tag))
+    ),
+    [models, recommendationFilter, tagFilters]
+  );
+
+  useEffect(() => {
+    setDraftRecommendation(selectedModel?.recommendation ?? "unrated");
+    setDraftTags(selectedModel?.tags ?? []);
+    setNewTag("");
+  }, [selectedModel?.recommendation, selectedModel?.relative_path, selectedModel?.tags]);
+
   const selectedStatus = selectedModel
     ? selectedModel.artifact_status ?? selectedModel.scan_status
     : artifactStatus(selectedArtifact);
@@ -84,13 +109,30 @@ export function ModelSelectionPanel({
   const switchLabel = busy === "model.switch"
     ? "正在验证并切换..."
     : "验证并切换到所选模型";
+  const metadataDirty = selectedModel !== null && (
+    draftRecommendation !== selectedModel.recommendation ||
+    draftTags.length !== selectedModel.tags.length ||
+    draftTags.some((tag, index) => tag !== selectedModel.tags[index])
+  );
+  const addTag = (value: string) => {
+    const tag = value.trim();
+    if (!tag || draftTags.some((item) => item.toLocaleLowerCase() === tag.toLocaleLowerCase())) return;
+    setDraftTags((current) => [...current, tag]);
+    setNewTag("");
+  };
+  const recommendationOptions: Array<{ value: ModelRecommendation; label: string }> = [
+    { value: "recommended", label: "推荐" },
+    { value: "unrated", label: "待整理" },
+    { value: "not_recommended", label: "不推荐" }
+  ];
+  const suggestedTags = ["高精度模型", "低精度模型", "低延迟", "延迟大", "稳定", "实验模型"];
 
   return (
     <div className="model-selection-panel">
       <header className="model-selection-toolbar">
         <div>
           <strong>模型目录</strong>
-          <span>{directoryCount} 个文件夹 · {modelCount} 个模型</span>
+          <span>{directoryCount} 个物理文件夹 · 当前显示 {filteredModels.length}/{modelCount} 个模型</span>
         </div>
         <button
           className="console-button secondary"
@@ -105,22 +147,62 @@ export function ModelSelectionPanel({
 
       {catalogMessage ? <div className="model-switch-note good">{catalogMessage}</div> : null}
 
+      <section className="model-vault-filters" aria-label="模型筛选">
+        <div className="model-vault-recommendation-filter" role="group" aria-label="推荐状态筛选">
+          {([
+            ["all", "全部"],
+            ["recommended", "推荐"],
+            ["unrated", "待整理"],
+            ["not_recommended", "不推荐"]
+          ] as const).map(([value, label]) => (
+            <button
+              aria-pressed={recommendationFilter === value}
+              className={recommendationFilter === value ? "active" : ""}
+              key={value}
+              onClick={() => setRecommendationFilter(value)}
+              type="button"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="model-vault-tag-filter" aria-label="标签筛选">
+          <span>标签筛选</span>
+          {availableTags.length > 0 ? availableTags.map((tag) => (
+            <button
+              aria-pressed={tagFilters.has(tag)}
+              className={tagFilters.has(tag) ? "active" : ""}
+              key={tag}
+              onClick={() => setTagFilters((current) => {
+                const next = new Set(current);
+                if (next.has(tag)) next.delete(tag); else next.add(tag);
+                return next;
+              })}
+              type="button"
+            >
+              {tag}
+            </button>
+          )) : <small>保存标签后可在这里筛选</small>}
+          {tagFilters.size > 0 ? (
+            <button className="clear" onClick={() => setTagFilters(new Set())} type="button">清除</button>
+          ) : null}
+        </div>
+      </section>
+
       <div className="model-selection-workspace">
         <div className="model-selection-browser">
           {loading ? (
             <div className="model-catalog-placeholder">正在读取 models 目录...</div>
-          ) : root && root.children.length > 0 ? (
+          ) : filteredModels.length > 0 ? (
             <ModelCatalogTree
-              root={root}
-              expandedDirectories={expandedDirectories}
+              models={filteredModels}
               selectedPath={selectedPath}
               activeArtifactId={activeArtifactId}
-              onToggleDirectory={onToggleDirectory}
               onSelectModel={onSelectModel}
             />
           ) : (
             <div className="model-catalog-placeholder">
-              models 目录中没有 .onnx 或 .engine 模型。
+              {models.length > 0 ? "没有符合当前推荐状态与标签的模型。" : "models 目录中没有 .onnx 或 .engine 模型。"}
             </div>
           )}
         </div>
@@ -195,6 +277,85 @@ export function ModelSelectionPanel({
               </dd>
             </div>
           </dl>
+
+          <section className="model-metadata-editor" aria-labelledby="model-metadata-title">
+            <div className="model-metadata-heading">
+              <div>
+                <strong id="model-metadata-title">整理与标签</strong>
+                <small>仅更新模型目录元数据，不读取 Engine，也不会触碰运行中的推理主链。</small>
+              </div>
+              {metadataDirty ? <span>待保存</span> : null}
+            </div>
+            <div className="model-recommendation-control" role="group" aria-label="模型推荐状态">
+              {recommendationOptions.map((option) => (
+                <button
+                  aria-pressed={draftRecommendation === option.value}
+                  className={draftRecommendation === option.value ? "active" : ""}
+                  disabled={busy !== null || selectedModel === null}
+                  key={option.value}
+                  onClick={() => setDraftRecommendation(option.value)}
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            <div className="model-tag-editor">
+              <div className="model-tag-list">
+                {draftTags.map((tag) => (
+                  <button
+                    aria-label={`移除标签 ${tag}`}
+                    disabled={busy !== null}
+                    key={tag}
+                    onClick={() => setDraftTags((current) => current.filter((item) => item !== tag))}
+                    type="button"
+                  >
+                    {tag}<span aria-hidden="true">×</span>
+                  </button>
+                ))}
+                {draftTags.length === 0 ? <small>尚未添加标签</small> : null}
+              </div>
+              <div className="model-tag-input-row">
+                <input
+                  aria-label="新增模型标签"
+                  disabled={busy !== null || selectedModel === null}
+                  maxLength={32}
+                  onChange={(event) => setNewTag(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addTag(newTag);
+                    }
+                  }}
+                  placeholder="输入自定义标签"
+                  value={newTag}
+                />
+                <button
+                  className="console-button secondary"
+                  disabled={busy !== null || selectedModel === null || newTag.trim() === ""}
+                  onClick={() => addTag(newTag)}
+                  type="button"
+                >
+                  添加
+                </button>
+              </div>
+              <div className="model-tag-suggestions" aria-label="常用标签">
+                {suggestedTags.filter((tag) => !draftTags.includes(tag)).map((tag) => (
+                  <button disabled={busy !== null || selectedModel === null} key={tag} onClick={() => addTag(tag)} type="button">
+                    + {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button
+              className="console-button secondary model-metadata-save"
+              disabled={busy !== null || !metadataDirty || selectedModel?.kind !== "engine"}
+              onClick={() => onSaveMetadata(draftRecommendation, draftTags)}
+              type="button"
+            >
+              {busy === "model.metadata" ? "保存中..." : "保存整理结果"}
+            </button>
+          </section>
         </aside>
       </div>
 

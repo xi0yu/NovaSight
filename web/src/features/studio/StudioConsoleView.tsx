@@ -20,6 +20,7 @@ import {
   ModelCatalogModel,
   ModelCatalogResponse,
   ModelProject,
+  ModelRecommendation,
   ModelVersion,
   ParserPresetId,
   RuntimeConfig,
@@ -39,7 +40,8 @@ import {
   stopRuntimePipeline,
   streamUrl,
   updateRuntimeConfig,
-  updateRuntimeConfigField
+  updateRuntimeConfigField,
+  updateModelArtifactMetadata
 } from "../../api";
 import { reportError, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
@@ -649,9 +651,6 @@ export function StudioConsoleView({
   const [modelCatalogModelCount, setModelCatalogModelCount] = useState(0);
   const [modelCatalogDirectoryCount, setModelCatalogDirectoryCount] = useState(0);
   const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
-  const [expandedModelDirectories, setExpandedModelDirectories] = useState<Set<string>>(
-    () => new Set([""])
-  );
   const [selectedModelCatalogPath, setSelectedModelCatalogPath] = useState<string>();
   const [kmnetTestDx, setKmnetTestDx] = useState(10);
   const [kmnetTestDy, setKmnetTestDy] = useState(0);
@@ -1677,16 +1676,6 @@ export function StudioConsoleView({
     setModelCatalog(result.root);
     setModelCatalogModelCount(result.model_count);
     setModelCatalogDirectoryCount(result.directory_count);
-    setExpandedModelDirectories((current) => {
-      const next = new Set(current);
-      next.add("");
-      for (const child of result.root.children) {
-        if (child.type === "directory") {
-          next.add(child.relative_path);
-        }
-      }
-      return next;
-    });
   }, []);
 
   useEffect(() => {
@@ -1732,12 +1721,6 @@ export function StudioConsoleView({
     const activePath = findCatalogModelPath(modelCatalog, artifact.id);
     if (!activePath) return;
     setSelectedModelCatalogPath((current) => current ?? activePath);
-    setExpandedModelDirectories((current) => {
-      const next = new Set(current);
-      next.add("");
-      modelDirectoryAncestors(activePath).forEach((path) => next.add(path));
-      return next;
-    });
   }, [artifact?.id, modelCatalog]);
 
   useEffect(() => {
@@ -2956,18 +2939,6 @@ export function StudioConsoleView({
     }
   };
 
-  const toggleModelDirectory = useCallback((relativePath: string) => {
-    setExpandedModelDirectories((current) => {
-      const next = new Set(current);
-      if (next.has(relativePath)) {
-        next.delete(relativePath);
-      } else {
-        next.add(relativePath);
-      }
-      return next;
-    });
-  }, []);
-
   const selectModelFromCatalog = useCallback((model: ModelCatalogModel) => {
     setParserPreset("auto");
     setSelectedModelCatalogPath(model.relative_path);
@@ -2985,15 +2956,47 @@ export function StudioConsoleView({
       : undefined;
     if (activePath) {
       setSelectedModelCatalogPath(activePath);
-      setExpandedModelDirectories((current) => {
-        const next = new Set(current);
-        next.add("");
-        modelDirectoryAncestors(activePath).forEach((path) => next.add(path));
-        return next;
-      });
     }
     setModelManagerDialogOpen(true);
   }, [artifact?.id, modelCatalog, onEnsureProjects]);
+
+  const ensureCatalogModelRegistration = async (model: ModelCatalogModel) => {
+    if (typeof model.project_id === "number" && typeof model.artifact_id === "number") {
+      return { projectId: model.project_id, artifactId: model.artifact_id };
+    }
+    const registered = await registerCatalogModel(model.relative_path);
+    setSelectedModelProjectId(registered.project.id);
+    setSelectedModelVersionId(registered.version.id);
+    setSelectedModelArtifactId(registered.artifact.id);
+    setModelCatalogMessage(`已登记模型引用：${model.relative_path}；Engine 文件保持原位。`);
+    return { projectId: registered.project.id, artifactId: registered.artifact.id };
+  };
+
+  const saveModelMetadata = async (
+    recommendation: ModelRecommendation,
+    tags: string[]
+  ) => {
+    if (!selectedCatalogModel || selectedCatalogModel.kind !== "engine") {
+      setLocalError("请选择 TensorRT engine 模型后再整理标签。");
+      return;
+    }
+    setBusy("model.metadata");
+    setLocalError(null);
+    try {
+      const { artifactId } = await ensureCatalogModelRegistration(selectedCatalogModel);
+      await updateModelArtifactMetadata(artifactId, recommendation, tags);
+      const updatedCatalog = await getModelCatalog(true);
+      applyModelCatalogResult(updatedCatalog);
+      setModelCatalogMessage(`已保存 ${selectedCatalogModel.name} 的推荐状态与 ${tags.length} 个标签。`);
+      setModelDetailsRefreshKey((current) => current + 1);
+      await onRefresh();
+    } catch (err) {
+      setLocalError(`模型整理结果保存失败：${getErrorMessage(err)}`);
+      reportError(err, { source: "model-metadata", title: "模型整理失败" });
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const switchModel = async () => {
     if (!selectedCatalogModel || selectedCatalogModel.kind !== "engine") {
@@ -3012,17 +3015,12 @@ export function StudioConsoleView({
     try {
       setModelSwitchCompletedStages(1);
       setModelSwitchStageIndex(1);
-      let projectId = selectedCatalogModel.project_id;
-      let artifactId = selectedCatalogModel.artifact_id;
-      if (typeof projectId !== "number" || typeof artifactId !== "number") {
+      if (typeof selectedCatalogModel.project_id !== "number" || typeof selectedCatalogModel.artifact_id !== "number") {
         setModelSwitchProgressDetail("模型尚未登记，正在建立轻量文件引用；此步骤不会读取 Engine 内容。");
-        const registered = await registerCatalogModel(selectedCatalogModel.relative_path);
-        projectId = registered.project.id;
-        artifactId = registered.artifact.id;
-        setModelCatalogMessage(`已引用原始 Engine：${selectedCatalogModel.relative_path}；未复制模型文件。`);
       } else {
         setModelSwitchProgressDetail("已找到现有模型登记，跳过重复登记。");
       }
+      const { projectId, artifactId } = await ensureCatalogModelRegistration(selectedCatalogModel);
       setModelSwitchCompletedStages(2);
       setModelSwitchStageIndex(2);
       setModelSwitchProgressDetail("正在后端事务中验证 TensorRT 契约，并复用或生成运行 manifest。");
@@ -4673,7 +4671,6 @@ export function StudioConsoleView({
           loading: modelCatalogLoading,
           directoryCount: modelCatalogDirectoryCount,
           modelCount: modelCatalogModelCount,
-          expandedDirectories: expandedModelDirectories,
           selectedPath: selectedModelCatalogPath,
           selectedModel: selectedCatalogModel,
           selectedArtifact: selectedPreviewArtifact,
@@ -4689,8 +4686,8 @@ export function StudioConsoleView({
           parserPreset,
           onParserPresetChange: setParserPreset,
           onRefresh: () => void refreshModelCatalog(),
-          onToggleDirectory: toggleModelDirectory,
           onSelectModel: selectModelFromCatalog,
+          onSaveMetadata: (recommendation, tags) => void saveModelMetadata(recommendation, tags),
           onSwitch: () => void switchModel()
             }}
           />
@@ -5036,10 +5033,6 @@ function findCatalogModelByPath(
   return null;
 }
 
-function modelDirectoryAncestors(relativePath: string): string[] {
-  const parts = relativePath.split("/").filter(Boolean);
-  return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join("/"));
-}
 
 function PreviewFrame({
   supported,
