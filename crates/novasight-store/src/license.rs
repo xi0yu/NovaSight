@@ -18,8 +18,18 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod jwt;
+
+use jwt::verify_license_jwt;
+
 const TEMPORARY_LICENSE_TIER: &str = "temporary";
 const DEVELOPMENT_SESSION_ID: &str = "debug-process-session";
+const LEGACY_CREDENTIAL_FORMAT: &str = "legacy_ns1";
+const JWT_CREDENTIAL_FORMAT: &str = "jwt_rs256";
+const DEBUG_CREDENTIAL_FORMAT: &str = "debug_session";
+const MAX_LICENSE_CREDENTIAL_BYTES: usize = 64 * 1024;
+const MAX_UNIX_TIMESTAMP: u64 = 253_402_300_799;
+const LICENSE_CLOCK_SKEW_SECONDS: f64 = 60.0;
 const SECONDS_PER_YEAR: f64 = 365.0 * 24.0 * 60.0 * 60.0;
 const ALL_FEATURES: [&str; 7] = [
     "capture",
@@ -71,7 +81,15 @@ pub struct LicenseStatus {
     pub tier: String,
     pub features: Vec<String>,
     pub license_id: String,
+    #[serde(default)]
+    pub credential_format: String,
+    #[serde(default)]
+    pub token_id: String,
+    #[serde(default)]
+    pub key_id: String,
     pub created_at: Option<f64>,
+    #[serde(default)]
+    pub not_before: Option<f64>,
     pub activated_at: Option<f64>,
     pub expires_at: Option<f64>,
     pub duration_value: Option<u64>,
@@ -90,7 +108,11 @@ impl LicenseStatus {
             tier: String::new(),
             features: Vec::new(),
             license_id: String::new(),
+            credential_format: String::new(),
+            token_id: String::new(),
+            key_id: String::new(),
             created_at: None,
+            not_before: None,
             activated_at: None,
             expires_at: None,
             duration_value: None,
@@ -184,13 +206,18 @@ impl FileLicenseRepository {
                 "license key must be at least 8 characters".to_owned(),
             ));
         }
+        if key.len() > MAX_LICENSE_CREDENTIAL_BYTES {
+            return Err(LicenseError::InvalidKey(
+                "license credential is too large".to_owned(),
+            ));
+        }
         let _operation = self
             .operation_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _lock = self.lock()?;
         let now = now_seconds()?;
-        let (claims, payload, signature) = verify_signed_key(
+        let credential = verify_license_credential(
             key,
             self.policy
                 .public_key_pem
@@ -198,25 +225,24 @@ impl FileLicenseRepository {
                 .ok_or(LicenseError::PublicKeyMissing)?,
         )?;
         let key_hash = sha256_hex(key.as_bytes());
-        let expires_at = expiration(
-            claims.created_at,
-            claims.duration.value,
-            &claims.duration.unit,
-        )?;
         let document = PersistedLicense {
-            schema_version: 2,
+            schema_version: credential.schema_version,
             fingerprint: key_hash.chars().take(12).collect(),
             key_hash,
-            license_id: claims.license_id,
-            tier: claims.tier,
-            features: claims.features,
-            created_at: claims.created_at,
+            license_id: credential.license_id,
+            tier: credential.tier,
+            features: credential.features,
+            credential_format: credential.credential_format.to_owned(),
+            token_id: credential.token_id,
+            key_id: credential.key_id,
+            created_at: credential.created_at,
+            not_before: credential.not_before,
             activated_at: now,
-            duration_value: claims.duration.value,
-            duration_unit: claims.duration.unit,
-            expires_at,
+            duration_value: credential.duration_value,
+            duration_unit: credential.duration_unit,
+            expires_at: credential.expires_at,
             updated_at: now,
-            verification: Verification::RsaPkcs1v15Sha256 { payload, signature },
+            verification: credential.verification,
         };
         self.write_document(&document)?;
         *self
@@ -340,45 +366,106 @@ impl FileLicenseRepository {
         document: PersistedLicense,
         now: f64,
     ) -> Result<LicenseStatus, LicenseError> {
-        if document.schema_version != 2 {
-            return Err(LicenseError::UnsupportedSchema(document.schema_version));
-        }
-        match &document.verification {
-            Verification::RsaPkcs1v15Sha256 { payload, signature } => {
-                let key = format!("NS1.{payload}.{signature}");
-                let (claims, _, _) = verify_signed_key(
-                    &key,
-                    self.policy
-                        .public_key_pem
-                        .as_deref()
-                        .ok_or(LicenseError::PublicKeyMissing)?,
-                )?;
-                if document.key_hash != sha256_hex(key.as_bytes())
-                    || document.license_id != claims.license_id
-                    || document.tier != claims.tier
-                    || document.features != claims.features
-                    || document.created_at != claims.created_at
-                    || document.duration_value != claims.duration.value
-                    || document.duration_unit != claims.duration.unit
-                {
+        let public_key_pem = self
+            .policy
+            .public_key_pem
+            .as_deref()
+            .ok_or(LicenseError::PublicKeyMissing)?;
+        let (credential_format, token_id, key_id, not_before, expires_at) =
+            match (document.schema_version, &document.verification) {
+                (2, Verification::RsaPkcs1v15Sha256 { payload, signature }) => {
+                    let key = format!("NS1.{payload}.{signature}");
+                    let (claims, _, _) = verify_legacy_signed_key(&key, public_key_pem)?;
+                    let expires_at = expiration(
+                        claims.created_at,
+                        claims.duration.value,
+                        &claims.duration.unit,
+                    )?;
+                    if document.key_hash != sha256_hex(key.as_bytes())
+                        || document.license_id != claims.license_id
+                        || document.tier != claims.tier
+                        || document.features != claims.features
+                        || document.created_at != claims.created_at
+                        || document.duration_value != claims.duration.value
+                        || document.duration_unit != claims.duration.unit
+                    {
+                        return Err(LicenseError::VerificationFailed(
+                            "persisted license claims do not match the signed payload".to_owned(),
+                        ));
+                    }
+                    if !document.credential_format.is_empty()
+                        && document.credential_format != LEGACY_CREDENTIAL_FORMAT
+                    {
+                        return Err(LicenseError::VerificationFailed(
+                            "persisted license credential format was modified".to_owned(),
+                        ));
+                    }
+                    (
+                        LEGACY_CREDENTIAL_FORMAT,
+                        String::new(),
+                        String::new(),
+                        None,
+                        expires_at,
+                    )
+                }
+                (
+                    3,
+                    Verification::JwtRs256 {
+                        header,
+                        payload,
+                        signature,
+                    },
+                ) => {
+                    let key = format!("{header}.{payload}.{signature}");
+                    let claims =
+                        verify_license_jwt(&key, public_key_pem).map_err(map_license_jwt_error)?;
+                    let created_at = claims.issued_at as f64;
+                    let expires_at = claims.expires_at as f64;
+                    let not_before = claims.not_before.map(|value| value as f64);
+                    let duration_value = claims.expires_at - claims.issued_at;
+                    validate_license_features(&claims.features)?;
+                    if document.key_hash != sha256_hex(key.as_bytes())
+                        || document.license_id != claims.license_id
+                        || document.tier != claims.tier
+                        || document.features != claims.features
+                        || document.credential_format != JWT_CREDENTIAL_FORMAT
+                        || document.token_id != claims.token_id
+                        || document.key_id != claims.key_id
+                        || document.created_at != created_at
+                        || document.not_before != not_before
+                        || document.duration_value != duration_value
+                        || document.duration_unit != "seconds"
+                    {
+                        return Err(LicenseError::VerificationFailed(
+                            "persisted license claims do not match the signed JWT".to_owned(),
+                        ));
+                    }
+                    (
+                        JWT_CREDENTIAL_FORMAT,
+                        claims.token_id,
+                        claims.key_id,
+                        not_before,
+                        expires_at,
+                    )
+                }
+                (schema_version, _) if schema_version != 2 && schema_version != 3 => {
+                    return Err(LicenseError::UnsupportedSchema(schema_version));
+                }
+                _ => {
                     return Err(LicenseError::VerificationFailed(
-                        "persisted license claims do not match the signed payload".to_owned(),
+                        "persisted license schema and credential format do not match".to_owned(),
                     ));
                 }
-            }
-        }
-        let expires_at = expiration(
-            document.created_at,
-            document.duration_value,
-            &document.duration_unit,
-        )?;
+            };
         let expected_fingerprint: String = document.key_hash.chars().take(12).collect();
         if document.fingerprint != expected_fingerprint || document.expires_at != expires_at {
             return Err(LicenseError::VerificationFailed(
                 "persisted fingerprint or expiration was modified".to_owned(),
             ));
         }
-        let valid = expires_at > now;
+        let not_active_yet = document.created_at > now + LICENSE_CLOCK_SKEW_SECONDS
+            || not_before.is_some_and(|value| value > now + LICENSE_CLOCK_SKEW_SECONDS);
+        let valid = !not_active_yet && expires_at > now;
         Ok(LicenseStatus {
             configured: true,
             valid,
@@ -387,7 +474,11 @@ impl FileLicenseRepository {
             tier: document.tier,
             features: document.features,
             license_id: document.license_id,
+            credential_format: credential_format.to_owned(),
+            token_id,
+            key_id,
             created_at: Some(document.created_at),
+            not_before,
             activated_at: Some(document.activated_at),
             expires_at: Some(expires_at),
             duration_value: Some(document.duration_value),
@@ -395,8 +486,10 @@ impl FileLicenseRepository {
             updated_at: Some(document.updated_at),
             message: if valid {
                 String::new()
+            } else if not_active_yet {
+                "license is not active yet".to_owned()
             } else {
-                "license expired or invalid".to_owned()
+                "license expired".to_owned()
             },
         })
     }
@@ -474,7 +567,15 @@ struct PersistedLicense {
     license_id: String,
     tier: String,
     features: Vec<String>,
+    #[serde(default)]
+    credential_format: String,
+    #[serde(default)]
+    token_id: String,
+    #[serde(default)]
+    key_id: String,
     created_at: f64,
+    #[serde(default)]
+    not_before: Option<f64>,
     activated_at: f64,
     duration_value: u64,
     duration_unit: String,
@@ -515,7 +616,11 @@ impl LegacyLicense {
             tier: self.tier,
             features: self.features,
             license_id: self.license_id,
+            credential_format: "legacy_document".to_owned(),
+            token_id: String::new(),
+            key_id: String::new(),
             created_at: self.created_at,
+            not_before: None,
             activated_at: self.activated_at,
             expires_at: self.expires_at,
             duration_value: self.duration_value,
@@ -534,7 +639,15 @@ impl LegacyLicense {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Verification {
-    RsaPkcs1v15Sha256 { payload: String, signature: String },
+    RsaPkcs1v15Sha256 {
+        payload: String,
+        signature: String,
+    },
+    JwtRs256 {
+        header: String,
+        payload: String,
+        signature: String,
+    },
 }
 
 fn development_session_status(granted_at: f64) -> LicenseStatus {
@@ -546,7 +659,11 @@ fn development_session_status(granted_at: f64) -> LicenseStatus {
         tier: TEMPORARY_LICENSE_TIER.to_owned(),
         features: ALL_FEATURES.iter().map(ToString::to_string).collect(),
         license_id: DEVELOPMENT_SESSION_ID.to_owned(),
+        credential_format: DEBUG_CREDENTIAL_FORMAT.to_owned(),
+        token_id: String::new(),
+        key_id: String::new(),
         created_at: Some(granted_at),
+        not_before: None,
         activated_at: Some(granted_at),
         expires_at: None,
         duration_value: None,
@@ -572,6 +689,22 @@ struct SignedDuration {
     unit: String,
 }
 
+struct VerifiedCredential {
+    schema_version: u32,
+    credential_format: &'static str,
+    license_id: String,
+    token_id: String,
+    key_id: String,
+    tier: String,
+    features: Vec<String>,
+    created_at: f64,
+    not_before: Option<f64>,
+    expires_at: f64,
+    duration_value: u64,
+    duration_unit: String,
+    verification: Verification,
+}
+
 struct LicenseLock(File);
 
 impl Drop for LicenseLock {
@@ -587,6 +720,7 @@ fn expiration(created_at: f64, value: u64, unit: &str) -> Result<f64, LicenseErr
         ));
     }
     let multiplier = match unit.to_ascii_lowercase().as_str() {
+        "second" | "seconds" => 1.0,
         "day" | "days" => 24.0 * 60.0 * 60.0,
         "month" | "months" => 30.0 * 24.0 * 60.0 * 60.0,
         "year" | "years" => SECONDS_PER_YEAR,
@@ -595,7 +729,74 @@ fn expiration(created_at: f64, value: u64, unit: &str) -> Result<f64, LicenseErr
     Ok(created_at + value as f64 * multiplier)
 }
 
-fn verify_signed_key(
+fn verify_license_credential(
+    key: &str,
+    public_key_pem: &str,
+) -> Result<VerifiedCredential, LicenseError> {
+    if key.starts_with("NS1.") {
+        let (claims, payload, signature) = verify_legacy_signed_key(key, public_key_pem)?;
+        validate_license_features(&claims.features)?;
+        let expires_at = expiration(
+            claims.created_at,
+            claims.duration.value,
+            &claims.duration.unit,
+        )?;
+        return Ok(VerifiedCredential {
+            schema_version: 2,
+            credential_format: LEGACY_CREDENTIAL_FORMAT,
+            license_id: claims.license_id,
+            token_id: String::new(),
+            key_id: String::new(),
+            tier: claims.tier,
+            features: claims.features,
+            created_at: claims.created_at,
+            not_before: None,
+            expires_at,
+            duration_value: claims.duration.value,
+            duration_unit: claims.duration.unit,
+            verification: Verification::RsaPkcs1v15Sha256 { payload, signature },
+        });
+    }
+
+    let claims = verify_license_jwt(key, public_key_pem).map_err(map_license_jwt_error)?;
+    if claims.issued_at > MAX_UNIX_TIMESTAMP
+        || claims.expires_at > MAX_UNIX_TIMESTAMP
+        || claims
+            .not_before
+            .is_some_and(|value| value > MAX_UNIX_TIMESTAMP)
+    {
+        return Err(LicenseError::InvalidKey(
+            "license JWT timestamp is outside the supported range".to_owned(),
+        ));
+    }
+    validate_license_features(&claims.features)?;
+    let mut parts = key.split('.');
+    let header = parts.next().unwrap_or_default().to_owned();
+    let payload = parts.next().unwrap_or_default().to_owned();
+    let signature = parts.next().unwrap_or_default().to_owned();
+
+    Ok(VerifiedCredential {
+        schema_version: 3,
+        credential_format: JWT_CREDENTIAL_FORMAT,
+        license_id: claims.license_id,
+        token_id: claims.token_id,
+        key_id: claims.key_id,
+        tier: claims.tier,
+        features: claims.features,
+        created_at: claims.issued_at as f64,
+        not_before: claims.not_before.map(|value| value as f64),
+        expires_at: claims.expires_at as f64,
+        duration_value: claims.expires_at - claims.issued_at,
+        duration_unit: "seconds".to_owned(),
+        verification: Verification::JwtRs256 {
+            header,
+            payload,
+            signature,
+        },
+    })
+}
+
+fn verify_legacy_signed_key(
     key: &str,
     public_key_pem: &str,
 ) -> Result<(SignedLicenseClaims, String, String), LicenseError> {
@@ -646,6 +847,34 @@ fn verify_signed_key(
         payload.to_owned(),
         key.rsplit_once('.').unwrap().1.to_owned(),
     ))
+}
+
+fn validate_license_features(features: &[String]) -> Result<(), LicenseError> {
+    let mut seen = std::collections::HashSet::with_capacity(features.len());
+    for feature in features {
+        if !ALL_FEATURES.contains(&feature.as_str()) {
+            return Err(LicenseError::InvalidKey(format!(
+                "license contains unsupported feature {feature:?}"
+            )));
+        }
+        if !seen.insert(feature) {
+            return Err(LicenseError::InvalidKey(format!(
+                "license contains duplicate feature {feature:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn map_license_jwt_error(error: jwt::LicenseJwtError) -> LicenseError {
+    match error {
+        jwt::LicenseJwtError::InvalidPublicKey(message) => LicenseError::PublicKeyInvalid(message),
+        jwt::LicenseJwtError::InvalidToken(message)
+        | jwt::LicenseJwtError::InvalidClaims(message) => LicenseError::InvalidKey(message),
+        jwt::LicenseJwtError::VerificationFailed(message) => {
+            LicenseError::VerificationFailed(message)
+        }
+    }
 }
 
 fn parse_public_key(public_key_pem: &str) -> Result<RsaPublicKey, LicenseError> {

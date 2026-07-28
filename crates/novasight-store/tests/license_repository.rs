@@ -2,7 +2,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use novasight_store::license::{FileLicenseRepository, LicensePolicy};
+use rand::thread_rng;
+use rsa::RsaPrivateKey;
+use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+use serde::Serialize;
 
 const PUBLIC_KEY: &str = include_str!("../../../testdata/license-public.pem");
 const SIGNED_KEY: &str = include_str!("../../../testdata/license-signed.key");
@@ -40,6 +45,7 @@ fn development_access_is_process_local_and_never_written_to_the_license_file() {
     assert!(activated.configured);
     assert!(activated.valid);
     assert_eq!(activated.tier, "temporary");
+    assert_eq!(activated.credential_format, "debug_session");
     assert_eq!(activated.license_id, "debug-process-session");
     assert!(activated.features.contains(&"hardware_control".to_owned()));
     assert!(activated.activated_at.is_some());
@@ -82,6 +88,7 @@ fn signed_license_is_reverified_after_restart_and_rejects_disk_claim_tampering()
     assert!(activated.valid);
     assert_eq!(activated.license_id, "commercial-001");
     assert_eq!(activated.tier, "pro");
+    assert_eq!(activated.credential_format, "legacy_ns1");
     assert_eq!(activated.features, ["runtime", "models"]);
     assert!(!fs::read_to_string(&path).unwrap().contains(SIGNED_KEY));
     assert_eq!(
@@ -104,6 +111,63 @@ fn signed_license_is_reverified_after_restart_and_rejects_disk_claim_tampering()
     assert!(status.configured);
     assert!(!status.valid);
     assert!(status.message.contains("do not match"));
+}
+
+#[test]
+fn rs256_jwt_license_is_reverified_from_persisted_signed_segments() {
+    let directory = TestDirectory::new();
+    let path = directory.0.join("license.json");
+    let private_key = RsaPrivateKey::new(&mut thread_rng(), 2048).unwrap();
+    let private_pem = private_key.to_pkcs8_pem(LineEnding::LF).unwrap();
+    let public_pem = private_key
+        .to_public_key()
+        .to_public_key_pem(LineEnding::LF)
+        .unwrap();
+    let mut header = Header::new(Algorithm::RS256);
+    header.kid = Some("license-key-2026-01".to_owned());
+    let token = encode(
+        &header,
+        &TestJwtClaims {
+            iss: "novasight-license",
+            sub: "commercial-jwt-001",
+            aud: "novasightd",
+            exp: 4_102_444_800,
+            iat: 1_700_000_000,
+            jti: "entitlement-001",
+            tier: "pro",
+            features: &["runtime", "models"],
+        },
+        &EncodingKey::from_rsa_pem(private_pem.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    let policy = LicensePolicy::new(false, Some(public_pem));
+    let repository = FileLicenseRepository::new(&path, policy.clone());
+
+    let activated = repository.activate(&token).unwrap();
+
+    assert!(activated.valid);
+    assert_eq!(activated.license_id, "commercial-jwt-001");
+    assert_eq!(activated.credential_format, "jwt_rs256");
+    assert_eq!(activated.token_id, "entitlement-001");
+    assert_eq!(activated.key_id, "license-key-2026-01");
+    assert_eq!(activated.duration_unit, "seconds");
+    assert!(!fs::read_to_string(&path).unwrap().contains(&token));
+    assert_eq!(
+        FileLicenseRepository::new(&path, policy).status().unwrap(),
+        activated
+    );
+}
+
+#[derive(Serialize)]
+struct TestJwtClaims<'a> {
+    iss: &'a str,
+    sub: &'a str,
+    aud: &'a str,
+    exp: u64,
+    iat: u64,
+    jti: &'a str,
+    tier: &'a str,
+    features: &'a [&'a str],
 }
 
 #[test]

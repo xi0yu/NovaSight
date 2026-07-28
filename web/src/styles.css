@@ -1206,6 +1206,42 @@ tbody tr:hover {
   gap: var(--space-3);
 }
 
+.signed-license-preview {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--green) 28%, var(--border-subtle));
+  border-radius: var(--radius-inner);
+  background: color-mix(in srgb, var(--green) 5%, var(--bg-subtle));
+}
+
+.signed-license-preview.invalid {
+  border-color: color-mix(in srgb, var(--red) 28%, var(--border-subtle));
+  background: color-mix(in srgb, var(--red) 5%, var(--bg-subtle));
+}
+
+.signed-license-preview > div {
+  min-width: 0;
+}
+
+.signed-license-preview strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signed-license-preview p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  line-height: 1.5;
+}
+
 .license-hero {
   display: flex;
   align-items: flex-start;

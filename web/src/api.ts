@@ -571,7 +571,11 @@ export type LicenseStatus = {
   tier: string;
   features: LicenseFeature[];
   license_id: string;
+  credential_format: string;
+  token_id: string;
+  key_id: string;
   created_at: number | null;
+  not_before: number | null;
   activated_at: number | null;
   expires_at: number | null;
   duration_value: number | null;

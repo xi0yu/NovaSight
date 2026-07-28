@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import {
   type LicenseStatus,
@@ -15,6 +15,7 @@ import {
   type LicenseActionFailure
 } from "./connectionIssue";
 import { LICENSE_CACHE_KEY } from "./storage";
+import { inspectLicenseCredential } from "./licenseJwt";
 
 export function LicensePanel({
   license,
@@ -30,6 +31,10 @@ export function LicensePanel({
   const [failure, setFailure] = useState<LicenseActionFailure | null>(null);
   const currentTime = new Date().toLocaleString("zh-CN", { hour12: false });
   const temporarySupported = license?.temporary_access_supported === true;
+  const credentialPreview = useMemo(
+    () => inspectLicenseCredential(licenseInput),
+    [licenseInput]
+  );
 
   const requestTemporary = useCallback(async () => {
     setFailure(null);
@@ -142,6 +147,8 @@ export function LicensePanel({
       </div>
       <div className="field-grid">
         <Field label="授权类型" value={license?.tier ? formatTier(license.tier) : "未授权"} />
+        <Field label="凭证格式" value={formatCredentialFormat(license?.credential_format)} />
+        <Field label="授权编号" value={license?.license_id || "无"} />
         <Field label="当前状态" value={license?.valid ? "可用" : "等待申请"} />
         <Field label="当前时间" value={currentTime} />
         <Field label="激活时间" value={formatEpoch(license?.activated_at)} />
@@ -181,7 +188,7 @@ export function LicensePanel({
       <div className="signed-license-action">
         <div>
           <strong>正式授权</strong>
-          <span>使用经过签名的授权凭证；激活后不会保存或回显凭证明文。</span>
+          <span>优先使用 RS256 JWT，兼容旧版 NS1。界面不保存或回显凭证，后端会在受限权限文件中保留签名片段用于重启复核。</span>
         </div>
         <div className="signed-license-controls">
           <label className="config-field">
@@ -189,7 +196,7 @@ export function LicensePanel({
             <input
               type="password"
               value={licenseInput}
-              placeholder="输入 NS1 签名授权凭证"
+              placeholder="粘贴 RS256 JWT 授权凭证"
               autoComplete="off"
               onChange={(event) => setLicenseInput(event.target.value)}
             />
@@ -202,6 +209,36 @@ export function LicensePanel({
           >
             {activating ? "正在验证…" : "激活正式授权"}
           </button>
+          {credentialPreview ? (
+            <div className={credentialPreview.acceptedShape
+              ? "signed-license-preview"
+              : "signed-license-preview invalid"}>
+              <div>
+                <span>凭证格式</span>
+                <strong>{credentialPreview.label}</strong>
+              </div>
+              {credentialPreview.licenseId ? (
+                <div>
+                  <span>授权编号</span>
+                  <strong>{credentialPreview.licenseId}</strong>
+                </div>
+              ) : null}
+              {credentialPreview.tier ? (
+                <div>
+                  <span>授权版本</span>
+                  <strong>{formatTier(credentialPreview.tier)}</strong>
+                </div>
+              ) : null}
+              {credentialPreview.expiresAt ? (
+                <div>
+                  <span>声明到期</span>
+                  <strong>{formatEpoch(credentialPreview.expiresAt)}</strong>
+                </div>
+              ) : null}
+              <p>{credentialPreview.problems[0]
+                ?? "这里只预览 JWT 声明；签名、签发方、有效期与权限最终由 novasightd 校验。"}</p>
+            </div>
+          ) : null}
         </div>
       </div>
       {license?.configured ? (
@@ -239,6 +276,8 @@ function formatDuration(value: number | null | undefined, unit: string | undefin
     return "无";
   }
   const labels: Record<string, string> = {
+    second: "秒",
+    seconds: "秒",
     day: "天",
     days: "天",
     month: "个月",
@@ -247,6 +286,16 @@ function formatDuration(value: number | null | undefined, unit: string | undefin
     years: "年"
   };
   return `${value} ${labels[unit] ?? unit}`;
+}
+
+function formatCredentialFormat(format: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    jwt_rs256: "JWT · RS256",
+    legacy_ns1: "旧版 NS1",
+    debug_session: "Debug 进程授权",
+    legacy_document: "旧版授权文件"
+  };
+  return format ? labels[format] ?? format : "未授权";
 }
 
 function formatFeature(feature: string): string {

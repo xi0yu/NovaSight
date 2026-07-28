@@ -269,6 +269,8 @@ async fn activate_license(
     tracing::info!(
         valid = status.valid,
         tier = %status.tier,
+        credential_format = %status.credential_format,
+        license_id = %status.license_id,
         fingerprint = %status.fingerprint,
         "license activation completed"
     );
