@@ -11,6 +11,7 @@ __pycache__/
 .superpowers/
 .worktrees/
 .pnpm-store/
+/.config/novasight.yaml
 data/
 logs/
 build/
