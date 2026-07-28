@@ -137,6 +137,7 @@ type CapabilityChoice = {
 type LaunchStatus = "idle" | "running" | "success" | "failed" | "cancelled";
 type LaunchStepState = "pending" | "running" | "success" | "failed";
 type ConfigDialogId = "class-config" | "target-weights" | "algorithm" | "target-advanced" | "tracker";
+type AlgorithmSettingsSection = "response" | "prediction" | "stability" | "calibration";
 type DualPhasePipelineField =
   | "freshness_threshold_ms"
   | "projection_fov_x_deg"
@@ -697,6 +698,7 @@ export function StudioConsoleView({
   const [classConfigDialogOpen, setClassConfigDialogOpen] = useState(false);
   const [targetWeightsDialogOpen, setTargetWeightsDialogOpen] = useState(false);
   const [algorithmSettingsDialogOpen, setAlgorithmSettingsDialogOpen] = useState(false);
+  const [algorithmSettingsSection, setAlgorithmSettingsSection] = useState<AlgorithmSettingsSection>("response");
   const [targetAdvancedDialogOpen, setTargetAdvancedDialogOpen] = useState(false);
   const [trackerSettingsDialogOpen, setTrackerSettingsDialogOpen] = useState(false);
   const [confirmationRequest, setConfirmationRequest] = useState<ActionConfirmationRequest | null>(null);
@@ -773,6 +775,9 @@ export function StudioConsoleView({
     setConfigDraft(baseline);
     setConfigDialogDirty(false);
     setDialogSaveError(null);
+    if (dialog === "algorithm") {
+      setAlgorithmSettingsSection("response");
+    }
     setConfigDialogVisibility(dialog, true);
   }, [setConfigDialogVisibility]);
 
@@ -4403,7 +4408,7 @@ export function StudioConsoleView({
       {wideThemeGallery ? <ThemeGallery /> : null}
 
       <AdvancedSettingsDialog
-        description="这里只展示 Rust 主链真实读取的投影、预测、Atan、量化与时效安全参数。"
+        description="先按问题进入对应调参路径；常用手感参数与底层保护参数不再混在同一张表里。"
         dirty={configDialogDirty}
         eyebrow="参数设置 / 控制算法"
         footerNote={`当前算法：${controlModeLabel}`}
@@ -4414,37 +4419,118 @@ export function StudioConsoleView({
         saving={dialogSaving}
         title={`${controlModeLabel} · 高级参数`}
       >
-        <div className="advanced-settings-grid">
-          <NumberControl label="观测新鲜度上限 ms" detail="超过该帧龄的视觉观测不会进入控制器。" value={freshnessThresholdMs} min={1} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("freshness_threshold_ms", value)} />
-          <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhaseField("projection_fov_x_deg", value)} />
-          <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhaseField("projection_counts_per_360", value)} />
-          <NumberControl label="近远过渡中心 px" detail="以该误差距离为中心，在前后 25% 区间内平滑融合 NEAR 与 FAR Atan 响应，避免阈值附近突然换挡。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("near_threshold_px", value)} />
-          <NumberControl label="FAR Kp" detail="远距离闭环增益；不是 KMNet 设备能力上限。" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("far_kp", value)} />
-          <NumberControl label="NEAR Kp" detail="接近准星后的闭环增益，过高会导致左右往返修正。" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("near_kp", value)} />
-          <NumberControl label="共享 Atan 尺度 counts" detail="控制响应曲线尺度，不代表协议可发送的最大 counts。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("atan_scale_counts", value)} />
-          <NumberControl label="FAR 单次上限 counts" detail="稳定性保护上限；KMNet 的 signed-16 能力独立校验。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("far_max_counts_per_update", value)} />
-          <NumberControl label="NEAR 单次上限 counts" detail="近目标单次修正上限，默认低于 FAR 以抑制过冲。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("near_max_counts_per_update", value)} />
-          <NumberControl label="到位半径 counts" detail="每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞。" value={dualPhaseArrivalRadiusCounts} min={0.5} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("arrival_radius_counts", value)} />
-          <NumberControl label="量化残差上限 counts" detail="限制不足一个设备计数的累计余量，范围为 0～1。" value={residualCap} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("residual_cap", value)} />
-          <ModuleSwitch label="启用 X / Y 目标预测" detail="使用唯一锁定目标的真实帧间速度；不会预测多个候选目标。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)} />
-          {dualPhasePredictionEnabled ? (
-            <>
-              <NumberControl label="预测速度平滑帧数" value={dualPhasePredictionSmoothingFrames} min={0.1} max={120} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_smoothing_frames", value)} />
-              <NumberControl label="预测历史重置间隔 ms" detail="相邻有效画面超过该时间后丢弃旧速度，避免断流后沿旧方向预测。" value={dualPhasePredictionHistoryResetGapMs} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_history_reset_gap_ms", value)} />
-              <NumberControl label="速度离散基础容差 px/ms" detail="三段速度样本的离散程度超过基础值加相对值后，会降低预测可信度。" value={velocitySpreadBasePxMs} min={0.01} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_spread_base_px_ms", value)} />
-              <NumberControl label="速度离散相对容差" value={velocitySpreadRelative} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_spread_relative", value)} />
-              <NumberControl label="速度变化基础容差 px/ms" detail="限制相邻平滑速度的突变；超过阈值时降低预测可信度。" value={velocityChangeBasePxMs} min={0.01} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_change_base_px_ms", value)} />
-              <NumberControl label="速度变化相对容差" value={velocityChangeRelative} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_change_relative", value)} />
-              <NumberControl label="预测提前帧数" value={dualPhasePredictionLeadFrames} min={0} max={10} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_lead_frames", value)} />
-              <NumberControl label="FAR 预测绝对上限 px" value={dualPhasePredictionFarCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_far_absolute_cap_px", value)} />
-              <NumberControl label="FAR 预测基础上限 px" detail="实际上限取绝对上限与“基础上限 + 相对上限 × 当前误差”中的较小值。" value={dualPhasePredictionFarBaseCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_far_base_cap_px", value)} />
-              <NumberControl label="FAR 预测相对上限" value={dualPhasePredictionFarRelativeCap} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("prediction_far_relative_cap", value)} />
-              <NumberControl label="NEAR 预测绝对上限 px" value={dualPhasePredictionNearCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_near_absolute_cap_px", value)} />
-              <NumberControl label="NEAR 预测基础上限 px" detail="接近目标时的预测基线，避免小误差被过量提前。" value={dualPhasePredictionNearBaseCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_near_base_cap_px", value)} />
-              <NumberControl label="NEAR 预测相对上限" value={dualPhasePredictionNearRelativeCap} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("prediction_near_relative_cap", value)} />
-            </>
+        <div className="algorithm-settings-layout">
+          <nav aria-label="控制算法调参分类" className="algorithm-settings-nav">
+            <button aria-controls="algorithm-settings-response" aria-pressed={algorithmSettingsSection === "response"} className={algorithmSettingsSection === "response" ? "active" : ""} onClick={() => setAlgorithmSettingsSection("response")} type="button">
+              <b>响应算法</b>
+              <small>远近速度、过冲与 Atan 手感</small>
+            </button>
+            <button aria-controls="algorithm-settings-prediction" aria-pressed={algorithmSettingsSection === "prediction"} className={algorithmSettingsSection === "prediction" ? "active" : ""} onClick={() => setAlgorithmSettingsSection("prediction")} type="button">
+              <b>目标预测</b>
+              <small>移动目标跟随、提前量与可信度</small>
+            </button>
+            <button aria-controls="algorithm-settings-stability" aria-pressed={algorithmSettingsSection === "stability"} className={algorithmSettingsSection === "stability" ? "active" : ""} onClick={() => setAlgorithmSettingsSection("stability")} type="button">
+              <b>到位与输出</b>
+              <small>临近抖动、单次限幅与反馈等待</small>
+            </button>
+            <button aria-controls="algorithm-settings-calibration" aria-pressed={algorithmSettingsSection === "calibration"} className={algorithmSettingsSection === "calibration" ? "active" : ""} onClick={() => setAlgorithmSettingsSection("calibration")} type="button">
+              <b>标定与时效</b>
+              <small>FOV、设备 counts 与过期画面</small>
+            </button>
+          </nav>
+
+          {algorithmSettingsSection === "response" ? (
+            <section aria-labelledby="algorithm-settings-response-title" className="algorithm-settings-panel" id="algorithm-settings-response">
+              <header className="algorithm-settings-panel-header">
+                <span>CONTROL RESPONSE</span>
+                <h3 id="algorithm-settings-response-title">响应算法</h3>
+                <p>先判断问题发生在远距离还是准星附近。近距离过冲优先降低 NEAR Kp；远距离跟随偏慢再提高 FAR Kp。</p>
+              </header>
+              <div className="algorithm-tuning-order"><b>建议顺序</b><span>近距离响应 → 远距离响应 → 过渡位置 → Atan 曲线尺度</span></div>
+              <div className="advanced-settings-grid two-column">
+                <NumberControl label="近距离响应强度（NEAR Kp）" detail="目标接近准星后的主要手感参数。过高会过冲和左右往返，过低会贴近后跟不上。" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("near_kp", value)} />
+                <NumberControl label="远距离响应强度（FAR Kp）" detail="目标离准星较远时的追赶强度。它不是 KMNet 设备能力上限。" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("far_kp", value)} />
+                <NumberControl label="近远过渡位置 px" detail="误差在该位置附近时，从 NEAR 平滑过渡到 FAR；决定多近开始进入精细控制。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("near_threshold_px", value)} />
+                <NumberControl label="Atan 曲线尺度 counts" detail="决定大误差何时开始被曲线压缩。增大后中远距离输出更接近线性，减小则更早压缩。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("atan_scale_counts", value)} />
+              </div>
+            </section>
           ) : null}
-          <NumberControl label="设备反馈等待 ms" detail="设备成功移动后额外等待的最小视觉反馈时间；运行时还会自动加一帧实测采集周期，避免同一旧画面重复驱动。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("actuation_feedback_delay_ms", value)} />
+
+          {algorithmSettingsSection === "prediction" ? (
+            <section aria-labelledby="algorithm-settings-prediction-title" className="algorithm-settings-panel" id="algorithm-settings-prediction">
+              <header className="algorithm-settings-panel-header">
+                <span>PREDICTION</span>
+                <h3 id="algorithm-settings-prediction-title">唯一锁定目标的 X / Y 预测</h3>
+                <p>只想改变提前量时，先改“预测提前量”；移动目标的预测点发抖时，再增加速度平滑。其余参数属于异常保护。</p>
+              </header>
+              <ModuleSwitch label="启用 X / Y 目标预测" detail="X、Y 两轴使用同一套时间与可信度参数，只预测 Tracker 当前锁定的一个目标。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)} />
+              {dualPhasePredictionEnabled ? (
+                <>
+                  <div className="advanced-settings-grid two-column">
+                    <NumberControl label="预测提前量（帧）" detail="沿当前目标速度向前预测多少帧。跟不上移动目标时小幅增加；明显超前时降低。" value={dualPhasePredictionLeadFrames} min={0} max={10} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_lead_frames", value)} />
+                    <NumberControl label="速度平滑窗口（帧）" detail="增大可降低预测点抖动，但会让速度变化响应更慢。" value={dualPhasePredictionSmoothingFrames} min={0.1} max={120} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_smoothing_frames", value)} />
+                    <NumberControl label="断流历史重置 ms" detail="相邻有效画面超过该时间后丢弃旧速度，避免断流后继续沿旧方向预测。" value={dualPhasePredictionHistoryResetGapMs} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_history_reset_gap_ms", value)} />
+                  </div>
+                  <details className="algorithm-settings-disclosure">
+                    <summary><span><b>预测可信度保护</b><small>检测速度异常时降低或取消预测，一般不需要修改</small></span><i>4 项</i></summary>
+                    <div className="advanced-settings-grid two-column">
+                      <NumberControl label="速度离散基础容差 px/ms" detail="多段速度样本离散程度超过基础值加相对值后，预测可信度会降低。" value={velocitySpreadBasePxMs} min={0.01} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_spread_base_px_ms", value)} />
+                      <NumberControl label="速度离散相对容差" detail="按当前速度幅度放宽离散容差，避免高速目标被固定阈值误判。" value={velocitySpreadRelative} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_spread_relative", value)} />
+                      <NumberControl label="速度变化基础容差 px/ms" detail="限制相邻平滑速度的突变；超过阈值时降低预测可信度。" value={velocityChangeBasePxMs} min={0.01} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_change_base_px_ms", value)} />
+                      <NumberControl label="速度变化相对容差" detail="按已有速度幅度放宽变化阈值，适应高速但连续的运动。" value={velocityChangeRelative} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_change_relative", value)} />
+                    </div>
+                  </details>
+                  <details className="algorithm-settings-disclosure">
+                    <summary><span><b>预测位移上限</b><small>防止提前量超过当前误差，只有确认预测被截断时再修改</small></span><i>6 项</i></summary>
+                    <div className="advanced-settings-grid two-column">
+                      <NumberControl label="远距离预测硬上限 px" detail="远距离阶段允许的最终预测位移硬上限。" value={dualPhasePredictionFarCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_far_absolute_cap_px", value)} />
+                      <NumberControl label="远距离预测基础上限 px" detail="动态上限的基础部分；最终仍受硬上限约束。" value={dualPhasePredictionFarBaseCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_far_base_cap_px", value)} />
+                      <NumberControl label="远距离预测相对上限" detail="当前误差越大，允许的预测位移按该比例增加。" value={dualPhasePredictionFarRelativeCap} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("prediction_far_relative_cap", value)} />
+                      <NumberControl label="近距离预测硬上限 px" detail="接近准星时允许的最终预测位移硬上限。" value={dualPhasePredictionNearCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_near_absolute_cap_px", value)} />
+                      <NumberControl label="近距离预测基础上限 px" detail="近距离动态上限的基础部分，用于避免小误差被过量提前。" value={dualPhasePredictionNearBaseCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_near_base_cap_px", value)} />
+                      <NumberControl label="近距离预测相对上限" detail="按当前误差比例增加近距离允许的预测位移。" value={dualPhasePredictionNearRelativeCap} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("prediction_near_relative_cap", value)} />
+                    </div>
+                  </details>
+                </>
+              ) : (
+                <div className="algorithm-settings-empty"><b>预测当前关闭</b><span>控制器直接使用当前观测位置；下面的预测参数不会参与主链计算。</span></div>
+              )}
+            </section>
+          ) : null}
+
+          {algorithmSettingsSection === "stability" ? (
+            <section aria-labelledby="algorithm-settings-stability-title" className="algorithm-settings-panel" id="algorithm-settings-stability">
+              <header className="algorithm-settings-panel-header">
+                <span>CONVERGENCE & OUTPUT</span>
+                <h3 id="algorithm-settings-stability-title">到位稳定与单次输出</h3>
+                <p>这些参数不改变目标位置。它们限制每次能走多远，并决定什么时候认为已经到位、什么时候等待画面反馈。</p>
+              </header>
+              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低近距离单次上限，再检查到位半径，最后才调整设备反馈等待</span></div>
+              <div className="advanced-settings-grid two-column">
+                <NumberControl label="近距离单次上限 counts" detail="靠近目标时每轮最多输出多少。降低可抑制越过瞄点，但过低会降低收敛速度。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("near_max_counts_per_update", value)} />
+                <NumberControl label="远距离单次上限 counts" detail="远距离追赶时每轮最多输出多少；它独立于 KMNet 的 signed-16 协议上限。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("far_max_counts_per_update", value)} />
+                <NumberControl label="到位停止半径 counts" detail="每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞。" value={dualPhaseArrivalRadiusCounts} min={0.5} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("arrival_radius_counts", value)} />
+                <NumberControl label="小数残差上限 counts" detail="限制不足一个设备计数的累计余量，范围为 0～1；不是额外移动速度。" value={residualCap} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("residual_cap", value)} />
+                <NumberControl label="设备反馈等待 ms" detail="成功移动后至少等待该时长，并自动加一帧实测采集周期，避免同一旧画面重复驱动。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("actuation_feedback_delay_ms", value)} />
+              </div>
+            </section>
+          ) : null}
+
+          {algorithmSettingsSection === "calibration" ? (
+            <section aria-labelledby="algorithm-settings-calibration-title" className="algorithm-settings-panel" id="algorithm-settings-calibration">
+              <header className="algorithm-settings-panel-header">
+                <span>CALIBRATION & FRESHNESS</span>
+                <h3 id="algorithm-settings-calibration-title">坐标标定与观测时效</h3>
+                <p>这里不是手感增益。FOV 与每圈 counts 必须对应真实游戏和设备；错误标定会让所有 Atan 参数一起表现错误。</p>
+              </header>
+              <div className="algorithm-settings-warning"><b>不要用标定参数修手感</b><span>整体移动比例不对才检查标定；只是远近速度不合适，请回到“响应算法”。</span></div>
+              <div className="advanced-settings-grid two-column">
+                <NumberControl label="水平视场角 FOVX" detail="当前游戏水平视场角，用于把像素误差换算成角度误差。" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhaseField("projection_fov_x_deg", value)} />
+                <NumberControl label="设备每圈 counts" detail="鼠标完成 360°转向所需的真实设备计数，用于把角度需求换算成输出 counts。" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhaseField("projection_counts_per_360", value)} />
+                <NumberControl label="可用观测最大帧龄 ms" detail="超过该帧龄的 DetectionBatch 不会进入控制器；它是安全时效门，不是固定推理时长。" value={freshnessThresholdMs} min={1} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("freshness_threshold_ms", value)} />
+              </div>
+            </section>
+          ) : null}
         </div>
       </AdvancedSettingsDialog>
 
