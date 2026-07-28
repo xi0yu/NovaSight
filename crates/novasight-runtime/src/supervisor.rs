@@ -23,7 +23,7 @@ use novasight_pipeline::{
     PipelineRuntime, PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription, TriggerMode,
 };
 use novasight_store::config::{
-    RecoilConfig as ConfigRecoilConfig, TriggerMode as ConfigTriggerMode,
+    AppConfig, RecoilConfig as ConfigRecoilConfig, TriggerMode as ConfigTriggerMode,
 };
 use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, SqliteModelCatalog};
 use tokio::sync::{Semaphore, mpsc, oneshot, watch};
@@ -39,6 +39,7 @@ use crate::model_ingress::{
     ModelManifestTransaction, load_profile, validate_worker_output,
 };
 use crate::protocol::{RuntimeErrorSummary, SubsystemState};
+use crate::runtime_config::compose_pipeline_config;
 use crate::snapshot::{
     DaemonSnapshot, DeviceMetrics, ModelSnapshot, PipelineSnapshot, RuntimeSnapshot,
     RuntimeTelemetrySnapshot, SubsystemSnapshots,
@@ -96,7 +97,7 @@ impl Drop for UrgentStopToken {
 pub struct RuntimeDependencies {
     clock: Arc<dyn Clock>,
     device: Arc<dyn PointerDevice>,
-    pipeline: PipelineConfig,
+    pipeline: std::sync::RwLock<PipelineConfig>,
     hardware_trigger_required: AtomicBool,
     recoil_config: std::sync::RwLock<RecoilConfig>,
     model_geometry: std::sync::RwLock<Option<ModelGeometry>>,
@@ -152,7 +153,7 @@ impl RuntimeDependencies {
         Self {
             clock,
             device,
-            pipeline,
+            pipeline: std::sync::RwLock::new(pipeline),
             hardware_trigger_required: AtomicBool::new(hardware_trigger_required),
             recoil_config: std::sync::RwLock::new(recoil_config),
             model_geometry: std::sync::RwLock::new(Some(model_geometry)),
@@ -187,13 +188,19 @@ impl RuntimeDependencies {
     }
 
     pub fn with_crosshair(mut self, crosshair: CrosshairHub) -> Self {
-        self.pipeline.crosshair = Some(crosshair.clone());
+        self.pipeline
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .crosshair = Some(crosshair.clone());
         self.crosshair = Some(crosshair);
         self
     }
 
     pub fn with_recoil(mut self, config: RecoilConfig) -> Self {
-        self.pipeline.recoil = config;
+        self.pipeline
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .recoil = config;
         *self
             .recoil_config
             .get_mut()
@@ -207,10 +214,12 @@ impl RuntimeDependencies {
     }
 
     fn pipeline_config(&self, epoch: RuntimeEpoch) -> PipelineConfig {
-        let mut pipeline = PipelineConfig {
-            epoch,
-            ..self.pipeline.clone()
-        };
+        let base = self
+            .pipeline
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let mut pipeline = PipelineConfig { epoch, ..base };
         pipeline.trigger_mode = self.trigger_mode();
         pipeline.recoil = self.recoil_config();
         if let Some(geometry) = self.model_geometry() {
@@ -226,6 +235,43 @@ impl RuntimeDependencies {
             }
         }
         pipeline
+    }
+
+    fn install_app_config(&self, config: &AppConfig) -> Result<(), RuntimeError> {
+        let (trigger_poll_interval_ms, crosshair) = {
+            let pipeline = self
+                .pipeline
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (
+                pipeline.trigger_poll_interval_ms,
+                pipeline.crosshair.clone(),
+            )
+        };
+        let mut pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
+            .map_err(RuntimeError::pipeline_rejected)?;
+        pipeline.crosshair = crosshair;
+        let current_geometry = self.model_geometry().unwrap_or(ModelGeometry {
+            input_width: pipeline.control.observation_width,
+            input_height: pipeline.control.observation_height,
+            preserves_roi_coordinates: false,
+            source_width: pipeline.control.source_width,
+            roi_width: pipeline.control.roi_width,
+            roi_height: pipeline.control.roi_height,
+        });
+        self.replace_model_geometry(Some(ModelGeometry {
+            source_width: pipeline.control.source_width,
+            roi_width: pipeline.control.roi_width,
+            roi_height: pipeline.control.roi_height,
+            ..current_geometry
+        }));
+        self.set_trigger_mode(pipeline.trigger_mode);
+        self.set_recoil_config(pipeline.recoil);
+        *self
+            .pipeline
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = pipeline;
+        Ok(())
     }
 
     fn trigger_mode(&self) -> TriggerMode {
@@ -273,13 +319,19 @@ impl RuntimeDependencies {
     }
 
     fn install_model_contract(&self, contract: &PerceptionModelContract) -> Option<ModelGeometry> {
-        let current = self.model_geometry().unwrap_or(ModelGeometry {
-            input_width: 0,
-            input_height: 0,
-            preserves_roi_coordinates: false,
-            source_width: self.pipeline.control.source_width,
-            roi_width: self.pipeline.control.roi_width,
-            roi_height: self.pipeline.control.roi_height,
+        let current = self.model_geometry().unwrap_or_else(|| {
+            let pipeline = self
+                .pipeline
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            ModelGeometry {
+                input_width: 0,
+                input_height: 0,
+                preserves_roi_coordinates: false,
+                source_width: pipeline.control.source_width,
+                roi_width: pipeline.control.roi_width,
+                roi_height: pipeline.control.roi_height,
+            }
         });
         self.replace_model_geometry(Some(ModelGeometry {
             input_width: contract.input_width,
@@ -1052,6 +1104,17 @@ impl RuntimeHandle {
             .await
     }
 
+    pub(crate) async fn install_stopped_config(
+        &self,
+        config: AppConfig,
+    ) -> Result<(), RuntimeError> {
+        self.send_command(|reply| RuntimeCommand::InstallStoppedConfig {
+            config: Box::new(config),
+            reply,
+        })
+        .await
+    }
+
     pub async fn preflight_perception(&self) -> Result<(), RuntimeError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx
@@ -1311,6 +1374,23 @@ async fn handle_command(
                 .await
             }
             .await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::InstallStoppedConfig { config, reply } => {
+            let result = if active.is_some()
+                || !matches!(
+                    state.pipeline,
+                    PipelineState::Stopped | PipelineState::Faulted
+                ) {
+                Err(RuntimeError::invalid_pipeline_state(
+                    "configuration reload requires a stopped runtime",
+                ))
+            } else {
+                dependencies.install_app_config(&config).map(|()| {
+                    state.output_enabled = config.control.output_enabled;
+                    publish(snapshot_tx, state, now_ms());
+                })
+            };
             let _ = reply.send(result);
         }
         RuntimeCommand::PreflightPerception { reply } => {

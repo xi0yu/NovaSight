@@ -259,6 +259,70 @@ impl ConfigService {
         }
     }
 
+    /// Install saved vision/control settings into the next runtime epoch.
+    ///
+    /// This is intentionally a stopped-runtime control-plane operation. It
+    /// does not add locks or configuration reads to DetectionBatch handling,
+    /// controller evaluation, or device output. Process-owned resources such
+    /// as listeners, database roots, and the concrete pointer adapter retain
+    /// the honest daemon-restart boundary.
+    pub async fn prepare_runtime_start(
+        &self,
+        runtime: &RuntimeHandle,
+    ) -> Result<(), ConfigServiceError> {
+        let desired = self.inner.current.read().await.clone();
+        let effective_revision = self.effective_revision();
+        if !self.inner.output_gate_consistent.load(Ordering::Acquire) {
+            return Err(ConfigServiceError::RuntimeConfigDiverged {
+                effective_revision,
+                desired_revision: desired.revision,
+            });
+        }
+        if desired.revision == effective_revision {
+            return Ok(());
+        }
+        let effective = self
+            .inner
+            .effective_config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let process_sections = process_restart_sections(&effective, &desired)?;
+        if !process_sections.is_empty() {
+            return Err(ConfigServiceError::ProcessRestartRequired {
+                effective_revision,
+                desired_revision: desired.revision,
+                sections: process_sections.join(", "),
+            });
+        }
+
+        runtime
+            .install_stopped_config(desired.clone())
+            .await
+            .map_err(ConfigServiceError::Runtime)?;
+
+        // Recheck under the writer lock. If another writer won while the
+        // stopped runtime was being prepared, never claim its newer revision
+        // is active; the next start attempt will install that exact snapshot.
+        let _update_guard = self.inner.update_lock.lock().await;
+        let latest_revision = self.inner.current.read().await.revision;
+        if latest_revision != desired.revision {
+            return Err(ConfigServiceError::RestartRequired {
+                effective_revision,
+                desired_revision: latest_revision,
+            });
+        }
+        *self
+            .inner
+            .effective_config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = desired.clone();
+        self.inner
+            .effective_revision
+            .store(desired.revision, Ordering::Release);
+        Ok(())
+    }
+
     /// Commit a persisted revision only after its runtime-side mutation has
     /// succeeded. Keeping this separate from persistence prevents a failed hot
     /// apply from being reported as effective.
@@ -730,6 +794,14 @@ pub enum ConfigServiceError {
         effective_revision: u64,
         desired_revision: u64,
     },
+    #[error(
+        "novasightd restart required for process-owned configuration sections [{sections}]: process uses revision {effective_revision}, persisted revision is {desired_revision}"
+    )]
+    ProcessRestartRequired {
+        effective_revision: u64,
+        desired_revision: u64,
+        sections: String,
+    },
     #[error("configuration save task failed: {0}")]
     SaveTask(tokio::task::JoinError),
 }
@@ -754,10 +826,64 @@ impl ConfigServiceError {
             }
             Self::RuntimeConfigDiverged { .. } => "CONFIG_RUNTIME_DIVERGED",
             Self::Runtime(error) => error.kind.code(),
-            Self::RestartRequired { .. } => "CONFIG_RESTART_REQUIRED",
+            Self::RestartRequired { .. } | Self::ProcessRestartRequired { .. } => {
+                "CONFIG_RESTART_REQUIRED"
+            }
             Self::SaveTask(_) => "CONFIG_SAVE_TASK_FAILED",
         }
     }
+}
+
+fn process_restart_sections(
+    effective: &AppConfig,
+    desired: &AppConfig,
+) -> Result<Vec<&'static str>, ConfigServiceError> {
+    let mut changed = Vec::new();
+    for (name, differs) in [
+        (
+            "schema_version",
+            config_value_differs(&effective.schema_version, &desired.schema_version)?,
+        ),
+        (
+            "server",
+            config_value_differs(&effective.server, &desired.server)?,
+        ),
+        (
+            "replay",
+            config_value_differs(&effective.replay, &desired.replay)?,
+        ),
+        (
+            "paths",
+            config_value_differs(&effective.paths, &desired.paths)?,
+        ),
+        (
+            "crosshair",
+            config_value_differs(&effective.crosshair, &desired.crosshair)?,
+        ),
+        (
+            "hardware",
+            config_value_differs(&effective.device, &desired.device)?,
+        ),
+        (
+            "legacy",
+            config_value_differs(&effective.legacy, &desired.legacy)?,
+        ),
+    ] {
+        if differs {
+            changed.push(name);
+        }
+    }
+    Ok(changed)
+}
+
+fn config_value_differs(
+    effective: &impl Serialize,
+    desired: &impl Serialize,
+) -> Result<bool, ConfigServiceError> {
+    let effective =
+        serde_yaml::to_value(effective).map_err(ConfigServiceError::SerializeFieldValue)?;
+    let desired = serde_yaml::to_value(desired).map_err(ConfigServiceError::SerializeFieldValue)?;
+    Ok(effective != desired)
 }
 
 #[cfg(test)]

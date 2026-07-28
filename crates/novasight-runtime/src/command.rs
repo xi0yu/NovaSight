@@ -11,6 +11,7 @@
 use tokio::sync::oneshot;
 
 use novasight_core::DeviceReceipt;
+use novasight_store::config::AppConfig;
 
 use crate::config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate};
 use crate::error::RuntimeError;
@@ -33,6 +34,10 @@ pub(crate) enum RuntimeCommand {
     },
     Restart {
         reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
+    },
+    InstallStoppedConfig {
+        config: Box<AppConfig>,
+        reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
     PreflightPerception {
         reply: oneshot::Sender<Result<(), RuntimeError>>,

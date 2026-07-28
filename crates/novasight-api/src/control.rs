@@ -533,7 +533,7 @@ async fn legacy_start(
 ) -> Result<Json<CompatibilityRuntimeStart>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_runtime_license(&state).await?;
-    ensure_config_effective(&state).await?;
+    prepare_config_for_start(&state).await?;
     let snapshot = state.runtime.start().await?;
     Ok(Json(CompatibilityRuntimeStart::from(&snapshot)))
 }
@@ -852,6 +852,13 @@ async fn ensure_config_effective(state: &ControlState) -> Result<(), ControlApiE
     Ok(())
 }
 
+async fn prepare_config_for_start(state: &ControlState) -> Result<(), ControlApiError> {
+    if let Some(service) = &state.config {
+        service.prepare_runtime_start(&state.runtime).await?;
+    }
+    Ok(())
+}
+
 async fn ensure_runtime_license(state: &ControlState) -> Result<(), ControlApiError> {
     let Some(repository) = state.license.as_ref() else {
         return Ok(());
@@ -975,6 +982,10 @@ async fn select_capture(
         .config
         .as_ref()
         .ok_or(ControlApiError::ConfigUnavailable)?;
+    // Studio deliberately confirms the capture profile before starting the
+    // mainline. Load any saved epoch-scoped settings first so this preflight
+    // step cannot dead-end on a harmless desired/effective revision split.
+    service.prepare_runtime_start(&state.runtime).await?;
     service.apply_capture_profile(&selected).await?;
 
     let snapshot = state.runtime.snapshot();
@@ -1094,7 +1105,7 @@ async fn start(
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_runtime_license(&state).await?;
-    ensure_config_effective(&state).await?;
+    prepare_config_for_start(&state).await?;
     Ok(Json(state.runtime.start().await?))
 }
 
@@ -1108,8 +1119,9 @@ async fn restart(
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_runtime_license(&state).await?;
-    ensure_config_effective(&state).await?;
-    Ok(Json(state.runtime.restart().await?))
+    state.runtime.stop().await?;
+    prepare_config_for_start(&state).await?;
+    Ok(Json(state.runtime.start().await?))
 }
 
 async fn emergency_stop(

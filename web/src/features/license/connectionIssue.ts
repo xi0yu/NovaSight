@@ -65,9 +65,9 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
     if (error.status >= 500) {
       return {
         kind: "service-error",
-        title: "授权状态暂时无法读取",
-        description: "novasightd 已响应，但授权子系统返回了服务错误；采集或推理后端不一定异常。",
-        recovery: "请查看异常信息中的授权错误代码，并检查授权文件、公钥及目录权限。"
+        title: "授权服务暂时未完成状态检查",
+        description: "novasightd 在线，但这次授权状态检查没有成功；这不是授权凭证无效，也不代表采集或推理故障。",
+        recovery: "请查看 novasightd 日志中的 LICENSE_ 错误代码后重试；Debug 构建会保留本机临时权限入口。"
       };
     }
   }

@@ -164,6 +164,13 @@ impl FileLicenseRepository {
             Err(error) if error.is_invalid_license_state() => {
                 LicenseStatus::invalid_configured(error.to_string())
             }
+            Err(error) if self.temporary_access_supported() => {
+                let mut status = LicenseStatus::unconfigured();
+                status.message = format!(
+                    "formal license storage is unavailable; Debug temporary access remains available: {error}"
+                );
+                status
+            }
             Err(error) => return Err(error),
         };
         status.temporary_access_supported = self.temporary_access_supported();

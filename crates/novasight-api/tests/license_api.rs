@@ -141,6 +141,36 @@ async fn license_gate_blocks_runtime_until_real_activation_and_clear() {
 }
 
 #[tokio::test]
+async fn debug_license_status_keeps_temporary_access_available_when_formal_storage_is_broken() {
+    let directory = TestDirectory::new();
+    let blocked_parent = directory.0.join("formal-license-parent");
+    fs::write(&blocked_parent, "this is a file, not a directory").unwrap();
+    let license = FileLicenseRepository::new(
+        blocked_parent.join("license.json"),
+        LicensePolicy::new(true, None),
+    );
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app =
+        build_control_router_with_control_plane(runtime.clone(), None, license, None, false, None);
+
+    let (status, body) = json_response(app, "GET", "/api/license", Body::empty()).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["configured"], false);
+    assert_eq!(body["valid"], false);
+    assert_eq!(body["temporary_access_supported"], true);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("formal license storage is unavailable")
+    );
+
+    runtime.shutdown_daemon().await.unwrap();
+    supervisor.join().await.unwrap();
+}
+
+#[tokio::test]
 async fn temporary_license_policy_rejection_is_an_explicit_business_response() {
     let directory = TestDirectory::new();
     let license = FileLicenseRepository::new(

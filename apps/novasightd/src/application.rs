@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use novasight_core::controller::recoil::RecoilConfig;
 #[cfg(feature = "deepstream")]
 use novasight_runtime::NativeModelJobRunner;
 use novasight_runtime::{ConfigService, LoadedApplication, RuntimeDependencies};
@@ -204,21 +203,7 @@ pub async fn entry() -> ExitCode {
 
     #[cfg(feature = "deepstream")]
     let dependencies = dependencies.with_model_jobs(NativeModelJobRunner::new());
-    let dependencies = dependencies
-        .with_output_enabled(loaded.config().control.output_enabled)
-        .with_recoil(RecoilConfig {
-            enabled: loaded.config().control.recoil.enabled,
-            require_target: loaded.config().control.recoil.require_target,
-            base_rate_counts_s: loaded.config().control.recoil.base_rate_counts_s,
-            max_rate_counts_s: loaded.config().control.recoil.max_rate_counts_s,
-            startup_ms: loaded.config().control.recoil.startup_ms,
-            positive_deadzone_norm: loaded.config().control.recoil.positive_deadzone_norm,
-            negative_deadzone_norm: loaded.config().control.recoil.negative_deadzone_norm,
-            full_brake_error_norm: loaded.config().control.recoil.full_brake_error_norm,
-            fast_add_gain_counts_s: loaded.config().control.recoil.fast_add_gain_counts_s,
-            max_fast_add_ratio: loaded.config().control.recoil.max_fast_add_ratio,
-            stale_threshold_ms: loaded.config().control.recoil.stale_threshold_ms,
-        });
+    let dependencies = dependencies.with_output_enabled(loaded.config().control.output_enabled);
     match server::run_daemon(loaded, dependencies, config_service, model_catalog, mode).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

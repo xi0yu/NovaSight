@@ -15,7 +15,10 @@ export function getErrorMessage(error: unknown): string {
       return "配置刚刚被另一项操作更新，已保留较新的版本；请刷新后重试本次修改。";
     }
     if (code === "CONFIG_RESTART_REQUIRED") {
-      return "新配置已经保存，但尚未进入当前进程；请重启 novasightd 后继续。";
+      if (error.message.includes("process-owned configuration sections")) {
+        return "新配置修改了由 novasightd 进程创建的服务、目录、准星或硬件连接资源；请重启后端一次再继续。";
+      }
+      return "配置在本次启动准备期间又发生了变化；请重新点击启动，后端会装载最新保存值。";
     }
     if (code === "HARDWARE_OUTPUT_DISABLED") {
       return "当前以 dry-run 模式运行，不能连接或控制物理 kmNet 设备。";

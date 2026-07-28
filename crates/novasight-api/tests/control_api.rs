@@ -200,6 +200,133 @@ async fn versioned_config_api_preserves_pending_restart_while_hot_applying_outpu
 }
 
 #[tokio::test]
+async fn runtime_start_loads_pending_visual_pipeline_configuration_into_the_next_epoch() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, include_str!("../../../.config/novasight.yaml")).unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_platform_queries(
+        runtime.clone(),
+        config.clone(),
+        None,
+        None,
+        Arc::new(StaticCaptureProbe) as Arc<dyn CaptureCapabilityProbe>,
+        false,
+        None,
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"pipeline","key":"near_threshold_px","value":18.0}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(config.effective_revision(), 0);
+    assert_eq!(config.snapshot().await.revision, 1);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/capture/select")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"device":"/dev/video0","preference":"manual","pixel_format":"MJPG","width":1920,"height":1080,"fps":120}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(config.effective_revision(), 2);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/runtime/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(config.effective_revision(), 2);
+    assert_eq!(
+        config
+            .blocking_effective_snapshot()
+            .pipeline
+            .near_threshold_px,
+        18.0
+    );
+    assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn runtime_start_keeps_process_owned_hardware_changes_behind_daemon_restart() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, include_str!("../../../.config/novasight.yaml")).unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"hardware","key":"host","value":"192.168.2.199"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/runtime/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "CONFIG_RESTART_REQUIRED");
+    assert!(body["message"].as_str().unwrap().contains("hardware"));
+    assert_eq!(config.effective_revision(), 0);
+    assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
 async fn output_gate_config_is_persisted_and_applied_without_runtime_restart() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");

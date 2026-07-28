@@ -19,6 +19,7 @@ mod model_ingress;
 #[cfg(feature = "tensorrt-model-ingress")]
 mod model_ingress_native;
 mod protocol;
+mod runtime_config;
 pub mod snapshot;
 mod state;
 pub mod supervisor;
@@ -40,6 +41,7 @@ pub use novasight_pipeline::{
 };
 pub use novasight_store::config::AppConfig;
 pub use protocol::{RuntimeErrorSummary, SubsystemState};
+pub use runtime_config::compose_pipeline_config;
 pub use snapshot::{
     DaemonSnapshot, DeviceMetrics, ModelSnapshot, PipelineSnapshot, RuntimeSnapshot,
     RuntimeTelemetrySnapshot, SubsystemSnapshot, SubsystemSnapshots,

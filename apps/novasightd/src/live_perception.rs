@@ -8,8 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use novasight_core::controller::DualPhaseConfig;
-use novasight_core::tracking::TargetingConfig;
 use novasight_core::{
     CaptureCapabilityProbe, CaptureSelectionPreference, Clock,
     MAX_DETECTIONS as DEEPSTREAM_MAX_DETECTIONS, PointerDevice, RuntimeEpoch,
@@ -19,8 +17,7 @@ use novasight_pipeline::{
     CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, ModelCandidate,
     ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
     PerceptionEvent, PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession,
-    PipelineConfig, PipelineIngress, PreviewHub, TriggerMode as PipelineTriggerMode,
-    validate_parser_preset,
+    PipelineIngress, PreviewHub, validate_parser_preset,
 };
 use novasight_platform_jetson::SystemMonotonicClock;
 use novasight_platform_jetson::deepstream::{
@@ -30,11 +27,9 @@ use novasight_platform_jetson::deepstream::{
 };
 use novasight_platform_jetson::kmnet::{KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError};
 use novasight_platform_jetson::v4l2::V4l2CapabilityProbe;
-use novasight_runtime::{ConfigService, RuntimeDependencies};
+use novasight_runtime::{ConfigService, RuntimeDependencies, compose_pipeline_config};
 use novasight_store::config::{
-    AppConfig, CaptureConfig, CapturePreference, ConfigValidationError, DeviceBackend,
-    DeviceConfig, parse_target_class_aim_y_ratios, parse_target_class_filter,
-    parse_target_class_priority,
+    AppConfig, CaptureConfig, CapturePreference, ConfigValidationError, DeviceBackend, DeviceConfig,
 };
 use novasight_store::model_catalog::{RuntimeModelArtifact, SqliteModelCatalog};
 use novasight_store::model_manifest::ModelManifest;
@@ -127,111 +122,23 @@ fn build_live_dependencies(
     trigger_poll_interval_ms: Option<u64>,
     parser_library: PathBuf,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
-    let adapters = config
-        .require_vision_adapters()
-        .map_err(LivePerceptionError::Config)?;
-    if !adapters.inference.enabled {
-        return Err(LivePerceptionError::InferenceDisabled);
-    }
     let clock: Arc<dyn Clock> = Arc::new(SystemMonotonicClock::default());
     let latest_frames = LatestFrameExchange::new();
-    let preview = PreviewHub::new(adapters.consumers.preview);
+    let preview = PreviewHub::new(config.consumers.preview);
     let crosshair = build_crosshair_hub(config)?;
-    let mut dependencies = RuntimeDependencies::new(
-        clock,
-        device,
-        PipelineConfig {
-            targeting: TargetingConfig {
-                target_fov_radius_px: adapters.pipeline.target_fov_radius_px,
-                min_confidence: adapters.pipeline.target_min_confidence,
-                track_max_age: adapters.pipeline.target_track_max_age,
-                track_max_lost_age_ms: adapters.pipeline.target_track_max_lost_age_ms,
-                tracker_max_match_distance: adapters.pipeline.tracker_max_match_distance,
-                tracker_position_cost_weight: adapters.pipeline.tracker_position_cost_weight,
-                tracker_iou_cost_weight: adapters.pipeline.tracker_iou_cost_weight,
-                tracker_scale_cost_weight: adapters.pipeline.tracker_scale_cost_weight,
-                tracker_max_size_ratio: adapters.pipeline.tracker_max_size_ratio,
-                tracker_max_association_dt_ms: adapters.pipeline.tracker_max_association_dt_ms,
-                kalman: Default::default(),
-                class_priority: parse_target_class_priority(
-                    &adapters.pipeline.target_class_priority,
-                )
-                .map_err(LivePerceptionError::Config)?,
-                allowed_class_ids: parse_target_class_filter(
-                    &adapters.pipeline.target_class_filter,
-                )
-                .map_err(LivePerceptionError::Config)?,
-                selection_class_weight: adapters.pipeline.target_selection_class_weight,
-                selection_distance_weight: adapters.pipeline.target_selection_distance_weight,
-                sticky_bias: adapters.pipeline.target_sticky_bias,
-                switch_min_preference_advantage: adapters
-                    .pipeline
-                    .target_switch_min_preference_advantage,
-                switch_min_continuity_score: adapters.pipeline.target_switch_min_continuity_score,
-                switch_delay_ms: adapters.pipeline.target_switch_delay_ms,
-                aim_y_ratio: adapters.pipeline.target_aim_y_ratio,
-                class_aim_y_ratios: parse_target_class_aim_y_ratios(
-                    &adapters.pipeline.target_class_aim_y_ratios,
-                )
-                .map_err(LivePerceptionError::Config)?,
-                candidate_max_aspect_ratio: adapters.pipeline.candidate_max_aspect_ratio,
-            },
-            control: DualPhaseConfig {
-                freshness_threshold_ms: adapters.pipeline.freshness_threshold_ms,
-                near_threshold_px: adapters.pipeline.near_threshold_px,
-                projection_fov_x_deg: adapters.pipeline.projection_fov_x_deg,
-                projection_counts_per_360: adapters.pipeline.projection_counts_per_360,
-                projection_invert_y: adapters.pipeline.projection_invert_y,
-                atan_scale_counts: adapters.pipeline.atan_scale_counts,
-                far_kp: adapters.pipeline.far_kp,
-                far_max_counts_per_update: adapters.pipeline.far_max_counts_per_update,
-                near_kp: adapters.pipeline.near_kp,
-                near_max_counts_per_update: adapters.pipeline.near_max_counts_per_update,
-                arrival_radius_counts: adapters.pipeline.arrival_radius_counts,
-                velocity_smoothing_frames: adapters.pipeline.velocity_smoothing_frames,
-                velocity_history_reset_gap_ms: adapters.pipeline.velocity_history_reset_gap_ms,
-                velocity_spread_base_px_ms: adapters.pipeline.velocity_spread_base_px_ms,
-                velocity_spread_relative: adapters.pipeline.velocity_spread_relative,
-                velocity_change_base_px_ms: adapters.pipeline.velocity_change_base_px_ms,
-                velocity_change_relative: adapters.pipeline.velocity_change_relative,
-                prediction_enabled: adapters.pipeline.prediction_enabled,
-                prediction_lead_frames: adapters.pipeline.prediction_lead_frames,
-                prediction_far_absolute_cap_px: adapters.pipeline.prediction_far_absolute_cap_px,
-                prediction_far_base_cap_px: adapters.pipeline.prediction_far_base_cap_px,
-                prediction_far_relative_cap: adapters.pipeline.prediction_far_relative_cap,
-                prediction_near_absolute_cap_px: adapters.pipeline.prediction_near_absolute_cap_px,
-                prediction_near_base_cap_px: adapters.pipeline.prediction_near_base_cap_px,
-                prediction_near_relative_cap: adapters.pipeline.prediction_near_relative_cap,
-                source_width: adapters.capture.width,
-                roi_width: adapters.capture.roi_width,
-                roi_height: adapters.capture.roi_height,
-                observation_width: 0,
-                observation_height: 0,
-                residual_cap: adapters.pipeline.residual_cap,
-            },
-            max_command_age_ns: adapters.pipeline.max_command_age_ms * 1_000_000,
-            output_interval_ms: adapters.pipeline.output_interval_ms,
-            actuation_feedback_delay_ns: (adapters.pipeline.actuation_feedback_delay_ms
-                * 1_000_000.0)
-                .round() as u64,
-            trigger_poll_interval_ms,
-            trigger_mode: match config.control.trigger_mode {
-                novasight_store::config::TriggerMode::Always => PipelineTriggerMode::Always,
-                novasight_store::config::TriggerMode::Hardware => PipelineTriggerMode::Hardware,
-            },
-            ..PipelineConfig::default()
-        },
-    )
-    .with_model_catalog(model_catalog.clone())
-    .with_preview(preview.clone())
-    .with_perception(Arc::new(CatalogDeepStreamAdapter {
-        config: config_service,
-        model_catalog,
-        latest_frames,
-        preview,
-        crosshair: crosshair.clone(),
-        parser_library,
-    }));
+    let pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
+        .map_err(LivePerceptionError::Pipeline)?;
+    let mut dependencies = RuntimeDependencies::new(clock, device, pipeline)
+        .with_model_catalog(model_catalog.clone())
+        .with_preview(preview.clone())
+        .with_perception(Arc::new(CatalogDeepStreamAdapter {
+            config: config_service,
+            model_catalog,
+            latest_frames,
+            preview,
+            crosshair: crosshair.clone(),
+            parser_library,
+        }));
     if let Some(crosshair) = crosshair {
         dependencies = dependencies.with_crosshair(crosshair);
     }
@@ -1616,8 +1523,6 @@ pub(super) enum LivePerceptionError {
         manifest: String,
         actual: String,
     },
-    #[error("live DeepStream requires inference.enabled=true")]
-    InferenceDisabled,
     #[error("capture capability probe failed: {0}")]
     CaptureProbe(String),
     #[error("capture profile cannot be resolved for the selected Jetson adapter: {0}")]
