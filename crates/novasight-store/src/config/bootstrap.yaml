@@ -47,9 +47,8 @@ pipeline:
   tracker_max_association_dt_ms: 150.0
   target_class_priority: "0,1"
   target_class_filter: all
-  target_selection_class_weight: 0.55
-  target_selection_distance_weight: 0.40
-  target_sticky_bias: 0.25
+  # 0.35 类别偏好 + 0.65 准星距离；所有类别排名按 1, 0.5, 0.25... 生效。
+  target_selection_class_ratio: 0.35
   target_switch_min_preference_advantage: 0.08
   target_switch_min_continuity_score: 0.70
   target_switch_delay_ms: 50.0

@@ -442,13 +442,71 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     let removed_humanized_motion = config.control.legacy.remove("humanized_motion").is_some();
     config.pipeline.legacy.remove("projection_invert_y");
+    let legacy_class_weight = config
+        .pipeline
+        .legacy
+        .remove("target_selection_class_weight")
+        .and_then(|value| value.as_f64());
+    let legacy_distance_weight = config
+        .pipeline
+        .legacy
+        .remove("target_selection_distance_weight")
+        .and_then(|value| value.as_f64());
+    let legacy_sticky_bias = config
+        .pipeline
+        .legacy
+        .remove("target_sticky_bias")
+        .and_then(|value| value.as_f64());
+    let class_ratio_explicit =
+        section_has_fields(document, "pipeline", &["target_selection_class_ratio"]);
+    let has_legacy_target_scoring = legacy_class_weight.is_some()
+        || legacy_distance_weight.is_some()
+        || legacy_sticky_bias.is_some();
+    let migrated_class_ratio = (!class_ratio_explicit && has_legacy_target_scoring)
+        .then(|| {
+            let class_weight = legacy_class_weight.unwrap_or(0.55).max(0.0);
+            let distance_weight = legacy_distance_weight.unwrap_or(0.40).max(0.0);
+            let generated_defaults = (class_weight - 0.55).abs() < f64::EPSILON
+                && (distance_weight - 0.40).abs() < f64::EPSILON
+                && legacy_sticky_bias.is_none_or(|value| (value - 0.25).abs() < f64::EPSILON);
+            if generated_defaults {
+                return Some(0.35);
+            }
+            let total = class_weight + distance_weight;
+            (total > 0.0).then_some(class_weight / total)
+        })
+        .flatten();
+    if let Some(class_ratio) = migrated_class_ratio {
+        config.pipeline.target_selection_class_ratio = class_ratio;
+        if let Value::Mapping(root) = document {
+            let pipeline = root
+                .entry(Value::String("pipeline".to_owned()))
+                .or_insert_with(|| Value::Mapping(Default::default()));
+            if let Value::Mapping(pipeline) = pipeline {
+                pipeline.insert(
+                    Value::String("target_selection_class_ratio".to_owned()),
+                    serde_yaml::to_value(class_ratio)
+                        .expect("finite target selection class ratio migration value"),
+                );
+            }
+        }
+    }
     config.paths.legacy.remove("python_executable");
     if let Some(device) = &mut config.device {
         device.legacy.remove("helper_module");
         device.legacy.remove("reconnect_cooldown_ms");
     }
     remove_section_fields(document, "paths", &["python_executable"]);
-    remove_section_fields(document, "pipeline", &["projection_invert_y"]);
+    remove_section_fields(
+        document,
+        "pipeline",
+        &[
+            "projection_invert_y",
+            "target_selection_class_weight",
+            "target_selection_distance_weight",
+            "target_sticky_bias",
+        ],
+    );
     remove_section_fields(
         document,
         "hardware",
@@ -582,9 +640,7 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "tracker_max_association_dt_ms",
             "target_class_priority",
             "target_class_filter",
-            "target_selection_class_weight",
-            "target_selection_distance_weight",
-            "target_sticky_bias",
+            "target_selection_class_ratio",
             "target_switch_min_preference_advantage",
             "target_switch_min_continuity_score",
             "target_switch_delay_ms",

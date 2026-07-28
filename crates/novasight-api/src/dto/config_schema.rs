@@ -451,24 +451,10 @@ impl ConfigSchemaResponse {
                         string("pipeline.target_class_priority", "目标类别优先级"),
                         string("pipeline.target_class_filter", "参与目标选择的类别"),
                         float(
-                            "pipeline.target_selection_class_weight",
-                            "目标类别评分权重",
+                            "pipeline.target_selection_class_ratio",
+                            "目标类别偏好比例",
                             0.0,
-                            100.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.target_selection_distance_weight",
-                            "目标距离评分权重",
-                            0.0,
-                            100.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.target_sticky_bias",
-                            "已锁定目标粘滞偏置",
-                            0.0,
-                            0.9,
+                            1.0,
                             None,
                         ),
                         float(

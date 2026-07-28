@@ -37,9 +37,7 @@ pub fn compose_pipeline_config(
                 .map_err(|error| error.to_string())?,
             allowed_class_ids: parse_target_class_filter(&adapters.pipeline.target_class_filter)
                 .map_err(|error| error.to_string())?,
-            selection_class_weight: adapters.pipeline.target_selection_class_weight,
-            selection_distance_weight: adapters.pipeline.target_selection_distance_weight,
-            sticky_bias: adapters.pipeline.target_sticky_bias,
+            selection_class_ratio: adapters.pipeline.target_selection_class_ratio,
             switch_min_preference_advantage: adapters
                 .pipeline
                 .target_switch_min_preference_advantage,

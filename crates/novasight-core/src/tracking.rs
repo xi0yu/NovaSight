@@ -401,16 +401,16 @@ pub struct TargetingConfig {
     pub tracker_max_size_ratio: f64,
     pub tracker_max_association_dt_ms: f64,
     pub kalman: KalmanConfig,
-    /// Descending class preference. The first two ranks receive the same
-    /// 1.0 / 0.5 scores as the Python selector; unlisted classes score zero.
+    /// Descending class preference. Every listed rank participates through a
+    /// geometric 1.0, 0.5, 0.25, ... preference curve; unlisted classes score
+    /// zero but remain selectable when admitted by `allowed_class_ids`.
     pub class_priority: Vec<u32>,
     /// Optional class admission allowlist. `None` admits every detector class;
     /// an empty set intentionally disables target selection.
     pub allowed_class_ids: Option<BTreeSet<u32>>,
-    pub selection_class_weight: f64,
-    pub selection_distance_weight: f64,
-    /// Distance discount applied only to the currently locked TrackId.
-    pub sticky_bias: f64,
+    /// Share of the stateless candidate score assigned to class preference.
+    /// Distance receives the complementary `1.0 - selection_class_ratio`.
+    pub selection_class_ratio: f64,
     pub switch_min_preference_advantage: f64,
     pub switch_min_continuity_score: f64,
     pub switch_delay_ms: f64,
@@ -435,9 +435,7 @@ impl Default for TargetingConfig {
             kalman: KalmanConfig::default(),
             class_priority: vec![0, 1],
             allowed_class_ids: None,
-            selection_class_weight: 0.55,
-            selection_distance_weight: 0.40,
-            sticky_bias: 0.25,
+            selection_class_ratio: 0.35,
             switch_min_preference_advantage: 0.08,
             switch_min_continuity_score: 0.70,
             switch_delay_ms: 50.0,
@@ -527,7 +525,8 @@ impl TargetingCore {
         let mut rejected_by_class = 0;
         let mut rejected_by_aspect_ratio = 0;
         let mut rejected_by_fov = 0;
-        let mut admissible = Vec::with_capacity(detections.len().min(MAX_ACTIVE_TRACKS));
+        let mut inside_fov = 0;
+        let mut trackable = Vec::with_capacity(detections.len().min(MAX_ACTIVE_TRACKS));
         for detection in detections {
             if detection.confidence() < self.config.min_confidence {
                 rejected_by_confidence += 1;
@@ -548,18 +547,23 @@ impl TargetingCore {
                 continue;
             }
             let aim = detection_aim(detection, &self.config);
-            if euclidean(aim.0, aim.1, observation_center.0, observation_center.1)
-                > self.config.target_fov_radius_px
-            {
+            let selectable = euclidean(aim.0, aim.1, observation_center.0, observation_center.1)
+                <= self.config.target_fov_radius_px;
+            if !selectable {
                 rejected_by_fov += 1;
-                continue;
             }
-            if admissible.len() < MAX_ACTIVE_TRACKS {
-                admissible.push(detection.clone());
+            if selectable && inside_fov < MAX_ACTIVE_TRACKS {
+                if trackable.len() == MAX_ACTIVE_TRACKS {
+                    trackable.pop();
+                }
+                trackable.insert(inside_fov, detection.clone());
+                inside_fov += 1;
+            } else if !selectable && trackable.len() < MAX_ACTIVE_TRACKS {
+                trackable.push(detection.clone());
             }
         }
         let rejected_class_ids = rejected_class_ids.into_iter().collect::<Vec<_>>();
-        if admissible.is_empty() {
+        if trackable.is_empty() {
             self.pending_switch = None;
             self.miss_locked_target(captured_at_ns);
             return TargetSelection {
@@ -603,10 +607,10 @@ impl TargetingCore {
         }
 
         let associations =
-            associate(&self.tracks, &admissible, &self.config, captured_at_ns).unwrap_or_default();
-        let mut updated = Vec::with_capacity(admissible.len());
+            associate(&self.tracks, &trackable, &self.config, captured_at_ns).unwrap_or_default();
+        let mut updated = Vec::with_capacity(trackable.len());
         let mut rebuilt_ids = [None; MAX_ACTIVE_TRACKS];
-        for det in &admissible {
+        for det in &trackable {
             let associated = associations.iter().find_map(|association| {
                 let prior = self
                     .tracks
@@ -665,8 +669,12 @@ impl TargetingCore {
             } else {
                 let id = TrackId(self.next_track_id);
                 self.next_track_id = self.next_track_id.saturating_add(1);
-                let confirmed =
-                    admissible.len() == 1 && det.confidence() >= IMMEDIATE_CONFIRM_CONFIDENCE;
+                let aim_is_selectable =
+                    euclidean(aim.0, aim.1, observation_center.0, observation_center.1)
+                        <= self.config.target_fov_radius_px;
+                let confirmed = inside_fov == 1
+                    && aim_is_selectable
+                    && det.confidence() >= IMMEDIATE_CONFIRM_CONFIDENCE;
                 remember_track_id(&mut rebuilt_ids, id);
                 Track {
                     id,
@@ -719,7 +727,14 @@ impl TargetingCore {
         let mut current_indices = [0_usize; MAX_ACTIVE_TRACKS];
         let mut current_count = 0;
         for (index, track) in updated.iter().enumerate() {
-            if track.state == TrackState::Confirmed {
+            if track.state == TrackState::Confirmed
+                && euclidean(
+                    track.observed_aim_x,
+                    track.observed_aim_y,
+                    observation_center.0,
+                    observation_center.1,
+                ) <= self.config.target_fov_radius_px
+            {
                 current_indices[current_count] = index;
                 current_count += 1;
             }
@@ -730,17 +745,41 @@ impl TargetingCore {
             .locked
             .as_ref()
             .and_then(|locked| retained.iter().find(|track| track.id == locked.id).cloned());
+        let observed_lock = self
+            .locked
+            .as_ref()
+            .and_then(|locked| updated.iter().find(|track| track.id == locked.id).cloned());
         // A temporary miss is not a switch opportunity. Keep the identity for
         // reacquisition, but emit no target so control stops until a real
         // observation of the same track returns or the grace period expires.
-        if current_indices.is_empty() || retained_lock.is_some() {
+        if retained_lock.is_some() {
             self.pending_switch = None;
             self.tracks = updated;
             self.tracks.append(&mut retained);
             self.locked = retained_lock;
             return TargetSelection {
                 candidates,
-                inside_fov: admissible.len(),
+                inside_fov,
+                rejected_class_ids,
+                rejected_by_confidence,
+                rejected_by_class,
+                rejected_by_aspect_ratio,
+                rejected_by_fov,
+                lost_count: self.lost_count,
+                ..TargetSelection::empty()
+            };
+        }
+        // A target observed outside the selection radius remains tracked, but
+        // it cannot drive control. This preserves identity for reacquisition
+        // without treating the selection FOV as a tracker admission gate.
+        if current_indices.is_empty() {
+            self.pending_switch = None;
+            self.tracks = updated;
+            self.tracks.append(&mut retained);
+            self.locked = observed_lock;
+            return TargetSelection {
+                candidates,
+                inside_fov,
                 rejected_class_ids,
                 rejected_by_confidence,
                 rejected_by_class,
@@ -762,13 +801,8 @@ impl TargetingCore {
             .max_by(|(left_index, left), (right_index, right)| {
                 let left = &updated[**left];
                 let right = &updated[**right];
-                target_score(left, self.locked.as_ref(), observation_center, &self.config)
-                    .total_cmp(&target_score(
-                        right,
-                        self.locked.as_ref(),
-                        observation_center,
-                        &self.config,
-                    ))
+                target_score(left, observation_center, &self.config)
+                    .total_cmp(&target_score(right, observation_center, &self.config))
                     .then_with(|| right.id.cmp(&left.id))
                     .then_with(|| right_index.cmp(left_index))
             })
@@ -776,53 +810,53 @@ impl TargetingCore {
             .expect("admissible detections produce current tracks");
 
         let chosen_index = match locked_index {
-            None => {
-                self.pending_switch = None;
-                best_index
-            }
             Some(index) if index == best_index => {
                 self.pending_switch = None;
-                best_index
+                Some(best_index)
             }
             Some(index) => {
-                let locked_score = target_score(
-                    &updated[current_indices[index]],
-                    self.locked.as_ref(),
-                    observation_center,
-                    &self.config,
-                );
                 let best = &updated[current_indices[best_index]];
-                let advantage =
-                    target_score(best, self.locked.as_ref(), observation_center, &self.config)
-                        - locked_score;
-                let continuity = if best.age_frames > 1 {
-                    best.identity_confidence
+                if self.challenger_ready(
+                    &updated[current_indices[index]],
+                    best,
+                    observation_center,
+                    captured_at_ns,
+                ) {
+                    Some(best_index)
                 } else {
-                    0.0
-                };
-                if advantage < self.config.switch_min_preference_advantage
-                    || continuity < self.config.switch_min_continuity_score
-                {
-                    self.pending_switch = None;
-                    index
-                } else {
-                    let started_at_ns = self
-                        .pending_switch
-                        .filter(|pending| pending.track_id == best.id)
-                        .map_or(captured_at_ns, |pending| pending.started_at_ns);
-                    let elapsed_ms = captured_at_ns.saturating_sub(started_at_ns) as f64 / 1e6;
-                    if elapsed_ms >= self.config.switch_delay_ms {
-                        self.pending_switch = None;
-                        best_index
-                    } else {
-                        self.pending_switch = Some(PendingSwitch {
-                            track_id: best.id,
-                            started_at_ns,
-                        });
-                        index
-                    }
+                    Some(index)
                 }
             }
+            None => match observed_lock.as_ref() {
+                Some(locked) => self
+                    .challenger_ready(
+                        locked,
+                        &updated[current_indices[best_index]],
+                        observation_center,
+                        captured_at_ns,
+                    )
+                    .then_some(best_index),
+                None => {
+                    self.pending_switch = None;
+                    Some(best_index)
+                }
+            },
+        };
+        let Some(chosen_index) = chosen_index else {
+            self.tracks = updated;
+            self.tracks.append(&mut retained);
+            self.locked = observed_lock;
+            return TargetSelection {
+                candidates,
+                inside_fov,
+                rejected_class_ids,
+                rejected_by_confidence,
+                rejected_by_class,
+                rejected_by_aspect_ratio,
+                rejected_by_fov,
+                lost_count: self.lost_count,
+                ..TargetSelection::empty()
+            };
         };
         let track = updated[current_indices[chosen_index]].clone();
         let reason = if self.config.class_priority.first().copied() == Some(track.class_id) {
@@ -830,7 +864,7 @@ impl TargetingCore {
         } else {
             LockReason::FallbackClass
         };
-        let selected_detection = admissible
+        let selected_detection = trackable
             .iter()
             .find(|detection| detection.object_id() == track.object_id)
             .expect("selected track belongs to the admitted batch");
@@ -842,7 +876,7 @@ impl TargetingCore {
         self.locked = Some(track.clone());
         TargetSelection {
             candidates,
-            inside_fov: admissible.len(),
+            inside_fov,
             target_object_id: Some(track.object_id),
             target_track_id: Some(track.id),
             target_class_id: Some(track.class_id),
@@ -863,6 +897,43 @@ impl TargetingCore {
             rejected_by_aspect_ratio,
             rejected_by_fov,
             lost_count: self.lost_count,
+        }
+    }
+
+    fn challenger_ready(
+        &mut self,
+        locked: &Track,
+        challenger: &Track,
+        observation_center: (f64, f64),
+        captured_at_ns: u64,
+    ) -> bool {
+        let advantage = target_score(challenger, observation_center, &self.config)
+            - target_score(locked, observation_center, &self.config);
+        let continuity = if challenger.age_frames > 1 {
+            challenger.identity_confidence
+        } else {
+            0.0
+        };
+        if advantage < self.config.switch_min_preference_advantage
+            || continuity < self.config.switch_min_continuity_score
+        {
+            self.pending_switch = None;
+            return false;
+        }
+        let started_at_ns = self
+            .pending_switch
+            .filter(|pending| pending.track_id == challenger.id)
+            .map_or(captured_at_ns, |pending| pending.started_at_ns);
+        let elapsed_ms = captured_at_ns.saturating_sub(started_at_ns) as f64 / 1e6;
+        if elapsed_ms >= self.config.switch_delay_ms {
+            self.pending_switch = None;
+            true
+        } else {
+            self.pending_switch = Some(PendingSwitch {
+                track_id: challenger.id,
+                started_at_ns,
+            });
+            false
         }
     }
 
@@ -901,40 +972,28 @@ fn track_within_loss_grace(track: &Track, captured_at_ns: u64, config: &Targetin
     }
 }
 
-fn target_score(
-    track: &Track,
-    locked: Option<&Track>,
-    observation_center: (f64, f64),
-    config: &TargetingConfig,
-) -> f64 {
-    let class_score = match config
-        .class_priority
-        .iter()
-        .position(|class_id| *class_id == track.class_id)
-    {
-        Some(0) => 1.0,
-        Some(1) => 0.5,
-        _ => 0.0,
-    };
-    let raw_distance = euclidean(
+fn target_score(track: &Track, observation_center: (f64, f64), config: &TargetingConfig) -> f64 {
+    let mut class_score = 1.0;
+    let mut class_matched = false;
+    for class_id in &config.class_priority {
+        if *class_id == track.class_id {
+            class_matched = true;
+            break;
+        }
+        class_score *= 0.5;
+    }
+    if !class_matched {
+        class_score = 0.0;
+    }
+    let distance = euclidean(
         track.center_x,
         track.center_y,
         observation_center.0,
         observation_center.1,
     );
-    let distance = if locked.is_some_and(|locked| locked.id == track.id) {
-        raw_distance * (1.0 - config.sticky_bias.clamp(0.0, 0.9))
-    } else {
-        raw_distance
-    };
     let distance_score = 1.0 - (distance / config.target_fov_radius_px.max(1e-6)).clamp(0.0, 1.0);
-    let class_weight = config.selection_class_weight.max(0.0);
-    let distance_weight = config.selection_distance_weight.max(0.0);
-    let total_weight = class_weight + distance_weight;
-    if total_weight <= 0.0 {
-        return distance_score;
-    }
-    (class_weight * class_score + distance_weight * distance_score) / total_weight
+    let class_ratio = config.selection_class_ratio.clamp(0.0, 1.0);
+    class_ratio * class_score + (1.0 - class_ratio) * distance_score
 }
 
 fn detection_aspect_ratio(detection: &Detection) -> f64 {

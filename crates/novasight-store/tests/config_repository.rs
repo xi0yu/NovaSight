@@ -347,6 +347,85 @@ pipeline:
 }
 
 #[test]
+fn legacy_target_weights_migrate_to_one_class_ratio() {
+    let directory = TempDirectory::new();
+    let path = directory.join("legacy-target-weights.yaml");
+    fs::write(
+        &path,
+        r#"schema_version: 7
+revision: 0
+pipeline:
+  target_selection_class_weight: 0.55
+  target_selection_distance_weight: 0.40
+  target_sticky_bias: 0.25
+"#,
+    )
+    .unwrap();
+
+    let config = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(config.pipeline.target_selection_class_ratio, 0.35);
+    assert!(
+        !config
+            .pipeline
+            .legacy
+            .contains_key("target_selection_class_weight")
+    );
+    assert!(!config.pipeline.legacy.contains_key("target_sticky_bias"));
+
+    YamlConfigRepository::new(&path)
+        .save_field("server", "port", Value::Number(5_175_u64.into()), 0)
+        .unwrap();
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert!(
+        persisted["pipeline"]
+            .get("target_selection_class_weight")
+            .is_none()
+    );
+    assert!(persisted["pipeline"].get("target_sticky_bias").is_none());
+    assert!(
+        (persisted["pipeline"]["target_selection_class_ratio"]
+            .as_f64()
+            .expect("migrated class ratio")
+            - 0.35)
+            .abs()
+            < 1e-12
+    );
+}
+
+#[test]
+fn partial_legacy_target_scoring_still_materializes_the_new_ratio() {
+    let directory = TempDirectory::new();
+    let path = directory.join("partial-legacy-target-scoring.yaml");
+    fs::write(
+        &path,
+        r#"schema_version: 7
+revision: 0
+pipeline:
+  target_sticky_bias: 0.10
+"#,
+    )
+    .unwrap();
+
+    let config = YamlConfigRepository::load(&path).unwrap();
+    let expected_ratio = 0.55 / (0.55 + 0.40);
+    assert!((config.pipeline.target_selection_class_ratio - expected_ratio).abs() < f64::EPSILON);
+
+    YamlConfigRepository::new(&path)
+        .save_field("server", "port", Value::Number(5_175_u64.into()), 0)
+        .unwrap();
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert!(
+        (persisted["pipeline"]["target_selection_class_ratio"]
+            .as_f64()
+            .expect("migrated class ratio")
+            - expected_ratio)
+            .abs()
+            < f64::EPSILON
+    );
+    assert!(persisted["pipeline"].get("target_sticky_bias").is_none());
+}
+
+#[test]
 fn parse_and_io_errors_have_distinct_stable_codes() {
     let directory = TempDirectory::new();
     let malformed = directory.join("malformed.yaml");

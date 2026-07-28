@@ -609,12 +609,8 @@ pub struct PipelineRuntimeConfig {
     pub target_class_priority: String,
     #[serde(default = "default_target_class_filter")]
     pub target_class_filter: String,
-    #[serde(default = "default_target_selection_class_weight")]
-    pub target_selection_class_weight: f64,
-    #[serde(default = "default_target_selection_distance_weight")]
-    pub target_selection_distance_weight: f64,
-    #[serde(default = "default_target_sticky_bias")]
-    pub target_sticky_bias: f64,
+    #[serde(default = "default_target_selection_class_ratio")]
+    pub target_selection_class_ratio: f64,
     #[serde(default = "default_target_switch_min_preference_advantage")]
     pub target_switch_min_preference_advantage: f64,
     #[serde(default = "default_target_switch_min_continuity_score")]
@@ -679,9 +675,7 @@ impl Default for PipelineRuntimeConfig {
             tracker_max_association_dt_ms: default_tracker_max_association_dt_ms(),
             target_class_priority: default_target_class_priority(),
             target_class_filter: default_target_class_filter(),
-            target_selection_class_weight: default_target_selection_class_weight(),
-            target_selection_distance_weight: default_target_selection_distance_weight(),
-            target_sticky_bias: default_target_sticky_bias(),
+            target_selection_class_ratio: default_target_selection_class_ratio(),
             target_switch_min_preference_advantage: default_target_switch_min_preference_advantage(
             ),
             target_switch_min_continuity_score: default_target_switch_min_continuity_score(),
@@ -895,29 +889,11 @@ impl PipelineRuntimeConfig {
         )?;
         parse_target_class_priority(&self.target_class_priority)?;
         parse_target_class_filter(&self.target_class_filter)?;
-        for (field, value) in [
-            (
-                "pipeline.target_selection_class_weight",
-                self.target_selection_class_weight,
-            ),
-            (
-                "pipeline.target_selection_distance_weight",
-                self.target_selection_distance_weight,
-            ),
-        ] {
-            validate_finite_range(field, value, 0.0, 100.0)?;
-        }
-        if self.target_selection_class_weight + self.target_selection_distance_weight <= 0.0 {
-            return Err(ConfigValidationError::new(
-                "pipeline.target_selection_class_weight",
-                "target class and distance weights must not both be zero",
-            ));
-        }
         validate_finite_range(
-            "pipeline.target_sticky_bias",
-            self.target_sticky_bias,
+            "pipeline.target_selection_class_ratio",
+            self.target_selection_class_ratio,
             0.0,
-            0.9,
+            1.0,
         )?;
         validate_finite_range(
             "pipeline.target_switch_min_preference_advantage",
@@ -1233,16 +1209,8 @@ fn default_target_class_filter() -> String {
     "all".to_owned()
 }
 
-const fn default_target_selection_class_weight() -> f64 {
-    0.55
-}
-
-const fn default_target_selection_distance_weight() -> f64 {
-    0.40
-}
-
-const fn default_target_sticky_bias() -> f64 {
-    0.25
+const fn default_target_selection_class_ratio() -> f64 {
+    0.35
 }
 
 const fn default_target_switch_min_preference_advantage() -> f64 {
@@ -2004,14 +1972,13 @@ mod tests {
     }
 
     #[test]
-    fn target_selection_requires_a_real_scoring_signal() {
+    fn target_selection_class_ratio_is_bounded() {
         let config = PipelineRuntimeConfig {
-            target_selection_class_weight: 0.0,
-            target_selection_distance_weight: 0.0,
+            target_selection_class_ratio: 1.1,
             ..PipelineRuntimeConfig::default()
         };
-        let error = config.validate().expect_err("zero target scoring weights");
-        assert_eq!(error.field, "pipeline.target_selection_class_weight");
+        let error = config.validate().expect_err("class ratio above one");
+        assert_eq!(error.field, "pipeline.target_selection_class_ratio");
     }
 
     #[test]

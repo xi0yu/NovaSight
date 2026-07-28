@@ -171,9 +171,7 @@ type TargetingPipelineField =
   | "tracker_scale_cost_weight"
   | "tracker_max_size_ratio"
   | "tracker_max_association_dt_ms"
-  | "target_selection_class_weight"
-  | "target_selection_distance_weight"
-  | "target_sticky_bias"
+  | "target_selection_class_ratio"
   | "target_switch_min_preference_advantage"
   | "target_switch_min_continuity_score"
   | "target_switch_delay_ms"
@@ -1216,15 +1214,12 @@ export function StudioConsoleView({
   const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? {};
   const targetFovRadiusPx = readNumber(rustPipelineConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(rustPipelineConfig.candidate_max_aspect_ratio, 6);
-  const candidateSelectionClassWeight = readNumber(rustPipelineConfig.target_selection_class_weight, 0.55);
-  const candidateSelectionDistanceWeight = readNumber(rustPipelineConfig.target_selection_distance_weight, 0.40);
-  const candidateSelectionWeightTotal = candidateSelectionClassWeight + candidateSelectionDistanceWeight;
-  const normalizedSelectionClassWeight = candidateSelectionWeightTotal > 0
-    ? candidateSelectionClassWeight / candidateSelectionWeightTotal
-    : 0;
-  const normalizedSelectionDistanceWeight = candidateSelectionWeightTotal > 0
-    ? candidateSelectionDistanceWeight / candidateSelectionWeightTotal
-    : 0;
+  const normalizedSelectionClassWeight = clampNumber(
+    readNumber(rustPipelineConfig.target_selection_class_ratio, 0.35),
+    0,
+    1
+  );
+  const normalizedSelectionDistanceWeight = 1 - normalizedSelectionClassWeight;
   const trackerMaxMatchDistance = readNumber(rustPipelineConfig.tracker_max_match_distance, 1.5);
   const trackerPositionCostWeight = readNumber(rustPipelineConfig.tracker_position_cost_weight, 0.75);
   const trackerIouCostWeight = readNumber(rustPipelineConfig.tracker_iou_cost_weight, 0.25);
@@ -1264,7 +1259,6 @@ export function StudioConsoleView({
   const trackerScaleCostWeight = readNumber(rustPipelineConfig.tracker_scale_cost_weight, 0.15);
   const trackerMaxSizeRatio = readNumber(rustPipelineConfig.tracker_max_size_ratio, 2.5);
   const trackerMaxAssociationDtMs = readNumber(rustPipelineConfig.tracker_max_association_dt_ms, 150);
-  const targetStickyBias = readNumber(rustPipelineConfig.target_sticky_bias, 0.25);
   const recoilConfig = (controlConfig.recoil ?? {}) as Record<string, unknown>;
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
   const recoilRequireTarget = readBoolean(recoilConfig.require_target, true);
@@ -4221,7 +4215,6 @@ export function StudioConsoleView({
         <div className="advanced-settings-grid two-column">
           <NumberControl label="控制目标最低置信度" detail="推理结果通过模型阈值后，还必须达到该值才允许进入目标选择。" value={targetMinConfidence} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_min_confidence", value)} />
           <NumberControl label="候选框最大宽高比" detail="拒绝宽高比或高宽比超过此值的异常细长框。值越大越宽松。" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updatePipelineField("candidate_max_aspect_ratio", value)} />
-          <NumberControl label="当前目标粘滞偏置" detail="给已锁定目标增加连续性优势，降低分数接近时的无意义切换；过高会延迟合理切换。" value={targetStickyBias} min={0} max={0.9} step={0.01} onCommit={(value) => updatePipelineField("target_sticky_bias", value)} />
           <NumberControl label="切换最小优势" detail="新候选综合分减去当前锁定目标综合分，至少达到此值才允许切换。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_switch_min_preference_advantage", value)} />
           <NumberControl label="切换最小连续性" detail="新候选 Track 的身份连续性至少达到此值，才允许进入切换确认。" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_switch_min_continuity_score", value)} />
           <NumberControl label="目标切换确认延迟 ms" detail="新候选持续满足优势和连续性阈值达到此时间后，才正式替换当前目标。" value={targetSwitchDelayMs} min={0} max={500} step={1} onCommit={(value) => updatePipelineField("target_switch_delay_ms", value)} />
@@ -4277,7 +4270,7 @@ export function StudioConsoleView({
               <div>
                 <span className="class-config-eyebrow">目标选择 / 评分策略</span>
                 <h2 id="target-weight-dialog-title">调整目标选择权重</h2>
-                <p>权重决定多个候选同时出现时，类别偏好与准星距离各自占多大影响；候选可靠性由系统内部处理。</p>
+                <p>比例决定多个候选同时出现时，类别顺序与准星距离各自占多大影响；置信度只负责候选准入，不参与排序。</p>
               </div>
               <button
                 aria-label={configDialogDirty ? "保存并关闭权重调整" : "关闭权重调整"}
@@ -4299,7 +4292,7 @@ export function StudioConsoleView({
                 <div className="target-weight-section-heading">
                   <div>
                     <span>综合目标分数</span>
-                    <small>类别与距离两项会自动归一化；当前总和为 {candidateSelectionWeightTotal.toFixed(2)}。</small>
+                    <small>类别比例由用户设置，距离自动使用剩余比例，两项始终合计 100%。</small>
                   </div>
                   <b>类别优先</b>
                 </div>
@@ -4312,8 +4305,7 @@ export function StudioConsoleView({
                   <span><i className="distance" />距离 <b>{(normalizedSelectionDistanceWeight * 100).toFixed(0)}%</b></span>
                 </div>
                 <div className="target-weight-controls">
-                  <NumberControl label="综合分权重：类别" detail="类别顺序第一项得 1.0，第二项得 0.5，其余类别得 0.0。提高后更倾向优先类别。" value={candidateSelectionClassWeight} min={0} max={2} step={0.01} onCommit={(value) => updatePipelineField("target_selection_class_weight", value)} />
-                  <NumberControl label="综合分权重：距离" detail="候选瞄点到准星的距离，按当前目标选择半径归一化。降低后允许优先类别位于更远位置。" value={candidateSelectionDistanceWeight} min={0} max={2} step={0.01} onCommit={(value) => updatePipelineField("target_selection_distance_weight", value)} />
+                  <NumberControl label="类别偏好比例" detail="类别顺序按 1、0.5、0.25…递减；距离自动使用剩余比例。提高后更倾向高优先类别。" value={normalizedSelectionClassWeight} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_selection_class_ratio", value)} />
                 </div>
               </section>
 

@@ -170,13 +170,11 @@ fn smooth_visual_motion_keeps_identity_and_does_not_rebuild_control_state() {
 }
 
 #[test]
-fn sticky_lock_is_not_disabled_by_an_unrelated_pixel_debounce_threshold() {
+fn switch_margin_holds_the_current_target_when_the_challenger_is_not_better_enough() {
     let mut core = TargetingCore::new(TargetingConfig {
         class_priority: Vec::new(),
-        selection_class_weight: 0.0,
-        selection_distance_weight: 1.0,
-        sticky_bias: 0.90,
-        switch_min_preference_advantage: 0.0,
+        selection_class_ratio: 0.0,
+        switch_min_preference_advantage: 0.30,
         switch_min_continuity_score: 0.0,
         switch_delay_ms: 0.0,
         kalman: KalmanConfig {
@@ -213,9 +211,7 @@ fn sticky_lock_is_not_disabled_by_an_unrelated_pixel_debounce_threshold() {
 fn equal_scores_tie_break_by_stable_track_id_not_frame_local_object_id() {
     let mut core = TargetingCore::new(TargetingConfig {
         class_priority: Vec::new(),
-        selection_class_weight: 0.0,
-        selection_distance_weight: 1.0,
-        sticky_bias: 0.0,
+        selection_class_ratio: 0.0,
         ..TargetingConfig::default()
     });
     let first = [
@@ -336,6 +332,59 @@ fn target_fov_radius_is_a_real_radial_admission_gate() {
 }
 
 #[test]
+fn detections_outside_selection_fov_keep_their_tracker_identity() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        target_fov_radius_px: 20.0,
+        kalman: KalmanConfig {
+            nis_threshold: 1_000_000.0,
+            nis_hard_reject: 1_000_000.0,
+            min_prediction_confidence: 0.0,
+            ..KalmanConfig::default()
+        },
+        ..TargetingConfig::default()
+    });
+    let initial = Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.95).expect("initial");
+    let track_id = core
+        .select_at(&[initial], OBSERVATION_CENTER, 1_000_000_000)
+        .target_track_id
+        .expect("initial lock");
+
+    let outside = Detection::new(2, 0, 322.0, 300.0, 40.0, 80.0, 0.95).expect("outside");
+    let suppressed = core.select_at(&[outside], OBSERVATION_CENTER, 1_010_000_000);
+    assert!(suppressed.target_track_id.is_none());
+    assert_eq!(suppressed.rejected_by_fov, 1);
+    assert_eq!(
+        core.locked().expect("tracked outside selection fov").id,
+        track_id
+    );
+
+    let returned = Detection::new(3, 0, 302.0, 300.0, 40.0, 80.0, 0.95).expect("returned");
+    let reacquired = core.select_at(&[returned], OBSERVATION_CENTER, 1_020_000_000);
+    assert_eq!(reacquired.target_track_id, Some(track_id));
+    assert!(!reacquired.target_rebuilt);
+}
+
+#[test]
+fn every_declared_class_priority_rank_affects_selection() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        class_priority: vec![0, 1, 2, 3],
+        selection_class_ratio: 1.0,
+        ..TargetingConfig::default()
+    });
+    let candidates = [
+        Detection::new(1, 2, 280.0, 280.0, 40.0, 80.0, 0.95).expect("third rank"),
+        Detection::new(2, 3, 340.0, 280.0, 40.0, 80.0, 0.95).expect("fourth rank"),
+    ];
+    assert!(
+        core.select_at(&candidates, OBSERVATION_CENTER, 1_000_000_000)
+            .target_track_id
+            .is_none()
+    );
+    let selected = core.select_at(&candidates, OBSERVATION_CENTER, 1_010_000_000);
+    assert_eq!(selected.target_class_id, Some(2));
+}
+
+#[test]
 fn control_aim_point_is_separate_from_association_center_and_supports_class_override() {
     let mut class_ratios = BTreeMap::new();
     class_ratios.insert(1, 0.304);
@@ -383,9 +432,7 @@ fn head_movement_keeps_the_same_stable_lock() {
 #[test]
 fn stable_challenger_must_hold_its_advantage_for_capture_time_delay() {
     let mut core = TargetingCore::new(TargetingConfig {
-        selection_class_weight: 0.01,
-        selection_distance_weight: 0.99,
-        sticky_bias: 0.0,
+        selection_class_ratio: 0.01,
         switch_min_preference_advantage: 0.01,
         switch_delay_ms: 50.0,
         ..TargetingConfig::default()
