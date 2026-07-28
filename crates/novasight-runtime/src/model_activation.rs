@@ -43,6 +43,7 @@ pub struct ModelActivationResult {
     pub runtime: RuntimeSnapshot,
     pub restarted: bool,
     pub changed: bool,
+    pub manifest_generated: bool,
 }
 
 #[derive(Debug, Error)]

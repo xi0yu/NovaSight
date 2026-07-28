@@ -36,7 +36,8 @@ use crate::model_activation::{
 };
 use crate::model_ingress::{
     ModelIngressError, ModelIngressRequest, ModelIngressResult, ModelIngressStage, ModelJobRunner,
-    ModelManifestTransaction, load_profile, validate_worker_output,
+    ModelManifestTransaction, ModelProbeInputMode, automatic_activation_profile, load_profile,
+    validate_worker_output,
 };
 use crate::protocol::{RuntimeErrorSummary, SubsystemState};
 use crate::runtime_config::compose_pipeline_config;
@@ -1626,6 +1627,76 @@ async fn preflight_perception(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn generate_candidate_model_manifest(
+    action: &'static str,
+    artifact_id: i64,
+    parser_preset: &str,
+    catalog_labels: &[String],
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    notice_tx: &mpsc::Sender<PipelineNotice>,
+    state: &mut SupervisorState,
+    active_pipeline: &mut Option<ActivePipeline>,
+    dependencies: &RuntimeDependencies,
+) -> Result<(), ModelActivationError> {
+    let inspected = model_ingress_state(
+        ModelIngressRequest::Inspect { artifact_id },
+        snapshot_tx,
+        ingress_tx,
+        notice_tx,
+        state,
+        active_pipeline,
+        dependencies,
+    )
+    .await
+    .map_err(|error| ModelActivationError::Failed {
+        action,
+        message: format!("automatic TensorRT Engine inspection failed: {error}"),
+    })?;
+    let profile = automatic_activation_profile(&inspected, parser_preset, catalog_labels).map_err(
+        |error| ModelActivationError::Failed {
+            action,
+            message: format!("automatic model contract selection failed: {error}"),
+        },
+    )?;
+    model_ingress_state(
+        ModelIngressRequest::Configure {
+            artifact_id,
+            profile: Box::new(profile),
+        },
+        snapshot_tx,
+        ingress_tx,
+        notice_tx,
+        state,
+        active_pipeline,
+        dependencies,
+    )
+    .await
+    .map_err(|error| ModelActivationError::Failed {
+        action,
+        message: format!("automatic model contract configuration failed: {error}"),
+    })?;
+    model_ingress_state(
+        ModelIngressRequest::Probe {
+            artifact_id,
+            input_mode: ModelProbeInputMode::Fixed,
+        },
+        snapshot_tx,
+        ingress_tx,
+        notice_tx,
+        state,
+        active_pipeline,
+        dependencies,
+    )
+    .await
+    .map_err(|error| ModelActivationError::Failed {
+        action,
+        message: format!("automatic TensorRT Engine probe failed: {error}"),
+    })?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn activate_model_state(
     request: ModelActivationRequest,
     snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
@@ -1694,20 +1765,51 @@ async fn activate_model_state(
             runtime,
             restarted: false,
             changed: false,
+            manifest_generated: false,
         });
     }
 
     let receipt_catalog = catalog.clone();
     let receipt_artifact_id = candidate.artifact.id;
-    tokio::task::spawn_blocking(move || {
+    let receipt = tokio::task::spawn_blocking(move || {
         receipt_catalog.validate_ingress_receipt(receipt_artifact_id)
     })
     .await
     .map_err(|error| ModelActivationError::Failed {
         action,
         message: format!("model validation receipt task failed: {error}"),
-    })?
-    .map_err(ModelActivationError::Catalog)?;
+    })?;
+    let manifest_generated = match receipt {
+        Ok(_) => false,
+        Err(ModelCatalogError::IngressManifestInvalid { .. }) => {
+            generate_candidate_model_manifest(
+                action,
+                candidate.artifact.id,
+                &parser_preset,
+                &candidate.version.classes,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active_pipeline,
+                dependencies,
+            )
+            .await?;
+            let receipt_catalog = catalog.clone();
+            let receipt_artifact_id = candidate.artifact.id;
+            tokio::task::spawn_blocking(move || {
+                receipt_catalog.validate_ingress_receipt(receipt_artifact_id)
+            })
+            .await
+            .map_err(|error| ModelActivationError::Failed {
+                action,
+                message: format!("generated model manifest validation task failed: {error}"),
+            })?
+            .map_err(ModelActivationError::Catalog)?;
+            true
+        }
+        Err(error) => return Err(ModelActivationError::Catalog(error)),
+    };
 
     let adapter = dependencies
         .perception
@@ -1945,6 +2047,7 @@ async fn activate_model_state(
         runtime,
         restarted: was_running,
         changed: true,
+        manifest_generated,
     })
 }
 

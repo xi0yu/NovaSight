@@ -572,6 +572,7 @@ async fn configured_inference_backend(state: &ControlState) -> String {
 fn success_response(result: ModelActivationResult, backend: String) -> ModelSwitchResponse {
     let loaded = result.restarted;
     let changed = result.changed;
+    let manifest_generated = result.manifest_generated;
     let input_shape = result
         .contract
         .as_ref()
@@ -617,8 +618,16 @@ fn success_response(result: ModelActivationResult, backend: String) -> ModelSwit
         }),
         parser_contract,
         preparation: ModelPreparation {
-            manifest_action: if changed { "reused" } else { "unchanged" },
-            reason: if changed {
+            manifest_action: if manifest_generated {
+                "generated"
+            } else if changed {
+                "reused"
+            } else {
+                "unchanged"
+            },
+            reason: if manifest_generated {
+                "inspected the TensorRT Engine and generated a validated runtime manifest"
+            } else if changed {
                 "validated existing model manifest and immutable engine identity"
             } else {
                 "no previous deployment exists; candidate validation was not required"

@@ -435,6 +435,119 @@ pub(crate) fn load_profile(
     validate_existing_profile(artifact, display_root, output)
 }
 
+/// Build the minimum complete YOLO profile needed by the native TensorRT
+/// ingress path when a referenced Engine has no sidecar yet. Tensor identity
+/// and dimensions come from the Engine inspection result; class labels are
+/// descriptive only and are generated from the real output channel count when
+/// the catalog has no matching labels.
+pub(crate) fn automatic_activation_profile(
+    inspected: &ModelIngressResult,
+    parser_preset: &str,
+    catalog_labels: &[String],
+) -> Result<ModelProfileConfigureRequest, ModelIngressError> {
+    let outputs = inspected
+        .profile
+        .get("outputs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ModelIngressError::Protocol("profile.outputs must be an array".to_owned())
+        })?;
+    if outputs.len() != 1 {
+        return Err(ModelIngressError::InvalidRequest(format!(
+            "automatic YOLO activation requires one output tensor, Engine reports {}",
+            outputs.len()
+        )));
+    }
+    let output = &outputs[0];
+    let shape = output
+        .get("engine_shape")
+        .and_then(Value::as_array)
+        .filter(|shape| !shape.is_empty())
+        .or_else(|| output.get("shape").and_then(Value::as_array))
+        .ok_or_else(|| {
+            ModelIngressError::Protocol("profile.outputs[0] has no inspected shape".to_owned())
+        })?
+        .iter()
+        .map(|value| value.as_u64().filter(|dimension| *dimension > 0))
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            ModelIngressError::Protocol(
+                "profile.outputs[0].engine_shape must contain positive integers".to_owned(),
+            )
+        })?;
+    let semantic_shape = if shape.first() == Some(&1) {
+        &shape[1..]
+    } else {
+        shape.as_slice()
+    };
+    if semantic_shape.len() != 2 {
+        return Err(ModelIngressError::InvalidRequest(format!(
+            "automatic raw YOLO activation requires [C,N], [N,C], or [1,C,N], got {shape:?}"
+        )));
+    }
+    let channels = semantic_shape.iter().copied().min().unwrap_or(0);
+    let normalized = parser_preset.trim().to_ascii_lowercase().replace('-', "_");
+    let catalog_count = u64::try_from(catalog_labels.len()).unwrap_or(u64::MAX);
+    let (parser_type, has_objectness) = match normalized.as_str() {
+        "yolov5" | "yolo_v5" | "yolov5_raw" => ("yolov5_raw", true),
+        "yolo11" | "yolo_11" | "yolo11_raw" => ("yolo11_raw", false),
+        "yolov8" | "yolo_v8" | "yolov8_raw" => ("yolov8_raw", false),
+        "" | "auto" | "automatic" | "novasight_generic" | "generic" | "custom" => {
+            if !catalog_labels.is_empty() && channels == catalog_count.saturating_add(5) {
+                ("yolov5_raw", true)
+            } else {
+                ("yolov8_raw", false)
+            }
+        }
+        _ => {
+            return Err(ModelIngressError::InvalidRequest(format!(
+                "unsupported parser preset {parser_preset}"
+            )));
+        }
+    };
+    let base_channels = if has_objectness { 5 } else { 4 };
+    let class_count = channels.checked_sub(base_channels).ok_or_else(|| {
+        ModelIngressError::InvalidRequest(format!(
+            "output channel count {channels} is too small for {parser_type}"
+        ))
+    })?;
+    let class_count = u32::try_from(class_count)
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or_else(|| {
+            ModelIngressError::InvalidRequest(
+                "automatic YOLO class count is outside the supported range".to_owned(),
+            )
+        })?;
+    let labels = if usize::try_from(class_count).ok() == Some(catalog_labels.len())
+        && catalog_labels.iter().all(|label| !label.trim().is_empty())
+    {
+        catalog_labels.to_vec()
+    } else {
+        (0..class_count)
+            .map(|class_id| format!("class_{class_id}"))
+            .collect()
+    };
+    Ok(ModelProfileConfigureRequest {
+        color_format: "RGB".to_owned(),
+        scale: 1.0 / 255.0,
+        offsets: Vec::new(),
+        mean: Vec::new(),
+        std: Vec::new(),
+        resize_mode: "direct".to_owned(),
+        symmetric_padding: false,
+        padding_value: 0.0,
+        parser_type: parser_type.to_owned(),
+        class_count,
+        labels,
+        bbox_format: "xywh".to_owned(),
+        has_objectness,
+        confidence_threshold: default_confidence_threshold(),
+        nms_threshold: default_nms_threshold(),
+        max_detections: default_max_detections(),
+    })
+}
+
 fn validate_existing_profile(
     artifact: &RuntimeModelArtifact,
     display_root: &Path,
@@ -691,6 +804,78 @@ const fn default_nms_threshold() -> f64 {
 
 const fn default_max_detections() -> u32 {
     256
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inspected(shape: &[u64]) -> ModelIngressResult {
+        ModelIngressResult {
+            artifact_id: 1,
+            profile_path: "detector.engine.manifest.json".to_owned(),
+            profile: serde_json::json!({
+                "outputs": [{"engine_shape": shape}],
+            }),
+            report: None,
+        }
+    }
+
+    fn inspected_dynamic(shape: &[u64]) -> ModelIngressResult {
+        ModelIngressResult {
+            artifact_id: 1,
+            profile_path: "detector.engine.manifest.json".to_owned(),
+            profile: serde_json::json!({
+                "outputs": [{"shape": shape, "engine_shape": []}],
+            }),
+            report: None,
+        }
+    }
+
+    #[test]
+    fn automatic_profile_derives_yolov8_classes_from_engine_channels() {
+        let profile = automatic_activation_profile(
+            &inspected(&[1, 7, 1_344]),
+            "auto",
+            &["target".to_owned()],
+        )
+        .expect("three-class YOLOv8 profile");
+
+        assert_eq!(profile.parser_type, "yolov8_raw");
+        assert!(!profile.has_objectness);
+        assert_eq!(profile.class_count, 3);
+        assert_eq!(profile.labels, ["class_0", "class_1", "class_2"]);
+    }
+
+    #[test]
+    fn automatic_profile_uses_catalog_labels_to_identify_objectness() {
+        let labels = (0..80).map(|id| format!("label_{id}")).collect::<Vec<_>>();
+        let profile = automatic_activation_profile(&inspected(&[1, 8_400, 85]), "auto", &labels)
+            .expect("eighty-class YOLOv5 profile");
+
+        assert_eq!(profile.parser_type, "yolov5_raw");
+        assert!(profile.has_objectness);
+        assert_eq!(profile.class_count, 80);
+        assert_eq!(profile.labels, labels);
+    }
+
+    #[test]
+    fn explicit_parser_preset_controls_objectness_without_a_manifest() {
+        let profile = automatic_activation_profile(&inspected(&[1, 8, 1_344]), "yolov5", &[])
+            .expect("three-class YOLOv5 profile");
+
+        assert_eq!(profile.class_count, 3);
+        assert!(profile.has_objectness);
+    }
+
+    #[test]
+    fn automatic_profile_uses_selected_runtime_shape_for_dynamic_engines() {
+        let profile = automatic_activation_profile(&inspected_dynamic(&[1, 7, 1_344]), "auto", &[])
+            .expect("dynamic YOLOv8 profile");
+
+        assert_eq!(profile.class_count, 3);
+        assert_eq!(profile.parser_type, "yolov8_raw");
+    }
 }
 
 #[derive(Debug, Error)]
