@@ -17,7 +17,6 @@ class ControlMode(Enum):
 class ProjectionConfig:
     fov_x_deg: float = 105.0
     counts_per_360: float = 9980.0
-    invert_y: bool = False
 
 
 @dataclass(frozen=True, slots=True)

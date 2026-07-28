@@ -543,8 +543,6 @@ pub struct PipelineRuntimeConfig {
     pub projection_fov_x_deg: f64,
     #[serde(default = "default_projection_counts_per_360")]
     pub projection_counts_per_360: f64,
-    #[serde(default)]
-    pub projection_invert_y: bool,
     #[serde(default = "default_atan_scale_counts")]
     pub atan_scale_counts: f64,
     #[serde(default = "default_far_kp")]
@@ -648,7 +646,6 @@ impl Default for PipelineRuntimeConfig {
             near_threshold_px: default_near_threshold_px(),
             projection_fov_x_deg: default_projection_fov_x_deg(),
             projection_counts_per_360: default_projection_counts_per_360(),
-            projection_invert_y: false,
             atan_scale_counts: default_atan_scale_counts(),
             far_kp: default_far_kp(),
             far_max_counts_per_update: default_far_max_counts_per_update(),

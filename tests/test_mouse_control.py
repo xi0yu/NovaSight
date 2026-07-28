@@ -54,7 +54,6 @@ def _config(
         "deadzone_y_px": 0.0,
         "max_count_slew_x": 1000.0,
         "max_count_slew_y": 1000.0,
-        "invert_y": False,
         "max_budget_counts_x": 1000,
         "max_budget_counts_y": 1000,
     }
@@ -350,15 +349,6 @@ def test_universal_saturated_quantizes_first_action_without_losing_residual(
     assert controller.state.residual_x_counts == pytest.approx(expected_residual)
 
 
-def test_mouse_controller_inverts_y_only_in_count_mapping() -> None:
-    controller = MouseController(_config(calibrated={"kp_x": 0.0}, shared={"invert_y": True}))
-
-    command = controller.calculate(_observation(frame_id=1, observed_y=150.0))
-
-    assert command.debug["limited_output_y_rad"] > 0.0
-    assert command.dy < 0
-
-
 def test_mouse_controller_distinguishes_theoretical_and_limited_counts() -> None:
     controller = MouseController(
         _config(
@@ -442,7 +432,7 @@ def test_shared_count_slew_limits_adjacent_observation_change() -> None:
 
     command = controller.calculate(_observation(frame_id=2, observed_x=10_000, observed_y=100))
 
-    assert command.debug["directed_counts_x_float"] > 3.0
+    assert command.debug["deadzone_limited_counts_x_float"] > 3.0
     assert command.debug["slew_limited_counts_x_float"] == pytest.approx(3.0)
     assert command.dx == 3
 

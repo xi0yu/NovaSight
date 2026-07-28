@@ -17,7 +17,6 @@ pipeline:
   near_threshold_px: 12.0
   projection_fov_x_deg: 105.0
   projection_counts_per_360: 9980.0
-  projection_invert_y: false
   atan_scale_counts: 1024.0
   far_kp: 0.90
   far_max_counts_per_update: 600.0

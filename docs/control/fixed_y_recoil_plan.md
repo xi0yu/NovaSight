@@ -106,6 +106,5 @@ enough evidence to diagnose over-pressure.
 2. requires fresh real left button and a fresh observed target;
 3. fractional setting quantizes deterministically and independently from visual feedback;
 4. release/target switch/stale/config change clears residual immediately;
-5. `invert_y` changes device direction exactly once;
-6. fixed recoil and visual feedback are separately reported before final clamp;
-7. latest-replace still sends at most one command for one observation.
+5. fixed recoil and visual feedback are separately reported before final clamp;
+6. latest-replace still sends at most one command for one observation.

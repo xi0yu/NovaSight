@@ -240,7 +240,6 @@ def test_mouse_controller_uses_explicit_reference_instead_of_geometric_center() 
                 deadzone_y_px=0.0,
                 max_count_slew_x=1000.0,
                 max_count_slew_y=1000.0,
-                invert_y=False,
                 max_budget_counts_x=1000,
                 max_budget_counts_y=1000,
             ),

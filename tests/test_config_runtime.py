@@ -334,7 +334,7 @@ def test_runtime_config_defaults_include_exclusive_dual_mouse_control_settings()
     assert cfg.control.universal_saturated.max_step_x_counts == 50.0
     assert cfg.control.shared.deadzone_x_px == 4.0
     assert cfg.control.shared.max_count_slew_x == 10.0
-    assert cfg.control.shared.invert_y is False
+    assert not hasattr(cfg.control.shared, "invert_y")
     assert cfg.control.recoil.enabled is False
     assert cfg.control.recoil.base_rate_counts_s == 0.0
     assert cfg.control.recoil.startup_ms == 35.0
@@ -498,7 +498,7 @@ def test_example_runtime_config_loads_with_current_schema() -> None:
     assert not hasattr(robust, "aim")
     assert cfg.control.calibrated_angular.fov_x_deg == 105
     assert cfg.control.calibrated_angular.counts_per_360_x == 9980
-    assert cfg.control.shared.invert_y is False
+    assert not hasattr(cfg.control.shared, "invert_y")
     assert cfg.hardware.auto_connect is True
     assert cfg.control.aim.role_y_ratios.head == pytest.approx(0.22)
     assert cfg.control.aim.role_y_ratios.body == pytest.approx(0.22)
@@ -556,10 +556,10 @@ def test_runtime_config_migrates_v2_aim_to_shared_aim_and_removes_legacy_owner()
     assert not hasattr(cfg.control.dual_phase_atan_robust_predictive_v2, "aim")
 
 
-def test_runtime_config_migrates_legacy_axis_signs() -> None:
+def test_runtime_config_retires_legacy_axis_signs() -> None:
     cfg = parse_runtime_config({"calibration": {"axis_sign_x": 1, "axis_sign_y": -1}})
 
-    assert cfg.control.shared.invert_y is True
+    assert not hasattr(cfg.control.shared, "invert_y")
     assert not hasattr(cfg.calibration, "axis_sign_x")
     assert not hasattr(cfg.calibration, "axis_sign_y")
 
@@ -602,7 +602,7 @@ def test_runtime_config_migrates_weak_universal_default_profile() -> None:
 def test_runtime_config_drops_legacy_noop_hardware_flip_dy() -> None:
     cfg = parse_runtime_config({"hardware": {"flip_dy": True}})
 
-    assert cfg.control.shared.invert_y is False
+    assert not hasattr(cfg.control.shared, "invert_y")
     assert not hasattr(cfg.hardware, "flip_dy")
 
 
@@ -667,7 +667,7 @@ def test_runtime_config_migrates_previous_mouse_control_schema() -> None:
     assert cfg.control.calibrated_angular.fov_x_deg == pytest.approx(103.0)
     assert cfg.control.calibrated_angular.counts_per_360_x == pytest.approx(9900.0)
     assert cfg.control.calibrated_angular.counts_per_360_y == pytest.approx(9900.0)
-    assert cfg.control.shared.invert_y is True
+    assert not hasattr(cfg.control.shared, "invert_y")
     assert cfg.control.aim.role_y_ratios.head == pytest.approx(0.40)
     assert cfg.control.aim.role_y_ratios.body == pytest.approx(0.40)
     assert cfg.control.aim.role_y_ratios.other == pytest.approx(0.40)

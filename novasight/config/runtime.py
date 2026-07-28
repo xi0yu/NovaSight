@@ -186,7 +186,6 @@ class UniversalSaturatedConfig:
 class DualPhaseProjectionConfig:
     fov_x_deg: float = 105.0
     counts_per_360: float = 9980.0
-    invert_y: bool = False
 
 
 @dataclass
@@ -301,7 +300,6 @@ class SharedControlConfig:
     deadzone_x_px: float = 4.0
     deadzone_y_px: float = 4.0
     arrival_hysteresis_enabled: bool = True
-    invert_y: bool = False
     trigger_activation_delay_ms: float = 0.0
 
 
@@ -630,7 +628,7 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         _migrate_legacy_axis_signs(calibration)
         if control is None and any(
             key in calibration
-            for key in ("fov_x_deg", "counts_per_360_x", "counts_per_360_y", "invert_y")
+            for key in ("fov_x_deg", "counts_per_360_x", "counts_per_360_y")
         ):
             control = {}
     if isinstance(control, dict):
@@ -644,8 +642,10 @@ def _drop_legacy_runtime_keys(raw: dict[str, Any]) -> dict[str, Any]:
         _migrate_control_algorithm_namespaces(control)
         _migrate_shared_aim_config(control)
         _migrate_fixed_recoil_config(control)
+        _drop_retired_y_direction_config(control)
         normalized["control"] = control
     if isinstance(calibration, dict):
+        calibration.pop("invert_y", None)
         normalized["calibration"] = calibration
     return normalized
 
@@ -682,9 +682,7 @@ def _migrate_legacy_axis_signs(calibration: dict[str, Any]) -> None:
                 "the single mouse-control route fixes positive X counts to positive X error"
             )
     if legacy_sign_y is not None:
-        sign_y = _legacy_axis_sign(legacy_sign_y, "calibration.axis_sign_y")
-        if "invert_y" not in calibration:
-            calibration["invert_y"] = sign_y < 0
+        _legacy_axis_sign(legacy_sign_y, "calibration.axis_sign_y")
 
 
 def _migrate_legacy_mouse_control(
@@ -868,9 +866,7 @@ def _migrate_dual_control_modes(
         if deadzone is not None:
             shared.setdefault(f"deadzone_{axis}_px", deadzone)
 
-    invert_y = calibration.pop("invert_y", None)
-    if invert_y is not None:
-        shared.setdefault("invert_y", invert_y)
+    calibration.pop("invert_y", None)
     calibration.pop("fov_semantics", None)
     calibration.pop("projection_profile", None)
 
@@ -918,6 +914,28 @@ def _migrate_control_algorithm_namespaces(control: dict[str, Any]) -> None:
         selected_algorithm = "dual_phase_atan_robust_predictive_v2"
     control["active_algorithm"] = selected_algorithm
     control["algorithms"] = algorithms
+
+
+def _drop_retired_y_direction_config(control: dict[str, Any]) -> None:
+    shared = control.get("shared")
+    if isinstance(shared, dict):
+        shared = dict(shared)
+        shared.pop("invert_y", None)
+        control["shared"] = shared
+
+    algorithms = control.get("algorithms")
+    if not isinstance(algorithms, dict):
+        return
+    robust = algorithms.get("dual_phase_atan_robust_predictive_v2")
+    if not isinstance(robust, dict):
+        return
+    robust = dict(robust)
+    projection = robust.get("projection")
+    if isinstance(projection, dict):
+        projection = dict(projection)
+        projection.pop("invert_y", None)
+        robust["projection"] = projection
+    algorithms["dual_phase_atan_robust_predictive_v2"] = robust
 
 
 def _migrate_dual_phase_robust_v2_namespace(

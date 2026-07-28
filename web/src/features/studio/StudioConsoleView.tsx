@@ -134,7 +134,6 @@ type DualPhasePipelineField =
   | "freshness_threshold_ms"
   | "projection_fov_x_deg"
   | "projection_counts_per_360"
-  | "projection_invert_y"
   | "near_threshold_px"
   | "far_kp"
   | "near_kp"
@@ -1235,7 +1234,6 @@ export function StudioConsoleView({
   const targetSwitchContinuityScore = readNumber(rustPipelineConfig.target_switch_min_continuity_score, 0.7);
   const targetSwitchDelayMs = readNumber(rustPipelineConfig.target_switch_delay_ms, 50);
   const freshnessThresholdMs = readNumber(rustPipelineConfig.freshness_threshold_ms, 55);
-  const projectionInvertY = readBoolean(rustPipelineConfig.projection_invert_y, false);
   const dualPhaseFovX = readNumber(rustPipelineConfig.projection_fov_x_deg, 105);
   const dualPhaseCountsPer360 = readNumber(rustPipelineConfig.projection_counts_per_360, 9980);
   const dualPhaseNearThreshold = readNumber(rustPipelineConfig.near_threshold_px, 12);
@@ -4178,7 +4176,6 @@ export function StudioConsoleView({
           <NumberControl label="观测新鲜度上限 ms" detail="超过该帧龄的视觉观测不会进入控制器。" value={freshnessThresholdMs} min={1} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("freshness_threshold_ms", value)} />
           <NumberControl label="水平 FOVX" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhaseField("projection_fov_x_deg", value)} />
           <NumberControl label="每圈 counts" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhaseField("projection_counts_per_360", value)} />
-          <ModuleSwitch label="反转 Y 轴输出" detail="只改变垂直控制方向；X 轴不受影响。" enabled={projectionInvertY} onToggle={(enabled) => updateDualPhaseField("projection_invert_y", enabled)} />
           <NumberControl label="近远过渡中心 px" detail="以该误差距离为中心，在前后 25% 区间内平滑融合 NEAR 与 FAR Atan 响应，避免阈值附近突然换挡。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("near_threshold_px", value)} />
           <NumberControl label="FAR Kp" detail="远距离闭环增益；不是 KMNet 设备能力上限。" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("far_kp", value)} />
           <NumberControl label="NEAR Kp" detail="接近准星后的闭环增益，过高会导致左右往返修正。" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("near_kp", value)} />

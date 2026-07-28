@@ -70,7 +70,6 @@ pub struct DualPhaseConfig {
     pub near_threshold_px: f64,
     pub projection_fov_x_deg: f64,
     pub projection_counts_per_360: f64,
-    pub projection_invert_y: bool,
     pub atan_scale_counts: f64,
     pub far_kp: f64,
     pub far_max_counts_per_update: f64,
@@ -108,7 +107,6 @@ impl Default for DualPhaseConfig {
             near_threshold_px: 12.0,
             projection_fov_x_deg: 105.0,
             projection_counts_per_360: 9_980.0,
-            projection_invert_y: false,
             atan_scale_counts: 256.0,
             far_kp: 0.22,
             far_max_counts_per_update: 127.0,
@@ -734,10 +732,7 @@ impl DualPhaseControl {
         }
         let counts_per_rad = config.projection_counts_per_360 / std::f64::consts::TAU;
         let full_x = (source_error_x / focal_px).atan() * counts_per_rad;
-        let mut full_y = (source_error_y / focal_px).atan() * counts_per_rad;
-        if config.projection_invert_y {
-            full_y = -full_y;
-        }
+        let full_y = (source_error_y / focal_px).atan() * counts_per_rad;
         let response = BlendedAtanConfig {
             near_threshold_px: config.near_threshold_px,
             scale_counts: config.atan_scale_counts,

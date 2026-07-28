@@ -174,8 +174,6 @@ class DualPhaseAtanRobustPredictiveV2Algorithm:
         counts_per_rad = self.config.projection.counts_per_360 / (2.0 * pi)
         full_counts_x = atan(source_error_x / focal_x_px) * counts_per_rad
         full_counts_y = atan(source_error_y / focal_y_px) * counts_per_rad
-        if self.config.projection.invert_y:
-            full_counts_y = -full_counts_y
 
         atan_mode = self.config.atan.far if mode is ControlMode.FAR else self.config.atan.near
         demand_x = _atan_demand(full_counts_x, atan_mode, self.config.atan.scale_counts)

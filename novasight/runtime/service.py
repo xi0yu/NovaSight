@@ -677,7 +677,6 @@ class RuntimeService:
                 str(calibration.game_sensitivity_fingerprint).strip(),
                 float(projection.fov_x_deg),
                 float(projection.counts_per_360),
-                bool(projection.invert_y),
             )
         if algorithm_id == CALIBRATED_ANGULAR:
             calibration = config.calibration
@@ -689,7 +688,6 @@ class RuntimeService:
                 float(calibrated.fov_x_deg),
                 float(calibrated.counts_per_360_x),
                 float(calibrated.counts_per_360_y),
-                bool(config.control.shared.invert_y),
             )
         return geometry_signature
 
@@ -745,18 +743,15 @@ class RuntimeService:
             fov_x_deg = projection.fov_x_deg
             counts_per_360_x = projection.counts_per_360
             counts_per_360_y = projection.counts_per_360
-            invert_y = projection.invert_y
         elif mode == CALIBRATED_ANGULAR:
             calibrated = self.config.control.calibrated_angular
             fov_x_deg = calibrated.fov_x_deg
             counts_per_360_x = calibrated.counts_per_360_x
             counts_per_360_y = calibrated.counts_per_360_y
-            invert_y = self.config.control.shared.invert_y
         else:
             fov_x_deg = 0.0
             counts_per_360_x = 0.0
             counts_per_360_y = 0.0
-            invert_y = self.config.control.shared.invert_y
         delivery_stage = (
             "LatestReplaceScheduler"
             if is_dual_phase
@@ -782,7 +777,7 @@ class RuntimeService:
         logger.info(
             "production_control_chain event=%s chain=%s controller=%s executor=%s trigger=%s "
             "calibration_profile_id=%s calibration_profile_version=%s fov_x_deg=%.3f "
-            "counts_per_360_x=%.3f counts_per_360_y=%.3f invert_y=%s",
+            "counts_per_360_x=%.3f counts_per_360_y=%.3f",
             event,
             chain,
             mode,
@@ -793,7 +788,6 @@ class RuntimeService:
             float(fov_x_deg),
             float(counts_per_360_x),
             float(counts_per_360_y),
-            bool(invert_y),
         )
 
     def _calibration_fingerprint_status(self) -> dict[str, Any]:
@@ -3429,7 +3423,6 @@ class RuntimeService:
                     deadzone_y_px=float(shared.deadzone_y_px),
                     max_count_slew_x=float(shared.max_count_slew_x),
                     max_count_slew_y=float(shared.max_count_slew_y),
-                    invert_y=bool(shared.invert_y),
                     max_budget_counts_x=int(config.control.scheduler_step_counts_x)
                     * max_plan_steps,
                     max_budget_counts_y=int(config.control.scheduler_step_counts_y)
@@ -3453,7 +3446,6 @@ class RuntimeService:
                 projection=DualPhaseRobustProjectionConfig(
                     fov_x_deg=float(source_v2.projection.fov_x_deg),
                     counts_per_360=float(source_v2.projection.counts_per_360),
-                    invert_y=bool(source_v2.projection.invert_y),
                 ),
                 mode=DualPhaseRobustModeSelectorConfig(
                     near_threshold_px=float(source_v2.mode.near_threshold_px),

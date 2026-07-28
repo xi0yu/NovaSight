@@ -104,7 +104,6 @@ class SharedOutputConfig:
     deadzone_y_px: float
     max_count_slew_x: float
     max_count_slew_y: float
-    invert_y: bool
     max_budget_counts_x: int
     max_budget_counts_y: int
 
@@ -481,11 +480,7 @@ class MouseController:
             0.0 if hold_x else computation.counts.x,
             0.0 if hold_y else computation.counts.y,
         )
-        directed_counts = Vec2(
-            deadzone_limited.x,
-            -deadzone_limited.y if shared.invert_y else deadzone_limited.y,
-        )
-        mixed_counts = directed_counts
+        mixed_counts = deadzone_limited
         previous_counts = (
             self.state.previous_counts if self.state.output_history_valid else Vec2(0.0, 0.0)
         )
@@ -552,12 +547,8 @@ class MouseController:
             **computation.debug,
             "deadzone_limited_counts_x_float": deadzone_limited.x,
             "deadzone_limited_counts_y_float": deadzone_limited.y,
-            "directed_counts_x_float": directed_counts.x,
-            "directed_counts_y_float": directed_counts.y,
-            "feedback_demand_y": directed_counts.y,
-            "combined_demand_y": (
-                directed_counts.y
-            ),
+            "feedback_demand_y": deadzone_limited.y,
+            "combined_demand_y": deadzone_limited.y,
             "mixed_counts_x_float": mixed_counts.x,
             "mixed_counts_y_float": mixed_counts.y,
             "slew_limited_counts_x_float": slew_limited.x,

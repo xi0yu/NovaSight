@@ -35,18 +35,15 @@ class RuntimeConfigStore:
                 fov_x_deg = projection.fov_x_deg
                 counts_per_360_x = projection.counts_per_360
                 counts_per_360_y = projection.counts_per_360
-                invert_y = projection.invert_y
             elif algorithm_id == CALIBRATED_ANGULAR:
                 calibrated = config.control.calibrated_angular
                 fov_x_deg = calibrated.fov_x_deg
                 counts_per_360_x = calibrated.counts_per_360_x
                 counts_per_360_y = calibrated.counts_per_360_y
-                invert_y = config.control.shared.invert_y
             else:
                 fov_x_deg = None
                 counts_per_360_x = None
                 counts_per_360_y = None
-                invert_y = config.control.shared.invert_y
             return {
                 "version": self.version,
                 "source": {
@@ -91,7 +88,6 @@ class RuntimeConfigStore:
                     "fov_x_deg": fov_x_deg,
                     "counts_per_360_x": counts_per_360_x,
                     "counts_per_360_y": counts_per_360_y,
-                    "invert_y": invert_y,
                 },
                 "consumers": {
                     "preview": config.consumers.preview,

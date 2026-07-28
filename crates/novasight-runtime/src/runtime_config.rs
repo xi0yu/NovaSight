@@ -57,7 +57,6 @@ pub fn compose_pipeline_config(
             near_threshold_px: adapters.pipeline.near_threshold_px,
             projection_fov_x_deg: adapters.pipeline.projection_fov_x_deg,
             projection_counts_per_360: adapters.pipeline.projection_counts_per_360,
-            projection_invert_y: adapters.pipeline.projection_invert_y,
             atan_scale_counts: adapters.pipeline.atan_scale_counts,
             far_kp: adapters.pipeline.far_kp,
             far_max_counts_per_update: adapters.pipeline.far_max_counts_per_update,

@@ -441,12 +441,14 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     let removed_humanized_motion = config.control.legacy.remove("humanized_motion").is_some();
+    config.pipeline.legacy.remove("projection_invert_y");
     config.paths.legacy.remove("python_executable");
     if let Some(device) = &mut config.device {
         device.legacy.remove("helper_module");
         device.legacy.remove("reconnect_cooldown_ms");
     }
     remove_section_fields(document, "paths", &["python_executable"]);
+    remove_section_fields(document, "pipeline", &["projection_invert_y"]);
     remove_section_fields(
         document,
         "hardware",
@@ -562,7 +564,6 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "near_threshold_px",
             "projection_fov_x_deg",
             "projection_counts_per_360",
-            "projection_invert_y",
             "atan_scale_counts",
             "far_kp",
             "far_max_counts_per_update",

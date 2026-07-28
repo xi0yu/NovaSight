@@ -249,7 +249,6 @@ impl ConfigSchemaResponse {
                             1_000_000.0,
                             Some("count"),
                         ),
-                        boolean("pipeline.projection_invert_y", "反转垂直输出"),
                         float(
                             "pipeline.atan_scale_counts",
                             "Atan 响应尺度",
