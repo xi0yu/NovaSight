@@ -338,10 +338,12 @@ struct SharedState {
     last_vision_telemetry_at_ns: AtomicU64,
     latest_successful_send_x_ts_ns: AtomicU64,
     latest_successful_send_y_ts_ns: AtomicU64,
+    recoil_config_version: AtomicU64,
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
     latest_recoil_observation: Mutex<Option<RecoilObservation>>,
+    recoil_config: Mutex<RecoilConfig>,
 }
 
 impl SharedState {
@@ -350,6 +352,7 @@ impl SharedState {
         external_stop: Arc<AtomicUsize>,
         device_connected: bool,
         trigger_mode: TriggerMode,
+        recoil_config: RecoilConfig,
     ) -> Self {
         let metrics = AtomicMetrics {
             vision: Mutex::new(VisionTelemetry {
@@ -381,10 +384,12 @@ impl SharedState {
             last_vision_telemetry_at_ns: AtomicU64::new(0),
             latest_successful_send_x_ts_ns: AtomicU64::new(0),
             latest_successful_send_y_ts_ns: AtomicU64::new(0),
+            recoil_config_version: AtomicU64::new(1),
             device_lane: Mutex::new(()),
             event_tx,
             metrics,
             latest_recoil_observation: Mutex::new(None),
+            recoil_config: Mutex::new(recoil_config),
         }
     }
 
@@ -667,6 +672,30 @@ impl PipelineIngress {
         }
     }
 
+    /// Replace recoil behavior for the active epoch without rebuilding capture
+    /// or inference. The device worker reads the mutex only after this version
+    /// changes; ordinary output ticks pay one atomic load and no config lock.
+    pub fn set_recoil_config(&self, config: RecoilConfig) -> Result<(), PipelineError> {
+        config
+            .validate()
+            .map_err(|message| PipelineError::InvalidRecoilConfig { message })?;
+        let _lane = self
+            .shared
+            .device_lane
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *self
+            .shared
+            .recoil_config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config;
+        self.shared
+            .recoil_config_version
+            .fetch_add(1, Ordering::Release);
+        self.shared.clear_control_telemetry();
+        Ok(())
+    }
+
     pub fn trigger_active(&self) -> bool {
         self.shared.trigger_active.load(Ordering::Acquire)
     }
@@ -884,6 +913,7 @@ impl PipelineRuntime {
             external_stop,
             initial_device_error.is_none(),
             config.trigger_mode,
+            config.recoil,
         ));
         if let Some(error) = &initial_device_error {
             // Capture and inference remain useful while a commissioned output
@@ -1496,7 +1526,20 @@ fn spawn_device_worker(
                 let mut last_tick_ns = None;
                 let mut recoil = TargetRelativeRecoilController::new(config.recoil)
                     .expect("pipeline validates recoil config before worker startup");
+                let mut recoil_config_version =
+                    shared.recoil_config_version.load(Ordering::Acquire);
                 while let Ok(command) = input.wait_take_or_timeout(interval) {
+                    let latest_recoil_config_version =
+                        shared.recoil_config_version.load(Ordering::Acquire);
+                    if latest_recoil_config_version != recoil_config_version {
+                        let config = *shared
+                            .recoil_config
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        recoil = TargetRelativeRecoilController::new(config)
+                            .expect("live recoil config is validated before publication");
+                        recoil_config_version = latest_recoil_config_version;
+                    }
                     let tracking = command.map(|command| *command);
                     let now_ns = clock.now().0;
                     let dt_s = last_tick_ns.map_or(interval_s, |last_tick_ns| {
@@ -1531,6 +1574,10 @@ fn spawn_device_worker(
                         .device_lane
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if shared.recoil_config_version.load(Ordering::Acquire) != recoil_config_version
+                    {
+                        continue;
+                    }
                     if shared.external_stop.load(Ordering::Acquire) != 0
                         || shared.status() != PipelineStatus::Running
                     {

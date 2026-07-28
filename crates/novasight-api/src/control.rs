@@ -1033,10 +1033,13 @@ async fn update_config(
         .ok_or(ControlApiError::ConfigUnavailable)?;
     let hot_output_gate = update.section == "control" && update.key == "output_enabled";
     let hot_trigger_mode = update.section == "control" && update.key == "trigger_mode";
+    let hot_recoil = update.section == "control" && update.key == "recoil";
     let result = if hot_output_gate {
         service.update_output_gate(&state.runtime, update).await?
     } else if hot_trigger_mode {
         service.update_trigger_mode(&state.runtime, update).await?
+    } else if hot_recoil {
+        service.update_recoil(&state.runtime, update).await?
     } else {
         service.update_field(update).await?
     };
@@ -1062,6 +1065,7 @@ async fn update_legacy_config(
             field_update.section == "control" && field_update.key == "output_enabled";
         let hot_trigger_mode =
             field_update.section == "control" && field_update.key == "trigger_mode";
+        let hot_recoil = field_update.section == "control" && field_update.key == "recoil";
         if hot_output_gate {
             service
                 .update_output_gate(&state.runtime, field_update)
@@ -1070,6 +1074,8 @@ async fn update_legacy_config(
             service
                 .update_trigger_mode(&state.runtime, field_update)
                 .await?
+        } else if hot_recoil {
+            service.update_recoil(&state.runtime, field_update).await?
         } else {
             service.update_field(field_update).await?
         }

@@ -344,6 +344,78 @@ async fn trigger_mode_config_is_applied_to_the_running_pipeline_without_restart(
 }
 
 #[tokio::test]
+async fn recoil_config_is_applied_to_the_running_pipeline_without_restart() {
+    #[derive(Debug)]
+    struct ManualClock(AtomicU64);
+
+    impl Clock for ManualClock {
+        fn now(&self) -> MonotonicNanos {
+            MonotonicNanos(self.0.load(Ordering::Acquire))
+        }
+    }
+
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, commissioned_config(0, true)).unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn PointerDevice> = device.clone();
+    let clock = Arc::new(ManualClock(AtomicU64::new(1_008_000_000)));
+    let runtime_clock: Arc<dyn Clock> = clock.clone();
+    let dependencies = RuntimeDependencies::new(runtime_clock, pointer, PipelineConfig::default())
+        .with_output_enabled(true);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn(dependencies);
+    let started = runtime.start().await.unwrap();
+    let app = build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"control","key":"recoil","value":{"enabled":true,"require_target":false,"base_rate_counts_s":600.0,"max_rate_counts_s":600.0,"startup_ms":0.0}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["config"]["control"]["recoil"]["require_target"], false);
+    assert_eq!(body["applied"], true);
+    assert_eq!(body["restart_required"], false);
+    assert_eq!(config.effective_revision(), 1);
+
+    clock.0.store(1_012_000_000, Ordering::Release);
+    runtime.set_trigger_active(true).await.unwrap();
+    let epoch = started.pipeline.epoch.unwrap();
+    runtime
+        .submit_detection_batch(
+            DetectionBatch::new(FrameStamp::new(epoch, 1, 1_000_000_000), 640, 640, vec![])
+                .unwrap(),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        clock.0.fetch_add(4_000_000, Ordering::AcqRel);
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(
+        device.receipts().len(),
+        1,
+        "pipeline metrics: {:?}",
+        runtime.snapshot().pipeline_metrics
+    );
+    assert_eq!(device.receipts()[0].target_object_id, 0);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
 async fn failed_output_gate_hot_apply_never_advances_the_effective_revision() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");

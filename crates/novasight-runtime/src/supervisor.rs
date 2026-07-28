@@ -22,7 +22,9 @@ use novasight_pipeline::{
     PerceptionSession, PipelineConfig, PipelineEvent, PipelineIngress, PipelineMetrics,
     PipelineRuntime, PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription, TriggerMode,
 };
-use novasight_store::config::TriggerMode as ConfigTriggerMode;
+use novasight_store::config::{
+    RecoilConfig as ConfigRecoilConfig, TriggerMode as ConfigTriggerMode,
+};
 use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, SqliteModelCatalog};
 use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 
@@ -96,6 +98,7 @@ pub struct RuntimeDependencies {
     device: Arc<dyn PointerDevice>,
     pipeline: PipelineConfig,
     hardware_trigger_required: AtomicBool,
+    recoil_config: std::sync::RwLock<RecoilConfig>,
     model_geometry: std::sync::RwLock<Option<ModelGeometry>>,
     perception: Option<Arc<dyn PerceptionAdapter>>,
     model_catalog: Option<SqliteModelCatalog>,
@@ -145,11 +148,13 @@ impl RuntimeDependencies {
             roi_height: pipeline.control.roi_height,
         };
         let hardware_trigger_required = pipeline.trigger_mode == TriggerMode::Hardware;
+        let recoil_config = pipeline.recoil;
         Self {
             clock,
             device,
             pipeline,
             hardware_trigger_required: AtomicBool::new(hardware_trigger_required),
+            recoil_config: std::sync::RwLock::new(recoil_config),
             model_geometry: std::sync::RwLock::new(Some(model_geometry)),
             perception: None,
             model_catalog: None,
@@ -189,6 +194,10 @@ impl RuntimeDependencies {
 
     pub fn with_recoil(mut self, config: RecoilConfig) -> Self {
         self.pipeline.recoil = config;
+        *self
+            .recoil_config
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config;
         self
     }
 
@@ -203,6 +212,7 @@ impl RuntimeDependencies {
             ..self.pipeline.clone()
         };
         pipeline.trigger_mode = self.trigger_mode();
+        pipeline.recoil = self.recoil_config();
         if let Some(geometry) = self.model_geometry() {
             pipeline.control.source_width = geometry.source_width;
             pipeline.control.roi_width = geometry.roi_width;
@@ -229,6 +239,20 @@ impl RuntimeDependencies {
     fn set_trigger_mode(&self, mode: TriggerMode) {
         self.hardware_trigger_required
             .store(mode == TriggerMode::Hardware, Ordering::Release);
+    }
+
+    fn recoil_config(&self) -> RecoilConfig {
+        *self
+            .recoil_config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn set_recoil_config(&self, config: RecoilConfig) {
+        *self
+            .recoil_config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config;
     }
 
     fn model_geometry(&self) -> Option<ModelGeometry> {
@@ -911,6 +935,25 @@ impl RuntimeHandle {
             .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
     }
 
+    pub(crate) async fn update_recoil_config(
+        &self,
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::UpdateRecoilConfig {
+                service,
+                update,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
+    }
+
     pub fn preview_snapshot(&self) -> Option<PreviewSnapshot> {
         self.preview.as_ref().map(PreviewHub::snapshot)
     }
@@ -1408,6 +1451,15 @@ async fn handle_command(
             let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
             let result =
                 update_trigger_mode_config_state(service, update, ingress, dependencies).await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::UpdateRecoilConfig {
+            service,
+            update,
+            reply,
+        } => {
+            let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
+            let result = update_recoil_config_state(service, update, ingress, dependencies).await;
             let _ = reply.send(result);
         }
         RuntimeCommand::SetPreviewActive {
@@ -2552,6 +2604,81 @@ async fn update_trigger_mode_config_state(
         install_trigger_mode(ingress, dependencies, mode)
             .await
             .map_err(ConfigServiceError::Runtime)?;
+    }
+    Ok(transaction.commit())
+}
+
+fn runtime_recoil_config(config: &ConfigRecoilConfig) -> RecoilConfig {
+    RecoilConfig {
+        enabled: config.enabled,
+        require_target: config.require_target,
+        base_rate_counts_s: config.base_rate_counts_s,
+        max_rate_counts_s: config.max_rate_counts_s,
+        startup_ms: config.startup_ms,
+        positive_deadzone_norm: config.positive_deadzone_norm,
+        negative_deadzone_norm: config.negative_deadzone_norm,
+        full_brake_error_norm: config.full_brake_error_norm,
+        fast_add_gain_counts_s: config.fast_add_gain_counts_s,
+        max_fast_add_ratio: config.max_fast_add_ratio,
+        stale_threshold_ms: config.stale_threshold_ms,
+    }
+}
+
+async fn install_recoil_config(
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+    config: RecoilConfig,
+) -> Result<(), RuntimeError> {
+    if let Some(ingress) = ingress {
+        tokio::task::spawn_blocking(move || ingress.set_recoil_config(config))
+            .await
+            .map_err(|error| {
+                RuntimeError::pipeline_rejected(format!("recoil transition task failed: {error}"))
+            })?
+            .map_err(|error| RuntimeError::pipeline_rejected(error.to_string()))?;
+    }
+    dependencies.set_recoil_config(config);
+    Ok(())
+}
+
+async fn update_recoil_config_state(
+    service: ConfigService,
+    update: ConfigFieldUpdate,
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ConfigUpdate, ConfigServiceError> {
+    let stored = ConfigService::recoil_value(&update)?;
+    let requested = runtime_recoil_config(&stored);
+    let previous = dependencies.recoil_config();
+
+    // Disabling output is safety-monotonic and takes effect before disk I/O.
+    // Enabling or changing rates is published only after persistence succeeds.
+    if previous.enabled && !requested.enabled {
+        install_recoil_config(ingress.clone(), dependencies, requested)
+            .await
+            .map_err(ConfigServiceError::Runtime)?;
+    }
+    let transaction = match service.persist_recoil(update, stored).await {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            if previous.enabled
+                && !requested.enabled
+                && let Err(revert) =
+                    install_recoil_config(ingress.clone(), dependencies, previous).await
+            {
+                return Err(ConfigServiceError::Runtime(revert));
+            }
+            return Err(error);
+        }
+    };
+    if previous.enabled && !requested.enabled {
+        // The live controller was already disabled before persistence.
+    } else if previous.enabled || requested.enabled {
+        install_recoil_config(ingress, dependencies, requested)
+            .await
+            .map_err(ConfigServiceError::Runtime)?;
+    } else {
+        dependencies.set_recoil_config(requested);
     }
     Ok(transaction.commit())
 }

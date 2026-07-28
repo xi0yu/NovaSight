@@ -67,6 +67,11 @@ pub(crate) enum RuntimeCommand {
         update: ConfigFieldUpdate,
         reply: oneshot::Sender<Result<ConfigUpdate, ConfigServiceError>>,
     },
+    UpdateRecoilConfig {
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+        reply: oneshot::Sender<Result<ConfigUpdate, ConfigServiceError>>,
+    },
     SetPreviewActive {
         active: bool,
         reply: oneshot::Sender<Result<PreviewSnapshot, RuntimeError>>,
