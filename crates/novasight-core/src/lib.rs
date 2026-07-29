@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod assessment;
 pub mod capture;
 pub mod controller;
 pub mod error;
@@ -14,6 +15,10 @@ pub mod targeting;
 pub mod tracking;
 pub mod units;
 
+pub use assessment::{
+    AlgorithmScore, AlgorithmScoreConfig, AlgorithmTraceSample, CountResponseLagEstimate,
+    CountResponseLagScore, CountResponseModel, estimate_count_response_lag, score_algorithm_trace,
+};
 pub use capture::{
     CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError,
     CaptureSelectionError, CaptureSelectionPreference, SelectedCaptureProfile,

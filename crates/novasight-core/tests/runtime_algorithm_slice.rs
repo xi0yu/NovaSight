@@ -13,6 +13,10 @@ use novasight_core::freshness::{FreshnessPolicy, evaluate as freshness_evaluate}
 use novasight_core::perception::types::Detection;
 use novasight_core::tracking::{TargetingConfig, TargetingCore};
 use novasight_core::units::Nanoseconds;
+use novasight_core::{
+    AlgorithmScoreConfig, AlgorithmTraceSample, CountResponseModel, estimate_count_response_lag,
+    score_algorithm_trace,
+};
 use serde_json::Value;
 
 fn fixture_dir() -> PathBuf {
@@ -167,4 +171,95 @@ fn dual_phase_first_observation_emits_first_decision() {
     assert!(decision.emit_allowed);
     assert_eq!(decision.block_reason, BlockReason::None);
     assert_eq!(decision.mode, ControlMode::Far);
+}
+
+#[test]
+fn closed_loop_algorithm_score_tracks_visual_convergence() {
+    let control_config = DualPhaseConfig::default();
+    let focal_x = (control_config.source_width as f64 * 0.5)
+        / (control_config.projection_fov_x_deg.to_radians() * 0.5).tan();
+    let observation_px_per_count =
+        focal_x * (std::f64::consts::TAU / control_config.projection_counts_per_360).tan();
+    let mut targeting = TargetingCore::new(TargetingConfig::default());
+    let mut control = DualPhaseControl::new(control_config);
+    let mut true_error_x = 100.0;
+    let mut delayed_errors = [true_error_x; 3];
+    let mut trace = Vec::new();
+
+    for generation in 1..=80_u64 {
+        let observed_error_x = delayed_errors[0];
+        delayed_errors.rotate_left(1);
+        let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
+        let box_height = 40.0;
+        let detection = Detection::new(
+            generation,
+            0,
+            (320.0 + observed_error_x - 20.0) as f32,
+            (320.0 - box_height * 0.22) as f32,
+            40.0,
+            box_height as f32,
+            0.95,
+        )
+        .expect("valid detection");
+        let selection = targeting.select_at(&[detection], (320.0, 320.0), capture_ts_ns);
+        let decision = control.calculate(ControlObservation {
+            generation,
+            target_id: selection.target_track_id.map_or(0, |track_id| track_id.0),
+            capture_ts_ns,
+            control_now_ns: capture_ts_ns + 4_000_000,
+            aim_x: selection.target_aim_x.unwrap_or(320.0),
+            aim_y: selection.target_aim_y.unwrap_or(320.0),
+            crosshair_x: 320.0,
+            crosshair_y: 320.0,
+            detection_confidence: selection.target_detection_confidence.map_or(0.0, f64::from),
+            track_confidence: selection.target_identity_confidence.unwrap_or(0.0),
+            target_valid: selection.target_track_id.is_some(),
+            trigger_active: true,
+        });
+        true_error_x -= f64::from(decision.dx) * observation_px_per_count;
+        delayed_errors[2] = true_error_x;
+        trace.push(AlgorithmTraceSample::from_control_decision(&decision));
+    }
+
+    let score = score_algorithm_trace(&trace, AlgorithmScoreConfig::default());
+
+    assert_eq!(score.total_samples, 80);
+    assert_eq!(score.target_switches, 0);
+    assert!(score.emitted_commands > 0);
+    assert!(
+        score.final_error_px < score.initial_error_px * 0.05,
+        "final error should be materially lower; score={score:?}"
+    );
+    assert!(
+        score.mean_tail_error_px < 1.0,
+        "tail error should stay near the aim point; score={score:?}"
+    );
+    assert!(
+        score.max_overshoot_px < 2.0,
+        "default control should not hide a large overshoot; score={score:?}"
+    );
+    assert!(
+        score.settle_generation.is_some(),
+        "trace should reach the configured settle window; score={score:?}"
+    );
+
+    let response_lag = estimate_count_response_lag(
+        &trace,
+        CountResponseModel {
+            px_per_count_x: observation_px_per_count,
+            px_per_count_y: observation_px_per_count,
+            min_lag_samples: 1,
+            max_lag_samples: 5,
+        },
+    )
+    .expect("count response lag estimate");
+
+    assert_eq!(
+        response_lag.best.lag_samples, 3,
+        "synthetic visual feedback delay should be recovered; estimate={response_lag:?}"
+    );
+    assert!(
+        response_lag.best.rms_residual_px < 1e-4,
+        "stationary synthetic response should leave no unexplained residual; estimate={response_lag:?}"
+    );
 }
