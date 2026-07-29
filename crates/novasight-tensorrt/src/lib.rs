@@ -15,8 +15,9 @@ use thiserror::Error;
 mod decoder;
 pub use decoder::{DecodeContract, DecodeError, DetectionDecoder};
 
-const ABI_VERSION: u32 = 2;
+const ABI_VERSION: u32 = 3;
 const MAX_NAME: usize = 128;
+const MAX_DEVICE_NAME: usize = 256;
 const MAX_RANK: usize = 8;
 const MAX_OUTPUTS: usize = 8;
 const ERROR_CAPACITY: usize = 1024;
@@ -129,6 +130,64 @@ pub struct EngineContract {
     selected_profile: u32,
 }
 
+/// Runtime identity that determines whether a previous Engine validation
+/// receipt still belongs to the current Jetson environment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TensorRtEnvironment {
+    runtime_abi_version: u32,
+    tensorrt_runtime_version: i32,
+    cuda_runtime_version: i32,
+    cuda_driver_version: i32,
+    device_ordinal: i32,
+    compute_capability_major: i32,
+    compute_capability_minor: i32,
+    integrated: bool,
+    total_global_memory: u64,
+    device_name: String,
+}
+
+impl TensorRtEnvironment {
+    pub const fn runtime_abi_version(&self) -> u32 {
+        self.runtime_abi_version
+    }
+
+    pub const fn tensorrt_runtime_version(&self) -> i32 {
+        self.tensorrt_runtime_version
+    }
+
+    pub const fn cuda_runtime_version(&self) -> i32 {
+        self.cuda_runtime_version
+    }
+
+    pub const fn cuda_driver_version(&self) -> i32 {
+        self.cuda_driver_version
+    }
+
+    pub const fn device_ordinal(&self) -> i32 {
+        self.device_ordinal
+    }
+
+    pub const fn compute_capability_major(&self) -> i32 {
+        self.compute_capability_major
+    }
+
+    pub const fn compute_capability_minor(&self) -> i32 {
+        self.compute_capability_minor
+    }
+
+    pub const fn integrated(&self) -> bool {
+        self.integrated
+    }
+
+    pub const fn total_global_memory(&self) -> u64 {
+        self.total_global_memory
+    }
+
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+}
+
 impl EngineContract {
     pub const fn input(&self) -> &TensorSpec {
         &self.input
@@ -192,6 +251,55 @@ impl TensorRtEngine {
             });
         }
         Ok(())
+    }
+
+    #[cfg(feature = "ffi")]
+    pub fn environment() -> Result<TensorRtEnvironment, TensorRtError> {
+        Self::environment_from_abi(&LinkedTensorRtAbi)
+    }
+
+    fn environment_from_abi(
+        abi: &dyn NativeTensorRtAbi,
+    ) -> Result<TensorRtEnvironment, TensorRtError> {
+        let actual = abi.abi_version();
+        if actual != ABI_VERSION {
+            return Err(TensorRtError::AbiVersion {
+                expected: ABI_VERSION,
+                actual,
+            });
+        }
+        let mut native = NativeTensorRtEnvironment::empty();
+        let mut error = [0 as c_char; ERROR_CAPACITY];
+        let code = unsafe { abi.environment(&mut native, &mut error) };
+        if code != 0 {
+            return Err(TensorRtError::NativeEnvironment {
+                code,
+                detail: error_text(&error),
+            });
+        }
+        if native.runtime_abi_version != ABI_VERSION {
+            return Err(TensorRtError::AbiVersion {
+                expected: ABI_VERSION,
+                actual: native.runtime_abi_version,
+            });
+        }
+        let integrated = match native.integrated {
+            0 => false,
+            1 => true,
+            value => return Err(TensorRtError::InvalidIntegratedFlag(value)),
+        };
+        Ok(TensorRtEnvironment {
+            runtime_abi_version: native.runtime_abi_version,
+            tensorrt_runtime_version: native.tensorrt_runtime_version,
+            cuda_runtime_version: native.cuda_runtime_version,
+            cuda_driver_version: native.cuda_driver_version,
+            device_ordinal: native.device_ordinal,
+            compute_capability_major: native.compute_capability_major,
+            compute_capability_minor: native.compute_capability_minor,
+            integrated,
+            total_global_memory: native.total_global_memory,
+            device_name: native_string(&native.device_name)?.to_owned(),
+        })
     }
 
     #[cfg(feature = "ffi")]
@@ -564,6 +672,10 @@ impl HostTensor<'_> {
 pub enum TensorRtError {
     #[error("TensorRT runtime ABI mismatch: expected {expected}, got {actual}")]
     AbiVersion { expected: u32, actual: u32 },
+    #[error("TensorRT environment query failed with code {code}: {detail}")]
+    NativeEnvironment { code: i32, detail: String },
+    #[error("TensorRT returned invalid integrated-device flag {0}")]
+    InvalidIntegratedFlag(u32),
     #[error("TensorRT engine path is not UTF-8: {}", .0.display())]
     NonUtf8Path(std::path::PathBuf),
     #[error("TensorRT engine path contains a NUL byte")]
@@ -709,6 +821,10 @@ fn decode_tensor_spec(native: &NativeTensorSpec) -> Result<TensorSpec, TensorRtE
 }
 
 fn native_name(name: &[c_char; MAX_NAME]) -> Result<&str, TensorRtError> {
+    native_string(name)
+}
+
+fn native_string<const N: usize>(name: &[c_char; N]) -> Result<&str, TensorRtError> {
     let end = name
         .iter()
         .position(|value| *value == 0)
@@ -773,6 +889,38 @@ struct NativeEngineSpec {
     selected_profile: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NativeTensorRtEnvironment {
+    runtime_abi_version: u32,
+    tensorrt_runtime_version: i32,
+    cuda_runtime_version: i32,
+    cuda_driver_version: i32,
+    device_ordinal: i32,
+    compute_capability_major: i32,
+    compute_capability_minor: i32,
+    integrated: u32,
+    total_global_memory: u64,
+    device_name: [c_char; MAX_DEVICE_NAME],
+}
+
+impl NativeTensorRtEnvironment {
+    const fn empty() -> Self {
+        Self {
+            runtime_abi_version: 0,
+            tensorrt_runtime_version: 0,
+            cuda_runtime_version: 0,
+            cuda_driver_version: 0,
+            device_ordinal: 0,
+            compute_capability_major: 0,
+            compute_capability_minor: 0,
+            integrated: 0,
+            total_global_memory: 0,
+            device_name: [0; MAX_DEVICE_NAME],
+        }
+    }
+}
+
 impl NativeEngineSpec {
     const fn empty() -> Self {
         Self {
@@ -815,6 +963,12 @@ impl NativeHostTensorView {
 
 trait NativeTensorRtAbi: Send + Sync {
     fn abi_version(&self) -> u32;
+
+    unsafe fn environment(
+        &self,
+        environment: &mut NativeTensorRtEnvironment,
+        error: &mut [c_char],
+    ) -> i32;
 
     unsafe fn create(
         &self,
@@ -861,6 +1015,16 @@ struct LinkedTensorRtAbi;
 impl NativeTensorRtAbi for LinkedTensorRtAbi {
     fn abi_version(&self) -> u32 {
         unsafe { novasight_tensorrt_abi_version() }
+    }
+
+    unsafe fn environment(
+        &self,
+        environment: &mut NativeTensorRtEnvironment,
+        error: &mut [c_char],
+    ) -> i32 {
+        unsafe {
+            novasight_tensorrt_environment_query(environment, error.as_mut_ptr(), error.len())
+        }
     }
 
     unsafe fn create(
@@ -952,6 +1116,11 @@ impl NativeTensorRtAbi for LinkedTensorRtAbi {
 #[cfg(feature = "ffi")]
 unsafe extern "C" {
     fn novasight_tensorrt_abi_version() -> u32;
+    fn novasight_tensorrt_environment_query(
+        environment_out: *mut NativeTensorRtEnvironment,
+        error_out: *mut c_char,
+        error_out_size: usize,
+    ) -> i32;
     fn novasight_tensorrt_create(
         engine_path: *const c_char,
         requested_input_shape: *const u64,
@@ -1006,6 +1175,25 @@ mod tests {
     impl NativeTensorRtAbi for FakeAbi {
         fn abi_version(&self) -> u32 {
             ABI_VERSION
+        }
+
+        unsafe fn environment(
+            &self,
+            environment: &mut NativeTensorRtEnvironment,
+            _error: &mut [c_char],
+        ) -> i32 {
+            environment.runtime_abi_version = ABI_VERSION;
+            environment.tensorrt_runtime_version = 10_03_00;
+            environment.cuda_runtime_version = 12_020;
+            environment.cuda_driver_version = 12_020;
+            environment.compute_capability_major = 8;
+            environment.compute_capability_minor = 7;
+            environment.integrated = 1;
+            environment.total_global_memory = 16 * 1024 * 1024 * 1024;
+            for (target, source) in environment.device_name.iter_mut().zip(b"Orin") {
+                *target = *source as c_char;
+            }
+            0
         }
 
         unsafe fn create(
@@ -1121,6 +1309,20 @@ mod tests {
     }
 
     #[test]
+    fn environment_receipt_reports_native_runtime_and_device_identity() {
+        let abi = FakeAbi::new();
+        let environment = TensorRtEngine::environment_from_abi(abi.as_ref()).unwrap();
+        assert_eq!(environment.runtime_abi_version(), ABI_VERSION);
+        assert_eq!(environment.tensorrt_runtime_version(), 10_03_00);
+        assert_eq!(environment.cuda_runtime_version(), 12_020);
+        assert_eq!(environment.cuda_driver_version(), 12_020);
+        assert_eq!(environment.compute_capability_major(), 8);
+        assert_eq!(environment.compute_capability_minor(), 7);
+        assert!(environment.integrated());
+        assert_eq!(environment.device_name(), "Orin");
+    }
+
+    #[test]
     fn engine_owns_handle_and_executes_external_device_tensor_synchronously() {
         let abi = FakeAbi::new();
         let contract = TensorContract::rgb_nchw(640, 640, TensorDtype::Float16).unwrap();
@@ -1209,6 +1411,15 @@ mod tests {
         assert_eq!(std::mem::offset_of!(NativeDeviceTensorView, dimensions), 24);
         assert_eq!(std::mem::size_of::<NativeHostTensorView>(), 232);
         assert_eq!(std::mem::offset_of!(NativeHostTensorView, spec), 16);
+        assert_eq!(std::mem::size_of::<NativeTensorRtEnvironment>(), 296);
+        assert_eq!(
+            std::mem::offset_of!(NativeTensorRtEnvironment, total_global_memory),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(NativeTensorRtEnvironment, device_name),
+            40
+        );
     }
 
     #[test]

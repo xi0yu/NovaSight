@@ -245,6 +245,19 @@ impl ModelJobRunner {
         Err(ModelIngressError::Unavailable)
     }
 
+    pub(crate) async fn validation_receipt_is_current(
+        &self,
+        engine_path: &Path,
+    ) -> Result<bool, ModelIngressError> {
+        #[cfg(feature = "tensorrt-model-ingress")]
+        return self.native.validation_receipt_is_current(engine_path).await;
+        #[cfg(not(feature = "tensorrt-model-ingress"))]
+        {
+            let _ = engine_path;
+            Err(ModelIngressError::Unavailable)
+        }
+    }
+
     pub(crate) async fn inspect(
         &self,
         engine_path: &Path,

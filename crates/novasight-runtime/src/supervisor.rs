@@ -1706,36 +1706,51 @@ async fn activate_model_state(
         action,
         message: format!("model validation receipt task failed: {error}"),
     })?;
-    let manifest_generated = match receipt {
-        Ok(_) => false,
-        Err(ModelCatalogError::IngressManifestInvalid { .. }) => {
-            generate_candidate_model_manifest(
-                action,
-                candidate.artifact.id,
-                &parser_preset,
-                &candidate.version.classes,
-                snapshot_tx,
-                ingress_tx,
-                notice_tx,
-                state,
-                active_pipeline,
-                dependencies,
-            )
-            .await?;
-            let receipt_catalog = catalog.clone();
-            let receipt_artifact_id = candidate.artifact.id;
-            tokio::task::spawn_blocking(move || {
-                receipt_catalog.validate_ingress_receipt(receipt_artifact_id)
-            })
-            .await
-            .map_err(|error| ModelActivationError::Failed {
-                action,
-                message: format!("generated model manifest validation task failed: {error}"),
-            })?
-            .map_err(ModelActivationError::Catalog)?;
-            true
-        }
+    let receipt_is_current = match receipt {
+        Ok(_) => match dependencies.model_jobs.as_ref() {
+            Some(jobs) => jobs
+                .validation_receipt_is_current(&candidate.artifact_path)
+                .await
+                .map_err(|error| ModelActivationError::Failed {
+                    action,
+                    message: format!("model validation environment check failed: {error}"),
+                })?,
+            // Builds without native TensorRT admission retain the structural
+            // manifest contract. Production Jetson wiring always attaches the
+            // native runner and therefore performs the environment check.
+            None => true,
+        },
+        Err(ModelCatalogError::IngressManifestInvalid { .. }) => false,
         Err(error) => return Err(ModelActivationError::Catalog(error)),
+    };
+    let manifest_generated = if receipt_is_current {
+        false
+    } else {
+        generate_candidate_model_manifest(
+            action,
+            candidate.artifact.id,
+            &parser_preset,
+            &candidate.version.classes,
+            snapshot_tx,
+            ingress_tx,
+            notice_tx,
+            state,
+            active_pipeline,
+            dependencies,
+        )
+        .await?;
+        let receipt_catalog = catalog.clone();
+        let receipt_artifact_id = candidate.artifact.id;
+        tokio::task::spawn_blocking(move || {
+            receipt_catalog.validate_ingress_receipt(receipt_artifact_id)
+        })
+        .await
+        .map_err(|error| ModelActivationError::Failed {
+            action,
+            message: format!("generated model manifest validation task failed: {error}"),
+        })?
+        .map_err(ModelActivationError::Catalog)?;
+        true
     };
 
     let adapter = dependencies

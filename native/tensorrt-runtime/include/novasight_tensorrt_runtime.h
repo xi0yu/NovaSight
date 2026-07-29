@@ -8,10 +8,11 @@
 extern "C" {
 #endif
 
-#define NOVASIGHT_TENSORRT_RUNTIME_ABI_VERSION 2U
+#define NOVASIGHT_TENSORRT_RUNTIME_ABI_VERSION 3U
 #define NOVASIGHT_TENSORRT_MAX_TENSOR_NAME 128U
 #define NOVASIGHT_TENSORRT_MAX_RANK 8U
 #define NOVASIGHT_TENSORRT_MAX_OUTPUTS 8U
+#define NOVASIGHT_TENSORRT_MAX_DEVICE_NAME 256U
 
 typedef enum {
     NOVASIGHT_TENSOR_DTYPE_FLOAT32 = 1,
@@ -48,9 +49,28 @@ typedef struct {
     novasight_tensor_spec spec;
 } novasight_host_tensor_view;
 
+typedef struct {
+    uint32_t runtime_abi_version;
+    int32_t tensorrt_runtime_version;
+    int32_t cuda_runtime_version;
+    int32_t cuda_driver_version;
+    int32_t device_ordinal;
+    int32_t compute_capability_major;
+    int32_t compute_capability_minor;
+    uint32_t integrated;
+    uint64_t total_global_memory;
+    char device_name[NOVASIGHT_TENSORRT_MAX_DEVICE_NAME];
+} novasight_tensorrt_environment;
+
 typedef struct novasight_tensorrt_engine novasight_tensorrt_engine;
 
 uint32_t novasight_tensorrt_abi_version(void);
+
+int novasight_tensorrt_environment_query(
+    novasight_tensorrt_environment* environment_out,
+    char* error_out,
+    size_t error_out_size
+);
 
 int novasight_tensorrt_create(
     const char* engine_path,

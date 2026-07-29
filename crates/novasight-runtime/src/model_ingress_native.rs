@@ -19,7 +19,9 @@ use novasight_store::model_manifest::{
 };
 use novasight_tensorrt::{
     DecodeContract, DetectionDecoder, EngineContract, TensorDtype, TensorRtEngine,
+    TensorRtEnvironment,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -30,6 +32,44 @@ use crate::model_ingress::{
 
 const MANIFEST_LIMIT: usize = 1024 * 1024;
 const RUNTIME_MAX_DETECTIONS: u32 = 256;
+const MODEL_VALIDATION_ENVIRONMENT_SCHEMA: u32 = 1;
+const NOVASIGHT_MODEL_ABI: u32 = 1;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ModelValidationEnvironment {
+    schema_version: u32,
+    novasight_model_abi: u32,
+    runtime_abi_version: u32,
+    tensorrt_runtime_version: i32,
+    cuda_runtime_version: i32,
+    cuda_driver_version: i32,
+    device_ordinal: i32,
+    compute_capability_major: i32,
+    compute_capability_minor: i32,
+    integrated: bool,
+    total_global_memory: u64,
+    device_name: String,
+}
+
+impl From<TensorRtEnvironment> for ModelValidationEnvironment {
+    fn from(environment: TensorRtEnvironment) -> Self {
+        Self {
+            schema_version: MODEL_VALIDATION_ENVIRONMENT_SCHEMA,
+            novasight_model_abi: NOVASIGHT_MODEL_ABI,
+            runtime_abi_version: environment.runtime_abi_version(),
+            tensorrt_runtime_version: environment.tensorrt_runtime_version(),
+            cuda_runtime_version: environment.cuda_runtime_version(),
+            cuda_driver_version: environment.cuda_driver_version(),
+            device_ordinal: environment.device_ordinal(),
+            compute_capability_major: environment.compute_capability_major(),
+            compute_capability_minor: environment.compute_capability_minor(),
+            integrated: environment.integrated(),
+            total_global_memory: environment.total_global_memory(),
+            device_name: environment.device_name().to_owned(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct NativeModelJobRunner;
@@ -41,6 +81,20 @@ impl NativeModelJobRunner {
 
     pub async fn preflight(&self) -> Result<(), ModelIngressError> {
         TensorRtEngine::preflight().map_err(native_failure)
+    }
+
+    pub(crate) async fn validation_receipt_is_current(
+        &self,
+        engine_path: &Path,
+    ) -> Result<bool, ModelIngressError> {
+        let engine_path = engine_path.to_owned();
+        tokio::task::spawn_blocking(move || validation_receipt_is_current_sync(&engine_path))
+            .await
+            .map_err(|error| {
+                ModelIngressError::Failed(format!(
+                    "model validation environment task failed: {error}"
+                ))
+            })?
     }
 
     pub(crate) async fn admit(
@@ -321,7 +375,9 @@ fn probe_loaded(
         .decode(&outputs)
         .map_err(|error| ModelIngressError::InvalidRequest(error.to_string()))?;
     let decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
-    drop(outputs);
+
+    let validation_environment =
+        ModelValidationEnvironment::from(TensorRtEngine::environment().map_err(native_failure)?);
 
     let mut manifest = canonical_manifest(engine_path, &profile, &contract, parser)?;
     manifest.model_fingerprint = compute_model_fingerprint(&manifest).map_err(|error| {
@@ -336,6 +392,7 @@ fn probe_loaded(
         "nms_ok": true,
         "detection_batch_ok": true,
         "profile_fingerprint": manifest.model_fingerprint,
+        "environment": validation_environment.clone(),
         "issues": [],
     });
     let report = json!({
@@ -359,6 +416,10 @@ fn probe_loaded(
         ModelIngressError::Protocol("canonical manifest must serialize as an object".to_owned())
     })?;
     written_object.insert("manifest_kind".to_owned(), json!("novasight_model"));
+    written_object.insert(
+        "validation_environment".to_owned(),
+        serde_json::to_value(&validation_environment).map_err(ModelIngressError::DecodeResponse)?,
+    );
     written_object.insert("model_profile".to_owned(), profile.clone());
     write_manifest(&profile_path, &written)?;
     Ok(ModelWorkerOutput {
@@ -366,6 +427,26 @@ fn probe_loaded(
         profile,
         report: Some(report),
     })
+}
+
+fn validation_receipt_is_current_sync(engine_path: &Path) -> Result<bool, ModelIngressError> {
+    let profile_path = manifest_path(engine_path)?;
+    let root = load_manifest(&profile_path)?;
+    let Some(receipt) = root.get("validation_environment") else {
+        return Ok(false);
+    };
+    let receipt: ModelValidationEnvironment = match serde_json::from_value(receipt.clone()) {
+        Ok(receipt) => receipt,
+        Err(_) => return Ok(false),
+    };
+    if receipt.schema_version != MODEL_VALIDATION_ENVIRONMENT_SCHEMA
+        || receipt.novasight_model_abi != NOVASIGHT_MODEL_ABI
+    {
+        return Ok(false);
+    }
+    let current =
+        ModelValidationEnvironment::from(TensorRtEngine::environment().map_err(native_failure)?);
+    Ok(receipt == current)
 }
 
 fn inspected_profile(
@@ -507,7 +588,7 @@ fn validate_semantics(
             "the production manifest currently requires padding_value=0".to_owned(),
         ));
     }
-    if request.bbox_format.trim().to_ascii_lowercase() != "xywh" {
+    if !request.bbox_format.trim().eq_ignore_ascii_case("xywh") {
         return Err(ModelIngressError::InvalidRequest(format!(
             "{parser} requires bbox_format=xywh"
         )));

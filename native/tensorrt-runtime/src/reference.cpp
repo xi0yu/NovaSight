@@ -19,6 +19,22 @@ extern "C" uint32_t novasight_tensorrt_abi_version(void) {
     return NOVASIGHT_TENSORRT_RUNTIME_ABI_VERSION;
 }
 
+extern "C" int novasight_tensorrt_environment_query(
+    novasight_tensorrt_environment* environment_out,
+    char* error_out,
+    size_t error_out_size
+) {
+    if (environment_out != nullptr) {
+        std::memset(environment_out, 0, sizeof(*environment_out));
+    }
+    write_error(
+        error_out,
+        error_out_size,
+        "reference TensorRT runtime has no CUDA environment"
+    );
+    return 2;
+}
+
 extern "C" int novasight_tensorrt_create(
     const char* engine_path,
     const uint64_t* requested_input_shape,

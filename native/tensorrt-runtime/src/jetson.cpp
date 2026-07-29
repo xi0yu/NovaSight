@@ -408,6 +408,54 @@ extern "C" uint32_t novasight_tensorrt_abi_version(void) {
     return NOVASIGHT_TENSORRT_RUNTIME_ABI_VERSION;
 }
 
+extern "C" int novasight_tensorrt_environment_query(
+    novasight_tensorrt_environment* environment_out,
+    char* error_out,
+    size_t error_out_size
+) {
+    if (environment_out != nullptr) {
+        std::memset(environment_out, 0, sizeof(*environment_out));
+    }
+    try {
+        if (environment_out == nullptr) {
+            throw std::runtime_error("TensorRT environment output pointer is null");
+        }
+        int runtime_version = 0;
+        int driver_version = 0;
+        int device_ordinal = 0;
+        cudaDeviceProp properties{};
+        cuda_check(cudaRuntimeGetVersion(&runtime_version), "cudaRuntimeGetVersion");
+        cuda_check(cudaDriverGetVersion(&driver_version), "cudaDriverGetVersion");
+        cuda_check(cudaGetDevice(&device_ordinal), "cudaGetDevice");
+        cuda_check(
+            cudaGetDeviceProperties(&properties, device_ordinal),
+            "cudaGetDeviceProperties"
+        );
+        const size_t device_name_length = std::strlen(properties.name);
+        if (device_name_length >= NOVASIGHT_TENSORRT_MAX_DEVICE_NAME) {
+            throw std::runtime_error("CUDA device name exceeds ABI capacity");
+        }
+        environment_out->runtime_abi_version = NOVASIGHT_TENSORRT_RUNTIME_ABI_VERSION;
+        environment_out->tensorrt_runtime_version = getInferLibVersion();
+        environment_out->cuda_runtime_version = runtime_version;
+        environment_out->cuda_driver_version = driver_version;
+        environment_out->device_ordinal = device_ordinal;
+        environment_out->compute_capability_major = properties.major;
+        environment_out->compute_capability_minor = properties.minor;
+        environment_out->integrated = properties.integrated != 0 ? 1U : 0U;
+        environment_out->total_global_memory =
+            static_cast<uint64_t>(properties.totalGlobalMem);
+        std::memcpy(environment_out->device_name, properties.name, device_name_length);
+        return 0;
+    } catch (const std::exception& error) {
+        write_error(error_out, error_out_size, error.what());
+        return 1;
+    } catch (...) {
+        write_error(error_out, error_out_size, "unexpected TensorRT environment exception");
+        return 2;
+    }
+}
+
 extern "C" int novasight_tensorrt_create(
     const char* engine_path,
     const uint64_t* requested_input_shape,

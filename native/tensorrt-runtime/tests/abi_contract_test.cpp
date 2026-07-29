@@ -8,11 +8,20 @@ int main() {
     static_assert(sizeof(novasight_engine_spec) == 1960);
     static_assert(sizeof(novasight_device_tensor_view) == 96);
     static_assert(sizeof(novasight_host_tensor_view) == 232);
+    static_assert(sizeof(novasight_tensorrt_environment) == 296);
     assert(novasight_tensorrt_abi_version() == NOVASIGHT_TENSORRT_RUNTIME_ABI_VERSION);
+    novasight_tensorrt_environment environment{};
+    char error[256] = {};
+    assert(novasight_tensorrt_environment_query(
+               &environment,
+               error,
+               sizeof(error)
+           ) == 2);
+    assert(std::strstr(error, "no CUDA environment") != nullptr);
     const uint64_t shape[] = {1, 3, 640, 640};
     novasight_tensorrt_engine* engine = reinterpret_cast<novasight_tensorrt_engine*>(1);
     novasight_engine_spec spec{};
-    char error[256] = {};
+    std::memset(error, 0, sizeof(error));
     assert(novasight_tensorrt_create(
                "/tmp/model.engine",
                shape,
