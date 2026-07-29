@@ -1,11 +1,14 @@
 //! Jetson production adapter composition.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, UNIX_EPOCH};
 
 use novasight_core::{
     CaptureCapabilityProbe, CaptureSelectionPreference, Clock, PointerDevice, RuntimeEpoch,
@@ -82,8 +85,14 @@ pub(super) fn preflight_live_production(
     preflight_pointer_adapter(config)?;
     let preview = PreviewHub::new(config.consumers.preview);
     let crosshair = build_crosshair_hub(config)?;
-    let session =
-        build_deepstream_session_config(config, model_catalog, preview, crosshair, parser_library)?;
+    let session = build_deepstream_session_config(
+        config,
+        model_catalog,
+        preview,
+        crosshair,
+        parser_library,
+        &ModelIdentityCache::default(),
+    )?;
     preflight_deepstream_runtime(&session).map_err(LivePerceptionError::RuntimePreflight)
 }
 
@@ -116,6 +125,101 @@ fn build_native_kmnet(device: &DeviceConfig) -> Result<KmNetNativeDevice, LivePe
     .map_err(LivePerceptionError::NativeKmNet)
 }
 
+#[derive(Clone, Debug, Default)]
+struct ModelIdentityCache {
+    entries: Arc<Mutex<HashMap<PathBuf, CachedModelIdentity>>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ModelFileStamp {
+    size_bytes: u64,
+    modified_ns: u128,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed_seconds: i64,
+    #[cfg(unix)]
+    changed_nanoseconds: i64,
+}
+
+#[derive(Clone, Debug)]
+struct CachedModelIdentity {
+    stamp: ModelFileStamp,
+    sha256: String,
+}
+
+impl ModelIdentityCache {
+    fn sha256(&self, path: &Path) -> Result<String, LivePerceptionError> {
+        let canonical = path
+            .canonicalize()
+            .map_err(|source| LivePerceptionError::ReadEngine {
+                path: path.to_owned(),
+                source,
+            })?;
+        let before =
+            fs::metadata(&canonical).map_err(|source| LivePerceptionError::ReadEngine {
+                path: canonical.clone(),
+                source,
+            })?;
+        let stamp = ModelFileStamp::from_metadata(&before);
+        if let Some(cached) = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&canonical)
+            .filter(|cached| cached.stamp == stamp)
+        {
+            return Ok(cached.sha256.clone());
+        }
+
+        let sha256 = sha256_file(&canonical)?;
+        let after = fs::metadata(&canonical).map_err(|source| LivePerceptionError::ReadEngine {
+            path: canonical.clone(),
+            source,
+        })?;
+        if ModelFileStamp::from_metadata(&after) != stamp {
+            return Err(manifest_error(
+                "engine file changed while its identity was being validated",
+            ));
+        }
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                canonical,
+                CachedModelIdentity {
+                    stamp,
+                    sha256: sha256.clone(),
+                },
+            );
+        Ok(sha256)
+    }
+}
+
+impl ModelFileStamp {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        Self {
+            size_bytes: metadata.len(),
+            modified_ns: metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0),
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            #[cfg(unix)]
+            changed_seconds: metadata.ctime(),
+            #[cfg(unix)]
+            changed_nanoseconds: metadata.ctime_nsec(),
+        }
+    }
+}
+
 fn build_live_dependencies(
     config: &AppConfig,
     config_service: ConfigService,
@@ -140,6 +244,7 @@ fn build_live_dependencies(
             preview,
             crosshair: crosshair.clone(),
             parser_library,
+            model_identity_cache: ModelIdentityCache::default(),
         }));
     if let Some(crosshair) = crosshair {
         dependencies = dependencies.with_crosshair(crosshair);
@@ -194,6 +299,7 @@ struct CatalogDeepStreamAdapter {
     preview: PreviewHub,
     crosshair: Option<CrosshairHub>,
     parser_library: PathBuf,
+    model_identity_cache: ModelIdentityCache,
 }
 
 impl PerceptionAdapter for CatalogDeepStreamAdapter {
@@ -205,6 +311,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             self.preview.clone(),
             self.crosshair.clone(),
             &self.parser_library,
+            &self.model_identity_cache,
         )
         .map(|_| ())
         .map_err(|error| PerceptionError::new(error.to_string()))
@@ -224,6 +331,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             &model,
             Some(candidate.parser_preset.as_str()),
             &self.parser_library,
+            &self.model_identity_cache,
         )
         .map(|(_, contract)| Some(contract))
         .map_err(|error| PerceptionError::new(error.to_string()))
@@ -240,9 +348,15 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             })?;
         let model = active_runtime_model(&self.model_catalog)
             .map_err(|error| PerceptionError::new(error.to_string()))?;
-        let model = resolve_model_nvinfer_config(&config, &model, None, &self.parser_library)
-            .map(|(_, contract)| contract)
-            .map_err(|error| PerceptionError::new(error.to_string()))?;
+        let model = resolve_model_nvinfer_config(
+            &config,
+            &model,
+            None,
+            &self.parser_library,
+            &self.model_identity_cache,
+        )
+        .map(|(_, contract)| contract)
+        .map_err(|error| PerceptionError::new(error.to_string()))?;
         Ok(Some(PerceptionRuntimeContract {
             model,
             source_width: capture.width,
@@ -266,6 +380,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             self.preview.clone(),
             self.crosshair.clone(),
             &self.parser_library,
+            &self.model_identity_cache,
         )
         .map_err(|error| PerceptionError::new(error.to_string()))?;
         DeepStreamAdapter::with_latest_frames(config, self.latest_frames.clone())
@@ -279,6 +394,7 @@ fn build_deepstream_session_config(
     preview_hub: PreviewHub,
     crosshair_hub: Option<CrosshairHub>,
     parser_library: &Path,
+    model_identity_cache: &ModelIdentityCache,
 ) -> Result<DeepStreamSessionConfig, LivePerceptionError> {
     let adapters = config
         .require_vision_adapters()
@@ -288,7 +404,7 @@ fn build_deepstream_session_config(
     let io_mode = u32::try_from(adapters.inference.deepstream_io_mode)
         .map_err(|_| LivePerceptionError::InvalidIoMode(adapters.inference.deepstream_io_mode))?;
     let (path, model_contract) =
-        resolve_active_nvinfer_config(config, model_catalog, parser_library)?;
+        resolve_active_nvinfer_config(config, model_catalog, parser_library, model_identity_cache)?;
     let inference = if model_contract.preserves_roi_coordinates {
         InferenceStage::DeepStreamNvinferAspectPreserving { config: path }
     } else {
@@ -399,9 +515,10 @@ fn resolve_active_nvinfer_config(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
     parser_library: &Path,
+    model_identity_cache: &ModelIdentityCache,
 ) -> Result<(PathBuf, PerceptionModelContract), LivePerceptionError> {
     let model = active_runtime_model(model_catalog)?;
-    resolve_model_nvinfer_config(config, &model, None, parser_library)
+    resolve_model_nvinfer_config(config, &model, None, parser_library, model_identity_cache)
 }
 
 fn active_runtime_model(
@@ -426,12 +543,13 @@ fn resolve_model_nvinfer_config(
     model: &RuntimeModelArtifact,
     requested_preset: Option<&str>,
     parser_library: &Path,
+    model_identity_cache: &ModelIdentityCache,
 ) -> Result<(PathBuf, PerceptionModelContract), LivePerceptionError> {
     let candidate_preflight = requested_preset.is_some();
     let inference = config
         .require_inference_adapter()
         .map_err(LivePerceptionError::Config)?;
-    let parsed_manifest = validate_runtime_model(config, model)?;
+    let parsed_manifest = validate_runtime_model(config, model, model_identity_cache)?;
     let manifest = &parsed_manifest.document;
     let requested_preset = validate_parser_preset(
         requested_preset.unwrap_or(manifest.postprocess.parser_preset.as_str()),
@@ -508,6 +626,7 @@ fn manifest_input_dimension(
 fn validate_runtime_model(
     config: &AppConfig,
     model: &RuntimeModelArtifact,
+    model_identity_cache: &ModelIdentityCache,
 ) -> Result<ParsedModelManifest, LivePerceptionError> {
     config
         .require_inference_adapter()
@@ -535,6 +654,7 @@ fn validate_runtime_model(
         &model.artifact_path,
         manifest,
         parsed_manifest.output_class_names_present,
+        model_identity_cache,
     )?;
     let registry_sha = normalize_registry_checksum(&model.artifact.checksum).ok_or_else(|| {
         LivePerceptionError::RegistryChecksumInvalid {
@@ -681,6 +801,7 @@ fn validate_model_document(
     engine: &Path,
     document: &ModelManifest,
     output_class_names_present: bool,
+    model_identity_cache: &ModelIdentityCache,
 ) -> Result<String, LivePerceptionError> {
     validate_model_runtime_contract(document, output_class_names_present)
         .map_err(|error| manifest_error(error.to_string()))?;
@@ -706,7 +827,7 @@ fn validate_model_document(
             document.artifact.size_bytes
         )));
     }
-    let actual_sha = sha256_file(engine)?;
+    let actual_sha = model_identity_cache.sha256(engine)?;
     if actual_sha != document.artifact.sha256 {
         return Err(manifest_error(format!(
             "engine sha256 {actual_sha} does not match manifest {}",

@@ -110,6 +110,11 @@ pub enum ModelProbeInputMode {
 
 #[derive(Clone, Debug)]
 pub enum ModelIngressRequest {
+    Admit {
+        artifact_id: i64,
+        parser_preset: String,
+        catalog_labels: Vec<String>,
+    },
     Inspect {
         artifact_id: i64,
     },
@@ -129,7 +134,8 @@ pub enum ModelIngressRequest {
 impl ModelIngressRequest {
     pub const fn artifact_id(&self) -> i64 {
         match self {
-            Self::Inspect { artifact_id }
+            Self::Admit { artifact_id, .. }
+            | Self::Inspect { artifact_id }
             | Self::GetProfile { artifact_id }
             | Self::Configure { artifact_id, .. }
             | Self::Probe { artifact_id, .. } => *artifact_id,
@@ -253,6 +259,38 @@ impl ModelJobRunner {
         #[cfg(not(feature = "tensorrt-model-ingress"))]
         {
             let _ = (engine_path, display_name, cancellation);
+            Err(ModelIngressError::Unavailable)
+        }
+    }
+
+    pub(crate) async fn admit(
+        &self,
+        engine_path: &Path,
+        display_name: &str,
+        parser_preset: &str,
+        catalog_labels: &[String],
+        cancellation: Arc<AtomicUsize>,
+    ) -> Result<ModelWorkerOutput, ModelIngressError> {
+        #[cfg(feature = "tensorrt-model-ingress")]
+        return self
+            .native
+            .admit(
+                engine_path,
+                display_name,
+                parser_preset,
+                catalog_labels,
+                cancellation,
+            )
+            .await;
+        #[cfg(not(feature = "tensorrt-model-ingress"))]
+        {
+            let _ = (
+                engine_path,
+                display_name,
+                parser_preset,
+                catalog_labels,
+                cancellation,
+            );
             Err(ModelIngressError::Unavailable)
         }
     }
@@ -440,13 +478,22 @@ pub(crate) fn load_profile(
 /// and dimensions come from the Engine inspection result; class labels are
 /// descriptive only and are generated from the real output channel count when
 /// the catalog has no matching labels.
-pub(crate) fn automatic_activation_profile(
+#[cfg(test)]
+fn automatic_activation_profile(
     inspected: &ModelIngressResult,
     parser_preset: &str,
     catalog_labels: &[String],
 ) -> Result<ModelProfileConfigureRequest, ModelIngressError> {
-    let outputs = inspected
-        .profile
+    automatic_activation_profile_from_value(&inspected.profile, parser_preset, catalog_labels)
+}
+
+#[cfg(any(test, feature = "tensorrt-model-ingress"))]
+pub(crate) fn automatic_activation_profile_from_value(
+    profile: &Value,
+    parser_preset: &str,
+    catalog_labels: &[String],
+) -> Result<ModelProfileConfigureRequest, ModelIngressError> {
+    let outputs = profile
         .get("outputs")
         .and_then(Value::as_array)
         .ok_or_else(|| {

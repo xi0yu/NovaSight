@@ -36,8 +36,7 @@ use crate::model_activation::{
 };
 use crate::model_ingress::{
     ModelIngressError, ModelIngressRequest, ModelIngressResult, ModelIngressStage, ModelJobRunner,
-    ModelManifestTransaction, ModelProbeInputMode, automatic_activation_profile, load_profile,
-    validate_worker_output,
+    ModelManifestTransaction, load_profile, validate_worker_output,
 };
 use crate::protocol::{RuntimeErrorSummary, SubsystemState};
 use crate::runtime_config::compose_pipeline_config;
@@ -1603,30 +1602,11 @@ async fn generate_candidate_model_manifest(
     active_pipeline: &mut Option<ActivePipeline>,
     dependencies: &RuntimeDependencies,
 ) -> Result<(), ModelActivationError> {
-    let inspected = model_ingress_state(
-        ModelIngressRequest::Inspect { artifact_id },
-        snapshot_tx,
-        ingress_tx,
-        notice_tx,
-        state,
-        active_pipeline,
-        dependencies,
-    )
-    .await
-    .map_err(|error| ModelActivationError::Failed {
-        action,
-        message: format!("automatic TensorRT Engine inspection failed: {error}"),
-    })?;
-    let profile = automatic_activation_profile(&inspected, parser_preset, catalog_labels).map_err(
-        |error| ModelActivationError::Failed {
-            action,
-            message: format!("automatic model contract selection failed: {error}"),
-        },
-    )?;
     model_ingress_state(
-        ModelIngressRequest::Configure {
+        ModelIngressRequest::Admit {
             artifact_id,
-            profile: Box::new(profile),
+            parser_preset: parser_preset.to_owned(),
+            catalog_labels: catalog_labels.to_vec(),
         },
         snapshot_tx,
         ingress_tx,
@@ -1638,24 +1618,7 @@ async fn generate_candidate_model_manifest(
     .await
     .map_err(|error| ModelActivationError::Failed {
         action,
-        message: format!("automatic model contract configuration failed: {error}"),
-    })?;
-    model_ingress_state(
-        ModelIngressRequest::Probe {
-            artifact_id,
-            input_mode: ModelProbeInputMode::Fixed,
-        },
-        snapshot_tx,
-        ingress_tx,
-        notice_tx,
-        state,
-        active_pipeline,
-        dependencies,
-    )
-    .await
-    .map_err(|error| ModelActivationError::Failed {
-        action,
-        message: format!("automatic TensorRT Engine probe failed: {error}"),
+        message: format!("automatic TensorRT Engine admission failed: {error}"),
     })?;
     Ok(())
 }
@@ -2080,6 +2043,7 @@ async fn model_ingress_state(
         PipelineState::Running | PipelineState::Standby
     );
     let stage = match &request {
+        ModelIngressRequest::Admit { .. } => ModelIngressStage::Probe,
         ModelIngressRequest::Inspect { .. } => ModelIngressStage::Inspect,
         ModelIngressRequest::Configure { .. } => ModelIngressStage::Configure,
         ModelIngressRequest::Probe { .. } => ModelIngressStage::Probe,
@@ -2097,6 +2061,20 @@ async fn model_ingress_state(
         stop_state(snapshot_tx, ingress_tx, state, active_pipeline).await?;
     }
     let worker = match &request {
+        ModelIngressRequest::Admit {
+            parser_preset,
+            catalog_labels,
+            ..
+        } => {
+            jobs.admit(
+                &artifact.artifact_path,
+                &artifact.project.name,
+                parser_preset,
+                catalog_labels,
+                cancellation,
+            )
+            .await
+        }
         ModelIngressRequest::Inspect { .. } => {
             jobs.inspect(
                 &artifact.artifact_path,

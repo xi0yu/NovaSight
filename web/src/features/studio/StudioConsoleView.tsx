@@ -72,8 +72,9 @@ import "./studio-settings.css";
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
 const CONTROL_ALGORITHM_LABEL = "双阶段 Atan 控制";
 const CONTROL_ALGORITHM_DESCRIPTION = "唯一生产控制器：单目标预测、角度投影、连续双阶段 Atan 响应、限幅与量化。";
+const loadModelManagerDialog = () => import("../models/ModelManagerDialog");
 const ModelManagerDialog = lazy(() =>
-  import("../models/ModelManagerDialog").then((module) => ({
+  loadModelManagerDialog().then((module) => ({
     default: module.ModelManagerDialog
   }))
 );
@@ -650,6 +651,7 @@ export function StudioConsoleView({
   useEffect(() => {
     if (activePage === "infer" || activePage === "control" || activePage === "latency" || activePage === "capture") {
       onStatusTopicChange(activePage);
+      if (activePage === "infer") void loadModelManagerDialog();
       return;
     }
     onStatusTopicChange("summary");
@@ -1805,9 +1807,6 @@ export function StudioConsoleView({
         if (cancelled) {
           return;
         }
-        setModelCatalog(null);
-        setModelCatalogModelCount(0);
-        setModelCatalogDirectoryCount(0);
         setLocalError(`模型目录读取失败：${getErrorMessage(err)}`);
         reportError(err, { source: "model-catalog", title: "模型目录读取失败" });
       })
@@ -3353,7 +3352,7 @@ export function StudioConsoleView({
     setModelCatalogMessage("");
     preferLatestModelVersionRef.current = true;
     try {
-      const result = await getModelCatalog(false);
+      const result = await getModelCatalog(true);
       applyModelCatalogResult(result);
       setModelDetailsRefreshKey((current) => current + 1);
       await onRefresh();

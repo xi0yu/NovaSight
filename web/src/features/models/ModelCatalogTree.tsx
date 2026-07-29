@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 
 import type {
   ModelCatalogDirectory,
@@ -31,6 +31,8 @@ const SHELVES: Array<{
   }
 ];
 
+const INITIAL_SHELF_ROWS = 100;
+
 export const ModelCatalogTree = memo(function ModelCatalogTree({
   models,
   selectedPath,
@@ -42,6 +44,11 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
   activeArtifactId: number | null;
   onSelectModel: (model: ModelCatalogModel) => void;
 }) {
+  const [visibleRows, setVisibleRows] = useState<Record<ModelRecommendation, number>>({
+    recommended: INITIAL_SHELF_ROWS,
+    unrated: INITIAL_SHELF_ROWS,
+    not_recommended: INITIAL_SHELF_ROWS
+  });
   return (
     <div className="model-catalog model-vault-shelves" aria-label="按推荐状态整理的模型" role="list">
       {SHELVES.map((shelf) => {
@@ -52,6 +59,7 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
             return activeOrder || left.name.localeCompare(right.name);
           });
         if (shelfModels.length === 0) return null;
+        const visibleModels = shelfModels.slice(0, visibleRows[shelf.recommendation]);
         return (
           <section
             className={`model-vault-shelf ${shelf.recommendation}`}
@@ -67,7 +75,7 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
               <b>{shelfModels.length}</b>
             </header>
             <div className="model-catalog-level" role="group">
-              {shelfModels.map((model) => (
+              {visibleModels.map((model) => (
                 <ModelCatalogRow
                   activeArtifactId={activeArtifactId}
                   key={model.relative_path}
@@ -76,6 +84,18 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
                   selectedPath={selectedPath}
                 />
               ))}
+              {visibleModels.length < shelfModels.length ? (
+                <button
+                  className="console-button secondary model-vault-load-more"
+                  onClick={() => setVisibleRows((current) => ({
+                    ...current,
+                    [shelf.recommendation]: current[shelf.recommendation] + INITIAL_SHELF_ROWS
+                  }))}
+                  type="button"
+                >
+                  再显示 {Math.min(INITIAL_SHELF_ROWS, shelfModels.length - visibleModels.length)} 个
+                </button>
+              ) : null}
             </div>
           </section>
         );

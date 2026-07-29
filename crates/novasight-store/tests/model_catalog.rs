@@ -601,7 +601,7 @@ fn snapshot_keeps_deployments_and_active_deployment_in_one_read_transaction() {
 }
 
 #[test]
-fn catalog_cache_and_force_scan_have_real_distinct_semantics() {
+fn catalog_snapshot_is_stable_and_force_refresh_stays_lightweight() {
     let directory = TestDirectory::new();
     let path = directory.0.join("novasight.db");
     let model_root = directory.0.join("models");
@@ -634,52 +634,23 @@ fn catalog_cache_and_force_scan_have_real_distinct_semantics() {
         "need_confirm"
     );
     assert_eq!(cached.cache_hits, 1);
-    assert_eq!(forced.root.children[0].model().scan_status, "ready");
-
-    let manifest_path = model_root.join("model.engine.manifest.json");
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-    let mut wrong_filename = manifest.clone();
-    wrong_filename["artifact"]["engine_path"] =
-        serde_json::Value::String("other.engine".to_owned());
-    fs::write(&manifest_path, serde_json::to_vec(&wrong_filename).unwrap()).unwrap();
-    assert_eq!(
-        catalog.catalog(true).unwrap().root.children[0]
-            .model()
-            .scan_status,
-        "invalid"
-    );
-
-    let mut malformed_runtime = manifest.clone();
-    malformed_runtime["runtime"] = serde_json::json!({"unexpected": true});
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec(&malformed_runtime).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        catalog.catalog(true).unwrap().root.children[0]
-            .model()
-            .scan_status,
-        "invalid"
-    );
-
-    let mut wrong_fingerprint = manifest;
-    wrong_fingerprint["model_fingerprint"] = serde_json::Value::String("wrong".to_owned());
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec(&wrong_fingerprint).unwrap(),
-    )
-    .unwrap();
-    let invalid_fingerprint = catalog.catalog(true).unwrap();
-    assert_eq!(
-        invalid_fingerprint.root.children[0].model().scan_status,
-        "invalid"
-    );
+    assert_eq!(forced.root.children[0].model().scan_status, "need_confirm");
 
     fs::write(&engine, b"corrupt").unwrap();
-    let invalid = catalog.catalog(true).unwrap();
-    assert_eq!(invalid.root.children[0].model().scan_status, "invalid");
+    fs::write(
+        model_root.join("model.engine.manifest.json"),
+        b"not-json-and-must-not-be-read-by-catalog-refresh",
+    )
+    .unwrap();
+
+    let still_cached = catalog.catalog(false).unwrap();
+    assert_eq!(still_cached.root.children[0].model().size_bytes, 6);
+    let refreshed = catalog.catalog(true).unwrap();
+    assert_eq!(refreshed.root.children[0].model().size_bytes, 7);
+    assert_eq!(
+        refreshed.root.children[0].model().scan_status,
+        "need_confirm"
+    );
 }
 
 trait CatalogNodeTestExt {

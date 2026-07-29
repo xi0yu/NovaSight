@@ -177,6 +177,9 @@ pub async fn entry() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Err(error) = model_catalog.catalog(true) {
+        eprintln!("MODEL_CATALOG_WARMUP_FAILED: {error}");
+    }
     let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
     let (dependencies, mode) = if args.dry_run {
         (

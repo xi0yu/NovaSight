@@ -729,6 +729,11 @@ tbody tr:hover {
   display: grid;
 }
 
+.model-vault-load-more {
+  margin: 8px 10px 12px;
+  width: calc(100% - 20px);
+}
+
 .model-catalog-row {
   width: 100%;
   min-width: 0;

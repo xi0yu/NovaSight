@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 
 use crate::model_ingress::{
     ModelIngressError, ModelProbeInputMode, ModelProfileConfigureRequest, ModelWorkerOutput,
+    automatic_activation_profile_from_value,
 };
 
 const MANIFEST_LIMIT: usize = 1024 * 1024;
@@ -40,6 +41,32 @@ impl NativeModelJobRunner {
 
     pub async fn preflight(&self) -> Result<(), ModelIngressError> {
         TensorRtEngine::preflight().map_err(native_failure)
+    }
+
+    pub(crate) async fn admit(
+        &self,
+        engine_path: &Path,
+        display_name: &str,
+        parser_preset: &str,
+        catalog_labels: &[String],
+        cancellation: Arc<AtomicUsize>,
+    ) -> Result<ModelWorkerOutput, ModelIngressError> {
+        check_cancelled(&cancellation)?;
+        let engine_path = engine_path.to_owned();
+        let display_name = display_name.to_owned();
+        let parser_preset = parser_preset.to_owned();
+        let catalog_labels = catalog_labels.to_vec();
+        let cancellation_for_job = Arc::clone(&cancellation);
+        let output = tokio::task::spawn_blocking(move || {
+            check_cancelled(&cancellation_for_job)?;
+            admit_sync(&engine_path, &display_name, &parser_preset, &catalog_labels)
+        })
+        .await
+        .map_err(|error| {
+            ModelIngressError::Failed(format!("native admission task failed: {error}"))
+        })??;
+        check_cancelled(&cancellation)?;
+        Ok(output)
     }
 
     pub(crate) async fn inspect(
@@ -134,6 +161,20 @@ fn inspect_sync(
     })
 }
 
+fn admit_sync(
+    engine_path: &Path,
+    display_name: &str,
+    parser_preset: &str,
+    catalog_labels: &[String],
+) -> Result<ModelWorkerOutput, ModelIngressError> {
+    let mut engine = TensorRtEngine::inspect(engine_path).map_err(native_failure)?;
+    let mut profile = inspected_profile(engine_path, display_name, engine.contract())?;
+    let request = automatic_activation_profile_from_value(&profile, parser_preset, catalog_labels)?;
+    request.validate()?;
+    configure_profile(&mut profile, engine.contract(), &request)?;
+    probe_loaded(engine_path, profile, &mut engine)
+}
+
 fn configure_sync(
     engine_path: &Path,
     request: &ModelProfileConfigureRequest,
@@ -152,8 +193,29 @@ fn configure_sync(
         });
     let engine = TensorRtEngine::inspect(engine_path).map_err(native_failure)?;
     let contract = engine.contract().clone();
-    validate_semantics(&contract, request)?;
     let mut profile = inspected_profile(engine_path, display_name, &contract)?;
+    configure_profile(&mut profile, &contract, request)?;
+    write_manifest(
+        &profile_path,
+        &json!({
+            "schema_version": 1,
+            "manifest_kind": "novasight_model",
+            "model_profile": profile,
+        }),
+    )?;
+    Ok(ModelWorkerOutput {
+        profile_path,
+        profile,
+        report: None,
+    })
+}
+
+fn configure_profile(
+    profile: &mut Value,
+    contract: &EngineContract,
+    request: &ModelProfileConfigureRequest,
+) -> Result<(), ModelIngressError> {
+    validate_semantics(contract, request)?;
     profile["status"] = json!("READY_FOR_PROBE");
     profile["preprocess"] = json!({
         "color_format": request.color_format.trim().to_ascii_uppercase(),
@@ -177,27 +239,25 @@ fn configure_sync(
         "max_detections": request.max_detections.min(RUNTIME_MAX_DETECTIONS),
     });
     profile["labels"] = json!(request.labels);
-    write_manifest(
-        &profile_path,
-        &json!({
-            "schema_version": 1,
-            "manifest_kind": "novasight_model",
-            "model_profile": profile,
-        }),
-    )?;
-    Ok(ModelWorkerOutput {
-        profile_path,
-        profile,
-        report: None,
-    })
+    Ok(())
 }
 
 fn probe_sync(engine_path: &Path) -> Result<ModelWorkerOutput, ModelIngressError> {
     let profile_path = manifest_path(engine_path)?;
     let root = load_manifest(&profile_path)?;
-    let mut profile = root.get("model_profile").cloned().ok_or_else(|| {
+    let profile = root.get("model_profile").cloned().ok_or_else(|| {
         ModelIngressError::Protocol("inspect and configure the Engine first".to_owned())
     })?;
+    let mut engine = TensorRtEngine::inspect(engine_path).map_err(native_failure)?;
+    probe_loaded(engine_path, profile, &mut engine)
+}
+
+fn probe_loaded(
+    engine_path: &Path,
+    mut profile: Value,
+    engine: &mut TensorRtEngine,
+) -> Result<ModelWorkerOutput, ModelIngressError> {
+    let profile_path = manifest_path(engine_path)?;
     if !matches!(
         profile.get("status").and_then(Value::as_str),
         Some("READY_FOR_PROBE" | "VALIDATED")
@@ -216,7 +276,6 @@ fn probe_sync(engine_path: &Path) -> Result<ModelWorkerOutput, ModelIngressError
     let input_shape = profile_shape(&profile, &["input", "runtime_shape"])?;
     let output_name = profile_string(&profile, &["outputs", "0", "name"])?;
 
-    let mut engine = TensorRtEngine::inspect(engine_path).map_err(native_failure)?;
     let contract = engine.contract().clone();
     if input_shape.as_slice() != contract.input().dimensions() {
         return Err(ModelIngressError::InvalidRequest(

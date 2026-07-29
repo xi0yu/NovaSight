@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ pub struct SqliteModelCatalog {
     path: PathBuf,
     model_root: PathBuf,
     catalog_roots: Vec<PathBuf>,
-    catalog_cache: Arc<Mutex<Option<(Instant, ModelCatalogResponse)>>>,
+    catalog_cache: Arc<Mutex<Option<ModelCatalogResponse>>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -346,10 +346,7 @@ impl SqliteModelCatalog {
             )
             .map_err(ModelCatalogError::Sqlite)?;
         transaction.commit().map_err(ModelCatalogError::Sqlite)?;
-        *self
-            .catalog_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.update_cached_artifact_metadata(artifact_id, recommendation, &tags);
         Ok(ModelArtifactMetadata {
             artifact_id,
             recommendation,
@@ -792,6 +789,7 @@ impl SqliteModelCatalog {
             )
             .map_err(ModelCatalogError::Sqlite)?;
         transaction.commit().map_err(ModelCatalogError::Sqlite)?;
+        self.update_cached_artifact_status(update.artifact_id, &update.status);
         self.runtime_artifact_by_id(update.artifact_id)
     }
 
@@ -928,11 +926,9 @@ impl SqliteModelCatalog {
                 .catalog_cache
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((created, response)) = cache.as_ref()
-                && created.elapsed() < Duration::from_secs(2)
-            {
+            if let Some(response) = cache.as_ref() {
                 let mut response = response.clone();
-                response.cache_hits += 1;
+                response.cache_hits = response.cache_hits.saturating_add(1);
                 response.force = false;
                 return Ok(response);
             }
@@ -1008,14 +1004,24 @@ impl SqliteModelCatalog {
                 .unwrap_or("unknown")
                 .to_ascii_lowercase();
             let registered_artifact = registered.get(&canonical_or_original(absolute.clone()));
-            let (scan_status, scan_reason) = if force {
-                inspect_model_file(absolute, *size_bytes)?
-            } else if kind == "engine" {
-                (
-                    "need_confirm".to_owned(),
-                    "TensorRT engine suffix accepted; contract validation deferred until load"
-                        .to_owned(),
-                )
+            let (scan_status, scan_reason) = if kind == "engine" {
+                match registered_artifact.map(|artifact| artifact.artifact_status.as_str()) {
+                    Some("ready") => (
+                        "ready".to_owned(),
+                        "validated model receipt is recorded; runtime identity is rechecked before activation"
+                            .to_owned(),
+                    ),
+                    Some("failed") => (
+                        "invalid".to_owned(),
+                        "the most recent model admission failed; activate to validate the current file again"
+                            .to_owned(),
+                    ),
+                    _ => (
+                        "need_confirm".to_owned(),
+                        "TensorRT engine discovered; contract validation is deferred until activation"
+                            .to_owned(),
+                    ),
+                }
             } else {
                 (
                     "unsupported".to_owned(),
@@ -1065,8 +1071,7 @@ impl SqliteModelCatalog {
         *self
             .catalog_cache
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some((Instant::now(), cached_response));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cached_response);
         Ok(response)
     }
 
@@ -1170,10 +1175,7 @@ impl SqliteModelCatalog {
             .map_err(ModelCatalogError::Sqlite)?;
         artifact.size_bytes = Some(metadata.len());
         transaction.commit().map_err(ModelCatalogError::Sqlite)?;
-        *self
-            .catalog_cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.update_cached_catalog_registration(&relative, &project, &version, &artifact);
 
         Ok(CatalogEngineRegistration {
             project,
@@ -1182,6 +1184,72 @@ impl SqliteModelCatalog {
             engine_path,
             created: true,
         })
+    }
+
+    fn update_cached_artifact_metadata(
+        &self,
+        artifact_id: i64,
+        recommendation: ModelRecommendation,
+        tags: &[String],
+    ) {
+        self.update_cached_models(|model| {
+            if model.artifact_id == Some(artifact_id) {
+                model.recommendation = recommendation;
+                model.tags = tags.to_vec();
+            }
+        });
+    }
+
+    fn update_cached_artifact_status(&self, artifact_id: i64, status: &str) {
+        self.update_cached_models(|model| {
+            if model.artifact_id == Some(artifact_id) {
+                model.artifact_status = Some(status.to_owned());
+                match status {
+                    "ready" => {
+                        model.scan_status = "ready".to_owned();
+                        model.scan_reason = "validated model receipt is recorded; runtime identity is rechecked before activation".to_owned();
+                    }
+                    "failed" => {
+                        model.scan_status = "invalid".to_owned();
+                        model.scan_reason = "the most recent model admission failed; activate to validate the current file again".to_owned();
+                    }
+                    _ => {
+                        model.scan_status = "need_confirm".to_owned();
+                        model.scan_reason = "TensorRT engine discovered; contract validation is deferred until activation".to_owned();
+                    }
+                }
+            }
+        });
+    }
+
+    fn update_cached_catalog_registration(
+        &self,
+        relative_path: &Path,
+        project: &ModelProject,
+        version: &ModelVersion,
+        artifact: &ModelArtifact,
+    ) {
+        let relative_path = relative_path.to_string_lossy().replace('\\', "/");
+        self.update_cached_models(|model| {
+            if model.relative_path == relative_path {
+                model.project_id = Some(project.id);
+                model.project_name = Some(project.name.clone());
+                model.version_id = Some(version.id);
+                model.version_name = Some(version.version.clone());
+                model.artifact_id = Some(artifact.id);
+                model.artifact_status = Some(artifact.status.clone());
+            }
+        });
+    }
+
+    fn update_cached_models(&self, mut update: impl FnMut(&mut ModelCatalogModel)) {
+        let mut cache = self
+            .catalog_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(response) = cache.as_mut() {
+            visit_catalog_models_mut(&mut response.root, &mut update);
+        }
     }
 
     fn resolve_catalog_engine(&self, relative: &Path) -> Result<PathBuf, ModelCatalogError> {
@@ -1985,6 +2053,18 @@ fn sort_catalog(directory: &mut ModelCatalogDirectory) {
     for child in &mut directory.children {
         if let ModelCatalogNode::Directory(child) = child {
             sort_catalog(child);
+        }
+    }
+}
+
+fn visit_catalog_models_mut(
+    directory: &mut ModelCatalogDirectory,
+    update: &mut impl FnMut(&mut ModelCatalogModel),
+) {
+    for child in &mut directory.children {
+        match child {
+            ModelCatalogNode::Directory(directory) => visit_catalog_models_mut(directory, update),
+            ModelCatalogNode::Model(model) => update(model),
         }
     }
 }

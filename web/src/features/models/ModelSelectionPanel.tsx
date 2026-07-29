@@ -191,7 +191,7 @@ export function ModelSelectionPanel({
 
       <div className="model-selection-workspace">
         <div className="model-selection-browser">
-          {loading ? (
+          {loading && root === null ? (
             <div className="model-catalog-placeholder">正在读取 models 目录...</div>
           ) : filteredModels.length > 0 ? (
             <ModelCatalogTree
