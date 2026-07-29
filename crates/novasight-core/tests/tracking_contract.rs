@@ -396,12 +396,33 @@ fn control_aim_point_is_separate_from_association_center_and_supports_class_over
     let target = Detection::new(1, 1, 280.0, 200.0, 80.0, 100.0, 0.9).expect("target");
     let selection = core.select(&[target], OBSERVATION_CENTER);
     assert_eq!(selection.target_aim_x, Some(320.0));
-    assert_eq!(selection.target_aim_y, Some(230.0));
+    assert_eq!(selection.target_aim_y, Some(230.4));
     assert_eq!(selection.target_box_x, Some(280.0));
     assert_eq!(selection.target_box_y, Some(200.0));
     assert_eq!(selection.target_box_width, Some(80.0));
     assert_eq!(selection.target_box_height, Some(100.0));
-    assert_eq!(core.locked().expect("track").center_y, 230.0);
+    let track = core.locked().expect("track");
+    assert_eq!(track.center_y, 250.0);
+    assert_eq!(track.observed_aim_y, 230.4);
+}
+
+#[test]
+fn aim_point_motion_from_bbox_shape_does_not_rebuild_identity() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        aim_y_ratio: 0.0,
+        ..TargetingConfig::default()
+    });
+    let compact = Detection::new(1, 0, 300.0, 300.0, 40.0, 40.0, 0.95).expect("compact");
+    let first = core.select_at(&[compact], OBSERVATION_CENTER, 1_000_000_000);
+    let track_id = first.target_track_id.expect("initial track");
+
+    // The geometric center is unchanged, but a top-edge aim point moves 30px
+    // when height changes. Identity association must remain bbox-centered.
+    let tall = Detection::new(2, 0, 300.0, 270.0, 40.0, 100.0, 0.95).expect("tall");
+    let second = core.select_at(&[tall], OBSERVATION_CENTER, 1_010_000_000);
+    assert_eq!(second.target_track_id, Some(track_id));
+    assert!(!second.target_rebuilt);
+    assert_eq!(second.target_aim_y, Some(270.0));
 }
 
 #[test]

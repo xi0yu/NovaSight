@@ -13,7 +13,7 @@ use novasight_core::controller::{
     ActuationFeedback, ControlDecision as DualPhaseDecision, ControlObservation, DualPhaseConfig,
     DualPhaseControl,
 };
-use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore};
+use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore, TrackState};
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, PointerDevice, RuntimeEpoch,
 };
@@ -87,7 +87,9 @@ pub struct PipelineConfig {
     /// Optional vision-verified control origin. The hub owns its template and
     /// observation state; targeting only performs a cheap resolved-point read.
     pub crosshair: Option<CrosshairHub>,
-    /// Positive-Y recoil contribution mixed into existing tracking commands.
+    /// Positive-Y recoil contribution mixed into the newest safe output plan.
+    /// A plan may carry zero tracking demand when the aim is already settled
+    /// or when target gating is disabled and no target is present.
     pub recoil: RecoilConfig,
 }
 
@@ -323,6 +325,8 @@ struct SharedState {
     latest_successful_send_x_ts_ns: AtomicU64,
     latest_successful_send_y_ts_ns: AtomicU64,
     recoil_config_version: AtomicU64,
+    recoil_enabled: AtomicBool,
+    recoil_require_target: AtomicBool,
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
@@ -369,6 +373,8 @@ impl SharedState {
             latest_successful_send_x_ts_ns: AtomicU64::new(0),
             latest_successful_send_y_ts_ns: AtomicU64::new(0),
             recoil_config_version: AtomicU64::new(1),
+            recoil_enabled: AtomicBool::new(recoil_config.enabled),
+            recoil_require_target: AtomicBool::new(recoil_config.require_target),
             device_lane: Mutex::new(()),
             event_tx,
             metrics,
@@ -383,6 +389,11 @@ impl SharedState {
     fn set_button_left(&self, pressed: bool) {
         if self.button_left.swap(pressed, Ordering::AcqRel) != pressed {
             self.button_left_epoch.fetch_add(1, Ordering::Release);
+            if !pressed {
+                // Release is an immediate business-state transition even when
+                // settled tracking produces no subsequent device plan.
+                self.record_recoil(RecoilDecision::default());
+            }
         }
     }
 
@@ -443,12 +454,22 @@ impl SharedState {
         true
     }
 
-    fn record_device_receipt(&self, receipt: DeviceReceipt, accepted_at_ns: u64) {
-        if receipt.delta_x_counts != 0 {
+    fn record_device_receipt(
+        &self,
+        receipt: DeviceReceipt,
+        accepted_at_ns: u64,
+        tracking_x_counts: i32,
+        tracking_y_counts: i32,
+    ) {
+        // The feedback gate prevents a visual controller from issuing the
+        // same tracking correction against a frame that predates that move.
+        // Recoil is an independent feed-forward disturbance compensation: a
+        // recoil-only tick must not keep visual Y tracking permanently pending.
+        if tracking_x_counts != 0 {
             self.latest_successful_send_x_ts_ns
                 .store(accepted_at_ns, Ordering::Release);
         }
-        if receipt.delta_y_counts != 0 {
+        if tracking_y_counts != 0 {
             self.latest_successful_send_y_ts_ns
                 .store(accepted_at_ns, Ordering::Release);
         }
@@ -679,6 +700,12 @@ impl PipelineIngress {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = config;
         self.shared
+            .recoil_enabled
+            .store(config.enabled, Ordering::Release);
+        self.shared
+            .recoil_require_target
+            .store(config.require_target, Ordering::Release);
+        self.shared
             .recoil_config_version
             .fetch_add(1, Ordering::Release);
         self.shared.clear_control_telemetry();
@@ -774,6 +801,7 @@ impl PipelineIngress {
 struct TargetedObservation {
     stamp: novasight_core::FrameStamp,
     target_id: Option<u64>,
+    recoil_target_valid: bool,
     aim_x: f64,
     aim_y: f64,
     crosshair_x: f64,
@@ -782,6 +810,17 @@ struct TargetedObservation {
     track_confidence: f64,
     track_rebuilt: bool,
     inference_end_ns: u64,
+}
+
+/// One latest-only opportunity to compose physical output from a fresh
+/// perception observation. Tracking demand may be zero; recoil is evaluated
+/// later against the freshest button/config state while the device lane lock
+/// is held. This preserves one combined send without making recoil depend on
+/// the controller having produced a non-zero tracking command.
+#[derive(Clone, Copy, Debug)]
+struct OutputPlan {
+    command: DeviceCommand,
+    recoil_target_valid: bool,
 }
 
 /// Owns the post-inference real-time lanes. Capture/DeepStream keeps
@@ -794,7 +833,7 @@ pub struct PipelineRuntime {
     shared: Arc<SharedState>,
     batch_slot: LatestSlot<DetectionBatch>,
     target_slot: LatestSlot<TargetedObservation>,
-    command_slot: LatestSlot<DeviceCommand>,
+    command_slot: LatestSlot<OutputPlan>,
     event_rx: Option<Receiver<PipelineEvent>>,
     workers: Vec<JoinHandle<()>>,
 }
@@ -1291,10 +1330,15 @@ fn spawn_targeting_worker(
                         }
                     };
                     let (crosshair_x, crosshair_y) = targeting_center;
+                    let recoil_target_valid = target_id.is_some()
+                        || targeting
+                            .locked()
+                            .is_some_and(|track| track.state == TrackState::Lost);
                     let now = clock.now().0;
                     let observation = TargetedObservation {
                         stamp: batch.stamp(),
                         target_id,
+                        recoil_target_valid,
                         aim_x,
                         aim_y,
                         crosshair_x,
@@ -1319,7 +1363,7 @@ fn spawn_targeting_worker(
 
 fn spawn_control_worker(
     input: LatestSlot<TargetedObservation>,
-    output: LatestSlot<DeviceCommand>,
+    output: LatestSlot<OutputPlan>,
     shared: Arc<SharedState>,
     clock: Arc<dyn Clock>,
     config: ControlWorkerConfig,
@@ -1406,6 +1450,14 @@ fn spawn_control_worker(
                             .metrics
                             .blocked_decisions
                             .fetch_add(1, Ordering::Relaxed);
+                    }
+                    if !decision.emit_allowed
+                        && !recoil_plan_allowed(
+                            &shared,
+                            target.recoil_target_valid,
+                            decision.block_reason,
+                        )
+                    {
                         continue;
                     }
                     let command = DeviceCommand {
@@ -1414,10 +1466,24 @@ fn spawn_control_worker(
                         source_captured_at: target.stamp.captured_at,
                         issued_at: novasight_core::MonotonicNanos(control_now_ns),
                         target_object_id: target_id,
-                        delta_x_counts: decision.dx,
-                        delta_y_counts: decision.dy,
+                        delta_x_counts: if decision.emit_allowed {
+                            decision.dx
+                        } else {
+                            0
+                        },
+                        delta_y_counts: if decision.emit_allowed {
+                            decision.dy
+                        } else {
+                            0
+                        },
                     };
-                    if output.publish(command).is_err() {
+                    if output
+                        .publish(OutputPlan {
+                            command,
+                            recoil_target_valid: target.recoil_target_valid,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -1430,8 +1496,33 @@ fn spawn_control_worker(
         })
 }
 
+/// Only observations that already passed the controller's timestamp,
+/// freshness and sequence guards may authorize a recoil-only plan. Geometry
+/// and numeric failures remain hard output stops. Target absence is allowed
+/// here because `RecoilConfig::require_target` is evaluated at the device
+/// boundary using the current live configuration.
+fn recoil_plan_allowed(
+    shared: &SharedState,
+    target_valid: bool,
+    reason: novasight_core::controller::BlockReason,
+) -> bool {
+    use novasight_core::controller::BlockReason;
+
+    shared.recoil_enabled.load(Ordering::Acquire)
+        && shared.buttons_available.load(Ordering::Acquire)
+        && shared.button_left.load(Ordering::Acquire)
+        && (target_valid || !shared.recoil_require_target.load(Ordering::Acquire))
+        && matches!(
+            reason,
+            BlockReason::TargetInvalid
+                | BlockReason::DeadZone
+                | BlockReason::AimSettled
+                | BlockReason::ActuationFeedbackPending
+        )
+}
+
 fn spawn_device_worker(
-    input: LatestSlot<DeviceCommand>,
+    input: LatestSlot<OutputPlan>,
     shared: Arc<SharedState>,
     clock: Arc<dyn Clock>,
     device: Arc<dyn PointerDevice>,
@@ -1447,7 +1538,7 @@ fn spawn_device_worker(
                 let mut recoil_config_version =
                     shared.recoil_config_version.load(Ordering::Acquire);
                 let mut button_left_epoch = shared.button_left_epoch.load(Ordering::Acquire);
-                while let Some(command) = input.wait_take() {
+                while let Some(plan) = input.wait_take() {
                     let latest_recoil_config_version =
                         shared.recoil_config_version.load(Ordering::Acquire);
                     if latest_recoil_config_version != recoil_config_version {
@@ -1483,7 +1574,7 @@ fn spawn_device_worker(
                     {
                         continue;
                     }
-                    let mut command = *command;
+                    let mut command = plan.command;
                     if command.generation.0
                         < shared.output_gate_min_generation.load(Ordering::Acquire)
                     {
@@ -1512,12 +1603,18 @@ fn spawn_device_worker(
                         firing: shared.buttons_available.load(Ordering::Acquire)
                             && shared.button_left.load(Ordering::Acquire),
                         now_ns,
-                        target_valid: command.target_object_id != 0,
+                        target_valid: plan.recoil_target_valid,
                         source_generation: Some(command.generation.0),
                     });
-                    let recoil_mix =
-                        mix_tracking_and_recoil(command.delta_y_counts, recoil_decision);
+                    let tracking_x_counts = command.delta_x_counts;
+                    let tracking_y_counts = command.delta_y_counts;
+                    let tracking_requested = tracking_x_counts != 0 || tracking_y_counts != 0;
+                    let recoil_mix = mix_tracking_and_recoil(tracking_y_counts, recoil_decision);
                     command.delta_y_counts = recoil_mix.command_y;
+                    if !tracking_requested && !recoil_decision.should_add() {
+                        shared.record_recoil(recoil_decision);
+                        continue;
+                    }
                     let latest_generation = *shared
                         .metrics
                         .last_generation
@@ -1538,7 +1635,12 @@ fn spawn_device_worker(
                             }
                             shared.record_recoil(recoil_decision);
                             shared.record_device_success();
-                            shared.record_device_receipt(receipt, accepted_at_ns);
+                            shared.record_device_receipt(
+                                receipt,
+                                accepted_at_ns,
+                                tracking_x_counts,
+                                recoil_mix.surviving_tracking_counts_y,
+                            );
                         }
                         Err(error) => {
                             shared.record_recoil(recoil_decision);
@@ -1586,7 +1688,7 @@ fn is_recoverable_pointer_error(error: &novasight_core::AppError) -> bool {
 fn close_slots(
     batches: &LatestSlot<DetectionBatch>,
     targets: &LatestSlot<TargetedObservation>,
-    commands: &LatestSlot<DeviceCommand>,
+    commands: &LatestSlot<OutputPlan>,
 ) {
     batches.close();
     targets.close();
@@ -1606,7 +1708,7 @@ fn join_workers(workers: &mut Vec<JoinHandle<()>>) -> bool {
 fn snapshot_metrics(
     shared: &SharedState,
     batches: &LatestSlot<DetectionBatch>,
-    commands: &LatestSlot<DeviceCommand>,
+    commands: &LatestSlot<OutputPlan>,
 ) -> PipelineMetrics {
     let (detections, target_selection) = {
         let vision = shared

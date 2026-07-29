@@ -1,7 +1,8 @@
 //! Interval-gated recoil contribution for the final pointer command.
 //!
-//! Recoil never emits a device command by itself. When its cadence is due it
-//! contributes one positive-Y value to the already-planned tracking command.
+//! Recoil never owns a timer-driven device lane. On each newest safe visual
+//! observation, a due contribution is combined with that observation's
+//! tracking demand (which may be zero) and emitted as at most one command.
 
 use serde::{Deserialize, Serialize};
 
@@ -128,7 +129,7 @@ impl IntervalRecoilController {
         self.last_output_ns = None;
     }
 
-    /// Decide whether the current tracking command should receive +Y.
+    /// Decide whether the current safe output plan should receive +Y.
     ///
     /// This method never consumes a due recoil step. Call `mark_output_sent`
     /// only after the combined device command has been accepted, so a failed
@@ -208,6 +209,9 @@ impl IntervalRecoilController {
 pub struct RecoilMix {
     pub command_y: i32,
     pub applied_counts_y: i32,
+    /// Portion of the signed tracking demand that remains in the physical
+    /// command after the positive-Y recoil contribution is composed.
+    pub surviving_tracking_counts_y: i32,
 }
 
 /// Mix the recoil contribution into the current command exactly once and
@@ -223,6 +227,11 @@ pub fn mix_tracking_and_recoil(tracking_y: i32, recoil: RecoilDecision) -> Recoi
     RecoilMix {
         command_y,
         applied_counts_y: command_y.saturating_sub(tracking_y).max(0),
+        surviving_tracking_counts_y: if command_y.signum() == tracking_y.signum() {
+            tracking_y.signum() * command_y.abs().min(tracking_y.abs())
+        } else {
+            0
+        },
     }
 }
 
@@ -319,6 +328,7 @@ mod tests {
             RecoilMix {
                 command_y: i16::MAX as i32,
                 applied_counts_y: 0,
+                surviving_tracking_counts_y: i16::MAX as i32,
             }
         );
         assert_eq!(
@@ -326,6 +336,40 @@ mod tests {
             RecoilMix {
                 command_y: i16::MAX as i32,
                 applied_counts_y: 1,
+                surviving_tracking_counts_y: i16::MAX as i32 - 1,
+            }
+        );
+    }
+
+    #[test]
+    fn opposite_tracking_and_recoil_report_only_the_physical_tracking_remainder() {
+        let ready = RecoilDecision {
+            state: RecoilState::Ready,
+            requested_counts_y: 3,
+            ..RecoilDecision::default()
+        };
+        assert_eq!(
+            mix_tracking_and_recoil(-5, ready),
+            RecoilMix {
+                command_y: -2,
+                applied_counts_y: 3,
+                surviving_tracking_counts_y: -2,
+            }
+        );
+        assert_eq!(
+            mix_tracking_and_recoil(-3, ready),
+            RecoilMix {
+                command_y: 0,
+                applied_counts_y: 3,
+                surviving_tracking_counts_y: 0,
+            }
+        );
+        assert_eq!(
+            mix_tracking_and_recoil(-1, ready),
+            RecoilMix {
+                command_y: 2,
+                applied_counts_y: 3,
+                surviving_tracking_counts_y: 0,
             }
         );
     }

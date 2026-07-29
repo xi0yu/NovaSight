@@ -1,8 +1,8 @@
 //! Allocation-free constant-velocity Kalman state used by target association.
 //!
-//! The filtered position is deliberately limited to identity association and
-//! target scoring. Mouse control continues to consume the latest observed aim
-//! point so filtering cannot add visible control lag.
+//! The filtered position is deliberately limited to identity association.
+//! Target scoring and mouse control consume the latest observed aim point so
+//! filtering cannot add visible selection or control lag.
 
 use serde::{Deserialize, Serialize};
 

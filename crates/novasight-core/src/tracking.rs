@@ -217,8 +217,8 @@ fn associate(
         out.push(Association {
             track_id: track.id,
             object_id: detection.object_id(),
-            center_x: detection_aim(detection, config).0,
-            center_y: detection_aim(detection, config).1,
+            center_x: detection.center_x(),
+            center_y: detection.center_y(),
             confidence: detection.confidence(),
             identity_confidence: edge.identity_confidence,
         });
@@ -601,8 +601,8 @@ impl TargetingCore {
             ) {
                 (track.center_x, track.center_y) = track.kalman.position();
             } else {
-                track.center_x = track.observed_aim_x;
-                track.center_y = track.observed_aim_y;
+                track.center_x = track.box_x + track.width * 0.5;
+                track.center_y = track.box_y + track.height * 0.5;
             }
         }
 
@@ -622,13 +622,14 @@ impl TargetingCore {
                 Some((prior.clone(), association.identity_confidence))
             });
             let aim = detection_aim(det, &self.config);
+            let association_center = (det.center_x(), det.center_y());
             let track = if let Some((mut prior, identity_confidence)) = associated {
                 if prior.state == TrackState::Lost {
                     remember_track_id(&mut rebuilt_ids, prior.id);
                 }
                 let filtered_valid = prior.kalman.update(
-                    aim.0,
-                    aim.1,
+                    association_center.0,
+                    association_center.1,
                     captured_at_ns,
                     self.config.kalman,
                     identity_confidence,
@@ -646,12 +647,12 @@ impl TargetingCore {
                 prior.center_x = if filtered_valid && filtered.0.is_finite() {
                     filtered.0
                 } else {
-                    aim.0
+                    association_center.0
                 };
                 prior.center_y = if filtered_valid && filtered.1.is_finite() {
                     filtered.1
                 } else {
-                    aim.1
+                    association_center.1
                 };
                 prior.observed_aim_x = aim.0;
                 prior.observed_aim_y = aim.1;
@@ -685,8 +686,8 @@ impl TargetingCore {
                     } else {
                         TrackState::Tentative
                     },
-                    center_x: aim.0,
-                    center_y: aim.1,
+                    center_x: association_center.0,
+                    center_y: association_center.1,
                     observed_aim_x: aim.0,
                     observed_aim_y: aim.1,
                     box_x: f64::from(det.x()),
@@ -701,7 +702,13 @@ impl TargetingCore {
                     confirmed,
                     missed_frames: 0,
                     lost_since_ns: None,
-                    kalman: KalmanState::new(aim.0, aim.1, captured_at_ns, self.config.kalman, 1.0),
+                    kalman: KalmanState::new(
+                        association_center.0,
+                        association_center.1,
+                        captured_at_ns,
+                        self.config.kalman,
+                        1.0,
+                    ),
                 }
             };
             updated.push(track);
@@ -986,8 +993,8 @@ fn target_score(track: &Track, observation_center: (f64, f64), config: &Targetin
         class_score = 0.0;
     }
     let distance = euclidean(
-        track.center_x,
-        track.center_y,
+        track.observed_aim_x,
+        track.observed_aim_y,
         observation_center.0,
         observation_center.1,
     );
@@ -1034,15 +1041,19 @@ fn association_edge(
     if !reference_height.is_finite() || reference_height <= 0.0 {
         return None;
     }
-    let aim = detection_aim(detection, config);
+    // Identity association stays on the bbox geometry. Aim-point ratios are a
+    // control/selection preference and must not move a track's physical state.
+    let center = (detection.center_x(), detection.center_y());
     let nis = if track.kalman.prediction_valid() {
-        track.kalman.measurement_nis(aim.0, aim.1, config.kalman)
+        track
+            .kalman
+            .measurement_nis(center.0, center.1, config.kalman)
     } else {
         track.kalman.measurement_nis_from_position(
-            aim.0,
-            aim.1,
-            track.observed_aim_x,
-            track.observed_aim_y,
+            center.0,
+            center.1,
+            track.box_x + track.width * 0.5,
+            track.box_y + track.height * 0.5,
             config.kalman,
         )
     };
@@ -1050,7 +1061,7 @@ fn association_edge(
         return None;
     }
     let normalized_distance =
-        euclidean(track.center_x, track.center_y, aim.0, aim.1) / reference_height;
+        euclidean(track.center_x, track.center_y, center.0, center.1) / reference_height;
     if !normalized_distance.is_finite() || normalized_distance > config.tracker_max_match_distance {
         return None;
     }
@@ -1108,15 +1119,12 @@ fn track_detection_iou(track: &Track, detection: &Detection) -> f64 {
 }
 
 fn detection_aim(detection: &Detection, config: &TargetingConfig) -> (f64, f64) {
-    let raw_ratio = config
+    let ratio = config
         .class_aim_y_ratios
         .get(&detection.class_id())
         .copied()
-        .unwrap_or(config.aim_y_ratio);
-    // Python's public aim-point contract stores ratios at two decimal places.
-    // Normalize at the Rust domain boundary as well so targeting, preview and
-    // control cannot disagree over a hand-edited higher-precision value.
-    let ratio = (raw_ratio.clamp(0.0, 1.0) * 100.0).round() / 100.0;
+        .unwrap_or(config.aim_y_ratio)
+        .clamp(0.0, 1.0);
     (
         detection.center_x(),
         f64::from(detection.y()) + f64::from(detection.height()) * ratio,

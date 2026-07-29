@@ -151,7 +151,7 @@ impl ConfigSchemaResponse {
                     "独立压枪",
                     vec![
                         boolean("control.recoil.enabled", "启用独立 Y 轴压枪"),
-                        boolean("control.recoil.require_target", "只在检测到目标时压枪"),
+                        boolean("control.recoil.require_target", "只在存在目标时压枪"),
                         integer(
                             "control.recoil.interval_ms",
                             "压枪叠加间隔",

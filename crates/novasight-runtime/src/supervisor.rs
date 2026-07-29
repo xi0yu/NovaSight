@@ -113,9 +113,6 @@ pub struct RuntimeDependencies {
 
 #[derive(Clone, Copy, Debug)]
 struct ModelGeometry {
-    input_width: u32,
-    input_height: u32,
-    preserves_roi_coordinates: bool,
     source_width: u32,
     roi_width: u32,
     roi_height: u32,
@@ -142,9 +139,6 @@ impl RuntimeDependencies {
         pipeline: PipelineConfig,
     ) -> Self {
         let model_geometry = ModelGeometry {
-            input_width: pipeline.control.observation_width,
-            input_height: pipeline.control.observation_height,
-            preserves_roi_coordinates: false,
             source_width: pipeline.control.source_width,
             roi_width: pipeline.control.roi_width,
             roi_height: pipeline.control.roi_height,
@@ -227,13 +221,12 @@ impl RuntimeDependencies {
             pipeline.control.source_width = geometry.source_width;
             pipeline.control.roi_width = geometry.roi_width;
             pipeline.control.roi_height = geometry.roi_height;
-            if geometry.preserves_roi_coordinates {
-                pipeline.control.observation_width = geometry.roi_width;
-                pipeline.control.observation_height = geometry.roi_height;
-            } else {
-                pipeline.control.observation_width = geometry.input_width;
-                pipeline.control.observation_height = geometry.input_height;
-            }
+            // DetectionBatch coordinates come from NvDsFrameMeta pipeline
+            // geometry (the ROI-sized inference buffer), not the TensorRT
+            // network tensor. Model resize/letterbox policy must therefore
+            // never rescale the controller a second time.
+            pipeline.control.observation_width = geometry.roi_width;
+            pipeline.control.observation_height = geometry.roi_height;
         }
         pipeline
     }
@@ -252,19 +245,10 @@ impl RuntimeDependencies {
         let mut pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
             .map_err(RuntimeError::pipeline_rejected)?;
         pipeline.crosshair = crosshair;
-        let current_geometry = self.model_geometry().unwrap_or(ModelGeometry {
-            input_width: pipeline.control.observation_width,
-            input_height: pipeline.control.observation_height,
-            preserves_roi_coordinates: false,
-            source_width: pipeline.control.source_width,
-            roi_width: pipeline.control.roi_width,
-            roi_height: pipeline.control.roi_height,
-        });
         self.replace_model_geometry(Some(ModelGeometry {
             source_width: pipeline.control.source_width,
             roi_width: pipeline.control.roi_width,
             roi_height: pipeline.control.roi_height,
-            ..current_geometry
         }));
         self.set_trigger_mode(pipeline.trigger_mode);
         self.set_recoil_config(pipeline.recoil);
@@ -319,34 +303,14 @@ impl RuntimeDependencies {
         )
     }
 
-    fn install_model_contract(&self, contract: &PerceptionModelContract) -> Option<ModelGeometry> {
-        let current = self.model_geometry().unwrap_or_else(|| {
-            let pipeline = self
-                .pipeline
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            ModelGeometry {
-                input_width: 0,
-                input_height: 0,
-                preserves_roi_coordinates: false,
-                source_width: pipeline.control.source_width,
-                roi_width: pipeline.control.roi_width,
-                roi_height: pipeline.control.roi_height,
-            }
-        });
-        self.replace_model_geometry(Some(ModelGeometry {
-            input_width: contract.input_width,
-            input_height: contract.input_height,
-            preserves_roi_coordinates: contract.preserves_roi_coordinates,
-            ..current
-        }))
+    fn install_model_contract(&self, _contract: &PerceptionModelContract) -> Option<ModelGeometry> {
+        // Tensor shape belongs to inference. Control geometry remains the
+        // capture/ROI geometry until the concrete runtime contract arrives.
+        self.model_geometry()
     }
 
     fn install_runtime_contract(&self, contract: &PerceptionRuntimeContract) {
         self.replace_model_geometry(Some(ModelGeometry {
-            input_width: contract.model.input_width,
-            input_height: contract.model.input_height,
-            preserves_roi_coordinates: contract.model.preserves_roi_coordinates,
             source_width: contract.source_width,
             roi_width: contract.roi_width,
             roi_height: contract.roi_height,

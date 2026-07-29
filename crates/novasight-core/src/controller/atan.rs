@@ -217,6 +217,7 @@ pub struct ControlDecision {
     pub measurement_dt_ms: Option<f64>,
     pub reference_dt_ms: f64,
     pub prediction_lead_frames: f64,
+    pub prediction_horizon_ms: f64,
     pub prediction_raw_offset_x: f64,
     pub prediction_weighted_offset_x: f64,
     pub prediction_allowed_cap_x: f64,
@@ -285,6 +286,7 @@ impl ControlDecision {
             measurement_dt_ms: None,
             reference_dt_ms: 0.0,
             prediction_lead_frames: 0.0,
+            prediction_horizon_ms: 0.0,
             prediction_raw_offset_x: 0.0,
             prediction_weighted_offset_x: 0.0,
             prediction_allowed_cap_x: 0.0,
@@ -538,15 +540,13 @@ impl DualPhaseControl {
                 self.limiter.reset_y();
             }
         }
-        let distance = error_x.hypot(error_y);
-        let mode = if distance <= self.config.near_threshold_px {
-            ControlMode::Near
-        } else {
-            ControlMode::Far
-        };
-        let far_weight = far_weight(distance, self.config.near_threshold_px);
+        let observed_distance = error_x.hypot(error_y);
+        // Prediction caps are scheduled from the measured observation so the
+        // predictor cannot enlarge its own envelope recursively.
+        let prediction_far_weight = far_weight(observed_distance, self.config.near_threshold_px);
         let prediction = if capture_timestamp_discontinuity {
-            self.prediction.unavailable(error_x, error_y, far_weight)
+            self.prediction
+                .unavailable(error_x, error_y, prediction_far_weight)
         } else {
             self.prediction.predict(FocusTargetObservation {
                 track_id: observation.target_id,
@@ -555,17 +555,26 @@ impl DualPhaseControl {
                 measured_error_x: error_x,
                 measured_error_y: error_y,
                 capture_ts_ns: observation.capture_ts_ns,
+                observation_age_ms: frame_age_ms,
                 detection_confidence: observation.detection_confidence,
                 identity_confidence: observation.track_confidence,
-                far_weight,
+                far_weight: prediction_far_weight,
             })
         };
         let predicted_offset_x = prediction.x.safe_offset;
         let predicted_offset_y = prediction.y.safe_offset;
         let filtered_error_x = error_x + predicted_offset_x;
         let filtered_error_y = error_y + predicted_offset_y;
+        // The response region must follow the point we actually intend to
+        // control, not the stale pre-prediction position.
+        let control_distance = filtered_error_x.hypot(filtered_error_y);
+        let mode = if control_distance <= self.config.near_threshold_px {
+            ControlMode::Near
+        } else {
+            ControlMode::Far
+        };
         let Some((mut response, full_x, full_y)) =
-            self.project_demand(filtered_error_x, filtered_error_y, distance)
+            self.project_demand(filtered_error_x, filtered_error_y, control_distance)
         else {
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::GeometryInvalid);
@@ -667,6 +676,7 @@ impl DualPhaseControl {
             measurement_dt_ms: prediction.x.measurement_dt_ms,
             reference_dt_ms: prediction.x.reference_dt_ms,
             prediction_lead_frames: prediction.lead_frames,
+            prediction_horizon_ms: prediction.x.horizon_ms,
             prediction_raw_offset_x: prediction.x.raw_offset,
             prediction_weighted_offset_x: prediction.x.weighted_offset,
             prediction_allowed_cap_x: prediction.x.allowed_cap,
@@ -752,7 +762,9 @@ fn crossed_center(previous: f64, current: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AxisArrivalState, ControlObservation, DualPhaseConfig, DualPhaseControl};
+    use super::{
+        AxisArrivalState, ControlMode, ControlObservation, DualPhaseConfig, DualPhaseControl,
+    };
 
     #[test]
     fn arrival_state_uses_hysteresis_but_never_traps_a_real_departure() {
@@ -821,7 +833,8 @@ mod tests {
         assert_eq!(decision.median_velocity, Some(0.4));
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
         assert!((decision.reference_dt_ms - 10.0).abs() < 1e-12);
-        assert!((decision.prediction_raw_offset_x - 8.0).abs() < 1e-12);
+        assert!((decision.prediction_horizon_ms - 28.0).abs() < 1e-12);
+        assert!((decision.prediction_raw_offset_x - 11.2).abs() < 1e-12);
         assert!((decision.prediction_allowed_cap_x - 2.6).abs() < 1e-12);
         assert!(decision.prediction_allowed);
         assert!((decision.predicted_offset_x - 2.6).abs() < 1e-12);
@@ -866,6 +879,41 @@ mod tests {
         assert_eq!(decision.motion_confidence, 0.0);
         assert_eq!(decision.predicted_offset_x, 0.0);
         assert_eq!(decision.filtered_error_x, 52.0);
+    }
+
+    #[test]
+    fn response_region_follows_the_predicted_control_point() {
+        let mut control = DualPhaseControl::new(DualPhaseConfig {
+            prediction_enabled: true,
+            prediction_lead_frames: 1.0,
+            ..DualPhaseConfig::default()
+        });
+        let mut decision = None;
+        for (index, error_x) in [5.0, 7.0, 9.0, 11.0].into_iter().enumerate() {
+            let generation = index as u64 + 1;
+            let capture_ts_ns = 1_000_000_000 + generation * 10_000_000;
+            decision = Some(control.calculate(ControlObservation {
+                generation,
+                frame_id: generation,
+                target_id: 7,
+                capture_ts_ns,
+                inference_end_ts_ns: capture_ts_ns + 4_000_000,
+                control_now_ns: capture_ts_ns + 8_000_000,
+                aim_x: 160.0 + error_x,
+                aim_y: 160.0,
+                crosshair_x: 160.0,
+                crosshair_y: 160.0,
+                detection_confidence: 1.0,
+                track_confidence: 1.0,
+                target_valid: true,
+                trigger_active: true,
+            }));
+        }
+
+        let decision = decision.expect("last decision");
+        assert!(decision.observed_error_x < 12.0);
+        assert!(decision.filtered_error_x > 12.0);
+        assert_eq!(decision.mode, ControlMode::Far);
     }
 
     #[test]

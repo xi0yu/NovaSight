@@ -456,6 +456,7 @@ pub(crate) struct ControlPipelineState {
     pub measurement_dt_s: Option<f64>,
     pub reference_dt_ms: Option<f64>,
     pub prediction_lead_frames: Option<f64>,
+    pub prediction_horizon_ms: Option<f64>,
     pub prediction_raw_offset_x: Option<f64>,
     pub prediction_weighted_offset_x: Option<f64>,
     pub prediction_allowed_cap_x: Option<f64>,
@@ -1025,6 +1026,8 @@ impl CompatibilityRuntimeState {
                         reference_dt_ms: control_sample.then_some(dual_phase.reference_dt_ms),
                         prediction_lead_frames: control_sample
                             .then_some(dual_phase.prediction_lead_frames),
+                        prediction_horizon_ms: control_sample
+                            .then_some(dual_phase.prediction_horizon_ms),
                         prediction_raw_offset_x: control_sample
                             .then_some(dual_phase.prediction_raw_offset_x),
                         prediction_weighted_offset_x: control_sample

@@ -47,7 +47,7 @@ The observation call replaces the single pending complete integer command and ne
 - Capture age below zero, inference completion outside `[capture, control_now]`, stale age, or generation/frame rollback blocks the whole decision. A non-increasing capture timestamp resets prediction history and uses pure measured-position feedback for that otherwise valid observation.
 - Global observation cursors survive target switches; target-local estimator/mode/quantizer state does not.
 - Motion-estimator `dt_ms` is the adjacent same-target capture timestamp difference divided by `1_000_000`.
-- When `prediction.enabled` is true, prediction uses the arithmetic mean of the three capture intervals as one reference frame, then multiplies filtered X velocity by that dt and configured `lead_frames`. Disabling prediction zeros every prediction offset without disabling tracking or velocity observation. Frame age only participates in stale-observation rejection.
+- When `prediction.enabled` is true, prediction uses the arithmetic mean of the three capture intervals as one reference frame. The effective horizon is measured frame age plus reference dt times configured `lead_frames`; filtered X/Y velocity is multiplied by that horizon and then bounded. Disabling prediction zeros every prediction offset and skips velocity-history updates.
 
 ## Coordinate Contract
 
@@ -59,7 +59,8 @@ If source geometry is unavailable or untrusted, the aim observation is invalid a
 
 The new algorithm alone owns:
 
-- FAR/NEAR selection with one measured-error threshold;
+- FAR/NEAR selection from the final predicted control-point distance, while
+  prediction caps remain based on measured error to avoid recursive authority;
 - four-position same-target history;
 - three-segment median and time-adaptive EMA;
 - spread/trend/detection/track-identity prediction confidence;
@@ -99,7 +100,7 @@ Implementation owners:
 - `novasight/executors/runtime.py::ExecutorRegistry.tick_pending`
 - `novasight/config/runtime.py::ControlAlgorithmConfigs`
 
-Focused integration tests prove that consecutive DetectionBatch results replace the pending command, one control tick sends only the newest frame, and a newer observation also supersedes an older command that has left the slot but has not acquired the device lock. A deterministic closed-loop regression also requires limited prediction to reduce post-warmup mean absolute lag versus the `lead_frames=0` feedback baseline.
+Focused integration tests prove that consecutive DetectionBatch results replace the pending command, one control tick sends only the newest frame, and a newer observation also supersedes an older command that has left the slot but has not acquired the device lock. Prediction-disabled feedback remains the no-prediction baseline; `lead_frames=0` now means frame-age compensation without an extra capture interval.
 
 ## Remaining Blind Spots
 

@@ -66,6 +66,10 @@ pub struct FocusTargetObservation {
     pub measured_error_x: f64,
     pub measured_error_y: f64,
     pub capture_ts_ns: u64,
+    /// Time already elapsed from this capture to the current control
+    /// calculation. Prediction starts at capture time, so this measured age
+    /// must be covered before any configured frame lead is added.
+    pub observation_age_ms: f64,
     pub detection_confidence: f64,
     pub identity_confidence: f64,
     /// Continuous FAR response weight shared with the controller response
@@ -82,6 +86,7 @@ pub struct AxisPrediction {
     pub velocity_spread: Option<f64>,
     pub measurement_dt_ms: Option<f64>,
     pub reference_dt_ms: f64,
+    pub horizon_ms: f64,
     pub raw_offset: f64,
     pub weighted_offset: f64,
     pub allowed_cap: f64,
@@ -155,6 +160,8 @@ impl SingleTargetPredictor {
         if !observation.aim_x.is_finite()
             || !observation.aim_y.is_finite()
             || observation.capture_ts_ns == 0
+            || !observation.observation_age_ms.is_finite()
+            || observation.observation_age_ms < 0.0
         {
             return self.unavailable(
                 observation.measured_error_x,
@@ -194,11 +201,13 @@ impl SingleTargetPredictor {
                 estimate_x,
                 observation.measured_error_x,
                 observation.far_weight,
+                observation.observation_age_ms,
             ),
             y: self.axis_prediction(
                 estimate_y,
                 observation.measured_error_y,
                 observation.far_weight,
+                observation.observation_age_ms,
             ),
             history_position_count: self.velocity_x.history_position_count(),
             lead_frames: self.config.lead_frames,
@@ -210,18 +219,20 @@ impl SingleTargetPredictor {
         estimate: VelocityEstimate,
         measured_error: f64,
         far_weight: f64,
+        observation_age_ms: f64,
     ) -> AxisPrediction {
-        let allowed = estimate.reference_dt_ms.is_finite()
-            && estimate.reference_dt_ms > 0.0
-            && self.config.lead_frames > 0.0;
+        let allowed = estimate.reference_dt_ms.is_finite() && estimate.reference_dt_ms > 0.0;
         let confidence = if allowed {
             estimate.motion_confidence.clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let raw_offset = estimate.filtered_velocity
-            * estimate.reference_dt_ms.max(0.0)
-            * self.config.lead_frames;
+        let horizon_ms = if allowed {
+            observation_age_ms + estimate.reference_dt_ms.max(0.0) * self.config.lead_frames
+        } else {
+            0.0
+        };
+        let raw_offset = estimate.filtered_velocity * horizon_ms;
         let allowed_cap = self.allowed_cap(measured_error, far_weight);
         let weighted_offset = raw_offset * confidence;
         AxisPrediction {
@@ -232,6 +243,7 @@ impl SingleTargetPredictor {
             velocity_spread: Some(estimate.spread),
             measurement_dt_ms: Some(estimate.measurement_dt_ms),
             reference_dt_ms: estimate.reference_dt_ms,
+            horizon_ms,
             raw_offset,
             weighted_offset,
             allowed_cap,
@@ -449,6 +461,7 @@ mod tests {
             measured_error_x: aim_x - 100.0,
             measured_error_y: aim_y - 100.0,
             capture_ts_ns: 1_000_000_000 + index * 10_000_000,
+            observation_age_ms: 8.0,
             detection_confidence: 1.0,
             identity_confidence: 1.0,
             far_weight: 1.0,
@@ -495,5 +508,27 @@ mod tests {
         assert_eq!(prediction.y.velocity_samples, [Some(-0.25); 3]);
         assert!((prediction.x.reference_dt_ms - 29.0 / 3.0).abs() < 1e-12);
         assert!((prediction.y.reference_dt_ms - 29.0 / 3.0).abs() < 1e-12);
+        assert!((prediction.x.horizon_ms - (8.0 + 29.0 / 3.0)).abs() < 1e-12);
+        assert!((prediction.y.horizon_ms - (8.0 + 29.0 / 3.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn zero_extra_lead_still_compensates_observation_age() {
+        let mut zero_lead = config();
+        zero_lead.lead_frames = 0.0;
+        let mut predictor = SingleTargetPredictor::new(zero_lead);
+        let mut prediction = Default::default();
+        for index in 0..4 {
+            prediction = predictor.predict(observation(
+                index,
+                100.0 + index as f64 * 2.0,
+                100.0 + index as f64,
+            ));
+        }
+
+        assert!(prediction.x.allowed);
+        assert!((prediction.x.horizon_ms - 8.0).abs() < 1e-12);
+        assert!((prediction.x.raw_offset - 1.6).abs() < 1e-12);
+        assert!(prediction.x.safe_offset > 0.0);
     }
 }

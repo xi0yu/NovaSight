@@ -3845,6 +3845,7 @@ export function StudioConsoleView({
                 <span>误差距离</span><b>{formatOptionalNumber(predictedErrorDistancePx, 2, "px")}</b>
                 <span>控制 dt</span><b>{controlMeasurementDtS === null ? NO_SAMPLE : `${(controlMeasurementDtS * 1000).toFixed(3)} ms`}</b>
                 <span>控制观测帧龄</span><b>{formatOptionalNumber(controlFrameAgeMs, 2, "ms")}</b>
+                <span>预测实际时域</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_horizon_ms, 2, "ms") : "已关闭"}</b>
               </div>
             </div>
             <div className="console-card">
@@ -4096,14 +4097,14 @@ export function StudioConsoleView({
 
               <div className="console-card">
                   <SectionTitle title="Y 轴压枪" />
-                  <ModuleSwitch label="启用压枪" detail="真实左键按下后按设定间隔，把 +Y 合入当轮控制命令；不会额外发送第二条 move。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
-                  <ModuleSwitch label="只在检测到目标时压枪" detail="开启后，当轮命令必须包含有效目标。关闭只取消目标校验，压枪仍不会创建独立 move。" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
+                  <ModuleSwitch label="启用压枪" detail="真实左键按下后按设定间隔，把 +Y 与最新安全画面的跟踪量合并；每张画面最多发送一条 move。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
+                  <ModuleSwitch label="只在存在目标时压枪" detail="开启后要求当前有效目标；单帧漏检时沿用“目标丢失保持”窗口，但不会用预测框继续跟踪。关闭后，无目标时到期压枪量也能组成当轮唯一 move。" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
                   {recoilEnabled ? (
                     <details className="crosshair-advanced-settings">
                       <summary>间隔叠加参数</summary>
                       <p className="console-section-note">首次开火先等待一个完整间隔；达到间隔后只叠加一次，不补发错过的次数。发送失败也不会提前消耗本次压枪机会。</p>
                       <div className="advanced-settings-grid">
-                        <NumberControl label="压枪叠加间隔 ms" detail="距离上一次成功包含压枪量的 move 达到该时长后，下一条控制命令才允许再次叠加。" value={recoilIntervalMs} min={1} max={5000} step={1} onCommit={(value) => updateControlGroupField("recoil", "interval_ms", Math.round(value))} />
+                        <NumberControl label="压枪叠加间隔 ms" detail="距离上一次成功包含压枪量的 move 达到该时长后，在下一张安全新画面中再次叠加；不会用独立定时器补发。" value={recoilIntervalMs} min={1} max={5000} step={1} onCommit={(value) => updateControlGroupField("recoil", "interval_ms", Math.round(value))} />
                         <NumberControl label="每次叠加 +Y counts" detail="达到间隔时合入当轮 Y 输出的正向压枪量。" value={recoilYCounts} min={1} max={32767} step={1} onCommit={(value) => updateControlGroupField("recoil", "y_counts", Math.round(value))} />
                       </div>
                     </details>
@@ -4467,7 +4468,7 @@ export function StudioConsoleView({
               {dualPhasePredictionEnabled ? (
                 <>
                   <div className="advanced-settings-grid two-column">
-                    <NumberControl label="预测提前量（帧）" detail="沿当前目标速度向前预测多少帧。跟不上移动目标时小幅增加；明显超前时降低。" value={dualPhasePredictionLeadFrames} min={0} max={10} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_lead_frames", value)} />
+                    <NumberControl label="预测提前量（帧）" detail="在补偿当前观测帧龄后，再沿目标速度额外预测多少帧。跟不上移动目标时小幅增加；明显超前时降低。" value={dualPhasePredictionLeadFrames} min={0} max={10} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_lead_frames", value)} />
                     <NumberControl label="速度平滑窗口（帧）" detail="增大可降低预测点抖动，但会让速度变化响应更慢。" value={dualPhasePredictionSmoothingFrames} min={0.1} max={120} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_smoothing_frames", value)} />
                     <NumberControl label="断流历史重置 ms" detail="相邻有效画面超过该时间后丢弃旧速度，避免断流后继续沿旧方向预测。" value={dualPhasePredictionHistoryResetGapMs} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_history_reset_gap_ms", value)} />
                   </div>

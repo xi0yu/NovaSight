@@ -63,9 +63,9 @@ control:
   trigger_mode: hardware
   recoil:
     enabled: false
-    # true: 当轮跟踪命令必须包含有效目标；false: 不额外检查目标。
+    # true: 要求当前有效目标或仍在 Tracker 丢失保持期；false: 无目标时也允许压枪量组成当轮 move。
     require_target: true
-    # 开火后先等待一个完整间隔；之后只在现有 move 中按间隔叠加一次 +Y。
+    # 开火后先等待一个完整间隔；之后在下一张安全新画面中合成一次 +Y，不补发旧间隔。
     interval_ms: 16
     y_counts: 1
 capture:

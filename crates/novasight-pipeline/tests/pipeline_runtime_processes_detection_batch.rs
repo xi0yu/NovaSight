@@ -540,6 +540,334 @@ fn recoil_is_added_to_an_existing_tracking_command_after_its_interval() {
     runtime.shutdown().unwrap();
 }
 
+#[test]
+fn due_recoil_emits_at_the_predicted_aim_point_when_tracking_is_settled() {
+    let epoch = RuntimeEpoch(15);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let daemon_clock: Arc<dyn Clock> = clock.clone();
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let mut control = novasight_core::controller::DualPhaseConfig {
+        prediction_enabled: true,
+        ..Default::default()
+    };
+    control.arrival_radius_counts = 3.0;
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            control,
+            recoil: RecoilConfig {
+                enabled: true,
+                require_target: true,
+                interval_ms: 8,
+                y_counts: 2,
+            },
+            ..PipelineConfig::default()
+        },
+        daemon_clock,
+        pointer,
+    )
+    .unwrap();
+    ingress.set_trigger_active(true);
+
+    let centered_batch = |generation, captured_at_ns| {
+        DetectionBatch::new(
+            FrameStamp::new(epoch, generation, captured_at_ns),
+            640,
+            640,
+            // Default aim ratio is 0.22, so this box aims exactly at 320,320.
+            vec![Detection::new(generation, 0, 300.0, 311.2, 40.0, 40.0, 0.95).unwrap()],
+        )
+        .unwrap()
+    };
+    ingress.submit(centered_batch(1, 1_000_000_000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.metrics().control_decisions < 1 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(device.receipts().is_empty());
+
+    clock.0.store(1_078_000_000, Ordering::Release);
+    ingress.submit(centered_batch(2, 1_070_000_000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    let receipts = device.receipts();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].delta_x_counts, 0);
+    assert_eq!(receipts[0].delta_y_counts, 2);
+    assert_eq!(runtime.metrics().recoil.state, RecoilState::Applied);
+
+    // A recoil-only send is feed-forward compensation. It must not mark the
+    // visual controller's Y correction as pending, otherwise a short recoil
+    // interval can starve Y tracking for the entire firing period.
+    clock.0.store(1_079_000_000, Ordering::Release);
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 3, 1_071_000_000),
+                640,
+                640,
+                vec![Detection::new(3, 0, 300.0, 321.2, 40.0, 40.0, 0.95).unwrap()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().len() < 2 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let receipts = device.receipts();
+    assert_eq!(receipts.len(), 2);
+    assert!(receipts[1].delta_y_counts > 0);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn recoil_without_target_uses_fresh_observations_when_target_guard_is_disabled() {
+    let epoch = RuntimeEpoch(16);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let daemon_clock: Arc<dyn Clock> = clock.clone();
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            recoil: RecoilConfig {
+                enabled: true,
+                require_target: false,
+                interval_ms: 8,
+                y_counts: 2,
+            },
+            ..PipelineConfig::default()
+        },
+        daemon_clock,
+        pointer,
+    )
+    .unwrap();
+    ingress.set_trigger_active(true);
+
+    let empty_batch = |generation, captured_at_ns| {
+        DetectionBatch::new(
+            FrameStamp::new(epoch, generation, captured_at_ns),
+            640,
+            640,
+            Vec::new(),
+        )
+        .unwrap()
+    };
+    ingress.submit(empty_batch(1, 1_000_000_000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.metrics().control_decisions < 1 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(device.receipts().is_empty());
+
+    clock.0.store(1_078_000_000, Ordering::Release);
+    ingress.submit(empty_batch(2, 1_070_000_000)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    let receipts = device.receipts();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].target_object_id, 0);
+    assert_eq!(receipts[0].delta_x_counts, 0);
+    assert_eq!(receipts[0].delta_y_counts, 2);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn target_guard_uses_the_existing_tracker_loss_grace_without_predicted_control() {
+    let epoch = RuntimeEpoch(18);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let daemon_clock: Arc<dyn Clock> = clock.clone();
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            recoil: RecoilConfig {
+                enabled: true,
+                require_target: true,
+                interval_ms: 8,
+                y_counts: 2,
+            },
+            ..PipelineConfig::default()
+        },
+        daemon_clock,
+        pointer,
+    )
+    .unwrap();
+    ingress.set_trigger_active(true);
+
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 1, 1_000_000_000),
+                640,
+                640,
+                vec![Detection::new(1, 0, 300.0, 311.2, 40.0, 40.0, 0.95).unwrap()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.metrics().control_decisions < 1 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    // One missed observation retains the locked identity for the configured
+    // tracker grace. Tracking emits no predicted-only command, while recoil
+    // remains authorized long enough to avoid amplifying the visual loss.
+    clock.0.store(1_078_000_000, Ordering::Release);
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 2, 1_070_000_000),
+                640,
+                640,
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let receipts = device.receipts();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].target_object_id, 0);
+    assert_eq!(receipts[0].delta_y_counts, 2);
+    assert_eq!(
+        runtime.metrics().dual_phase.block_reason,
+        novasight_core::controller::BlockReason::TargetInvalid
+    );
+
+    // Once the existing 120 ms tracker grace expires, the target requirement
+    // closes again and no further recoil-only move is authorized.
+    clock.0.store(1_258_000_000, Ordering::Release);
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, 3, 1_250_000_000),
+                640,
+                640,
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.metrics().control_decisions < 3 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+    thread::sleep(Duration::from_millis(10));
+    assert_eq!(device.receipts().len(), 1);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
+    let epoch = RuntimeEpoch(17);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let daemon_clock: Arc<dyn Clock> = clock.clone();
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start_suspended(
+        PipelineConfig {
+            epoch,
+            control: novasight_core::controller::DualPhaseConfig {
+                prediction_enabled: true,
+                ..Default::default()
+            },
+            recoil: RecoilConfig {
+                enabled: true,
+                require_target: true,
+                interval_ms: 8,
+                y_counts: 2,
+            },
+            ..PipelineConfig::default()
+        },
+        daemon_clock,
+        pointer,
+    )
+    .unwrap();
+    ingress.set_trigger_active(true);
+
+    let moving_batch = |generation: u64| {
+        let elapsed_ms = generation.saturating_sub(1) * 20;
+        let captured_at_ns = 1_000_000_000 + elapsed_ms * 1_000_000;
+        let aim_y = 330.0 + generation.saturating_sub(1) as f32 * 2.0;
+        DetectionBatch::new(
+            FrameStamp::new(epoch, generation, captured_at_ns),
+            640,
+            640,
+            vec![
+                Detection::new(generation, 0, 300.0, aim_y - 40.0 * 0.22, 40.0, 40.0, 0.95)
+                    .unwrap(),
+            ],
+        )
+        .unwrap()
+    };
+
+    // Warm the real X/Y predictor while physical output is safely suspended.
+    for generation in 1..=4_u64 {
+        clock.0.store(
+            1_008_000_000 + generation.saturating_sub(1) * 20_000_000,
+            Ordering::Release,
+        );
+        ingress.submit(moving_batch(generation)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while runtime.metrics().control_decisions < generation && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    assert!(device.receipts().is_empty());
+    runtime.open_output_gate();
+
+    for generation in 5..=7_u64 {
+        clock.0.store(
+            1_008_000_000 + generation.saturating_sub(1) * 20_000_000,
+            Ordering::Release,
+        );
+        ingress.submit(moving_batch(generation)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while runtime.metrics().control_decisions < generation && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().last().map(|item| item.generation.0) != Some(7)
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    let metrics = runtime.metrics();
+    let control = metrics.dual_phase;
+    let recoil = metrics.recoil;
+    assert_eq!(control.generation, 7);
+    assert!(control.predicted_offset_y > 0.0);
+    assert_eq!(recoil.state, RecoilState::Applied);
+    assert_eq!(recoil.emitted_counts_y, 2);
+    let final_command = device
+        .receipts()
+        .last()
+        .copied()
+        .expect("generation 7 move");
+    assert_eq!(final_command.generation.0, 7);
+    assert_eq!(
+        final_command.delta_y_counts,
+        control.dy + recoil.emitted_counts_y
+    );
+    runtime.shutdown().unwrap();
+}
+
 fn publish_crosshair_samples(
     hub: &CrosshairHub,
     observer: &novasight_pipeline::CrosshairEpoch,

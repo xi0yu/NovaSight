@@ -4,10 +4,10 @@ Formal algorithm ID: `dual_phase_atan_robust_predictive_v2`
 
 Current production name: 双阶段 Atan 控制
 
-The serialized ID is retained for configuration compatibility. Despite the
-legacy name, the production controller does not estimate target velocity or
-predict a future position. Old prediction fields remain readable only for safe
-configuration migration and do not participate in mouse output.
+The serialized ID is retained for configuration compatibility. Prediction is
+optional and disabled by default. When enabled, the controller estimates X/Y
+screen velocity for the one selected TrackId and advances that aim point by the
+measured frame age plus the configured number of capture intervals.
 
 ## Production Data Path
 
@@ -15,7 +15,8 @@ configuration migration and do not participate in mouse output.
 latest valid DetectionBatch
 -> selected target and measured aim point
 -> current measured error
--> FAR/NEAR transition weight from measured radial error
+-> optional bounded X/Y prediction for that same target
+-> FAR/NEAR transition weight from the predicted control-point radial error
 -> ROI/source projection and geometric atan
 -> calibrated full correction counts
 -> continuously blended counts-domain Atan response
@@ -25,10 +26,10 @@ latest valid DetectionBatch
 -> kmNet move(dx, dy)
 ```
 
-Every command is recalculated from the newest measured aim point. There is no
-position extrapolation, D term, velocity feed-forward or algorithm-layer
-trajectory. A new inference result replaces an older unsent command without
-merging or repaying its counts.
+Every command is recalculated from the newest measured aim point. Prediction,
+when enabled, only changes that one control reference; there is no D term or
+algorithm-layer trajectory. A new inference result replaces an older unsent
+command without merging or repaying its counts.
 
 ## Projection And Atan Response
 
@@ -40,7 +41,7 @@ focal_x = (source_width / 2) / tan(FOV_x / 2)
 theta = atan(source_error / focal_x)
 full_counts = theta * counts_per_360 / (2*pi)
 
-w_far = smoothstep(distance, 0.75 * threshold, 1.25 * threshold)
+w_far = smoothstep(control_distance, 0.75 * threshold, 1.25 * threshold)
 K = (1 - w_far) * K_near + w_far * K_far
 u = K * S_counts * atan(full_counts / S_counts)
 limit = (1 - w_far) * near_limit + w_far * far_limit
@@ -56,6 +57,8 @@ radial-error threshold centers a cubic Smoothstep transition whose half-width
 is 25% of that threshold. This removes the parameter jump without adding a
 second gain stage or another tuning field. Both regions share one Atan scale;
 only Kp and the per-update output limit differ. Neither is a movement deadzone.
+Prediction caps are still scheduled from the measured error, so a predicted
+offset cannot recursively enlarge its own safety envelope.
 
 ## State And Integer Output
 
@@ -83,18 +86,21 @@ trigger snapshot, freshness deadline, generation and signed 16-bit device range
 before invoking the driver.
 
 Shared recoil is independent from target prediction. When its configured time
-interval is due, it adds one integer `+Y` contribution to the current command.
-It never creates a second move, accumulates missed intervals, or owns a
-fractional residual.
+interval is due, it adds one integer `+Y` contribution to the newest safe
+observation's tracking demand, including a zero tracking demand. It never
+creates a second move, accumulates missed intervals, or owns a fractional
+residual.
 
 ## Configuration Contract
 
-- `prediction_enabled` / `prediction.enabled` must be `false` in production.
-- Current configuration migrations force legacy prediction to `false`.
-- Public configuration schemas do not expose velocity or prediction tuning.
-- User-facing telemetry shows measured/control error and reports prediction as
-  disabled; zero-valued legacy fields are wire-compatibility data, not active
-  measurements.
+- Prediction is disabled by default and legacy migrations return it to the
+  disabled state instead of silently changing physical output.
+- Enabling prediction activates both X and Y for the one selected TrackId.
+- `prediction_lead_frames=0` still compensates measured frame age; it adds no
+  extra capture interval. The module switch is the only way to disable
+  prediction.
+- Runtime telemetry separates measured aim, predicted aim, prediction horizon,
+  tracking command, recoil contribution and final device receipt.
 
 The tuning surface is therefore limited to target/aim selection, projection
 calibration, the FAR/NEAR threshold, Kp, Atan scale, per-update limits,
