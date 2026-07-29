@@ -17,9 +17,7 @@
   "frame": {
     "epoch": "u64",
     "generation": "u64",
-    "frame_id": "u64",
     "captured_at_ns": "u64",
-    "inference_end_ts_ns": "u64",
     "control_now_ns": "u64",
     "coordinate_space": "string",
     "model_width": "f64",
@@ -56,7 +54,6 @@
   "target_state": {
     "object_id": "u64|null",
     "lock_reason": "string",
-    "frame_id": "u64|null",
     "generation": "u64|null"
   },
   "control_decision": {

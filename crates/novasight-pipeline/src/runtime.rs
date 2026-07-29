@@ -21,7 +21,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::CrosshairHub;
-use crate::{LatestSlot, TryPublishError};
+use crate::LatestSlot;
+use crate::slot::{MonotonicPublishError, TryMonotonicPublishError};
 
 const STATUS_STARTING: u8 = 0;
 const STATUS_RUNNING: u8 = 1;
@@ -217,13 +218,26 @@ struct AtomicMetrics {
     device_error_count: AtomicU64,
     device_recovery_count: AtomicU64,
     live_workers: AtomicU64,
-    last_generation: Mutex<Option<Generation>>,
+    last_generation: AtomicU64,
     last_fault: Mutex<Option<String>>,
     last_device_error: Mutex<Option<String>>,
     vision: Mutex<VisionTelemetry>,
     last_device_receipt: AtomicDeviceReceipt,
     dual_phase: Mutex<DualPhaseDecision>,
     recoil: Mutex<RecoilDecision>,
+}
+
+impl AtomicMetrics {
+    fn last_generation(&self) -> Option<Generation> {
+        (self.received_batches.load(Ordering::Acquire) != 0)
+            .then(|| Generation(self.last_generation.load(Ordering::Acquire)))
+    }
+
+    fn record_received_generation(&self, generation: Generation) {
+        self.last_generation
+            .fetch_max(generation.0, Ordering::AcqRel);
+        self.received_batches.fetch_add(1, Ordering::Release);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -327,6 +341,7 @@ struct SharedState {
     recoil_config_version: AtomicU64,
     recoil_enabled: AtomicBool,
     recoil_require_target: AtomicBool,
+    latest_seen_generation: AtomicU64,
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
@@ -375,6 +390,7 @@ impl SharedState {
             recoil_config_version: AtomicU64::new(1),
             recoil_enabled: AtomicBool::new(recoil_config.enabled),
             recoil_require_target: AtomicBool::new(recoil_config.require_target),
+            latest_seen_generation: AtomicU64::new(0),
             device_lane: Mutex::new(()),
             event_tx,
             metrics,
@@ -384,6 +400,11 @@ impl SharedState {
 
     fn status(&self) -> PipelineStatus {
         PipelineStatus::from_atomic(self.status.load(Ordering::Acquire))
+    }
+
+    fn latest_seen_generation(&self) -> Option<Generation> {
+        (self.metrics.received_batches.load(Ordering::Acquire) != 0)
+            .then(|| Generation(self.latest_seen_generation.load(Ordering::Acquire)))
     }
 
     fn set_button_left(&self, pressed: bool) {
@@ -610,6 +631,55 @@ impl std::fmt::Debug for PipelineIngress {
 }
 
 impl PipelineIngress {
+    /// Publish the newest generation while sharing the same safety boundary as
+    /// the final device send. Once this returns, no older command can enter the
+    /// vendor call.
+    fn observe_generation(&self, generation: Generation) -> Result<(), PipelineError> {
+        let _lane = self
+            .shared
+            .device_lane
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.observe_generation_locked(generation)
+    }
+
+    /// Realtime observation never waits for a device call. A busy lane drops
+    /// this frame; the next capture can publish the newer generation.
+    fn try_observe_generation(&self, generation: Generation) -> Result<(), PipelineError> {
+        let _lane = match self.shared.device_lane.try_lock() {
+            Ok(lane) => lane,
+            Err(TryLockError::WouldBlock) => return Err(PipelineError::IngressBusy),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        self.observe_generation_locked(generation)
+    }
+
+    /// Equality remains retryable until the latest slot accepts the batch;
+    /// strictly older attempts fail immediately.
+    fn observe_generation_locked(&self, generation: Generation) -> Result<(), PipelineError> {
+        let mut previous = self.shared.latest_seen_generation.load(Ordering::Acquire);
+        loop {
+            if generation.0 < previous {
+                return Err(PipelineError::NonMonotonicGeneration {
+                    previous,
+                    actual: generation.0,
+                });
+            }
+            if generation.0 == previous {
+                return Ok(());
+            }
+            match self.shared.latest_seen_generation.compare_exchange_weak(
+                previous,
+                generation.0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(actual) => previous = actual,
+            }
+        }
+    }
+
     /// Non-blocking stop request used by RuntimeHandle. The shared external
     /// cancellation flag retires future sends; this clears the local gate and
     /// trigger cache without waiting for an already-running vendor call.
@@ -730,29 +800,20 @@ impl PipelineIngress {
                 actual: stamp.epoch.0,
             });
         }
-        let mut last = self
-            .shared
-            .metrics
-            .last_generation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(previous) = *last
-            && stamp.generation <= previous
-        {
-            return Err(PipelineError::NonMonotonicGeneration {
-                previous: previous.0,
-                actual: stamp.generation.0,
-            });
+        self.observe_generation(stamp.generation)?;
+        match self.batches.publish_monotonic(stamp.generation.0, batch) {
+            Ok(_) => {}
+            Err(MonotonicPublishError::Closed) => return Err(PipelineError::NotRunning),
+            Err(MonotonicPublishError::NonMonotonic { previous }) => {
+                return Err(PipelineError::NonMonotonicGeneration {
+                    previous,
+                    actual: stamp.generation.0,
+                });
+            }
         }
-        self.batches
-            .publish(batch)
-            .map_err(|_| PipelineError::NotRunning)?;
-        *last = Some(stamp.generation);
-        drop(last);
         self.shared
             .metrics
-            .received_batches
-            .fetch_add(1, Ordering::Relaxed);
+            .record_received_generation(stamp.generation);
         Ok(())
     }
 
@@ -769,30 +830,24 @@ impl PipelineIngress {
                 actual: stamp.epoch.0,
             });
         }
-        let mut last = match self.shared.metrics.last_generation.try_lock() {
-            Ok(last) => last,
-            Err(TryLockError::WouldBlock) => return Err(PipelineError::IngressBusy),
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-        };
-        if let Some(previous) = *last
-            && stamp.generation <= previous
+        self.try_observe_generation(stamp.generation)?;
+        match self
+            .batches
+            .try_publish_monotonic(stamp.generation.0, batch)
         {
-            return Err(PipelineError::NonMonotonicGeneration {
-                previous: previous.0,
-                actual: stamp.generation.0,
-            });
-        }
-        match self.batches.try_publish(batch) {
             Ok(_) => {}
-            Err(TryPublishError::Busy) => return Err(PipelineError::IngressBusy),
-            Err(TryPublishError::Closed) => return Err(PipelineError::NotRunning),
+            Err(TryMonotonicPublishError::Busy) => return Err(PipelineError::IngressBusy),
+            Err(TryMonotonicPublishError::Closed) => return Err(PipelineError::NotRunning),
+            Err(TryMonotonicPublishError::NonMonotonic { previous }) => {
+                return Err(PipelineError::NonMonotonicGeneration {
+                    previous,
+                    actual: stamp.generation.0,
+                });
+            }
         }
-        *last = Some(stamp.generation);
-        drop(last);
         self.shared
             .metrics
-            .received_batches
-            .fetch_add(1, Ordering::Relaxed);
+            .record_received_generation(stamp.generation);
         Ok(())
     }
 }
@@ -809,7 +864,6 @@ struct TargetedObservation {
     detection_confidence: f64,
     track_confidence: f64,
     track_rebuilt: bool,
-    inference_end_ns: u64,
 }
 
 /// One latest-only opportunity to compose physical output from a fresh
@@ -946,7 +1000,6 @@ impl PipelineRuntime {
             batch_slot.clone(),
             target_slot.clone(),
             Arc::clone(&shared),
-            Arc::clone(&clock),
             config.targeting.clone(),
             config.crosshair.clone(),
         )?;
@@ -1050,10 +1103,7 @@ impl PipelineRuntime {
         {
             let next_generation = self
                 .shared
-                .metrics
-                .last_generation
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .latest_seen_generation()
                 .map_or(0, |generation| generation.0.saturating_add(1));
             self.shared
                 .output_gate_min_generation
@@ -1249,7 +1299,6 @@ fn spawn_targeting_worker(
     input: LatestSlot<DetectionBatch>,
     output: LatestSlot<TargetedObservation>,
     shared: Arc<SharedState>,
-    clock: Arc<dyn Clock>,
     config: TargetingConfig,
     crosshair: Option<CrosshairHub>,
 ) -> Result<JoinHandle<()>, PipelineError> {
@@ -1334,7 +1383,6 @@ fn spawn_targeting_worker(
                         || targeting
                             .locked()
                             .is_some_and(|track| track.state == TrackState::Lost);
-                    let now = clock.now().0;
                     let observation = TargetedObservation {
                         stamp: batch.stamp(),
                         target_id,
@@ -1346,7 +1394,6 @@ fn spawn_targeting_worker(
                         detection_confidence,
                         track_confidence,
                         track_rebuilt: selection.target_rebuilt,
-                        inference_end_ns: now,
                     };
                     if output.publish(observation).is_err() {
                         break;
@@ -1386,10 +1433,8 @@ fn spawn_control_worker(
                         || shared.trigger_active.load(Ordering::Acquire);
                     let observation = ControlObservation {
                         generation: target.stamp.generation.0,
-                        frame_id: target.stamp.generation.0,
                         target_id,
                         capture_ts_ns: target.stamp.captured_at.0,
-                        inference_end_ts_ns: target.inference_end_ns,
                         control_now_ns,
                         aim_x: target.aim_x,
                         aim_y: target.aim_y,
@@ -1615,11 +1660,7 @@ fn spawn_device_worker(
                         shared.record_recoil(recoil_decision);
                         continue;
                     }
-                    let latest_generation = *shared
-                        .metrics
-                        .last_generation
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let latest_generation = shared.latest_seen_generation();
                     if latest_generation != Some(command.generation) {
                         shared
                             .metrics
@@ -1745,11 +1786,7 @@ fn snapshot_metrics(
         button_right: shared.button_right.load(Ordering::Acquire),
         output_gate_open: shared.output_gate.load(Ordering::Acquire),
         live_workers: shared.metrics.live_workers.load(Ordering::Acquire),
-        last_generation: *shared
-            .metrics
-            .last_generation
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        last_generation: shared.metrics.last_generation(),
         last_fault: shared
             .metrics
             .last_fault

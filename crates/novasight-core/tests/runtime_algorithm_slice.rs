@@ -84,12 +84,8 @@ fn static_target_pipeline_drives_freshness_targeting_and_dual_phase() {
         let mut control = DualPhaseControl::new(DualPhaseConfig::default());
         let observation = ControlObservation {
             generation: frame["generation"].as_u64().expect("generation"),
-            frame_id: frame["frame_id"].as_u64().expect("frame_id"),
             target_id: target,
             capture_ts_ns: capture.0,
-            inference_end_ts_ns: frame["inference_end_ts_ns"]
-                .as_u64()
-                .expect("inference_end_ts_ns"),
             control_now_ns: now.0,
             aim_x: matched.center_x(),
             aim_y: matched.center_y(),
@@ -130,12 +126,8 @@ fn moving_target_records_emit_typed_decisions() {
                 .expect("matched detection");
             let observation = ControlObservation {
                 generation: frame["generation"].as_u64().expect("generation"),
-                frame_id: frame["frame_id"].as_u64().expect("frame_id"),
                 target_id: target,
                 capture_ts_ns: frame["captured_at_ns"].as_u64().expect("captured_at_ns"),
-                inference_end_ts_ns: frame["inference_end_ts_ns"]
-                    .as_u64()
-                    .expect("inference_end_ts_ns"),
                 control_now_ns: frame["control_now_ns"].as_u64().expect("control_now_ns"),
                 aim_x: matched.center_x(),
                 aim_y: matched.center_y(),
@@ -159,10 +151,8 @@ fn dual_phase_first_observation_emits_first_decision() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let observation = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 400.0,
         aim_y: 360.0,

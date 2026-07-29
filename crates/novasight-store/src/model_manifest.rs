@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ModelManifest {
@@ -121,6 +122,182 @@ pub struct ManifestPostprocess {
     pub max_detections: u32,
 }
 
+/// Compute the canonical fingerprint shared by model ingestion, catalog
+/// verification, and the live DeepStream composition path.
+pub fn compute_model_fingerprint(manifest: &ModelManifest) -> Result<String, serde_json::Error> {
+    manifest_fingerprint(manifest, true)
+}
+
+/// Verify one persisted fingerprint. Manifests written before `class_names`
+/// became explicit may use the legacy payload only when that key was absent
+/// from the source document.
+pub fn model_fingerprint_matches(
+    manifest: &ModelManifest,
+    expected: &str,
+    output_class_names_present: bool,
+) -> Result<bool, serde_json::Error> {
+    if manifest_fingerprint(manifest, true)? == expected {
+        return Ok(true);
+    }
+    if output_class_names_present {
+        return Ok(false);
+    }
+    Ok(manifest_fingerprint(manifest, false)? == expected)
+}
+
+fn manifest_fingerprint(
+    manifest: &ModelManifest,
+    include_class_names: bool,
+) -> Result<String, serde_json::Error> {
+    let mut output = serde_json::Map::new();
+    output.insert("name".to_owned(), serde_json::json!(manifest.output.name));
+    output.insert("shape".to_owned(), serde_json::json!(manifest.output.shape));
+    output.insert("dtype".to_owned(), serde_json::json!(manifest.output.dtype));
+    output.insert(
+        "layout".to_owned(),
+        serde_json::json!(manifest.output.layout),
+    );
+    output.insert(
+        "format".to_owned(),
+        serde_json::json!(manifest.output.format),
+    );
+    output.insert(
+        "class_count".to_owned(),
+        serde_json::json!(manifest.output.class_count),
+    );
+    output.insert(
+        "has_objectness".to_owned(),
+        serde_json::json!(manifest.output.has_objectness),
+    );
+    output.insert(
+        "coordinate_mode".to_owned(),
+        serde_json::json!(manifest.output.coordinate_mode),
+    );
+    if !manifest.output.bindings.is_empty() {
+        output.insert(
+            "bindings".to_owned(),
+            serde_json::to_value(&manifest.output.bindings)?,
+        );
+    }
+    if !manifest.output.strides.is_empty() {
+        output.insert(
+            "strides".to_owned(),
+            serde_json::json!(manifest.output.strides),
+        );
+    }
+    if !manifest.output.anchors.is_empty() {
+        output.insert(
+            "anchors".to_owned(),
+            serde_json::json!(manifest.output.anchors),
+        );
+    }
+    if include_class_names {
+        output.insert(
+            "class_names".to_owned(),
+            serde_json::json!(manifest.output.class_names),
+        );
+    }
+    let payload = serde_json::json!({
+        "artifact_sha256": manifest.artifact.sha256,
+        "input": {
+            "name": manifest.input.name,
+            "shape": manifest.input.shape,
+            "dtype": manifest.input.dtype,
+            "layout": manifest.input.layout,
+        },
+        "output": output,
+        "parser_schema": "yolo-v1",
+    });
+    let stable = serde_json::to_string(&payload)?;
+    let mut digest = Sha256::new();
+    digest.update(python_json_numbers(&stable).as_bytes());
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// Match Python's stable JSON float spelling at the two ryu differences used
+/// by existing manifests: exponent padding and scientific notation below
+/// `1e-4`. Only JSON number tokens outside strings are rewritten.
+fn python_json_numbers(json: &str) -> String {
+    let bytes = json.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_string {
+            output.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            in_string = true;
+            output.push(byte);
+            index += 1;
+            continue;
+        }
+        if !byte.is_ascii_digit() && byte != b'-' {
+            output.push(byte);
+            index += 1;
+            continue;
+        }
+        let start = index;
+        index += 1;
+        while index < bytes.len()
+            && (bytes[index].is_ascii_digit()
+                || matches!(bytes[index], b'.' | b'e' | b'E' | b'+' | b'-'))
+        {
+            index += 1;
+        }
+        output.extend_from_slice(python_number_token(&bytes[start..index]).as_bytes());
+    }
+    String::from_utf8(output).expect("valid JSON remains UTF-8")
+}
+
+fn python_number_token(token: &[u8]) -> String {
+    let token = std::str::from_utf8(token).expect("JSON numbers are ASCII");
+    if let Some(exponent_at) = token.find(['e', 'E']) {
+        let (mantissa, exponent) = token.split_at(exponent_at);
+        let exponent = &exponent[1..];
+        let (sign, digits) = exponent
+            .strip_prefix(['+', '-'])
+            .map_or(("", exponent), |digits| (&exponent[..1], digits));
+        return format!(
+            "{mantissa}e{sign}{}{digits}",
+            if digits.len() == 1 { "0" } else { "" }
+        );
+    }
+    let (sign, unsigned) = token
+        .strip_prefix('-')
+        .map_or(("", token), |value| ("-", value));
+    let Some(fraction) = unsigned.strip_prefix("0.") else {
+        return token.to_owned();
+    };
+    let leading_zeros = fraction.bytes().take_while(|byte| *byte == b'0').count();
+    if leading_zeros < 4 || leading_zeros == fraction.len() {
+        return token.to_owned();
+    }
+    let significant = &fraction[leading_zeros..];
+    let (first, rest) = significant.split_at(1);
+    let mantissa = if rest.is_empty() {
+        first.to_owned()
+    } else {
+        format!("{first}.{rest}")
+    };
+    let exponent = leading_zeros + 1;
+    format!(
+        "{sign}{mantissa}e-{}{exponent}",
+        if exponent < 10 { "0" } else { "" }
+    )
+}
+
 impl Default for ManifestPostprocess {
     fn default() -> Self {
         Self {
@@ -220,5 +397,14 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn fingerprint_number_normalization_matches_existing_python_manifests() {
+        assert_eq!(
+            python_json_numbers(r#"{"value":1e-7,"text":"1e-7"}"#),
+            r#"{"value":1e-07,"text":"1e-7"}"#
+        );
+        assert_eq!(python_number_token(b"0.00001234"), "1.234e-05");
     }
 }

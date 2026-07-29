@@ -233,13 +233,11 @@ fn equal_scores_tie_break_by_stable_track_id_not_frame_local_object_id() {
 }
 
 #[test]
-fn reset_clears_state_and_history() {
+fn reset_clears_targeting_state() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
     core.select(&[head], OBSERVATION_CENTER);
-    assert!(core.history_iter().next().is_some());
     core.reset();
-    assert!(core.history_iter().next().is_none());
     assert!(core.locked().is_none());
     assert_eq!(core.lost_count(), 0);
 }
@@ -747,18 +745,6 @@ fn filtered_classes_age_out_the_previous_track() {
 
     let reacquired = core.select(&[target], OBSERVATION_CENTER);
     assert_ne!(reacquired.target_track_id, Some(first_track));
-}
-
-#[test]
-fn history_is_bounded() {
-    let mut core = TargetingCore::new(TargetingConfig::default());
-    for index in 0..(novasight_core::tracking::DEFAULT_HISTORY_LIMIT * 4) {
-        let x = 300.0 + index as f32;
-        let detection = Detection::new(1, 0, x, 300.0, 40.0, 80.0, 0.9).expect("d");
-        core.select(&[detection], OBSERVATION_CENTER);
-    }
-    let count = core.history_iter().count();
-    assert!(count <= novasight_core::tracking::DEFAULT_HISTORY_LIMIT);
 }
 
 #[test]

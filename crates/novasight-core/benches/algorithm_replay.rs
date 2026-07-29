@@ -82,12 +82,8 @@ fn main() {
                 );
                 let observation = ControlObservation {
                     generation: frame["generation"].as_u64().expect("generation"),
-                    frame_id: frame["frame_id"].as_u64().expect("frame_id"),
                     target_id: target,
                     capture_ts_ns: capture.0,
-                    inference_end_ts_ns: frame["inference_end_ts_ns"]
-                        .as_u64()
-                        .expect("inference_end_ts_ns"),
                     control_now_ns: now.0,
                     aim_x: selection.target_aim_x.expect("aim x"),
                     aim_y: selection.target_aim_y.expect("aim y"),

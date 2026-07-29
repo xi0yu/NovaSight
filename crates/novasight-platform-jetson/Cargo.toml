@@ -11,11 +11,13 @@ deepstream = [
   "dep:gstreamer",
   "dep:novasight-deepstream-bridge",
   "dep:novasight-pipeline",
+  "dep:novasight-store",
   "novasight-deepstream-bridge/ffi",
 ]
 
 [dependencies]
 novasight-core = { path = "../novasight-core" }
+novasight-store = { path = "../novasight-store", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

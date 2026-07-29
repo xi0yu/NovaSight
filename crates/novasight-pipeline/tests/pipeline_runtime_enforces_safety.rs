@@ -68,7 +68,9 @@ impl Clock for BlockingClock {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.0 += 1;
-        if state.0 == 3 {
+        // Targeting no longer fabricates an inference-end timestamp. The
+        // second clock read is therefore the device lane's pre-send check.
+        if state.0 == 2 {
             state.1 = true;
             self.changed.notify_all();
             while !state.2 {
@@ -634,7 +636,7 @@ fn device_worker_panic_immediately_faults_and_closes_output() {
 }
 
 #[test]
-fn device_lane_drops_a_command_superseded_by_a_newer_generation() {
+fn realtime_ingress_never_blocks_or_races_an_active_device_send() {
     let epoch = RuntimeEpoch(7);
     let clock = Arc::new(BlockingClock::default());
     let pipeline_clock: Arc<dyn Clock> = clock.clone();
@@ -653,21 +655,23 @@ fn device_lane_drops_a_command_superseded_by_a_newer_generation() {
     ingress.submit(batch(epoch, 1)).expect("generation one");
     clock.wait_until_device_check();
 
-    ingress.submit(batch(epoch, 2)).expect("generation two");
+    assert!(matches!(
+        ingress.try_submit(batch(epoch, 2)),
+        Err(PipelineError::IngressBusy)
+    ));
     clock.release_device_check();
 
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while runtime.metrics().superseded_commands == 0 && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
     let deadline = Instant::now() + Duration::from_secs(1);
     while device.receipts().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
+    ingress
+        .try_submit(batch(epoch, 2))
+        .expect("the next realtime frame is admitted after the device call");
 
-    assert_eq!(runtime.metrics().superseded_commands, 1);
+    assert_eq!(runtime.metrics().received_batches, 2);
     let receipts = device.receipts();
     assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].generation, 2);
+    assert_eq!(receipts[0].generation, 1);
     runtime.shutdown().expect("workers join");
 }

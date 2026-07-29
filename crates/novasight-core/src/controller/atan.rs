@@ -42,7 +42,7 @@ pub enum BlockReason {
     TimestampDomainInvalid,
     /// Frame age exceeded the freshness threshold.
     StaleObservation,
-    /// Generation or frame id is not strictly increasing.
+    /// Observation generation is not strictly increasing.
     NonMonotonicObservation,
     /// Capture timestamp went backwards.
     CaptureTimestampDiscontinuity,
@@ -166,10 +166,8 @@ impl DualPhaseConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ControlObservation {
     pub generation: u64,
-    pub frame_id: u64,
     pub target_id: u64,
     pub capture_ts_ns: u64,
-    pub inference_end_ts_ns: u64,
     pub control_now_ns: u64,
     pub aim_x: f64,
     pub aim_y: f64,
@@ -191,7 +189,6 @@ pub struct ActuationFeedback {
 pub struct ControlDecision {
     pub sample_available: bool,
     pub generation: u64,
-    pub frame_id: u64,
     pub target_id: u64,
     pub capture_ts_ns: u64,
     pub control_now_ns: u64,
@@ -261,7 +258,6 @@ impl ControlDecision {
         Self {
             sample_available: false,
             generation: 0,
-            frame_id: 0,
             target_id: 0,
             capture_ts_ns: 0,
             control_now_ns: 0,
@@ -400,7 +396,6 @@ pub struct DualPhaseControl {
     config: DualPhaseConfig,
     limiter: DeviceCountLimiter,
     last_generation: Option<u64>,
-    last_frame_id: Option<u64>,
     last_capture_ts_ns: Option<u64>,
     target_id: Option<u64>,
     previous_error_x: f64,
@@ -417,7 +412,6 @@ impl DualPhaseControl {
             config,
             limiter: DeviceCountLimiter::new(),
             last_generation: None,
-            last_frame_id: None,
             last_capture_ts_ns: None,
             target_id: None,
             previous_error_x: 0.0,
@@ -432,7 +426,6 @@ impl DualPhaseControl {
     pub fn reset(&mut self) {
         self.limiter.reset();
         self.last_generation = None;
-        self.last_frame_id = None;
         self.last_capture_ts_ns = None;
         self.target_id = None;
         self.previous_error_x = 0.0;
@@ -478,11 +471,7 @@ impl DualPhaseControl {
         feedback: ActuationFeedback,
     ) -> ControlDecision {
         let frame_age_ns = observation.control_now_ns as i128 - observation.capture_ts_ns as i128;
-        let inference_end_ns = observation.inference_end_ts_ns as i128;
-        if frame_age_ns < 0
-            || inference_end_ns < observation.capture_ts_ns as i128
-            || inference_end_ns > observation.control_now_ns as i128
-        {
+        if frame_age_ns < 0 {
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::TimestampDomainInvalid);
         }
@@ -493,12 +482,6 @@ impl DualPhaseControl {
         }
         if let Some(prev_gen) = self.last_generation
             && observation.generation <= prev_gen
-        {
-            self.release_trigger();
-            return ControlDecision::blocked(BlockReason::NonMonotonicObservation);
-        }
-        if let Some(prev_frame) = self.last_frame_id
-            && observation.frame_id <= prev_frame
         {
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::NonMonotonicObservation);
@@ -520,7 +503,6 @@ impl DualPhaseControl {
 
         if !observation.target_valid {
             self.last_generation = Some(observation.generation);
-            self.last_frame_id = Some(observation.frame_id);
             self.last_capture_ts_ns = Some(observation.capture_ts_ns);
             self.target_id = None;
             self.measured_error_history_valid = false;
@@ -641,7 +623,6 @@ impl DualPhaseControl {
         };
 
         self.last_generation = Some(observation.generation);
-        self.last_frame_id = Some(observation.frame_id);
         self.last_capture_ts_ns = Some(observation.capture_ts_ns);
         self.target_id = Some(observation.target_id);
         self.previous_error_x = error_x;
@@ -652,7 +633,6 @@ impl DualPhaseControl {
         ControlDecision {
             sample_available: true,
             generation: observation.generation,
-            frame_id: observation.frame_id,
             target_id: observation.target_id,
             capture_ts_ns: observation.capture_ts_ns,
             control_now_ns: observation.control_now_ns,
@@ -819,10 +799,8 @@ mod tests {
             let capture_ts_ns = 1_000_000_000 + generation * 10_000_000;
             decision = Some(control.calculate(ControlObservation {
                 generation,
-                frame_id: generation,
                 target_id: 7,
                 capture_ts_ns,
-                inference_end_ts_ns: capture_ts_ns + 4_000_000,
                 control_now_ns: capture_ts_ns + 8_000_000,
                 aim_x: 160.0 + error_x,
                 aim_y: 160.0 + error_y,
@@ -867,10 +845,8 @@ mod tests {
             let capture_ts_ns = 1_000_000_000 + generation * 10_000_000;
             decision = Some(control.calculate(ControlObservation {
                 generation,
-                frame_id: generation,
                 target_id: 7,
                 capture_ts_ns,
-                inference_end_ts_ns: capture_ts_ns + 4_000_000,
                 control_now_ns: capture_ts_ns + 8_000_000,
                 aim_x: 160.0 + error_x,
                 aim_y: 160.0,
@@ -902,10 +878,8 @@ mod tests {
             let capture_ts_ns = 1_000_000_000 + generation * 10_000_000;
             decision = Some(control.calculate(ControlObservation {
                 generation,
-                frame_id: generation,
                 target_id: 7,
                 capture_ts_ns,
-                inference_end_ts_ns: capture_ts_ns + 4_000_000,
                 control_now_ns: capture_ts_ns + 8_000_000,
                 aim_x: 160.0 + error_x,
                 aim_y: 160.0,
@@ -936,10 +910,8 @@ mod tests {
             let capture_ts_ns = 1_000_000_000 + generation * 10_000_000;
             decision = Some(control.calculate(ControlObservation {
                 generation,
-                frame_id: generation,
                 target_id: 7,
                 capture_ts_ns,
-                inference_end_ts_ns: capture_ts_ns + 4_000_000,
                 control_now_ns: capture_ts_ns + 8_000_000,
                 aim_x: 160.0 + error_x,
                 aim_y: 160.0,

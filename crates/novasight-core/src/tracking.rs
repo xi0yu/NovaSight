@@ -12,8 +12,8 @@
 //! * rectangular minimum-cost assignment is bounded to 16 tracks and
 //!   detections; temporal identity confidence combines predicted distance,
 //!   bounding-box IoU, and scale.
-//! * no unbounded growth. History is bounded by `BoundedHistory` and
-//!   `TargetingCore::reset` is the only way to clear it.
+//! * no unbounded growth. Active tracks are capped and
+//!   `TargetingCore::reset` clears all temporal targeting state.
 //! * lost tracks never produce a control target. Production retention uses
 //!   monotonic capture time so different inference FPS values get the same
 //!   grace period; frame count remains only as a timestamp-free replay fallback.
@@ -28,10 +28,6 @@ use crate::perception::types::Detection;
 mod kalman;
 pub use kalman::KalmanConfig;
 use kalman::KalmanState;
-
-/// Maximum number of historical tracking observations retained per
-/// track. Past this bound, the oldest entry is dropped.
-pub const DEFAULT_HISTORY_LIMIT: usize = 32;
 
 /// Timestamp-free replay fallback for expiring a non-matched track.
 pub const DEFAULT_TRACK_MAX_AGE: u64 = 2;
@@ -90,55 +86,6 @@ pub struct Track {
     pub lost_since_ns: Option<u64>,
     #[serde(skip)]
     kalman: KalmanState,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TrackerConfig {
-    pub history_limit: usize,
-    pub track_max_age: u64,
-}
-
-impl Default for TrackerConfig {
-    fn default() -> Self {
-        Self {
-            history_limit: DEFAULT_HISTORY_LIMIT,
-            track_max_age: DEFAULT_TRACK_MAX_AGE,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct BoundedHistory<T> {
-    limit: usize,
-    entries: Vec<T>,
-}
-
-impl<T> BoundedHistory<T> {
-    pub fn new(limit: usize) -> Self {
-        Self {
-            limit: limit.max(1),
-            entries: Vec::new(),
-        }
-    }
-
-    pub fn push(&mut self, value: T) {
-        if self.entries.len() >= self.limit {
-            self.entries.remove(0);
-        }
-        self.entries.push(value);
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    pub fn iter(&self) -> std::slice::Iter<'_, T> {
-        self.entries.iter()
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -453,12 +400,11 @@ struct PendingSwitch {
 }
 
 /// Locked target state machine. A new instance starts empty; callers
-/// feed it consecutive `select` calls. The state machine owns its
-/// history so callers cannot reach into it from the outside.
+/// feed it consecutive `select` calls. The state machine owns the live
+/// tracks needed for identity continuity and no diagnostic frame history.
 #[derive(Debug)]
 pub struct TargetingCore {
     config: TargetingConfig,
-    history: BoundedHistory<Track>,
     tracks: Vec<Track>,
     locked: Option<Track>,
     pending_switch: Option<PendingSwitch>,
@@ -470,7 +416,6 @@ impl TargetingCore {
     pub fn new(config: TargetingConfig) -> Self {
         Self {
             config,
-            history: BoundedHistory::new(DEFAULT_HISTORY_LIMIT),
             tracks: Vec::new(),
             locked: None,
             pending_switch: None,
@@ -480,16 +425,11 @@ impl TargetingCore {
     }
 
     pub fn reset(&mut self) {
-        self.history = BoundedHistory::new(self.history.limit);
         self.tracks.clear();
         self.locked = None;
         self.pending_switch = None;
         self.lost_count = 0;
         self.next_track_id = 1;
-    }
-
-    pub fn history_iter<'a>(&'a self) -> impl Iterator<Item = &'a Track> + 'a {
-        self.history.iter()
     }
 
     pub fn lost_count(&self) -> u64 {
@@ -877,7 +817,6 @@ impl TargetingCore {
             .expect("selected track belongs to the admitted batch");
         let (aim_x, aim_y) = detection_aim(selected_detection, &self.config);
 
-        self.history.push(track.clone());
         self.tracks = updated;
         self.tracks.append(&mut retained);
         self.locked = Some(track.clone());

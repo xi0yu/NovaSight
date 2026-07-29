@@ -25,6 +25,7 @@ pub enum TryPublishError {
 #[derive(Debug)]
 struct SlotState<T> {
     value: Option<Arc<T>>,
+    last_monotonic_key: Option<u64>,
     closed: bool,
     metrics: SlotMetrics,
 }
@@ -33,10 +34,24 @@ impl<T> Default for SlotState<T> {
     fn default() -> Self {
         Self {
             value: None,
+            last_monotonic_key: None,
             closed: false,
             metrics: SlotMetrics::default(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MonotonicPublishError {
+    Closed,
+    NonMonotonic { previous: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TryMonotonicPublishError {
+    Busy,
+    Closed,
+    NonMonotonic { previous: u64 },
 }
 
 #[derive(Debug)]
@@ -118,6 +133,73 @@ impl<T> LatestSlot<T> {
             state.metrics.overwritten = state.metrics.overwritten.saturating_add(1);
         }
         state.metrics.published = state.metrics.published.saturating_add(1);
+        let published = state.metrics.published;
+        let replaced = state.value.replace(Arc::new(value));
+        self.inner.changed.notify_one();
+        drop(state);
+        drop(replaced);
+        Ok(published)
+    }
+
+    /// Publish a value only when its key is newer than every value previously
+    /// accepted by this slot. The check and replacement share the slot lock,
+    /// so cloned producers cannot publish an older value after a newer one.
+    pub(crate) fn publish_monotonic(
+        &self,
+        key: u64,
+        value: T,
+    ) -> Result<u64, MonotonicPublishError> {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.closed {
+            return Err(MonotonicPublishError::Closed);
+        }
+        if let Some(previous) = state.last_monotonic_key
+            && key <= previous
+        {
+            return Err(MonotonicPublishError::NonMonotonic { previous });
+        }
+        if state.value.is_some() {
+            state.metrics.overwritten = state.metrics.overwritten.saturating_add(1);
+        }
+        state.metrics.published = state.metrics.published.saturating_add(1);
+        state.last_monotonic_key = Some(key);
+        let published = state.metrics.published;
+        let replaced = state.value.replace(Arc::new(value));
+        self.inner.changed.notify_one();
+        drop(state);
+        drop(replaced);
+        Ok(published)
+    }
+
+    /// Realtime variant of [`Self::publish_monotonic`]. Busy means the caller
+    /// may retry the same key because it was not accepted by the slot.
+    pub(crate) fn try_publish_monotonic(
+        &self,
+        key: u64,
+        value: T,
+    ) -> Result<u64, TryMonotonicPublishError> {
+        let mut state = match self.inner.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return Err(TryMonotonicPublishError::Busy),
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        if state.closed {
+            return Err(TryMonotonicPublishError::Closed);
+        }
+        if let Some(previous) = state.last_monotonic_key
+            && key <= previous
+        {
+            return Err(TryMonotonicPublishError::NonMonotonic { previous });
+        }
+        if state.value.is_some() {
+            state.metrics.overwritten = state.metrics.overwritten.saturating_add(1);
+        }
+        state.metrics.published = state.metrics.published.saturating_add(1);
+        state.last_monotonic_key = Some(key);
         let published = state.metrics.published;
         let replaced = state.value.replace(Arc::new(value));
         self.inner.changed.notify_one();
@@ -215,5 +297,44 @@ impl<T> LatestSlot<T> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .metrics
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LatestSlot, MonotonicPublishError, TryMonotonicPublishError};
+
+    #[test]
+    fn monotonic_publish_never_replaces_newer_data_with_older_data() {
+        let slot = LatestSlot::new();
+        slot.publish_monotonic(7, "newest").unwrap();
+
+        assert_eq!(
+            slot.publish_monotonic(6, "older"),
+            Err(MonotonicPublishError::NonMonotonic { previous: 7 })
+        );
+        assert_eq!(slot.try_take().as_deref(), Some(&"newest"));
+    }
+
+    #[test]
+    fn busy_try_publish_does_not_consume_the_generation() {
+        let slot = LatestSlot::new();
+        let competing_producer = slot.clone();
+        let state = slot
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        assert_eq!(
+            competing_producer.try_publish_monotonic(9, "retryable"),
+            Err(TryMonotonicPublishError::Busy)
+        );
+        drop(state);
+
+        competing_producer
+            .try_publish_monotonic(9, "accepted")
+            .unwrap();
+        assert_eq!(slot.try_take().as_deref(), Some(&"accepted"));
     }
 }

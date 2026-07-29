@@ -13,10 +13,9 @@ use std::sync::{
 };
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use novasight_store::model_catalog::compute_model_fingerprint;
 use novasight_store::model_manifest::{
     ManifestArtifact, ManifestInput, ManifestOutput, ManifestPostprocess, ManifestRuntime,
-    ModelManifest,
+    ModelManifest, compute_model_fingerprint,
 };
 use novasight_tensorrt::{
     DecodeContract, DetectionDecoder, EngineContract, TensorDtype, TensorRtEngine,

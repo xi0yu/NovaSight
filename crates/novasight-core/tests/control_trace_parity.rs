@@ -36,12 +36,8 @@ fn load_records(name: &str) -> Vec<Value> {
 fn observation_from_value(value: &Value) -> ControlObservation {
     ControlObservation {
         generation: value["generation"].as_u64().expect("generation"),
-        frame_id: value["frame_id"].as_u64().expect("frame_id"),
         target_id: value["target_id"].as_u64().expect("target_id"),
         capture_ts_ns: value["capture_ts_ns"].as_u64().expect("capture_ts_ns"),
-        inference_end_ts_ns: value["inference_end_ts_ns"]
-            .as_u64()
-            .expect("inference_end_ts_ns"),
         control_now_ns: value["control_now_ns"].as_u64().expect("control_now_ns"),
         aim_x: value["aim_x"].as_f64().expect("aim_x"),
         aim_y: value["aim_y"].as_f64().expect("aim_y"),
@@ -127,10 +123,8 @@ fn first_observation_has_zero_velocity_and_predicted_offset() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let observation = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 400.0,
         aim_y: 360.0,
@@ -154,10 +148,8 @@ fn rust_feedback_matches_the_python_projection_and_atan_reference() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let decision = control.calculate(ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_001_000_000,
         control_now_ns: 1_002_000_000,
         aim_x: 420.0,
         aim_y: 380.0,
@@ -193,10 +185,8 @@ fn default_feedback_converges_with_two_frames_of_visual_delay() {
         let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
         let decision = control.calculate(ControlObservation {
             generation,
-            frame_id: generation,
             target_id: 1,
             capture_ts_ns,
-            inference_end_ts_ns: capture_ts_ns + 2_000_000,
             control_now_ns: capture_ts_ns + 4_000_000,
             aim_x: 320.0 + observed_error_x,
             aim_y: 320.0,
@@ -244,10 +234,8 @@ fn sub_count_arrival_becomes_quiet_instead_of_limit_cycling() {
         let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
         let decision = control.calculate(ControlObservation {
             generation,
-            frame_id: generation,
             target_id: 1,
             capture_ts_ns,
-            inference_end_ts_ns: capture_ts_ns + 2_000_000,
             control_now_ns: capture_ts_ns + 4_000_000,
             aim_x: 320.0 + observed_error_x,
             aim_y: 320.0,
@@ -286,10 +274,8 @@ fn aim_region_rejects_persistent_subpixel_detector_chatter() {
         let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
         let decision = control.calculate(ControlObservation {
             generation,
-            frame_id: generation,
             target_id: 1,
             capture_ts_ns,
-            inference_end_ts_ns: capture_ts_ns + 2_000_000,
             control_now_ns: capture_ts_ns + 4_000_000,
             aim_x: 320.0 + error_x,
             aim_y: 320.0,
@@ -316,10 +302,8 @@ fn second_observation_waits_for_complete_robust_velocity_window() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let first = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 400.0,
         aim_y: 360.0,
@@ -333,10 +317,8 @@ fn second_observation_waits_for_complete_robust_velocity_window() {
     let _ = control.calculate(first);
     let second = ControlObservation {
         generation: 2,
-        frame_id: 2,
         target_id: 1,
         capture_ts_ns: 1_016_666_666,
-        inference_end_ts_ns: 1_021_666_666,
         control_now_ns: 1_024_666_666,
         aim_x: 420.0,
         aim_y: 380.0,
@@ -359,10 +341,8 @@ fn invalid_target_returns_target_invalid_block() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let observation = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 400.0,
         aim_y: 360.0,
@@ -383,10 +363,8 @@ fn trigger_inactive_returns_trigger_inactive_block() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let observation = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 400.0,
         aim_y: 360.0,
@@ -407,10 +385,8 @@ fn non_monotonic_observation_is_rejected() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let first = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 400.0,
         aim_y: 360.0,
@@ -424,10 +400,8 @@ fn non_monotonic_observation_is_rejected() {
     let _ = control.calculate(first);
     let stale = ControlObservation {
         generation: 1,
-        frame_id: 2,
         target_id: 1,
         capture_ts_ns: 1_016_666_666,
-        inference_end_ts_ns: 1_021_666_666,
         control_now_ns: 1_024_666_666,
         aim_x: 420.0,
         aim_y: 380.0,
@@ -448,10 +422,8 @@ fn stale_observation_is_rejected() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let observation = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 0,
-        inference_end_ts_ns: 5_000_000,
         control_now_ns: 200_000_000, // 200ms in the future
         aim_x: 400.0,
         aim_y: 360.0,
@@ -472,10 +444,8 @@ fn reset_clears_state_and_history() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let observation = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 400.0,
         aim_y: 360.0,
@@ -490,10 +460,8 @@ fn reset_clears_state_and_history() {
     control.reset();
     let second = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 400.0,
         aim_y: 360.0,
@@ -514,10 +482,8 @@ fn release_trigger_drops_fractional_count_but_keeps_history() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let first = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 400.0,
         aim_y: 360.0,
@@ -532,10 +498,8 @@ fn release_trigger_drops_fractional_count_but_keeps_history() {
     control.release_trigger();
     let last = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 400.0,
         aim_y: 360.0,
@@ -557,10 +521,8 @@ fn near_mode_is_selected_for_small_error() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let observation = ControlObservation {
         generation: 1,
-        frame_id: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
-        inference_end_ts_ns: 1_005_000_000,
         control_now_ns: 1_008_000_000,
         aim_x: 322.0,
         aim_y: 322.0,
