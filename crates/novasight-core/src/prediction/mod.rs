@@ -393,7 +393,9 @@ impl RobustVelocityEstimator {
         let median_velocity = median_three(velocities);
         let spread = median_three(velocities.map(|value| (value - median_velocity).abs()));
         let latest_dt_ms = intervals_ms[2];
-        let reference_dt_ms = intervals_ms.iter().sum::<f64>() / 3.0;
+        let window_dt_ms = intervals_ms.iter().sum::<f64>();
+        let reference_dt_ms = window_dt_ms / 3.0;
+        let window_velocity = (points[3].aim_x - points[0].aim_x) / window_dt_ms;
         let previous_filtered = if self.initialized_velocity {
             self.filtered_velocity
         } else {
@@ -417,11 +419,35 @@ impl RobustVelocityEstimator {
         let trend_scale =
             self.config.change_base_px_ms + self.config.change_relative * previous_filtered.abs();
         let trend_quality = 1.0 / (1.0 + trend_delta / trend_scale.max(1e-9));
+        // Adjacent slopes may claim motion when detector jitter alternates
+        // around a stationary point. The net displacement over the same
+        // bounded window must corroborate that direction before it can
+        // contribute prediction confidence. This also suppresses stale EMA
+        // velocity after the current robust estimate reaches zero or reverses.
+        let median_speed = median_velocity.abs();
+        let window_speed = window_velocity.abs();
+        let filtered_speed = self.filtered_velocity.abs();
+        let displacement_quality = if median_speed <= f64::EPSILON
+            || window_speed <= f64::EPSILON
+            || filtered_speed <= f64::EPSILON
+            || median_velocity.signum() != window_velocity.signum()
+            || median_velocity.signum() != self.filtered_velocity.signum()
+        {
+            0.0
+        } else {
+            let window_agreement = median_speed.min(window_speed) / median_speed.max(window_speed);
+            let current_velocity_support = (median_speed / filtered_speed).min(1.0);
+            window_agreement * current_velocity_support
+        };
         let detection_quality = detection_confidence.clamp(0.0, 1.0);
         let track_quality = track_confidence.clamp(0.0, 1.0);
-        let motion_confidence =
-            (history_quality * spread_quality * trend_quality * detection_quality * track_quality)
-                .clamp(0.0, 1.0);
+        let motion_confidence = (history_quality
+            * spread_quality
+            * trend_quality
+            * displacement_quality
+            * detection_quality
+            * track_quality)
+            .clamp(0.0, 1.0);
 
         Some(VelocityEstimate {
             raw_velocities: velocities,
