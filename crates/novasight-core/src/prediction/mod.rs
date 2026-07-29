@@ -17,6 +17,9 @@ pub struct SingleTargetPredictionConfig {
     pub spread_relative: f64,
     pub change_base_px_ms: f64,
     pub change_relative: f64,
+    /// Command-to-visible-response delay included in the capture-to-actuation
+    /// prediction horizon before the optional frame lead.
+    pub actuation_delay_ms: f64,
     pub lead_frames: f64,
     pub far_absolute_cap_px: f64,
     pub far_base_cap_px: f64,
@@ -43,6 +46,8 @@ impl SingleTargetPredictionConfig {
             && self.change_base_px_ms > 0.0
             && self.change_relative.is_finite()
             && self.change_relative >= 0.0
+            && self.actuation_delay_ms.is_finite()
+            && self.actuation_delay_ms >= 0.0
             && self.lead_frames.is_finite()
             && (0.0..=10.0).contains(&self.lead_frames)
             && [
@@ -99,6 +104,7 @@ pub struct SingleTargetPrediction {
     pub x: AxisPrediction,
     pub y: AxisPrediction,
     pub history_position_count: usize,
+    pub actuation_delay_ms: f64,
     pub lead_frames: f64,
 }
 
@@ -149,6 +155,7 @@ impl SingleTargetPredictor {
                 ..AxisPrediction::default()
             },
             history_position_count: self.velocity_x.history_position_count(),
+            actuation_delay_ms: self.config.actuation_delay_ms,
             lead_frames: self.config.lead_frames,
         }
     }
@@ -210,6 +217,7 @@ impl SingleTargetPredictor {
                 observation.observation_age_ms,
             ),
             history_position_count: self.velocity_x.history_position_count(),
+            actuation_delay_ms: self.config.actuation_delay_ms,
             lead_frames: self.config.lead_frames,
         }
     }
@@ -228,7 +236,9 @@ impl SingleTargetPredictor {
             0.0
         };
         let horizon_ms = if allowed {
-            observation_age_ms + estimate.reference_dt_ms.max(0.0) * self.config.lead_frames
+            observation_age_ms
+                + self.config.actuation_delay_ms
+                + estimate.reference_dt_ms.max(0.0) * self.config.lead_frames
         } else {
             0.0
         };
@@ -443,6 +453,7 @@ mod tests {
             spread_relative: 0.50,
             change_base_px_ms: 0.20,
             change_relative: 0.75,
+            actuation_delay_ms: 4.0,
             lead_frames: 1.0,
             far_absolute_cap_px: 10.0,
             far_base_cap_px: 1.25,
@@ -508,12 +519,12 @@ mod tests {
         assert_eq!(prediction.y.velocity_samples, [Some(-0.25); 3]);
         assert!((prediction.x.reference_dt_ms - 29.0 / 3.0).abs() < 1e-12);
         assert!((prediction.y.reference_dt_ms - 29.0 / 3.0).abs() < 1e-12);
-        assert!((prediction.x.horizon_ms - (8.0 + 29.0 / 3.0)).abs() < 1e-12);
-        assert!((prediction.y.horizon_ms - (8.0 + 29.0 / 3.0)).abs() < 1e-12);
+        assert!((prediction.x.horizon_ms - (8.0 + 4.0 + 29.0 / 3.0)).abs() < 1e-12);
+        assert!((prediction.y.horizon_ms - (8.0 + 4.0 + 29.0 / 3.0)).abs() < 1e-12);
     }
 
     #[test]
-    fn zero_extra_lead_still_compensates_observation_age() {
+    fn zero_extra_lead_still_compensates_observation_and_actuation_age() {
         let mut zero_lead = config();
         zero_lead.lead_frames = 0.0;
         let mut predictor = SingleTargetPredictor::new(zero_lead);
@@ -527,8 +538,8 @@ mod tests {
         }
 
         assert!(prediction.x.allowed);
-        assert!((prediction.x.horizon_ms - 8.0).abs() < 1e-12);
-        assert!((prediction.x.raw_offset - 1.6).abs() < 1e-12);
+        assert!((prediction.x.horizon_ms - 12.0).abs() < 1e-12);
+        assert!((prediction.x.raw_offset - 2.4).abs() < 1e-12);
         assert!(prediction.x.safe_offset > 0.0);
     }
 }

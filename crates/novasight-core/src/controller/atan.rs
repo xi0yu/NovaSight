@@ -84,6 +84,9 @@ pub struct DualPhaseConfig {
     pub velocity_change_base_px_ms: f64,
     pub velocity_change_relative: f64,
     pub prediction_enabled: bool,
+    /// Unified command-to-visible-response delay shared with the runtime's
+    /// actuation feedback gate.
+    pub prediction_actuation_delay_ms: f64,
     pub prediction_lead_frames: f64,
     pub prediction_far_absolute_cap_px: f64,
     pub prediction_far_base_cap_px: f64,
@@ -120,6 +123,7 @@ impl Default for DualPhaseConfig {
             velocity_change_base_px_ms: 0.20,
             velocity_change_relative: 0.75,
             prediction_enabled: false,
+            prediction_actuation_delay_ms: 4.0,
             prediction_lead_frames: 1.0,
             prediction_far_absolute_cap_px: 10.0,
             prediction_far_base_cap_px: 1.25,
@@ -147,6 +151,7 @@ impl DualPhaseConfig {
             spread_relative: self.velocity_spread_relative,
             change_base_px_ms: self.velocity_change_base_px_ms,
             change_relative: self.velocity_change_relative,
+            actuation_delay_ms: self.prediction_actuation_delay_ms,
             lead_frames: self.prediction_lead_frames,
             far_absolute_cap_px: self.prediction_far_absolute_cap_px,
             far_base_cap_px: self.prediction_far_base_cap_px,
@@ -216,6 +221,7 @@ pub struct ControlDecision {
     pub velocity_spread: Option<f64>,
     pub measurement_dt_ms: Option<f64>,
     pub reference_dt_ms: f64,
+    pub prediction_actuation_delay_ms: f64,
     pub prediction_lead_frames: f64,
     pub prediction_horizon_ms: f64,
     pub prediction_raw_offset_x: f64,
@@ -285,6 +291,7 @@ impl ControlDecision {
             velocity_spread: None,
             measurement_dt_ms: None,
             reference_dt_ms: 0.0,
+            prediction_actuation_delay_ms: 0.0,
             prediction_lead_frames: 0.0,
             prediction_horizon_ms: 0.0,
             prediction_raw_offset_x: 0.0,
@@ -675,6 +682,7 @@ impl DualPhaseControl {
             velocity_spread: prediction.x.velocity_spread,
             measurement_dt_ms: prediction.x.measurement_dt_ms,
             reference_dt_ms: prediction.x.reference_dt_ms,
+            prediction_actuation_delay_ms: prediction.actuation_delay_ms,
             prediction_lead_frames: prediction.lead_frames,
             prediction_horizon_ms: prediction.x.horizon_ms,
             prediction_raw_offset_x: prediction.x.raw_offset,
@@ -833,8 +841,8 @@ mod tests {
         assert_eq!(decision.median_velocity, Some(0.4));
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
         assert!((decision.reference_dt_ms - 10.0).abs() < 1e-12);
-        assert!((decision.prediction_horizon_ms - 28.0).abs() < 1e-12);
-        assert!((decision.prediction_raw_offset_x - 11.2).abs() < 1e-12);
+        assert!((decision.prediction_horizon_ms - 32.0).abs() < 1e-12);
+        assert!((decision.prediction_raw_offset_x - 12.8).abs() < 1e-12);
         assert!((decision.prediction_allowed_cap_x - 2.6).abs() < 1e-12);
         assert!(decision.prediction_allowed);
         assert!((decision.predicted_offset_x - 2.6).abs() < 1e-12);

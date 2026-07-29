@@ -177,6 +177,11 @@ type TargetingPipelineField =
   | "tracker_scale_cost_weight"
   | "tracker_max_size_ratio"
   | "tracker_max_association_dt_ms"
+  | "tracker_kalman_acceleration_noise"
+  | "tracker_kalman_measurement_noise_x"
+  | "tracker_kalman_measurement_noise_y"
+  | "tracker_kalman_nis_threshold"
+  | "tracker_kalman_nis_hard_reject"
   | "target_selection_class_ratio"
   | "target_switch_min_preference_advantage"
   | "target_switch_min_continuity_score"
@@ -1354,6 +1359,11 @@ export function StudioConsoleView({
   const trackerScaleCostWeight = readNumber(rustPipelineConfig.tracker_scale_cost_weight, 0.15);
   const trackerMaxSizeRatio = readNumber(rustPipelineConfig.tracker_max_size_ratio, 2.5);
   const trackerMaxAssociationDtMs = readNumber(rustPipelineConfig.tracker_max_association_dt_ms, 150);
+  const trackerKalmanAccelerationNoise = readNumber(rustPipelineConfig.tracker_kalman_acceleration_noise, 1200);
+  const trackerKalmanMeasurementNoiseX = readNumber(rustPipelineConfig.tracker_kalman_measurement_noise_x, 16);
+  const trackerKalmanMeasurementNoiseY = readNumber(rustPipelineConfig.tracker_kalman_measurement_noise_y, 16);
+  const trackerKalmanNisThreshold = readNumber(rustPipelineConfig.tracker_kalman_nis_threshold, 9.21);
+  const trackerKalmanNisHardReject = readNumber(rustPipelineConfig.tracker_kalman_nis_hard_reject, 16);
   const recoilConfig = (controlConfig.recoil ?? {}) as Record<string, unknown>;
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
   const recoilRequireTarget = readBoolean(recoilConfig.require_target, true);
@@ -3845,6 +3855,7 @@ export function StudioConsoleView({
                 <span>误差距离</span><b>{formatOptionalNumber(predictedErrorDistancePx, 2, "px")}</b>
                 <span>控制 dt</span><b>{controlMeasurementDtS === null ? NO_SAMPLE : `${(controlMeasurementDtS * 1000).toFixed(3)} ms`}</b>
                 <span>控制观测帧龄</span><b>{formatOptionalNumber(controlFrameAgeMs, 2, "ms")}</b>
+                <span>预测执行延迟</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_actuation_delay_ms, 2, "ms") : "已关闭"}</b>
                 <span>预测实际时域</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_horizon_ms, 2, "ms") : "已关闭"}</b>
               </div>
             </div>
@@ -4146,6 +4157,7 @@ export function StudioConsoleView({
                 <div className="advanced-settings-summary compact">
                   <div><span>匹配距离</span><b>{trackerMaxMatchDistance.toFixed(2)}</b></div>
                   <div><span>位置 / IoU / 尺度</span><b>{trackerPositionCostWeight.toFixed(2)} / {trackerIouCostWeight.toFixed(2)} / {trackerScaleCostWeight.toFixed(2)}</b></div>
+                  <div><span>NIS 可信 / 拒绝</span><b>{trackerKalmanNisThreshold.toFixed(2)} / {trackerKalmanNisHardReject.toFixed(2)}</b></div>
                   <div><span>丢失保持</span><b>{targetLostGraceMs.toFixed(0)} ms</b></div>
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("tracker")} type="button">
@@ -4465,6 +4477,9 @@ export function StudioConsoleView({
                 <p>只想改变提前量时，先改“预测提前量”；移动目标的预测点发抖时，再增加速度平滑。其余参数属于异常保护。</p>
               </header>
               <ModuleSwitch label="启用 X / Y 目标预测" detail="X、Y 两轴使用同一套时间与可信度参数，只预测 Tracker 当前锁定的一个目标。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)} />
+              <div className="advanced-settings-grid two-column">
+                <NumberControl label="执行与反馈延迟 ms" detail="统一表示命令发出到画面可观察到响应的延迟：预测会补偿这段时间，发送后也会等待这段时间再接受新画面反馈。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("actuation_feedback_delay_ms", value)} />
+              </div>
               {dualPhasePredictionEnabled ? (
                 <>
                   <div className="advanced-settings-grid two-column">
@@ -4506,13 +4521,12 @@ export function StudioConsoleView({
                 <h3 id="algorithm-settings-stability-title">到位稳定与单次输出</h3>
                 <p>这些参数不改变目标位置。它们限制每次能走多远，并决定什么时候认为已经到位、什么时候等待画面反馈。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低近距离单次上限，再检查到位半径，最后才调整设备反馈等待</span></div>
+              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低近距离单次上限，再检查到位半径；执行反馈延迟在“目标预测”中统一管理</span></div>
               <div className="advanced-settings-grid two-column">
                 <NumberControl label="近距离单次上限 counts" detail="靠近目标时每轮最多输出多少。降低可抑制越过瞄点，但过低会降低收敛速度。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("near_max_counts_per_update", value)} />
                 <NumberControl label="远距离单次上限 counts" detail="远距离追赶时每轮最多输出多少；它独立于 KMNet 的 signed-16 协议上限。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("far_max_counts_per_update", value)} />
                 <NumberControl label="到位停止半径 counts" detail="每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞。" value={dualPhaseArrivalRadiusCounts} min={0.5} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("arrival_radius_counts", value)} />
                 <NumberControl label="小数残差上限 counts" detail="限制不足一个设备计数的累计余量，范围为 0～1；不是额外移动速度。" value={residualCap} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("residual_cap", value)} />
-                <NumberControl label="设备反馈等待 ms" detail="成功移动后至少等待该时长，并自动加一帧实测采集周期，避免同一旧画面重复驱动。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("actuation_feedback_delay_ms", value)} />
               </div>
             </section>
           ) : null}
@@ -4578,9 +4592,19 @@ export function StudioConsoleView({
           <NumberControl label="无时间戳漏检上限（帧）" detail="只用于没有有效捕获时间戳的回放或降级输入；Jetson 正常主链优先使用毫秒保持时间。" value={targetTrackMaxAge} min={1} max={120} step={1} onCommit={(value) => updatePipelineField("target_track_max_age", Math.round(value))} />
           <NumberControl label="目标丢失保持 ms" detail="锁定目标短暂漏检时暂停输出并保留原身份；超过该时间后才允许其他目标接管。" value={targetLostGraceMs} min={1} max={10000} step={1} onCommit={(value) => updatePipelineField("target_track_max_lost_age_ms", value)} />
         </div>
+        <details className="algorithm-settings-disclosure">
+          <summary><span><b>卡尔曼关联与马氏门控</b><small>只维护目标身份，不直接平滑鼠标 AimPoint；画面稳定时通常保持默认值</small></span><i>5 项</i></summary>
+          <div className="advanced-settings-grid two-column">
+            <NumberControl label="运动响应噪声" detail="越大越允许轨迹速度快速变化，但预测协方差也会更快增长；它只影响身份关联。" value={trackerKalmanAccelerationNoise} min={0.001} max={1000000} step={10} onCommit={(value) => updatePipelineField("tracker_kalman_acceleration_noise", value)} />
+            <NumberControl label="X 轴观测噪声 px²" detail="检测框中心在 X 轴的预期方差。增大后更容忍横向框抖动，但关联门会相应变宽。" value={trackerKalmanMeasurementNoiseX} min={0.001} max={100000} step={0.5} onCommit={(value) => updatePipelineField("tracker_kalman_measurement_noise_x", value)} />
+            <NumberControl label="Y 轴观测噪声 px²" detail="检测框中心在 Y 轴的预期方差。Y 轴框高变化明显时可以独立调整。" value={trackerKalmanMeasurementNoiseY} min={0.001} max={100000} step={0.5} onCommit={(value) => updatePipelineField("tracker_kalman_measurement_noise_y", value)} />
+            <NumberControl label="NIS 可信阈值" detail="创新量低于该值时卡尔曼状态可作为可信关联预测；必须不高于硬拒绝阈值。" value={trackerKalmanNisThreshold} min={0.001} max={trackerKalmanNisHardReject} step={0.1} onCommit={(value) => updatePipelineField("tracker_kalman_nis_threshold", value)} />
+            <NumberControl label="NIS 硬拒绝阈值" detail="创新量超过该值时，该检测与旧 Track 不允许关联。降低会减少误关联，过低会造成频繁断轨。" value={trackerKalmanNisHardReject} min={Math.max(0.001, trackerKalmanNisThreshold)} max={1000000} step={0.1} onCommit={(value) => updatePipelineField("tracker_kalman_nis_hard_reject", value)} />
+          </div>
+        </details>
         <div className="advanced-settings-divider">
-          <span>Rust Tracker</span>
-          <small>{dualPhasePredictionEnabled ? "主链只预测唯一锁定目标的 X / Y 位置；Tracker 切换身份会立即重置预测历史。" : "主链使用有界关联保持目标身份；当前位置直接进入 Atan。"}</small>
+          <span>固定内部策略</span>
+          <small>Hungarian 全局匹配、四维常速度状态、最大 16 条活跃轨迹及协方差安全上限由 Tracker 内部统一管理，不作为手感参数开放。</small>
         </div>
       </AdvancedSettingsDialog>
 

@@ -6,6 +6,23 @@
 
 use serde::{Deserialize, Serialize};
 
+// Runtime-tunable values and internal safety limits share one canonical
+// default here. Persistence reads these defaults through `KalmanConfig`
+// instead of copying numeric literals into another crate.
+const DEFAULT_ACCELERATION_NOISE: f64 = 1_200.0;
+const DEFAULT_MEASUREMENT_NOISE_X: f64 = 16.0;
+const DEFAULT_MEASUREMENT_NOISE_Y: f64 = 16.0;
+const DEFAULT_MAX_PREDICT_DT_MS: f64 = 35.0;
+const DEFAULT_MAX_PREDICT_MISSING_MS: f64 = 80.0;
+const DEFAULT_MAX_PREDICT_STEPS: u32 = 5;
+const DEFAULT_NIS_THRESHOLD: f64 = 9.21;
+const DEFAULT_NIS_HARD_REJECT: f64 = 16.0;
+const DEFAULT_MAX_POSITION_SIGMA_PX: f64 = 45.0;
+const DEFAULT_MAX_COVARIANCE_TRACE: f64 = 5_000.0;
+const DEFAULT_MIN_IDENTITY_CONFIDENCE: f64 = 0.70;
+const DEFAULT_MIN_PREDICTION_CONFIDENCE: f64 = 0.35;
+const DEFAULT_PREDICTION_DECAY_TAU_MS: f64 = 45.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct KalmanConfig {
     pub acceleration_noise: f64,
@@ -26,19 +43,19 @@ pub struct KalmanConfig {
 impl Default for KalmanConfig {
     fn default() -> Self {
         Self {
-            acceleration_noise: 1_200.0,
-            measurement_noise_x: 16.0,
-            measurement_noise_y: 16.0,
-            max_predict_dt_ms: 35.0,
-            max_predict_missing_ms: 80.0,
-            max_predict_steps: 5,
-            nis_threshold: 9.21,
-            nis_hard_reject: 16.0,
-            max_position_sigma_px: 45.0,
-            max_covariance_trace: 5_000.0,
-            min_identity_confidence: 0.70,
-            min_prediction_confidence: 0.35,
-            prediction_decay_tau_ms: 45.0,
+            acceleration_noise: DEFAULT_ACCELERATION_NOISE,
+            measurement_noise_x: DEFAULT_MEASUREMENT_NOISE_X,
+            measurement_noise_y: DEFAULT_MEASUREMENT_NOISE_Y,
+            max_predict_dt_ms: DEFAULT_MAX_PREDICT_DT_MS,
+            max_predict_missing_ms: DEFAULT_MAX_PREDICT_MISSING_MS,
+            max_predict_steps: DEFAULT_MAX_PREDICT_STEPS,
+            nis_threshold: DEFAULT_NIS_THRESHOLD,
+            nis_hard_reject: DEFAULT_NIS_HARD_REJECT,
+            max_position_sigma_px: DEFAULT_MAX_POSITION_SIGMA_PX,
+            max_covariance_trace: DEFAULT_MAX_COVARIANCE_TRACE,
+            min_identity_confidence: DEFAULT_MIN_IDENTITY_CONFIDENCE,
+            min_prediction_confidence: DEFAULT_MIN_PREDICTION_CONFIDENCE,
+            prediction_decay_tau_ms: DEFAULT_PREDICTION_DECAY_TAU_MS,
         }
     }
 }

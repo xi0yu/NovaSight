@@ -1,6 +1,6 @@
 use novasight_core::controller::DualPhaseConfig;
 use novasight_core::controller::recoil::RecoilConfig;
-use novasight_core::tracking::TargetingConfig;
+use novasight_core::tracking::{KalmanConfig, TargetingConfig};
 use novasight_pipeline::{PipelineConfig, TriggerMode};
 use novasight_store::config::{
     AppConfig, parse_target_class_aim_y_ratios, parse_target_class_filter,
@@ -32,7 +32,14 @@ pub fn compose_pipeline_config(
             tracker_scale_cost_weight: adapters.pipeline.tracker_scale_cost_weight,
             tracker_max_size_ratio: adapters.pipeline.tracker_max_size_ratio,
             tracker_max_association_dt_ms: adapters.pipeline.tracker_max_association_dt_ms,
-            kalman: Default::default(),
+            kalman: KalmanConfig {
+                acceleration_noise: adapters.pipeline.tracker_kalman_acceleration_noise,
+                measurement_noise_x: adapters.pipeline.tracker_kalman_measurement_noise_x,
+                measurement_noise_y: adapters.pipeline.tracker_kalman_measurement_noise_y,
+                nis_threshold: adapters.pipeline.tracker_kalman_nis_threshold,
+                nis_hard_reject: adapters.pipeline.tracker_kalman_nis_hard_reject,
+                ..KalmanConfig::default()
+            },
             class_priority: parse_target_class_priority(&adapters.pipeline.target_class_priority)
                 .map_err(|error| error.to_string())?,
             allowed_class_ids: parse_target_class_filter(&adapters.pipeline.target_class_filter)
@@ -68,6 +75,7 @@ pub fn compose_pipeline_config(
             velocity_change_base_px_ms: adapters.pipeline.velocity_change_base_px_ms,
             velocity_change_relative: adapters.pipeline.velocity_change_relative,
             prediction_enabled: adapters.pipeline.prediction_enabled,
+            prediction_actuation_delay_ms: adapters.pipeline.actuation_feedback_delay_ms,
             prediction_lead_frames: adapters.pipeline.prediction_lead_frames,
             prediction_far_absolute_cap_px: adapters.pipeline.prediction_far_absolute_cap_px,
             prediction_far_base_cap_px: adapters.pipeline.prediction_far_base_cap_px,

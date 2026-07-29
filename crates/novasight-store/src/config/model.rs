@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 
+use novasight_core::tracking::KalmanConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
@@ -519,6 +520,16 @@ pub struct PipelineRuntimeConfig {
     pub tracker_max_size_ratio: f64,
     #[serde(default = "default_tracker_max_association_dt_ms")]
     pub tracker_max_association_dt_ms: f64,
+    #[serde(default = "default_tracker_kalman_acceleration_noise")]
+    pub tracker_kalman_acceleration_noise: f64,
+    #[serde(default = "default_tracker_kalman_measurement_noise_x")]
+    pub tracker_kalman_measurement_noise_x: f64,
+    #[serde(default = "default_tracker_kalman_measurement_noise_y")]
+    pub tracker_kalman_measurement_noise_y: f64,
+    #[serde(default = "default_tracker_kalman_nis_threshold")]
+    pub tracker_kalman_nis_threshold: f64,
+    #[serde(default = "default_tracker_kalman_nis_hard_reject")]
+    pub tracker_kalman_nis_hard_reject: f64,
     #[serde(default = "default_target_class_priority")]
     pub target_class_priority: String,
     #[serde(default = "default_target_class_filter")]
@@ -583,6 +594,11 @@ impl Default for PipelineRuntimeConfig {
             tracker_scale_cost_weight: default_tracker_scale_cost_weight(),
             tracker_max_size_ratio: default_tracker_max_size_ratio(),
             tracker_max_association_dt_ms: default_tracker_max_association_dt_ms(),
+            tracker_kalman_acceleration_noise: default_tracker_kalman_acceleration_noise(),
+            tracker_kalman_measurement_noise_x: default_tracker_kalman_measurement_noise_x(),
+            tracker_kalman_measurement_noise_y: default_tracker_kalman_measurement_noise_y(),
+            tracker_kalman_nis_threshold: default_tracker_kalman_nis_threshold(),
+            tracker_kalman_nis_hard_reject: default_tracker_kalman_nis_hard_reject(),
             target_class_priority: default_target_class_priority(),
             target_class_filter: default_target_class_filter(),
             target_selection_class_ratio: default_target_selection_class_ratio(),
@@ -794,6 +810,36 @@ impl PipelineRuntimeConfig {
             self.tracker_max_association_dt_ms,
             1.0,
             10_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.tracker_kalman_acceleration_noise",
+            self.tracker_kalman_acceleration_noise,
+            0.000_001,
+            1_000_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.tracker_kalman_measurement_noise_x",
+            self.tracker_kalman_measurement_noise_x,
+            0.000_001,
+            100_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.tracker_kalman_measurement_noise_y",
+            self.tracker_kalman_measurement_noise_y,
+            0.000_001,
+            100_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.tracker_kalman_nis_threshold",
+            self.tracker_kalman_nis_threshold,
+            0.000_001,
+            1_000_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.tracker_kalman_nis_hard_reject",
+            self.tracker_kalman_nis_hard_reject,
+            self.tracker_kalman_nis_threshold,
+            1_000_000.0,
         )?;
         parse_target_class_priority(&self.target_class_priority)?;
         parse_target_class_filter(&self.target_class_filter)?;
@@ -1095,6 +1141,26 @@ const fn default_tracker_max_size_ratio() -> f64 {
 
 const fn default_tracker_max_association_dt_ms() -> f64 {
     150.0
+}
+
+fn default_tracker_kalman_acceleration_noise() -> f64 {
+    KalmanConfig::default().acceleration_noise
+}
+
+fn default_tracker_kalman_measurement_noise_x() -> f64 {
+    KalmanConfig::default().measurement_noise_x
+}
+
+fn default_tracker_kalman_measurement_noise_y() -> f64 {
+    KalmanConfig::default().measurement_noise_y
+}
+
+fn default_tracker_kalman_nis_threshold() -> f64 {
+    KalmanConfig::default().nis_threshold
+}
+
+fn default_tracker_kalman_nis_hard_reject() -> f64 {
+    KalmanConfig::default().nis_hard_reject
 }
 
 fn default_target_class_priority() -> String {
