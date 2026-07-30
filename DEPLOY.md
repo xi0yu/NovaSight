@@ -43,16 +43,20 @@ Run on the Jetson build host with DeepStream, TensorRT, Node, pnpm, and Rust
 installed:
 
 ```bash
-cargo run -p novasight-packager -- --profile jetson-release
+cargo run -p novasight-packager -- --profile release
 ```
 
-The packager builds the Rust binaries, builds the Web UI, writes
+The packager builds the Rust binaries with the DeepStream/TensorRT production
+runtime, builds the Web UI, writes
 `out/package/NovaSight`, and validates the required files. Developers use the
 same package shape:
 
 ```bash
-cargo run -p novasight-packager -- --profile dev
+cargo run -p novasight-packager -- --profile debug
 ```
+
+`debug` and `release` package the same runtime capability. The difference is
+only Rust optimization and debug symbol policy.
 
 Runtime acceptance still uses the normal launcher command on the target host.
 

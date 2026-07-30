@@ -26,14 +26,18 @@ not the normal product path.
 Developer package:
 
 ```bash
-cargo run -p novasight-packager -- --profile dev
+cargo run -p novasight-packager -- --profile debug
 ```
 
-Jetson release package:
+Release package:
 
 ```bash
-cargo run -p novasight-packager -- --profile jetson-release
+cargo run -p novasight-packager -- --profile release
 ```
+
+Both profiles build the same DeepStream/TensorRT production runtime. Use
+`debug` only when the author build needs unoptimized Rust binaries for local
+diagnosis.
 
 The packager does all required assembly work:
 
@@ -94,7 +98,7 @@ acceptance path.
 Developer smoke test:
 
 ```bash
-cargo run -p novasight-packager -- --profile jetson-release
+cargo run -p novasight-packager -- --profile release
 cd out/package/NovaSight
 ./NovaSight
 ```
@@ -123,7 +127,7 @@ behind the same license gate as the Web API. Before activation, use
 
 ## Acceptance Checklist
 
-- `cargo run -p novasight-packager -- --profile jetson-release` creates
+- `cargo run -p novasight-packager -- --profile release` creates
   `out/package/NovaSight`.
 - `out/package/NovaSight/NovaSight` starts the packaged daemon and writes
   `run/ready.json`.

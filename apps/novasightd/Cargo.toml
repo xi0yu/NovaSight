@@ -10,7 +10,7 @@ name = "novasightd"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["deepstream"]
 deepstream = [
   "dep:novasight-platform-jetson",
   "novasight-platform-jetson/deepstream",

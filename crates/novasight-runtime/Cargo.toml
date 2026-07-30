@@ -12,7 +12,6 @@ tensorrt-model-ingress = [
 ]
 
 [dependencies]
-anyhow.workspace = true
 novasight-core = { path = "../novasight-core" }
 novasight-pipeline = { path = "../novasight-pipeline" }
 novasight-store = { path = "../novasight-store" }

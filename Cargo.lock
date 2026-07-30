@@ -1210,7 +1210,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -1265,7 +1264,6 @@ dependencies = [
 name = "novasight-runtime"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "novasight-core",
  "novasight-pipeline",
  "novasight-store",
@@ -1298,7 +1296,6 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "thiserror",
- "uuid",
  "xattr",
 ]
 
@@ -1326,8 +1323,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2247,11 +2242,9 @@ dependencies = [
  "bitflags",
  "bytes",
  "http",
- "http-body",
  "pin-project-lite",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]

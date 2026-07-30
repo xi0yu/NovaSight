@@ -15,7 +15,10 @@ fn main() {
     let repository = Path::new(&manifest).join("../..");
     emit_build_identity(&repository);
 
-    if env::var_os("CARGO_FEATURE_DEEPSTREAM").is_some() && env::var_os("DOCS_RS").is_none() {
+    if env::var_os("CARGO_FEATURE_DEEPSTREAM").is_some()
+        && env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+        && env::var_os("DOCS_RS").is_none()
+    {
         compile_deepstream_parser(&repository);
     }
 }
@@ -54,10 +57,6 @@ fn emit_build_identity(repository: &Path) {
 }
 
 fn compile_deepstream_parser(repository: &Path) {
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("linux") {
-        panic!("the DeepStream parser is supported only for Linux targets");
-    }
-
     let source = repository.join("native/deepstream-parser/src/novasight_parser.cpp");
     require_file(&source, "DeepStream parser source");
     println!("cargo:rerun-if-changed={}", source.display());

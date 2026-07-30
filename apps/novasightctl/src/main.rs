@@ -15,7 +15,6 @@ use novasight_runtime::{
 };
 use serde::Serialize;
 use thiserror::Error;
-use tracing_subscriber::EnvFilter;
 
 const PORTABLE_CONTROL_SOCKET: &str = "run/novasightd.sock";
 const CONTROL_SOCKET_ENV: &str = "NOVASIGHT_CONTROL_SOCKET";
@@ -262,17 +261,8 @@ enum CommandOutput {
     Json(serde_json::Value),
 }
 
-fn init_logging() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| "novasight=info".into()),
-        )
-        .try_init();
-}
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
-    init_logging();
     let cli = Cli::parse();
     match execute(cli).await {
         Ok(output) => match serde_json::to_string_pretty(&output) {

@@ -7,6 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
 
 const DEFAULT_OUTPUT: &str = "out/package/NovaSight";
+const RUST_PACKAGES: [&str; 3] = ["novasight", "novasightctl", "novasightd"];
 
 #[derive(Parser, Debug)]
 #[command(
@@ -15,7 +16,7 @@ const DEFAULT_OUTPUT: &str = "out/package/NovaSight";
 )]
 struct Args {
     /// Package build profile.
-    #[arg(long, value_enum, default_value_t = PackageProfile::Dev)]
+    #[arg(long, value_enum, default_value_t = PackageProfile::Debug)]
     profile: PackageProfile,
 
     /// Output package directory. It must stay below the workspace out/ tree.
@@ -26,10 +27,10 @@ struct Args {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
 enum PackageProfile {
-    /// Developer package: debug Rust binaries, no DeepStream feature, same launcher path.
-    Dev,
-    /// Jetson package: release Rust binaries with the DeepStream feature enabled.
-    JetsonRelease,
+    /// Developer package with debug Rust binaries.
+    Debug,
+    /// Optimized package with release Rust binaries.
+    Release,
 }
 
 #[derive(Clone, Debug)]
@@ -105,14 +106,7 @@ fn resolve_output_path(workspace: &Path, output: &Path) -> Result<PathBuf> {
 }
 
 fn build_artifacts(workspace: &Path, profile: PackageProfile) -> Result<()> {
-    build_rust_package(workspace, "novasight", profile, false)?;
-    build_rust_package(workspace, "novasightctl", profile, false)?;
-    build_rust_package(
-        workspace,
-        "novasightd",
-        profile,
-        profile == PackageProfile::JetsonRelease,
-    )?;
+    build_rust_artifacts(workspace, profile)?;
     run_command(
         workspace,
         "pnpm",
@@ -121,21 +115,20 @@ fn build_artifacts(workspace: &Path, profile: PackageProfile) -> Result<()> {
     )
 }
 
-fn build_rust_package(
-    workspace: &Path,
-    package: &str,
-    profile: PackageProfile,
-    deepstream: bool,
-) -> Result<()> {
-    let mut args = vec!["build", "--locked", "-p", package];
-    if profile == PackageProfile::JetsonRelease {
+fn build_rust_artifacts(workspace: &Path, profile: PackageProfile) -> Result<()> {
+    run_command(workspace, "cargo", rust_build_args(profile), &[])
+}
+
+fn rust_build_args(profile: PackageProfile) -> Vec<&'static str> {
+    let mut args = vec!["build", "--locked"];
+    for package in RUST_PACKAGES {
+        args.push("-p");
+        args.push(package);
+    }
+    if profile == PackageProfile::Release {
         args.push("--release");
     }
-    if deepstream {
-        args.push("--features");
-        args.push("deepstream");
-    }
-    run_command(workspace, "cargo", args, &[])
+    args
 }
 
 fn run_command<I, S>(cwd: &Path, program: &str, args: I, envs: &[(&str, &str)]) -> Result<()>
@@ -195,7 +188,7 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
         &artifact_dir.join(executable_name("novasightctl")),
         &layout.bin.join(executable_name("novasightctl")),
     )?;
-    copy_tree(&workspace.join("out/web"), &layout.web)?;
+    copy_runtime_web_tree(&workspace.join("out/web"), &layout.web)?;
     copy_file(
         &workspace.join("deploy/novasight.production.yaml"),
         &layout.data.join("novasight.yaml"),
@@ -217,8 +210,8 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
 impl PackageProfile {
     const fn artifact_dir(self) -> &'static str {
         match self {
-            Self::Dev => "debug",
-            Self::JetsonRelease => "release",
+            Self::Debug => "debug",
+            Self::Release => "release",
         }
     }
 }
@@ -270,7 +263,15 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
+fn copy_runtime_web_tree(source: &Path, destination: &Path) -> Result<()> {
+    copy_runtime_web_tree_from_root(source, source, destination)
+}
+
+fn copy_runtime_web_tree_from_root(
+    web_root: &Path,
+    source: &Path,
+    destination: &Path,
+) -> Result<()> {
     if !source.is_dir() {
         bail!("{} is not a directory", source.display());
     }
@@ -278,17 +279,42 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
     for entry in fs::read_dir(source).with_context(|| format!("read {}", source.display()))? {
         let entry = entry.with_context(|| format!("read entry below {}", source.display()))?;
         let source_path = entry.path();
+        if !should_package_runtime_web_path(web_root, &source_path) {
+            continue;
+        }
         let destination_path = destination.join(entry.file_name());
         let metadata = entry
             .metadata()
             .with_context(|| format!("inspect {}", source_path.display()))?;
         if metadata.is_dir() {
-            copy_tree(&source_path, &destination_path)?;
+            copy_runtime_web_tree_from_root(web_root, &source_path, &destination_path)?;
         } else if metadata.is_file() {
             copy_file(&source_path, &destination_path)?;
         }
     }
     Ok(())
+}
+
+fn should_package_runtime_web_path(web_root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(web_root) else {
+        return true;
+    };
+    let mut components = relative.components();
+    let Some(first) = components.next() else {
+        return true;
+    };
+    if first.as_os_str() == OsStr::new("landing") || first.as_os_str() == OsStr::new("landing.html")
+    {
+        return false;
+    }
+    if first.as_os_str() == OsStr::new("assets")
+        && let Some(second) = components.next()
+        && components.next().is_none()
+    {
+        let name = second.as_os_str().to_string_lossy();
+        return !name.starts_with("landing-");
+    }
+    true
 }
 
 fn validate_package(output: &Path) -> Result<()> {
@@ -314,8 +340,39 @@ mod tests {
 
     #[test]
     fn profile_selects_the_expected_artifact_directory() {
-        assert_eq!(PackageProfile::Dev.artifact_dir(), "debug");
-        assert_eq!(PackageProfile::JetsonRelease.artifact_dir(), "release");
+        assert_eq!(PackageProfile::Debug.artifact_dir(), "debug");
+        assert_eq!(PackageProfile::Release.artifact_dir(), "release");
+    }
+
+    #[test]
+    fn profiles_use_the_daemon_default_production_features() {
+        assert_eq!(
+            rust_build_args(PackageProfile::Debug),
+            vec![
+                "build",
+                "--locked",
+                "-p",
+                "novasight",
+                "-p",
+                "novasightctl",
+                "-p",
+                "novasightd",
+            ]
+        );
+        assert_eq!(
+            rust_build_args(PackageProfile::Release),
+            vec![
+                "build",
+                "--locked",
+                "-p",
+                "novasight",
+                "-p",
+                "novasightctl",
+                "-p",
+                "novasightd",
+                "--release",
+            ]
+        );
     }
 
     #[test]
@@ -339,5 +396,31 @@ mod tests {
         assert_eq!(layout.data, Path::new("/tmp/NovaSight/data"));
         assert_eq!(layout.logs, Path::new("/tmp/NovaSight/logs"));
         assert_eq!(layout.run, Path::new("/tmp/NovaSight/run"));
+    }
+
+    #[test]
+    fn runtime_web_package_excludes_landing_entrypoint() {
+        let web_root = Path::new("/tmp/novasight/out/web");
+
+        assert!(should_package_runtime_web_path(
+            web_root,
+            &web_root.join("index.html")
+        ));
+        assert!(should_package_runtime_web_path(
+            web_root,
+            &web_root.join("assets/main-abc123.js")
+        ));
+        assert!(!should_package_runtime_web_path(
+            web_root,
+            &web_root.join("landing.html")
+        ));
+        assert!(!should_package_runtime_web_path(
+            web_root,
+            &web_root.join("landing/assets/hero-bg.png")
+        ));
+        assert!(!should_package_runtime_web_path(
+            web_root,
+            &web_root.join("assets/landing-abc123.js")
+        ));
     }
 }

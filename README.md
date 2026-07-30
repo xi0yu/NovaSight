@@ -49,14 +49,17 @@ user, and test workflow split.
 Developer package:
 
 ```bash
-cargo run -p novasight-packager -- --profile dev
+cargo run -p novasight-packager -- --profile debug
 ```
 
-Jetson release package:
+Release package:
 
 ```bash
-cargo run -p novasight-packager -- --profile jetson-release
+cargo run -p novasight-packager -- --profile release
 ```
+
+Both package profiles build the same DeepStream/TensorRT production runtime;
+`debug` only keeps unoptimized Rust binaries for author-side debugging.
 
 Live DeepStream perception is the normal Jetson path. It does not need a
 `--live-perception` switch, a preparatory script, or Python. Cargo builds the
@@ -121,7 +124,7 @@ Runtime `status` is still protected by the same license gate as the Web API.
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p novasight-packager -- --profile dev
+cargo run -p novasight-packager -- --profile debug
 ```
 
 Local runtime databases, models, logs, generated native artifacts, Cargo

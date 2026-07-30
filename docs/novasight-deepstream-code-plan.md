@@ -160,7 +160,7 @@ Current implementation:
 Jetson smoke command:
 
 ```bash
-cargo run -p novasight-packager -- --profile jetson-release
+cargo run -p novasight-packager -- --profile release
 cd out/package/NovaSight
 bin/novasightd --check
 ```
