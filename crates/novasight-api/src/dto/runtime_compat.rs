@@ -630,7 +630,7 @@ impl CompatibilityRuntimeState {
             .unwrap_or_else(|| "unconfigured".to_owned());
         let mut executors = BTreeMap::new();
         executors.insert(
-            "dry_run".to_owned(),
+            "replay".to_owned(),
             Availability {
                 available: config.is_some_and(|config| config.replay.enabled),
                 configuration_state: "not_applicable",

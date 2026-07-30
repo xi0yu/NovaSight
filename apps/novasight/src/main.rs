@@ -29,14 +29,6 @@ struct Args {
     /// NovaSight portable bundle root. Defaults to the executable directory.
     #[arg(long)]
     bundle_root: Option<PathBuf>,
-
-    /// Start novasightd in dry-run mode for local development.
-    #[arg(long)]
-    dry_run: bool,
-
-    /// Print the Studio URL without opening a browser.
-    #[arg(long)]
-    no_open: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -80,14 +72,14 @@ fn run() -> Result<()> {
     if let Some(ready) = read_ready_file(&layout.ready_file).ok()
         && health_check(&ready.address)
     {
-        open_or_print(&ready.url, args.no_open)?;
+        open_studio(&ready.url)?;
         return Ok(());
     }
 
     let _ = fs::remove_file(&layout.ready_file);
-    let mut child = spawn_daemon(&layout, args.dry_run)?;
+    let mut child = spawn_daemon(&layout)?;
     let ready = wait_for_ready(&layout.ready_file, &mut child, DAEMON_READY_TIMEOUT)?;
-    open_or_print(&ready.url, args.no_open)?;
+    open_studio(&ready.url)?;
     Ok(())
 }
 
@@ -274,7 +266,7 @@ fn set_mapping_field(document: &mut Value, section: &str, key: &str, value: Valu
     Ok(true)
 }
 
-fn spawn_daemon(layout: &PortableLayout, dry_run: bool) -> Result<std::process::Child> {
+fn spawn_daemon(layout: &PortableLayout) -> Result<std::process::Child> {
     let log = OpenOptions::new()
         .create(true)
         .append(true)
@@ -294,9 +286,6 @@ fn spawn_daemon(layout: &PortableLayout, dry_run: bool) -> Result<std::process::
         .arg(relative_to_root(&layout.root, &layout.ready_file))
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(log));
-    if dry_run {
-        command.arg("--dry-run");
-    }
     command
         .spawn()
         .with_context(|| format!("start {}", layout.daemon.display()))
@@ -359,11 +348,8 @@ fn health_check(address: &str) -> bool {
     buffer[..read].starts_with(b"HTTP/1.1 200") || buffer[..read].starts_with(b"HTTP/1.0 200")
 }
 
-fn open_or_print(url: &str, no_open: bool) -> Result<()> {
+fn open_studio(url: &str) -> Result<()> {
     println!("{url}");
-    if no_open {
-        return Ok(());
-    }
     open_browser(url)
 }
 

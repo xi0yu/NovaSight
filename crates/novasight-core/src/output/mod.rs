@@ -52,7 +52,7 @@ impl DeviceReceipt {
     }
 }
 
-/// Deterministic dry-run adapter retaining one real receipt per attempted command.
+/// Deterministic recording adapter retaining one real receipt per attempted command.
 #[derive(Debug, Default)]
 pub struct RecordingPointerDevice {
     receipts: Mutex<Vec<DeviceReceipt>>,

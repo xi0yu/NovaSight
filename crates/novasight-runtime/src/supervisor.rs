@@ -316,8 +316,8 @@ impl RuntimeDependencies {
         }));
     }
 
-    /// Explicit recording adapter for tests, diagnostics, and dry-run
-    /// startup. Production composition should call [`Self::new`].
+    /// Explicit recording adapter for tests and diagnostics. Production
+    /// composition should call [`Self::new`].
     pub fn recording() -> Self {
         let clock: Arc<dyn Clock> = Arc::new(ProcessMonotonicClock::default());
         let device: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());

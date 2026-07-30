@@ -1,8 +1,7 @@
 //! Production application composition for NovaSight.
 //!
 //! Production startup may remain explicitly uncommissioned; hardware output
-//! stays closed until a real adapter has been provisioned. Recording output is
-//! available only through `--dry-run`.
+//! stays closed until a real adapter has been provisioned.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -11,6 +10,7 @@ use clap::Parser;
 #[cfg(feature = "deepstream")]
 use novasight_runtime::NativeModelJobRunner;
 use novasight_runtime::{ConfigService, LoadedApplication, RuntimeDependencies};
+use novasight_store::config::AppConfig;
 use novasight_store::model_catalog::SqliteModelCatalog;
 use tracing_subscriber::EnvFilter;
 
@@ -22,6 +22,8 @@ use crate::server;
 use crate::live_perception;
 
 const DEFAULT_CONFIG_PATH: &str = ".config/novasight.yaml";
+const PRODUCTION_RUNTIME_UNAVAILABLE: &str =
+    "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream";
 
 #[derive(Parser, Debug)]
 #[command(about = "NovaSight runtime daemon")]
@@ -41,11 +43,6 @@ struct Args {
     /// Run preflight checks and exit; do not start the pipeline.
     #[arg(long)]
     check: bool,
-
-    /// Isolated development mode with recording adapters; never opens the
-    /// production DeepStream or physical pointer-device path.
-    #[arg(long)]
-    dry_run: bool,
 }
 
 fn init_logging() {
@@ -85,26 +82,6 @@ pub async fn entry() -> ExitCode {
     #[cfg(not(feature = "deepstream"))]
     let _ = &parser_library;
     if args.check {
-        if args.dry_run {
-            if let Err(error) = loaded.config().validate_configured_adapters() {
-                eprintln!("PREFLIGHT_CONFIG_INVALID: {error}");
-                return ExitCode::FAILURE;
-            }
-            if let Err(error) = server::preflight_license_policy(server::DaemonMode::DryRun) {
-                eprintln!("{}: {error}", error.code());
-                return ExitCode::FAILURE;
-            }
-            if let Err(error) = server::preflight_instance_lock(server::DaemonMode::DryRun) {
-                eprintln!("{}: {error}", error.code());
-                return ExitCode::FAILURE;
-            }
-            println!(
-                "PASS mode=dry_run config={} configured_output_enabled={} model_ingress=not_started hardware_not_started=true",
-                args.config.display(),
-                loaded.config().control.output_enabled
-            );
-            return ExitCode::SUCCESS;
-        }
         if let Err(error) = loaded.config().require_production_adapters() {
             eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
             return ExitCode::FAILURE;
@@ -162,16 +139,12 @@ pub async fn entry() -> ExitCode {
         }
         #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
         {
-            eprintln!(
-                "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream"
-            );
+            eprintln!("{PRODUCTION_RUNTIME_UNAVAILABLE}");
             return ExitCode::FAILURE;
         }
     }
 
-    if !args.dry_run
-        && let Err(error) = loaded.config().require_production_adapters()
-    {
+    if let Err(error) = loaded.config().require_production_adapters() {
         eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
         return ExitCode::FAILURE;
     }
@@ -189,35 +162,19 @@ pub async fn entry() -> ExitCode {
         eprintln!("MODEL_CATALOG_WARMUP_FAILED: {error}");
     }
     let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
-    let (dependencies, mode) = if args.dry_run {
-        (
-            RuntimeDependencies::recording().with_model_catalog(model_catalog.clone()),
-            server::DaemonMode::DryRun,
-        )
-    } else {
-        #[cfg(all(feature = "deepstream", target_os = "linux"))]
-        {
-            match live_perception::build_live_production_dependencies(
-                loaded.config(),
-                config_service.clone(),
-                model_catalog.clone(),
-                parser_library.clone(),
-            ) {
-                Ok(dependencies) => (dependencies, server::DaemonMode::Hardware),
-                Err(error) => {
-                    eprintln!("PRODUCTION_RUNTIME_INVALID: {error}");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-        #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
-        {
-            eprintln!(
-                "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream"
-            );
+    let dependencies = match build_production_dependencies(
+        loaded.config(),
+        config_service.clone(),
+        model_catalog.clone(),
+        parser_library.clone(),
+    ) {
+        Ok(dependencies) => dependencies,
+        Err(error) => {
+            eprintln!("{error}");
             return ExitCode::FAILURE;
         }
     };
+    let mode = server::DaemonMode::Hardware;
 
     #[cfg(feature = "deepstream")]
     let dependencies = dependencies.with_model_jobs(NativeModelJobRunner::new());
@@ -249,6 +206,32 @@ fn resolve_deepstream_parser_library(configured: &Path, bundled: Option<&Path>) 
         return bundled.unwrap_or(configured).to_owned();
     }
     configured.to_owned()
+}
+
+#[cfg(all(feature = "deepstream", target_os = "linux"))]
+fn build_production_dependencies(
+    config: &AppConfig,
+    config_service: ConfigService,
+    model_catalog: SqliteModelCatalog,
+    parser_library: PathBuf,
+) -> Result<RuntimeDependencies, String> {
+    live_perception::build_live_production_dependencies(
+        config,
+        config_service,
+        model_catalog,
+        parser_library,
+    )
+    .map_err(|error| format!("PRODUCTION_RUNTIME_INVALID: {error}"))
+}
+
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+fn build_production_dependencies(
+    _config: &AppConfig,
+    _config_service: ConfigService,
+    _model_catalog: SqliteModelCatalog,
+    _parser_library: PathBuf,
+) -> Result<RuntimeDependencies, String> {
+    Err(PRODUCTION_RUNTIME_UNAVAILABLE.to_owned())
 }
 
 #[cfg(test)]

@@ -52,9 +52,9 @@ same package shape:
 
 ```bash
 cargo run -p novasight-packager -- --profile dev
-cd out/package/NovaSight
-./NovaSight --dry-run
 ```
+
+Runtime acceptance still uses the normal launcher command on the target host.
 
 ## Run
 
@@ -120,7 +120,7 @@ which tegrastats
 ```bash
 cd out/package/NovaSight
 bin/novasightd --config data/novasight.yaml --check
-./NovaSight --no-open
+./NovaSight
 bin/novasightctl license status
 ```
 

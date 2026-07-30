@@ -3926,10 +3926,10 @@ export function StudioConsoleView({
                     : "关闭后立即清空待发送旧命令"
                   : kmnetRestartRequired
                     ? "重启 novasightd 装载 kmNet 新配置后才能打开输出"
-                  : !kmnetAutoConnect
+                    : !kmnetAutoConnect
                     ? "请先保存 kmNet 配置，并按提示重启 novasightd"
                     : !kmnetExecutorAvailable
-                      ? "dry-run 不允许物理输出；请以生产模式启动 novasightd"
+                      ? "当前控制面没有可用的生产硬件输出适配器"
                       : !kmnetRuntimeConnected
                         ? "请先连接 kmNet，再打开偏移输出"
                         : "开启后只发送新的实时观测"}
@@ -4293,7 +4293,7 @@ export function StudioConsoleView({
                   {kmnetRestartRequired
                     ? "新配置尚未进入当前进程；请停止并重新运行 novasightd。"
                     : !kmnetExecutorAvailable
-                    ? "当前是 dry-run 或硬件输出不可用；物理发送必须使用不带 --dry-run 的生产模式启动。"
+                    ? "当前没有可用的生产硬件输出适配器；请检查 kmNet 配置和 Jetson 运行环境。"
                     : runtime?.running
                       ? kmnetBlockedReason === "already_connected"
                         ? "设备已连接；断开只停止物理输出，采集、推理和目标计算保持运行。"

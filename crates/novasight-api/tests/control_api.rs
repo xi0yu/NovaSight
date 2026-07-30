@@ -1306,13 +1306,13 @@ async fn studio_status_websocket_streams_real_supervisor_changes() {
 }
 
 #[tokio::test]
-async fn kmnet_diagnostics_are_real_supervisor_commands_and_never_dry_run_claims() {
+async fn kmnet_diagnostics_are_real_supervisor_commands_without_hardware_output() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");
     fs::write(&path, commissioned_config(0, false)).unwrap();
     let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
-    let dry_run =
+    let no_hardware_output =
         build_control_router_with_capabilities(runtime.clone(), Some(config.clone()), false, None);
     let request = || {
         Request::builder()
@@ -1323,7 +1323,7 @@ async fn kmnet_diagnostics_are_real_supervisor_commands_and_never_dry_run_claims
             .unwrap()
     };
 
-    let response = dry_run.oneshot(request()).await.unwrap();
+    let response = no_hardware_output.oneshot(request()).await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let error: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();

@@ -95,14 +95,14 @@ acceptance path.
 Developer smoke test:
 
 ```bash
-cargo run -p novasight-packager -- --profile dev
+cargo run -p novasight-packager -- --profile jetson-release
 cd out/package/NovaSight
-./NovaSight --dry-run --no-open
+./NovaSight
 ```
 
-`--dry-run` keeps hardware output closed. `--no-open` avoids launching a
-browser during automated checks. The launched process is still the same
-portable entrypoint and the same packaged `bin/novasightd`.
+NovaSight does not expose test-only startup switches. If a test harness needs a
+timeout or cleanup, it should supervise the same `./NovaSight` process
+externally instead of changing the product command line.
 
 After startup, verify from the package directory:
 
@@ -124,10 +124,10 @@ behind the same license gate as the Web API. Before activation, use
 
 ## Acceptance Checklist
 
-- `cargo run -p novasight-packager -- --profile dev` creates
+- `cargo run -p novasight-packager -- --profile jetson-release` creates
   `out/package/NovaSight`.
-- `out/package/NovaSight/NovaSight --dry-run --no-open` starts the packaged
-  daemon and writes `run/ready.json`.
+- `out/package/NovaSight/NovaSight` starts the packaged daemon and writes
+  `run/ready.json`.
 - `run/ready.json` contains a loopback URL and package-local control socket.
 - `web/index.html` is served by `novasightd` from the same origin as the API.
 - `bin/novasightctl license status` connects through `run/novasightd.sock`.

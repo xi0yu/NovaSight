@@ -83,14 +83,7 @@ and `run` directories, starts `bin/novasightd`, waits for `run/ready.json`, and
 opens the Web UI served by the daemon. It does not install systemd units, write
 to `/etc`, `/usr`, `/var/lib`, or `/run/novasight`, or require root.
 
-Developer run:
-
-```bash
-cd out/package/NovaSight
-./NovaSight --dry-run
-```
-
-Jetson user run:
+Developer and user run:
 
 ```bash
 cd out/package/NovaSight
@@ -114,8 +107,7 @@ Debug builds expose process-local development access through the Web UI and
 `POST /api/license/temporary`. The daemon decides this from its compiled build
 profile, makes no external authorization request, and writes no license file;
 access ends when that daemon process exits. Release builds reject temporary
-access, including release runs started with `--dry-run`, and require the
-configured production public key for signed activation.
+access and require the configured production public key for signed activation.
 
 ## Local Control CLI
 

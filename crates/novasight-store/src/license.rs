@@ -61,7 +61,8 @@ impl LicensePolicy {
     }
 
     /// Validate the verifier before daemon readiness. Production requires a
-    /// key; dry-run may omit it but still rejects malformed configured PEM.
+    /// key; development access may omit it but still rejects malformed
+    /// configured PEM.
     pub fn validate_public_key(&self, required: bool) -> Result<(), LicenseError> {
         match self.public_key_pem.as_deref() {
             Some(pem) => parse_public_key(pem).map(|_| ()),

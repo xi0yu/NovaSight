@@ -33,14 +33,12 @@ use tokio::sync::watch;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DaemonMode {
-    DryRun,
     Hardware,
 }
 
 impl DaemonMode {
     const fn label(self) -> &'static str {
         match self {
-            Self::DryRun => "dry-run",
             Self::Hardware if cfg!(debug_assertions) => "development-hardware",
             Self::Hardware => "production",
         }
@@ -48,7 +46,6 @@ impl DaemonMode {
 
     const fn hardware_output_enabled(self) -> bool {
         match self {
-            Self::DryRun => false,
             Self::Hardware => true,
         }
     }
@@ -129,11 +126,6 @@ pub(super) async fn run_daemon(
     ));
     let mut runtime_exit = Box::pin(runtime.wait_for_supervisor_exit());
 
-    if mode == DaemonMode::DryRun {
-        tracing::warn!(
-            "novasightd is running in explicit dry-run mode; hardware output is disabled"
-        );
-    }
     let _ready_file_guard = options.ready_file.clone().map(ReadyFileGuard::new);
     if let Some(path) = options.ready_file.as_ref() {
         write_ready_file(path, address, &control_socket, mode, web_root.as_deref())?;
@@ -989,7 +981,7 @@ mod tests {
             &ready,
             "127.0.0.1:49152".parse().unwrap(),
             &path.0,
-            DaemonMode::DryRun,
+            DaemonMode::Hardware,
             Some(Path::new("web")),
         )
         .expect("write ready file");
@@ -998,7 +990,14 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&ready).expect("read ready file"))
                 .expect("ready JSON");
         assert_eq!(document["schema_version"], 1);
-        assert_eq!(document["mode"], "dry-run");
+        assert_eq!(
+            document["mode"],
+            if cfg!(debug_assertions) {
+                "development-hardware"
+            } else {
+                "production"
+            }
+        );
         assert_eq!(document["address"], "127.0.0.1:49152");
         assert_eq!(document["url"], "http://127.0.0.1:49152/");
         assert!(

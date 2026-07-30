@@ -1516,7 +1516,7 @@ impl IntoResponse for ControlApiError {
             Self::HardwareOutputDisabled => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "HARDWARE_OUTPUT_DISABLED",
-                "physical kmNet is unavailable because novasightd was started with --dry-run; restart without --dry-run to use production hardware"
+                "physical kmNet is unavailable because this control surface has no production hardware output adapter"
                     .to_owned(),
             ),
             Self::DeviceNotConfigured => (

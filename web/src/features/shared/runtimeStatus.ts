@@ -150,7 +150,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
   const visionControl = asRecord(asRecord(runtime?.vision).control);
   const controlDeviceDisconnected =
     running &&
-    selectedExecutor !== "dry_run" &&
+    selectedExecutor !== "replay" &&
     readBoolean(visionControl.output_enabled) &&
     !readBoolean(selectedDevice.runtime_connected);
 

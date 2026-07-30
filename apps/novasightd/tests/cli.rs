@@ -1,13 +1,6 @@
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
-
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
+use std::process::Command;
 
 use uuid::Uuid;
 
@@ -67,14 +60,14 @@ fn production_config() -> (TempDirectory, PathBuf) {
 }
 
 #[test]
-fn help_documents_yaml_check_and_explicit_dry_run() {
+fn help_documents_yaml_check_without_test_runtime_flags() {
     let output = daemon_command().arg("--help").output().expect("run help");
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 help");
 
     assert!(output.status.success());
     assert!(stdout.contains(".config/novasight.yaml"));
     assert!(stdout.contains("--check"));
-    assert!(stdout.contains("--dry-run"));
+    assert!(!stdout.contains("--dry-run"));
 }
 
 #[test]
@@ -127,7 +120,7 @@ fn missing_default_config_is_created_before_preflight() {
     let directory = TempDirectory::new();
     let output = daemon_command()
         .current_dir(&directory.0)
-        .args(["--check", "--dry-run"])
+        .arg("--check")
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
         .output()
@@ -136,37 +129,14 @@ fn missing_default_config_is_created_before_preflight() {
     let config_path = directory.join(".config/novasight.yaml");
 
     assert!(
-        output.status.success(),
-        "first start should create the default configuration: {stderr}"
+        config_path.is_file(),
+        "first start should create the default configuration before preflight completion: {stderr}"
     );
-    assert!(config_path.is_file());
     let config = novasight_store::config::YamlConfigRepository::load(config_path)
         .expect("load generated default configuration");
     config
         .require_production_adapters()
         .expect("generated configuration must contain the explicit Jetson contract");
-}
-
-#[test]
-fn check_loads_config_and_exits_without_starting_the_daemon() {
-    let (_directory, path) = temp_config();
-    let output = daemon_command()
-        .args([
-            "--config",
-            path.to_str().expect("UTF-8 path"),
-            "--check",
-            "--dry-run",
-        ])
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
-        .output()
-        .expect("run check");
-    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
-
-    assert!(output.status.success());
-    assert!(stdout.contains("PASS mode=dry_run"));
-    assert!(stdout.contains("configured_output_enabled=false"));
-    assert!(stdout.contains("hardware_not_started=true"));
 }
 
 #[test]
@@ -243,175 +213,4 @@ fn valid_production_authority_reaches_the_platform_build_boundary() {
 
     assert!(!output.status.success());
     assert!(stderr.contains("PRODUCTION_RUNTIME_UNAVAILABLE"));
-}
-
-#[cfg(unix)]
-#[test]
-fn explicit_dry_run_exits_cleanly_on_sigterm() {
-    let (directory, path) = temp_config();
-    let mut child = daemon_command()
-        .args(["--config", path.to_str().expect("UTF-8 path"), "--dry-run"])
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
-        .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn dry-run daemon");
-    let stderr = child.stderr.take().expect("capture stderr");
-    let mut child = ChildGuard(Some(child));
-    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let mut log = Vec::new();
-        let mut ready = None;
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            let mut address = None;
-            let mut socket = None;
-            for field in line.split_whitespace() {
-                if let Some(value) = field.strip_prefix("address=") {
-                    address = value.parse::<SocketAddr>().ok();
-                } else if let Some(value) = field.strip_prefix("socket=") {
-                    socket = Some(PathBuf::from(value));
-                }
-            }
-            log.push(line);
-            if let Some(value) = address.zip(socket) {
-                ready = Some(value);
-                break;
-            }
-        }
-        let _ = ready_tx.send((ready, log));
-    });
-    let (ready, log) = ready_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("readiness timeout");
-    let (address, control_socket) =
-        ready.unwrap_or_else(|| panic!("daemon exited before readiness: {}", log.join(" | ")));
-    assert!(address.ip().is_loopback());
-    assert_ne!(address.port(), 0);
-    assert!(control_socket.exists(), "control socket was not created");
-    let (status, health) = unix_http_request(&control_socket, "GET", "/healthz");
-    assert_eq!(status, 200);
-    assert!(health.contains("\"ok\":true"));
-
-    let (status, license) = unix_http_request(&control_socket, "GET", "/api/license");
-    assert_eq!(status, 200);
-    assert!(license.contains("\"configured\":false"));
-    let (status, blocked) = unix_http_request(&control_socket, "GET", "/api/v1/status");
-    assert_eq!(status, 401);
-    assert!(blocked.contains("license required"));
-    let (status, activated) = unix_http_request_with_body(
-        &control_socket,
-        "POST",
-        "/api/license/temporary",
-        "{}",
-        Some("application/json"),
-    );
-    assert_eq!(status, 200);
-    assert!(activated.contains("\"supported\":true"));
-    assert!(activated.contains("\"granted\":true"));
-    assert!(activated.contains("\"valid\":true"));
-    assert!(
-        !directory.join("license.json").exists(),
-        "Debug development access must not create a license file"
-    );
-    let (status, initial) = unix_http_request(&control_socket, "GET", "/api/v1/status");
-    assert_eq!(status, 200);
-    assert!(initial.contains("\"state\":\"stopped\""));
-    let (status, started) = unix_http_request(&control_socket, "POST", "/api/v1/runtime/start");
-    assert_eq!(status, 200);
-    assert!(started.contains("\"state\":\"running\""));
-    let (status, shared) = unix_http_request(&control_socket, "GET", "/api/v1/status");
-    assert_eq!(status, 200);
-    assert!(shared.contains("\"state\":\"running\""));
-
-    let signal = Command::new("kill")
-        .args(["-TERM", &child.id().to_string()])
-        .status()
-        .expect("send SIGTERM");
-    assert!(signal.success());
-    let status = child
-        .wait_timeout(Duration::from_secs(5))
-        .expect("wait for graceful exit");
-    assert!(status.success(), "novasightd exited with {status}");
-    assert!(
-        !control_socket.exists(),
-        "control socket was not removed after shutdown"
-    );
-}
-
-#[cfg(unix)]
-fn unix_http_request(socket: &Path, method: &str, path: &str) -> (u16, String) {
-    unix_http_request_with_body(socket, method, path, "", None)
-}
-
-#[cfg(unix)]
-fn unix_http_request_with_body(
-    socket: &Path,
-    method: &str,
-    path: &str,
-    body: &str,
-    content_type: Option<&str>,
-) -> (u16, String) {
-    let mut stream = UnixStream::connect(socket).expect("connect Unix control socket");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .expect("set read timeout");
-    let content_type = content_type
-        .map(|value| format!("Content-Type: {value}\r\n"))
-        .unwrap_or_default();
-    write!(
-        stream,
-        "{method} {path} HTTP/1.1\r\nHost: localhost\r\n{content_type}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-    .expect("write Unix HTTP request");
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .expect("read Unix HTTP response");
-    let (headers, body) = response
-        .split_once("\r\n\r\n")
-        .expect("Unix HTTP response headers");
-    let status = headers
-        .split_whitespace()
-        .nth(1)
-        .expect("Unix HTTP status")
-        .parse()
-        .expect("numeric Unix HTTP status");
-    (status, body.to_owned())
-}
-
-struct ChildGuard(Option<Child>);
-
-impl ChildGuard {
-    fn id(&self) -> u32 {
-        self.0.as_ref().expect("child present").id()
-    }
-
-    fn wait_timeout(&mut self, timeout: Duration) -> std::io::Result<std::process::ExitStatus> {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            let child = self.0.as_mut().expect("child present");
-            if let Some(status) = child.try_wait()? {
-                self.0.take();
-                return Ok(status);
-            }
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let status = child.wait()?;
-                self.0.take();
-                panic!("novasightd did not exit within {timeout:?}; killed with {status}");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        if let Some(child) = &mut self.0 {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
 }
