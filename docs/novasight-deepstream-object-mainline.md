@@ -171,13 +171,13 @@ C++ metadata postprocess: present
 ## Build And Verify On Jetson
 
 ```bash
-scripts/setup_jetson.sh --pyds-wheel /path/to/pyds.whl
+scripts/setup_jetson.sh
 
-scripts/verify_deepstream_60s.py \
-  --config config/novasight.yaml \
-  --data-dir data \
-  --seconds 60 \
-  --report-json /tmp/novasight-deepstream-60s.json
+build/jetson-release/bin/novasightd \
+  --config deploy/novasight.production.yaml \
+  --check
+
+scripts/run_deepstream_gst_pipeline.sh
 ```
 
 The setup step builds the native parser by default. The installed Rust daemon
@@ -197,10 +197,15 @@ restart may end a live session without an error.
 
 The 60-second gate checks:
 
+- observed telemetry spans the requested run duration;
+- the pipeline is still running at the final sample and reports no `last_error`;
 - at least one `DetectionBatch` was published;
 - parser decode calls are real;
 - timestamp source is `gst_clock_base_time_pts`;
 - mailbox capacity is one;
+- sampled `pending_depth`, `published_batches`, and `last_frame_id` never
+  violate latest-only monotonicity;
+- batch-age P50/P95 telemetry is present;
 - batch-age P50 is at most 15 ms;
 - batch-age P95 is at most 30 ms;
 - late-window frame age does not drift upward by more than 10 ms.

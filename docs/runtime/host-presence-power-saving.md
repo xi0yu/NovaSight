@@ -18,17 +18,22 @@ power_saving:
 Configuration changes require restarting the NovaSight process. The default is
 disabled so existing deployments do not require a host agent.
 
-## Target host agent
+## Target Host Heartbeat
 
-Run the standalone agent on the target/game host:
+Send the heartbeat from the target/game host with any HTTP client or service
+manager. The active contract is the Rust daemon endpoint:
 
 ```bash
-python3 scripts/host_presence_agent.py \
-  --jetson http://JETSON_IP:5174 \
-  --host-id gaming-pc
+while true; do
+  curl -fsS \
+    -H 'Content-Type: application/json' \
+    -d '{"host_id":"gaming-pc"}' \
+    http://JETSON_IP:5174/api/runtime/presence/heartbeat
+  sleep 2
+done
 ```
 
-The agent sends a heartbeat every two seconds. If the host shuts down, sleeps,
+The host sends a heartbeat every two seconds. If the host shuts down, sleeps,
 or loses network connectivity, NovaSight first enters an offline grace period
 and then stops the complete DeepStream pipeline. A later heartbeat automatically
 starts it again only when the user previously requested the runtime to run.

@@ -304,12 +304,11 @@ for the complete synchronous native map/transform/kernel interval. The
 native readiness receipt and the exact RGB NCHW shape/dtype/nbytes result, and
 owns `novasight_release_tensor` through `DeviceTensor` RAII. The linked adapter
 is enabled only with the explicit Rust `cuda-preprocess` feature and expects
-`libnovasight_preprocess.so` from `scripts/build_jetson_preprocess.sh`.
+the native preprocess library to be packaged with the Rust Jetson release.
 
-This integration reuses the existing production Jetson CUDA implementation in
-`novasight_jetson_preprocess_native`; it does not introduce a second CUDA
-kernel. The native ABI accepts both the legacy Python `appsink` source and the
-Rust `deepstream_pad` source while keeping the strongly-held buffer alive.
+This integration reuses the Rust Jetson runtime and does not introduce a second
+CUDA kernel. The online runtime path is Rust-owned and uses the
+`deepstream_pad` source while keeping the strongly-held buffer alive.
 RuntimeSupervisor consumption and decode/NMS are still separate later steps.
 Until both are connected and verified on the target Jetson, model probe
 `input_mode=latest` remains fail-closed with 409.

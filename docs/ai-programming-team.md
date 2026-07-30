@@ -51,11 +51,11 @@ Responsibilities:
 
 Evidence to inspect:
 
-- `novasight/deepstream/*`
-- `novasight/runtime/*`
-- `novasight/model_registry/*`
-- `novasight/control/*`
-- `novasight/executors/*`
+- `crates/novasight-pipeline/*`
+- `crates/novasight-runtime/*`
+- `crates/novasight-store/*`
+- `crates/novasight-core/*`
+- `crates/novasight-platform-jetson/*`
 - `docs/novasight-deepstream-code-plan.md`
 
 ### 2. Code Cartographer
@@ -120,7 +120,8 @@ Responsibilities:
 
 Evidence to inspect:
 
-- `novasight/model_registry/*`
+- `crates/novasight-store/*`
+- `crates/novasight-runtime/src/model_ingress*.rs`
 - generated `model.manifest.json`
 - generated `deepstream.ini`
 - model scan and prepare API paths
@@ -168,7 +169,7 @@ Owns proof with the smallest useful command set.
 Responsibilities:
 
 - Prefer compile, lint, smoke, and focused runtime tests over broad test bloat.
-- Use `python3` in this workspace.
+- Use Cargo for backend checks; Python is limited to release/tooling scripts.
 - Run Mac-valid checks locally and record Jetson-only checks as explicit
   commands when hardware is unavailable.
 - Treat `UNKNOWN` hardware evidence honestly instead of filling gaps with docs.
@@ -176,9 +177,8 @@ Responsibilities:
 Common checks:
 
 ```bash
-python3 -m py_compile <changed-python-files>
-uv run ruff check <changed-python-files-or-packages>
-python3 -m pytest -q <focused-test-files>
+cargo test -p <crate>
+cargo clippy -p <crate> --all-targets -- -D warnings
 git diff --check
 cd web && npm run build
 ```

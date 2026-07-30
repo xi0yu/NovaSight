@@ -19,7 +19,7 @@ DetectionBatch latest-only gate
 -> KmNetExecutor.move(dx, dy)
 ```
 
-The dedicated X estimator consumes the measured aim point. It retains four positions from one target, derives three adjacent `px/ms` speeds, takes their median, and applies a capture-dt adaptive EMA. Tracker Kalman state is not used as V2's predicted aim, so there is no double prediction.
+The dedicated X/Y estimator consumes the measured aim point. It retains four positions from one target, derives three adjacent `px/ms` speeds, uses their arithmetic mean as the prediction velocity baseline, and applies a capture-dt adaptive EMA. The three-segment median remains diagnostic telemetry only. Tracker Kalman state is not used as V2's predicted aim, so there is no double prediction.
 
 The active algorithm bypasses:
 
@@ -62,7 +62,7 @@ The new algorithm alone owns:
 - FAR/NEAR selection from the final predicted control-point distance, while
   prediction caps remain based on measured error to avoid recursive authority;
 - four-position same-target history;
-- three-segment median and time-adaptive EMA;
+- three-segment mean as the prediction baseline, diagnostic median, and time-adaptive EMA;
 - spread/trend/detection/track-identity prediction confidence;
 - reference dt, configured/effective lead frames, relative and absolute caps;
 - measured-error zero-cross history;
@@ -88,17 +88,17 @@ control.active_algorithm
 control.algorithms.<algorithm_id>.*
 ```
 
-The loader migrates the preceding `control.mode` and top-level algorithm blocks. Runtime Python aliases remain temporary compatibility accessors; serialized config and Studio edits use the isolated namespace.
+The loader migrates the preceding `control.mode` and top-level algorithm blocks. Runtime compatibility projection is now owned by Rust; serialized config and Studio edits use the isolated namespace.
 
 ## Direct Evidence
 
 Implementation owners:
 
-- `novasight/control/algorithms/dual_phase_atan_robust_predictive_v2/core.py`
-- `novasight/control/algorithms/dual_phase_atan_robust_predictive_v2/motion_history.py`
-- `novasight/runtime/service.py::_dual_phase_control_command`
-- `novasight/executors/runtime.py::ExecutorRegistry.tick_pending`
-- `novasight/config/runtime.py::ControlAlgorithmConfigs`
+- `crates/novasight-core/src/controller/atan.rs`
+- `crates/novasight-core/src/prediction/mod.rs`
+- `crates/novasight-pipeline/src/runtime.rs`
+- `crates/novasight-runtime/src/supervisor.rs`
+- `crates/novasight-api/src/dto/runtime_compat.rs`
 
 Focused integration tests prove that consecutive DetectionBatch results replace the pending command, one control tick sends only the newest frame, and a newer observation also supersedes an older command that has left the slot but has not acquired the device lock. Prediction-disabled feedback remains the no-prediction baseline; `lead_frames=0` now means frame-age compensation without an extra capture interval.
 

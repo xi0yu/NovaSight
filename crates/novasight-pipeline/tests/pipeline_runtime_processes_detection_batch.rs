@@ -483,7 +483,6 @@ fn recoil_is_added_to_an_existing_tracking_command_after_its_interval() {
                 require_target: true,
                 interval_ms: 8,
                 y_counts: 2,
-                ..RecoilConfig::default()
             },
             ..PipelineConfig::default()
         },

@@ -449,6 +449,7 @@ pub(crate) struct ControlPipelineState {
     pub velocity_1: Option<f64>,
     pub velocity_2: Option<f64>,
     pub velocity_3: Option<f64>,
+    pub mean_velocity: Option<f64>,
     pub median_velocity: Option<f64>,
     pub filtered_velocity: Option<f64>,
     pub velocity_spread: Option<f64>,
@@ -466,6 +467,7 @@ pub(crate) struct ControlPipelineState {
     pub velocity_y_1: Option<f64>,
     pub velocity_y_2: Option<f64>,
     pub velocity_y_3: Option<f64>,
+    pub mean_velocity_y: Option<f64>,
     pub median_velocity_y: Option<f64>,
     pub filtered_velocity_y: Option<f64>,
     pub velocity_spread_y: Option<f64>,
@@ -534,6 +536,7 @@ impl CompatibilityRuntimeState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn for_topic(
         snapshot: &RuntimeSnapshot,
         config: Option<&AppConfig>,
@@ -556,6 +559,7 @@ impl CompatibilityRuntimeState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
         snapshot: &RuntimeSnapshot,
         config: Option<&AppConfig>,
@@ -1019,6 +1023,7 @@ impl CompatibilityRuntimeState {
                         velocity_1: dual_phase.velocity_samples[0],
                         velocity_2: dual_phase.velocity_samples[1],
                         velocity_3: dual_phase.velocity_samples[2],
+                        mean_velocity: dual_phase.mean_velocity,
                         median_velocity: dual_phase.median_velocity,
                         filtered_velocity: control_sample.then_some(dual_phase.velocity_x),
                         velocity_spread: dual_phase.velocity_spread,
@@ -1043,6 +1048,7 @@ impl CompatibilityRuntimeState {
                         velocity_y_1: dual_phase.velocity_samples_y[0],
                         velocity_y_2: dual_phase.velocity_samples_y[1],
                         velocity_y_3: dual_phase.velocity_samples_y[2],
+                        mean_velocity_y: dual_phase.mean_velocity_y,
                         median_velocity_y: dual_phase.median_velocity_y,
                         filtered_velocity_y: control_sample.then_some(dual_phase.velocity_y),
                         velocity_spread_y: dual_phase.velocity_spread_y,
@@ -1363,6 +1369,7 @@ mod tests {
             motion_confidence: 0.8,
             history_position_count: 4,
             velocity_samples: [Some(0.2), Some(0.3), Some(0.25)],
+            mean_velocity: Some(0.25),
             median_velocity: Some(0.25),
             velocity_spread: Some(0.05),
             measurement_dt_ms: Some(8.0),
@@ -1375,6 +1382,7 @@ mod tests {
             velocity_y: -0.10,
             motion_confidence_y: 0.75,
             velocity_samples_y: [Some(-0.08), Some(-0.12), Some(-0.10)],
+            mean_velocity_y: Some(-0.10),
             median_velocity_y: Some(-0.10),
             velocity_spread_y: Some(0.02),
             measurement_dt_ms_y: Some(8.0),
@@ -1482,7 +1490,9 @@ mod tests {
         );
         assert_eq!(pipeline["mode"], "NEAR");
         assert_eq!(pipeline["velocity_2"], 0.3);
+        assert_eq!(pipeline["mean_velocity"], 0.25);
         assert_eq!(pipeline["prediction_safe_offset_x"], 1.6);
+        assert_eq!(pipeline["mean_velocity_y"], -0.10);
         assert_eq!(pipeline["filtered_velocity_y"], -0.10);
         assert_eq!(pipeline["prediction_safe_offset_y"], -0.6);
         assert_eq!(pipeline["prediction_allowed_y"], true);

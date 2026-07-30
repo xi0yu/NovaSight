@@ -87,6 +87,7 @@ pub struct AxisPrediction {
     pub velocity: f64,
     pub motion_confidence: f64,
     pub velocity_samples: [Option<f64>; 3],
+    pub mean_velocity: Option<f64>,
     pub median_velocity: Option<f64>,
     pub velocity_spread: Option<f64>,
     pub measurement_dt_ms: Option<f64>,
@@ -249,6 +250,7 @@ impl SingleTargetPredictor {
             velocity: estimate.filtered_velocity,
             motion_confidence: estimate.motion_confidence,
             velocity_samples: estimate.raw_velocities.map(Some),
+            mean_velocity: Some(estimate.mean_velocity),
             median_velocity: Some(estimate.median_velocity),
             velocity_spread: Some(estimate.spread),
             measurement_dt_ms: Some(estimate.measurement_dt_ms),
@@ -296,6 +298,7 @@ struct PositionSample {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VelocityEstimate {
     raw_velocities: [f64; 3],
+    mean_velocity: f64,
     median_velocity: f64,
     filtered_velocity: f64,
     spread: f64,
@@ -391,7 +394,8 @@ impl RobustVelocityEstimator {
             intervals_ms[index] = dt_ms;
         }
         let median_velocity = median_three(velocities);
-        let spread = median_three(velocities.map(|value| (value - median_velocity).abs()));
+        let mean_velocity = mean_three(velocities);
+        let spread = mean_three(velocities.map(|value| (value - mean_velocity).abs()));
         let latest_dt_ms = intervals_ms[2];
         let window_dt_ms = intervals_ms.iter().sum::<f64>();
         let reference_dt_ms = window_dt_ms / 3.0;
@@ -399,23 +403,23 @@ impl RobustVelocityEstimator {
         let previous_filtered = if self.initialized_velocity {
             self.filtered_velocity
         } else {
-            median_velocity
+            mean_velocity
         };
         if self.initialized_velocity {
             let smoothing_window_ms = (reference_dt_ms * self.config.smoothing_frames).max(1e-9);
             let alpha = 1.0 - (-latest_dt_ms / smoothing_window_ms).exp();
-            self.filtered_velocity = previous_filtered * (1.0 - alpha) + median_velocity * alpha;
+            self.filtered_velocity = previous_filtered * (1.0 - alpha) + mean_velocity * alpha;
         } else {
-            self.filtered_velocity = median_velocity;
+            self.filtered_velocity = mean_velocity;
             self.initialized_velocity = true;
         }
         self.complete_window_updates += 1;
 
         let history_quality = (self.complete_window_updates as f64 / 2.0).min(1.0);
         let spread_scale =
-            self.config.spread_base_px_ms + self.config.spread_relative * median_velocity.abs();
+            self.config.spread_base_px_ms + self.config.spread_relative * mean_velocity.abs();
         let spread_quality = 1.0 / (1.0 + spread / spread_scale.max(1e-9));
-        let trend_delta = (median_velocity - previous_filtered).abs();
+        let trend_delta = (mean_velocity - previous_filtered).abs();
         let trend_scale =
             self.config.change_base_px_ms + self.config.change_relative * previous_filtered.abs();
         let trend_quality = 1.0 / (1.0 + trend_delta / trend_scale.max(1e-9));
@@ -424,19 +428,19 @@ impl RobustVelocityEstimator {
         // bounded window must corroborate that direction before it can
         // contribute prediction confidence. This also suppresses stale EMA
         // velocity after the current robust estimate reaches zero or reverses.
-        let median_speed = median_velocity.abs();
+        let mean_speed = mean_velocity.abs();
         let window_speed = window_velocity.abs();
         let filtered_speed = self.filtered_velocity.abs();
-        let displacement_quality = if median_speed <= f64::EPSILON
+        let displacement_quality = if mean_speed <= f64::EPSILON
             || window_speed <= f64::EPSILON
             || filtered_speed <= f64::EPSILON
-            || median_velocity.signum() != window_velocity.signum()
-            || median_velocity.signum() != self.filtered_velocity.signum()
+            || mean_velocity.signum() != window_velocity.signum()
+            || mean_velocity.signum() != self.filtered_velocity.signum()
         {
             0.0
         } else {
-            let window_agreement = median_speed.min(window_speed) / median_speed.max(window_speed);
-            let current_velocity_support = (median_speed / filtered_speed).min(1.0);
+            let window_agreement = mean_speed.min(window_speed) / mean_speed.max(window_speed);
+            let current_velocity_support = (mean_speed / filtered_speed).min(1.0);
             window_agreement * current_velocity_support
         };
         let detection_quality = detection_confidence.clamp(0.0, 1.0);
@@ -451,6 +455,7 @@ impl RobustVelocityEstimator {
 
         Some(VelocityEstimate {
             raw_velocities: velocities,
+            mean_velocity,
             median_velocity,
             filtered_velocity: self.filtered_velocity,
             spread,
@@ -464,6 +469,10 @@ impl RobustVelocityEstimator {
 fn median_three(mut values: [f64; 3]) -> f64 {
     values.sort_by(f64::total_cmp);
     values[1]
+}
+
+fn mean_three(values: [f64; 3]) -> f64 {
+    values.into_iter().sum::<f64>() / 3.0
 }
 
 #[cfg(test)]
@@ -505,6 +514,37 @@ mod tests {
         }
     }
 
+    fn prediction_for_x_segments(segments_px: [f64; 3]) -> super::SingleTargetPrediction {
+        let mut predictor = SingleTargetPredictor::new(config());
+        let mut position = 100.0;
+        let mut prediction = predictor.predict(observation(0, position, 100.0));
+        for (index, segment_px) in segments_px.into_iter().enumerate() {
+            position += segment_px;
+            prediction = predictor.predict(observation(index as u64 + 1, position, 100.0));
+        }
+        prediction
+    }
+
+    #[test]
+    fn prediction_velocity_starts_from_three_segment_average() {
+        for (segments_px, expected_velocity) in [
+            ([0.0, 0.0, 0.0], 0.0),
+            ([10.0, 15.0, 15.0], (10.0 + 15.0 + 15.0) / 3.0 / 10.0),
+            ([10.0, 10.0, -5.0], (10.0 + 10.0 - 5.0) / 3.0 / 10.0),
+            ([10.0, -10.0, 10.0], (10.0 - 10.0 + 10.0) / 3.0 / 10.0),
+        ] {
+            let prediction = prediction_for_x_segments(segments_px);
+
+            assert_eq!(
+                prediction.x.velocity_samples,
+                segments_px.map(|segment_px| Some(segment_px / 10.0))
+            );
+            assert!((prediction.x.mean_velocity.expect("mean") - expected_velocity).abs() < 1e-12);
+            assert!((prediction.x.velocity - expected_velocity).abs() < 1e-12);
+            assert!((prediction.x.raw_offset - expected_velocity * 22.0).abs() < 1e-12);
+        }
+    }
+
     #[test]
     fn robust_velocity_rejects_a_single_segment_outlier() {
         let mut predictor = SingleTargetPredictor::new(config());
@@ -520,9 +560,10 @@ mod tests {
             prediction.x.velocity_samples,
             [Some(0.2), Some(5.8), Some(-5.4)]
         );
+        assert!((prediction.x.mean_velocity.expect("mean") - 0.2).abs() < 1e-12);
         assert!((prediction.x.median_velocity.expect("median") - 0.2).abs() < 1e-12);
         assert!((prediction.x.velocity - 0.2).abs() < 1e-12);
-        assert!((prediction.x.velocity_spread.expect("spread") - 5.6).abs() < 1e-12);
+        assert!((prediction.x.velocity_spread.expect("spread") - 11.2 / 3.0).abs() < 1e-12);
         assert!(prediction.x.motion_confidence < 0.05);
         assert!((prediction.y.velocity - 0.3).abs() < 1e-12);
         assert!(prediction.y.safe_offset > 0.0);

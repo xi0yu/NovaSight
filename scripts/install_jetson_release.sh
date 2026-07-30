@@ -54,24 +54,68 @@ require_file() {
   fi
 }
 
+manifest_check() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -c SHA256SUMS
+  else
+    shasum -a 256 -c SHA256SUMS
+  fi
+}
+
+verify_manifest() {
+  local root="$1"
+  require_file "${root}/SHA256SUMS"
+  if find "${root}" -type l -print -quit | grep -q .; then
+    echo "error: release tree contains symlinks" >&2
+    exit 1
+  fi
+  (
+    cd "${root}"
+    manifest_check
+  )
+}
+
+check_daemon_build() {
+  local daemon="$1"
+  local output
+  output="$("${daemon}" --build-info-json)"
+  [[ "${output}" == *'"schema_version":1'* ]] || {
+    echo "error: invalid novasightd build-info schema" >&2
+    exit 1
+  }
+  [[ "${output}" == *'"binary":"novasightd"'* ]] || {
+    echo "error: staged daemon is not novasightd" >&2
+    exit 1
+  }
+  [[ "${output}" == *'"target":"aarch64-'*linux* ]] || {
+    echo "error: staged daemon target is not aarch64 Linux: ${output}" >&2
+    exit 1
+  }
+  [[ "${output}" == *'"profile":"release"'* ]] || {
+    echo "error: staged daemon is not a release build" >&2
+    exit 1
+  }
+  [[ "${output}" == *'"features":["deepstream"]'* ]] || {
+    echo "error: staged daemon was not built with the deepstream feature" >&2
+    exit 1
+  }
+}
+
 path_in_root() {
   printf '%s%s' "${DEST_ROOT}" "$1"
 }
 
 require_file "${SOURCE_ROOT}/RELEASE_ID"
-require_file "${SOURCE_ROOT}/SHA256SUMS.json"
+require_file "${SOURCE_ROOT}/SHA256SUMS"
 require_file "${SOURCE_ROOT}/bin/novasightd"
 require_file "${SOURCE_ROOT}/bin/novasightctl"
 require_file "${SOURCE_ROOT}/lib/libnovasight_deepstream_bridge.so"
 require_file "${SOURCE_ROOT}/lib/libnovasight_parser.so"
 require_file "${SOURCE_ROOT}/deploy/novasight.service"
 require_file "${SOURCE_ROOT}/share/novasight/novasight.production.yaml"
-require_file "${SOURCE_ROOT}/scripts/release_manifest.py"
-require_file "${SOURCE_ROOT}/scripts/daemon_build_check.py"
 
-python3 "${SOURCE_ROOT}/scripts/release_manifest.py" verify "${SOURCE_ROOT}"
-python3 "${SOURCE_ROOT}/scripts/daemon_build_check.py" \
-  --daemon "${SOURCE_ROOT}/bin/novasightd"
+verify_manifest "${SOURCE_ROOT}"
+check_daemon_build "${SOURCE_ROOT}/bin/novasightd"
 
 RELEASE_ID="$(tr -d '\r\n' < "${SOURCE_ROOT}/RELEASE_ID")"
 if [[ ! "${RELEASE_ID}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
@@ -98,10 +142,9 @@ cp -a "${SOURCE_ROOT}/bin" "${SOURCE_ROOT}/lib" "${SOURCE_ROOT}/scripts" \
   "${SOURCE_ROOT}/share" "${SOURCE_ROOT}/deploy" \
   "${RELEASE_DIR}/"
 install -m 0644 "${SOURCE_ROOT}/RELEASE_ID" "${RELEASE_DIR}/RELEASE_ID"
-install -m 0644 "${SOURCE_ROOT}/SHA256SUMS.json" "${RELEASE_DIR}/SHA256SUMS.json"
-python3 "${RELEASE_DIR}/scripts/release_manifest.py" verify "${RELEASE_DIR}"
-python3 "${RELEASE_DIR}/scripts/daemon_build_check.py" \
-  --daemon "${RELEASE_DIR}/bin/novasightd"
+install -m 0644 "${SOURCE_ROOT}/SHA256SUMS" "${RELEASE_DIR}/SHA256SUMS"
+verify_manifest "${RELEASE_DIR}"
+check_daemon_build "${RELEASE_DIR}/bin/novasightd"
 install -m 0644 /dev/null "${RELEASE_DIR}/.complete"
 
 install -m 0640 "${SOURCE_ROOT}/share/novasight/novasight.production.yaml" \
@@ -116,12 +159,7 @@ fi
 
 TEMP_LINK="${OPT_ROOT}/.current.${RELEASE_ID}.$$"
 ln -s "releases/${RELEASE_ID}" "${TEMP_LINK}"
-python3 - "${TEMP_LINK}" "${CURRENT_LINK}" <<'PY'
-import os
-import sys
-
-os.replace(sys.argv[1], sys.argv[2])
-PY
+mv -Tf "${TEMP_LINK}" "${CURRENT_LINK}"
 
 install -m 0644 "${SOURCE_ROOT}/deploy/novasight.service" \
   "${UNIT_DIR}/novasight.service"

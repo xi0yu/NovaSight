@@ -8,6 +8,9 @@ The serialized ID is retained for configuration compatibility. Prediction is
 optional and disabled by default. When enabled, the controller estimates X/Y
 screen velocity for the one selected TrackId and advances that aim point by the
 measured frame age plus the configured number of capture intervals.
+The velocity estimate starts from the arithmetic mean of the latest three
+adjacent speed segments built from four same-target positions; the median is
+kept only as diagnostic telemetry.
 
 ## Production Data Path
 

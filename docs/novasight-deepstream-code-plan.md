@@ -87,10 +87,10 @@ This constraint is owned by `DeepStreamPipelineConfig` / `build_deepstream_pipel
 
 Completed:
 
-- Shared parser at `novasight/inference/postprocess/yolo.py`.
-- `ModelManifest` and deterministic model fingerprint.
-- DeepStream `nvinfer` config text generator.
-- Scan `data/models` for `.engine` and `.onnx`.
+- Shared parser at `native/deepstream-parser/`.
+- Rust `ModelManifest` and deterministic model fingerprint.
+- Rust-owned DeepStream `nvinfer` config generation.
+- Rust model ingress scans `data/models` for `.engine` and `.onnx`.
 - Return per-artifact configuration status:
   - `ready`: manifest exists and matches artifact. For TensorRT `.engine`, `deepstream.ini`
     must also match the manifest and point `model-engine-file` at the same engine.
@@ -140,13 +140,12 @@ This phase does not touch Tracker, Kalman, Controller, or kmNet.
 
 Current implementation:
 
-- `novasight/deepstream/pipeline_builder.py` generates the target MJPEG hardware decode → NVMM → `nvvidconv` ROI/resize → `nvstreammux` → `nvinfer` pipeline.
-- `novasight/deepstream/tensor_meta.py` converts an `output0` tensor into `DetectionBatch` through the shared YOLO parser.
-- `novasight/deepstream/backend.py` adds an isolated `DeepStreamDetectionBackend` with dependency detection, start/stop lifecycle, latest-result semantics, and a probe publishing entry point.
-- `/api/runtime/start` can now create a `RuntimePipeline` backed by `DeepStreamDetectionBackend` when `inference.backend=deepstream`.
-  This is still opt-in; the legacy capture/inference path remains available.
+- `crates/novasight-platform-jetson/src/deepstream/pipeline.rs` builds the target MJPEG hardware decode → NVMM → `nvvidconv` ROI/resize → `nvstreammux` → `nvinfer` pipeline.
+- `crates/novasight-platform-jetson/src/deepstream/session.rs` converts DeepStream metadata into the Rust `DetectionBatch` path.
+- `apps/novasightd/src/live_perception.rs` owns the production Jetson composition root.
+- The Rust daemon owns runtime start/stop and DeepStream latest-result publishing.
 - When `inference.backend=deepstream`, `/api/capture/select` only selects and persists the capture profile from device capabilities.
-  It must not start the legacy `CaptureService` appsink/cv2 session, because the DeepStream runtime owns `/dev/video0` and opens the real NVMM/nvinfer pipeline on `/api/runtime/start`.
+  It must not start any legacy capture session, because the Rust DeepStream runtime owns `/dev/video0`.
 - Runtime, model, capture, and source changes clear stale DeepStream pipeline objects instead of reusing an old GStreamer/nvinfer instance:
   - model publish/rollback;
   - DeepStream runtime config changes;
@@ -155,8 +154,8 @@ Current implementation:
   - capture stop;
   - runtime stop.
   The next start rebuilds the pipeline from the current manifest, `deepstream.ini`, capture profile, and ROI.
-- `novasight doctor deepstream-smoke` is the Jetson-side smoke gate for the generated `model.manifest.json` + `deepstream.ini` pair.
-- The backend remains opt-in and is not the default runtime path.
+- `novasightd --config deploy/novasight.production.yaml --check` and `scripts/run_deepstream_gst_pipeline.sh` are the Jetson-side smoke gates for the generated `model.manifest.json` + `deepstream.ini` pair.
+- The Rust DeepStream backend is the production runtime path.
 
 Jetson smoke command:
 

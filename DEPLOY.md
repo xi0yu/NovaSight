@@ -22,7 +22,6 @@ clients connect over REST and WebSocket.
 sudo mkdir -p /opt/novasight /etc/novasight /var/lib/novasight
 sudo cp -a . /opt/novasight
 cd /opt/novasight
-uv sync
 sudo cp config/novasight.yaml /etc/novasight/novasight.yaml
 sudo cp deploy/deepstream-tracker-iou.yml /etc/novasight/deepstream-tracker-iou.yml
 sudo cp deploy/novasight.service /etc/systemd/system/novasight.service
@@ -93,11 +92,11 @@ Logs are written to journald through `StandardOutput=journal` and
 ## Hardware Checks
 
 ```bash
-novasight doctor camera --device /dev/video0
-uv run python scripts/nvmm_path_check.py --device /dev/video0 --resolution 1920x1080 --formats MJPG,NV12 --fps 60 --output /var/lib/novasight/nvmm-check.json
-novasight doctor deepstream-smoke --manifest /var/lib/novasight/models/<model>/model.manifest.json --nvinfer-config /var/lib/novasight/models/<model>/deepstream.ini
-uv run python scripts/render_detection_overlay.py --image /var/lib/novasight/evidence/frame.jpg --detections-json /var/lib/novasight/evidence/detection-batch.json --output /var/lib/novasight/evidence/overlay.jpg
-novasight doctor kmnet --km-host <host> --km-port <port> --km-uuid <uuid>
+v4l2-ctl --list-formats-ext --device /dev/video0
+gst-inspect-1.0 nvinfer
+build/jetson-release/bin/novasightd --config /etc/novasight/novasight.yaml --check
+build/jetson-release/bin/novasightctl --help
+scripts/run_deepstream_gst_pipeline.sh
 ```
 
 ## Runtime API Checks
@@ -110,59 +109,10 @@ curl http://127.0.0.1:8000/api/v1/system/status
 
 Protected API and WebSocket endpoints require a valid license.
 
-## Performance Run
-
-Run the Phase 9 telemetry probe for one hour after the runtime has been started
-with the target capture source, model deployment, and HID executor:
-
-```bash
-uv run python tests/perf_test.py \
-  --base-url http://127.0.0.1:8000 \
-  --endpoint /api/runtime/state \
-  --duration-s 3600 \
-  --interval-s 0.05 \
-  --max-p95-ms 20 \
-  --target-fps 60 \
-  --fps-tolerance-pct 1 \
-  --output /var/lib/novasight/perf-1h.json
-```
-
-Review the output:
-
-- `e2e_latency_ms.p95` must be below `20.0`; below `15.0` is the preferred
-  production target.
-- `capture_fps.p50` should stay within `+-1%` of the configured target FPS.
-- `covered_frames` should increase during the run.
-- `dropped_frames` should not grow during a stable run.
-- `stale_detection_samples` should remain near zero after warm-up.
-- `passed` must be `true`; failed gates are listed under `gates`.
-
-Keep the generated JSON beside the deployment logs for regression comparison.
-
 ## Fault Injection
 
-Run these checks with HID output enabled only when the physical rig is safe:
-
-```bash
-# Camera disconnect: unplug the capture device, then watch state and logs.
-uv run python scripts/fault_injection.py capture-loss --duration-s 30 --interval-s 0.5
-journalctl -u novasight -f
-
-# Inference overload: add load, then verify old frames are dropped instead of
-# building unbounded latency.
-uv run python scripts/fault_injection.py overload \
-  --duration-s 120 \
-  --interval-s 0.05 \
-  --max-p95-ms 20 \
-  --target-fps 60 \
-  --fps-tolerance-pct 1
-
-# Bad model import/build: submit an invalid ONNX and confirm the build job fails
-# without stopping the API service.
-uv run python scripts/fault_injection.py bad-model --model-id bad_model
-```
-
-Expected behavior:
+Run these checks with HID output enabled only when the physical rig is safe.
+Use the Rust daemon state endpoints and system logs as evidence:
 
 - Capture loss must stop control/HID output and report an unavailable or
   degraded state.
@@ -171,21 +121,19 @@ Expected behavior:
 
 ## Production Acceptance
 
-Run the deployment self-check after installing the service file. Use
-`--skip-api` before the API is running, then run it again with the service
-started and a license header if the system API is protected:
+Run the Rust daemon preflight after installing the service file, then check the
+health endpoint after the service is running:
 
 ```bash
-uv run python scripts/deployment_check.py --skip-api
-uv run python scripts/deployment_check.py --header "Authorization: Bearer <token>"
+build/jetson-release/bin/novasightd --config /etc/novasight/novasight.yaml --check
+curl -fsS http://127.0.0.1:5174/healthz
 ```
 
 - `systemctl start novasight`, `systemctl stop novasight`, and restart on
   failure work through systemd.
 - Watchdog notifications are active with `WatchdogSec=10`.
 - A second service process cannot acquire the kernel-owned instance guard.
-- A 1-hour performance run satisfies the p95 latency and FPS gates above before
-  a 24-hour soak is started.
+- Runtime telemetry remains fresh and bounded before a 24-hour soak is started.
 - The 24-hour soak has no service crash, unbounded memory growth, or sustained
   stale detections.
 

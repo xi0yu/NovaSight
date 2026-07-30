@@ -214,6 +214,7 @@ pub struct ControlDecision {
     pub motion_confidence: f64,
     pub history_position_count: usize,
     pub velocity_samples: [Option<f64>; 3],
+    pub mean_velocity: Option<f64>,
     pub median_velocity: Option<f64>,
     pub velocity_spread: Option<f64>,
     pub measurement_dt_ms: Option<f64>,
@@ -227,6 +228,7 @@ pub struct ControlDecision {
     pub prediction_allowed: bool,
     pub motion_confidence_y: f64,
     pub velocity_samples_y: [Option<f64>; 3],
+    pub mean_velocity_y: Option<f64>,
     pub median_velocity_y: Option<f64>,
     pub velocity_spread_y: Option<f64>,
     pub measurement_dt_ms_y: Option<f64>,
@@ -283,6 +285,7 @@ impl ControlDecision {
             motion_confidence: 0.0,
             history_position_count: 0,
             velocity_samples: [None; 3],
+            mean_velocity: None,
             median_velocity: None,
             velocity_spread: None,
             measurement_dt_ms: None,
@@ -296,6 +299,7 @@ impl ControlDecision {
             prediction_allowed: false,
             motion_confidence_y: 0.0,
             velocity_samples_y: [None; 3],
+            mean_velocity_y: None,
             median_velocity_y: None,
             velocity_spread_y: None,
             measurement_dt_ms_y: None,
@@ -658,6 +662,7 @@ impl DualPhaseControl {
             motion_confidence: prediction.x.motion_confidence,
             history_position_count: prediction.history_position_count,
             velocity_samples: prediction.x.velocity_samples,
+            mean_velocity: prediction.x.mean_velocity,
             median_velocity: prediction.x.median_velocity,
             velocity_spread: prediction.x.velocity_spread,
             measurement_dt_ms: prediction.x.measurement_dt_ms,
@@ -671,6 +676,7 @@ impl DualPhaseControl {
             prediction_allowed: prediction.x.allowed,
             motion_confidence_y: prediction.y.motion_confidence,
             velocity_samples_y: prediction.y.velocity_samples,
+            mean_velocity_y: prediction.y.mean_velocity,
             median_velocity_y: prediction.y.median_velocity,
             velocity_spread_y: prediction.y.velocity_spread,
             measurement_dt_ms_y: prediction.y.measurement_dt_ms,
@@ -816,7 +822,8 @@ mod tests {
         assert!(decision.sample_available);
         assert_eq!(decision.history_position_count, 4);
         assert_eq!(decision.velocity_samples, [Some(0.4); 3]);
-        assert_eq!(decision.median_velocity, Some(0.4));
+        assert!((decision.mean_velocity.expect("mean") - 0.4).abs() < 1e-12);
+        assert!((decision.median_velocity.expect("median") - 0.4).abs() < 1e-12);
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
         assert!((decision.reference_dt_ms - 10.0).abs() < 1e-12);
         assert!((decision.prediction_horizon_ms - 32.0).abs() < 1e-12);
