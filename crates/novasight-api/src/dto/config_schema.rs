@@ -146,7 +146,7 @@ impl ConfigSchemaResponse {
                         ),
                     ],
                 ),
-                section(
+                runtime_section(
                     "control.recoil",
                     "独立压枪",
                     vec![
@@ -168,7 +168,7 @@ impl ConfigSchemaResponse {
                         ),
                     ],
                 ),
-                section(
+                runtime_section(
                     "pipeline",
                     "Rust 实时控制",
                     vec![
@@ -663,6 +663,17 @@ fn section(
     ConfigSectionSchema { id, label, fields }
 }
 
+fn runtime_section(
+    id: &'static str,
+    label: &'static str,
+    mut fields: Vec<ConfigFieldSchema>,
+) -> ConfigSectionSchema {
+    for field in &mut fields {
+        field.restart_required = false;
+    }
+    ConfigSectionSchema { id, label, fields }
+}
+
 fn field(path: &'static str, label: &'static str, field_type: &'static str) -> ConfigFieldSchema {
     ConfigFieldSchema {
         path,
@@ -765,7 +776,7 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 8);
+        assert_eq!(value["version"], 9);
         assert_eq!(value["values"]["server"]["port"], 5174);
         assert_eq!(value["values"]["pipeline"]["arrival_radius_counts"], 3.0);
         assert_eq!(
@@ -786,6 +797,7 @@ mod tests {
                     field["path"] == "control.recoil.interval_ms"
                         && field["min"] == 1.0
                         && field["max"] == 5_000.0
+                        && field["restart_required"] == false
                 })
         }));
         let output_gate = value["sections"]
@@ -796,6 +808,14 @@ mod tests {
             .find(|field| field["path"] == "control.output_enabled")
             .unwrap();
         assert_eq!(output_gate["restart_required"], false);
+        let far_gain = value["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|section| section["fields"].as_array().unwrap())
+            .find(|field| field["path"] == "pipeline.far_kp")
+            .unwrap();
+        assert_eq!(far_gain["restart_required"], false);
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
             section["id"] == "crosshair"
                 && section["fields"]

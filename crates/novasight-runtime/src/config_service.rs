@@ -240,6 +240,14 @@ impl ConfigService {
             .clone()
     }
 
+    pub async fn pending_process_restart_sections(
+        &self,
+    ) -> Result<Vec<&'static str>, ConfigServiceError> {
+        let effective = self.blocking_effective_snapshot();
+        let desired = self.inner.current.read().await.clone();
+        process_restart_sections(&effective, &desired)
+    }
+
     pub async fn ensure_effective(&self) -> Result<(), ConfigServiceError> {
         let desired_revision = self.inner.current.read().await.revision;
         let effective_revision = self.effective_revision();

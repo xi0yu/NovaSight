@@ -929,6 +929,48 @@ async fn prepare_config_for_start(state: &ControlState) -> Result<(), ControlApi
     Ok(())
 }
 
+fn runtime_reloadable_config_update(update: &ConfigFieldUpdate) -> bool {
+    update.section == "pipeline"
+}
+
+async fn apply_runtime_reloadable_config(
+    state: &ControlState,
+    service: &ConfigService,
+    mut update: ConfigUpdate,
+) -> Result<ConfigUpdate, ControlApiError> {
+    let process_sections = service.pending_process_restart_sections().await?;
+    if !process_sections.is_empty() {
+        update.message = format!(
+            "configuration persisted; restart novasightd to apply process-owned sections [{}]",
+            process_sections.join(", ")
+        );
+        return Ok(update);
+    }
+
+    let pipeline_state = state.runtime.snapshot().pipeline.state;
+    let was_running = matches!(
+        pipeline_state,
+        PipelineState::Running | PipelineState::Standby
+    );
+    if was_running {
+        ensure_runtime_license(state).await?;
+        state.runtime.stop().await?;
+    }
+    prepare_config_for_start(state).await?;
+    if was_running {
+        state.runtime.start().await?;
+        update.message =
+            "configuration persisted and applied by restarting the runtime pipeline".to_owned();
+    } else {
+        update.message =
+            "configuration persisted and installed for the next runtime start".to_owned();
+    }
+    update.restart_required = false;
+    update.applied = true;
+    update.rolled_back = false;
+    Ok(update)
+}
+
 async fn ensure_runtime_license(state: &ControlState) -> Result<(), ControlApiError> {
     let Some(repository) = state.license.as_ref() else {
         return Ok(());
@@ -1115,12 +1157,16 @@ async fn update_config(
     let hot_output_gate = update.section == "control" && update.key == "output_enabled";
     let hot_trigger_mode = update.section == "control" && update.key == "trigger_mode";
     let hot_recoil = update.section == "control" && update.key == "recoil";
+    let runtime_reloadable = runtime_reloadable_config_update(&update);
     let result = if hot_output_gate {
         service.update_output_gate(&state.runtime, update).await?
     } else if hot_trigger_mode {
         service.update_trigger_mode(&state.runtime, update).await?
     } else if hot_recoil {
         service.update_recoil(&state.runtime, update).await?
+    } else if runtime_reloadable {
+        let update = service.update_field(update).await?;
+        apply_runtime_reloadable_config(&state, service, update).await?
     } else {
         service.update_field(update).await?
     };
@@ -1147,6 +1193,7 @@ async fn update_legacy_config(
         let hot_trigger_mode =
             field_update.section == "control" && field_update.key == "trigger_mode";
         let hot_recoil = field_update.section == "control" && field_update.key == "recoil";
+        let runtime_reloadable = runtime_reloadable_config_update(&field_update);
         if hot_output_gate {
             service
                 .update_output_gate(&state.runtime, field_update)
@@ -1157,6 +1204,9 @@ async fn update_legacy_config(
                 .await?
         } else if hot_recoil {
             service.update_recoil(&state.runtime, field_update).await?
+        } else if runtime_reloadable {
+            let update = service.update_field(field_update).await?;
+            apply_runtime_reloadable_config(&state, service, update).await?
         } else {
             service.update_field(field_update).await?
         }

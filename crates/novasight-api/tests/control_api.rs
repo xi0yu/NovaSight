@@ -201,7 +201,7 @@ async fn versioned_config_api_preserves_pending_restart_while_hot_applying_outpu
 }
 
 #[tokio::test]
-async fn runtime_start_loads_pending_visual_pipeline_configuration_into_the_next_epoch() {
+async fn pipeline_config_update_installs_into_the_stopped_runtime_without_daemon_restart() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");
     YamlConfigRepository::initialize_default(&path).unwrap();
@@ -233,7 +233,11 @@ async fn runtime_start_loads_pending_visual_pipeline_configuration_into_the_next
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(config.effective_revision(), 0);
+    let update: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(update["restart_required"], false);
+    assert_eq!(update["applied"], true);
+    assert_eq!(config.effective_revision(), 1);
     assert_eq!(config.snapshot().await.revision, 1);
 
     let response = app
@@ -274,6 +278,64 @@ async fn runtime_start_loads_pending_visual_pipeline_configuration_into_the_next
         18.0
     );
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn pipeline_config_update_restarts_the_running_runtime_without_daemon_restart() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    YamlConfigRepository::initialize_default(&path).unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let app = build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/runtime/start")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
+    assert_eq!(runtime.snapshot().pipeline.epoch.unwrap().0, 1);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"pipeline","key":"far_kp","value":0.31}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let update: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(update["restart_required"], false);
+    assert_eq!(update["applied"], true);
+    assert!(
+        update["message"]
+            .as_str()
+            .unwrap()
+            .contains("runtime pipeline")
+    );
+    assert_eq!(config.effective_revision(), 1);
+    assert_eq!(config.blocking_effective_snapshot().pipeline.far_kp, 0.31);
+    assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
+    assert_eq!(runtime.snapshot().pipeline.epoch.unwrap().0, 2);
 
     shutdown(supervisor, &runtime).await;
 }
@@ -891,7 +953,7 @@ inference:
     assert_eq!(response.status(), StatusCode::OK);
     let schema: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(schema["version"], 8);
+    assert_eq!(schema["version"], 9);
     assert_eq!(schema["values"]["revision"], 4);
     assert_eq!(schema["values"]["server"]["port"], 6000);
     assert_eq!(
@@ -1265,7 +1327,7 @@ async fn studio_status_websocket_streams_real_supervisor_changes() {
 
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");
-    fs::write(&path, "revision: 8\nreplay:\n  enabled: true\n").unwrap();
+    fs::write(&path, "revision: 9\nreplay:\n  enabled: true\n").unwrap();
     let config = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
     let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1287,7 +1349,7 @@ async fn studio_status_websocket_streams_real_supervisor_changes() {
     assert_eq!(initial["topic"], "summary");
     assert_eq!(initial["full"], true);
     assert_eq!(initial["state"]["running"], false);
-    assert_eq!(initial["state"]["config"]["version"], 8);
+    assert_eq!(initial["state"]["config"]["version"], 9);
 
     runtime.start().await.unwrap();
     let running = loop {
