@@ -6,7 +6,8 @@ NovaSight ships as a Jetson-side portable application. The Jetson owns capture,
 DeepStream inference, target selection, control, and kmNet/HID output. Users
 start the `NovaSight` launcher; it starts `novasightd` as a package-local child
 process, prints the Web UI URL, and tries to open a desktop browser when one is
-available.
+available. The launcher remains the foreground owner; `Ctrl+C` stops the
+package-local daemon.
 
 NovaSight does not install a system service by default. It should not write to
 `/etc`, `/usr`, `/var/lib`, `/var/log`, or `/run/novasight` in the normal
@@ -94,8 +95,8 @@ bin/novasightctl emergency-stop
 ```
 
 `novasightctl` resolves the package socket automatically from
-`run/novasightd.sock`. `shutdown` closes the package-local daemon so the same
-package directory can be rebuilt.
+`run/novasightd.sock`. `shutdown` closes the package-local daemon when the
+original launcher terminal is no longer available.
 
 ## Hardware Prerequisites
 

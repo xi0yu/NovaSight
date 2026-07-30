@@ -56,11 +56,12 @@ cd NovaSight
 - 启动本机 NovaSight 后端服务。
 - 等待服务就绪。
 - 输出 NovaSight Studio 地址，并在有桌面浏览器时尝试自动打开。
+- 保持终端运行；按 `Ctrl+C` 会关闭包内后台服务。
 
 如果浏览器没有自动打开，请使用终端输出的地址，或者打开 `run/ready.json`，复制里面的本机地址到浏览器。Jetson 没有桌面浏览器时，这是正常路径，不代表后端启动失败。
 
 正常情况下，用户不需要直接运行 `bin/novasightd`，也不需要安装系统服务。
-需要关闭后台服务时，在交付包目录运行：
+如果原启动终端已经不在，仍然可以在交付包目录关闭后台服务：
 
 ```bash
 bin/novasightctl shutdown
@@ -315,7 +316,9 @@ data/models/
 1. 在 Studio 顶部点击“停止主链”。
 2. 等待状态变为停止。
 3. 关闭浏览器页面。
-4. 在交付包目录运行 `bin/novasightctl shutdown`。
+4. 回到启动 `./NovaSight` 的终端，按 `Ctrl+C`。
+
+如果原启动终端已经关闭，在交付包目录运行 `bin/novasightctl shutdown`。
 
 更新新版本：
 
@@ -393,7 +396,7 @@ bin/novasightctl shutdown
 - `license status`：查看授权状态。
 - `status`：查看当前运行快照，需要已有有效授权。
 - `emergency-stop`：立即关闭输出并停止运行主链。
-- `shutdown`：关闭包内后台服务。
+- `shutdown`：关闭包内后台服务，适用于原启动终端已经不在的情况。
 
 普通用户只需要记住一个启动命令：
 

@@ -84,8 +84,9 @@ out/package/NovaSight/
 Users start `NovaSight`. The launcher creates package-local `data`, `logs`,
 and `run` directories, starts `bin/novasightd`, waits for `run/ready.json`, and
 prints the Web UI URL. It also tries to open a desktop browser when one is
-available. It does not install systemd units, write to `/etc`, `/usr`,
-`/var/lib`, or `/run/novasight`, or require root.
+available. The launcher stays in the foreground; pressing `Ctrl+C` stops the
+package-local daemon. It does not install systemd units, write to `/etc`,
+`/usr`, `/var/lib`, or `/run/novasight`, or require root.
 
 Developer and user run:
 
@@ -120,7 +121,7 @@ bin/novasightctl shutdown
 control surface, not a second backend. It resolves `run/novasightd.sock` from
 the portable package. Runtime `status` is still protected by the same license
 gate as the Web API. `shutdown` is local-socket only and closes the package
-daemon before rebuilds.
+daemon when the original launcher terminal is no longer available.
 
 ## Development build checks
 

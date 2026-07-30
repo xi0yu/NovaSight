@@ -2,8 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
-use std::thread;
+use std::process::{Command as StdCommand, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -11,6 +10,8 @@ use clap::Parser;
 use novasight_store::config::YamlConfigRepository;
 use serde::Deserialize;
 use serde_yaml::{Mapping, Number, Value};
+use tokio::process::{Child, Command};
+use tokio::time;
 
 const CONFIG_PATH: &str = "data/novasight.yaml";
 const DATA_DIR: &str = "data";
@@ -22,6 +23,7 @@ const RUN_DIR: &str = "run";
 const CONTROL_SOCKET: &str = "run/novasightd.sock";
 const READY_FILE: &str = "run/ready.json";
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(20);
+const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Parser, Debug)]
 #[command(name = "novasight", about = "NovaSight portable launcher")]
@@ -31,6 +33,7 @@ struct Args {}
 struct PortableLayout {
     root: PathBuf,
     daemon: PathBuf,
+    control: PathBuf,
     config: PathBuf,
     data_dir: PathBuf,
     model_dir: PathBuf,
@@ -46,8 +49,9 @@ struct ReadyDocument {
     url: String,
 }
 
-fn main() -> ExitCode {
-    match run() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
+    match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("NOVASIGHT_LAUNCH_FAILED: {error:#}");
@@ -56,7 +60,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<()> {
+async fn run() -> Result<()> {
     let _args = Args::parse();
     let layout = PortableLayout::discover()?;
     prepare_layout(&layout)?;
@@ -68,13 +72,15 @@ fn run() -> Result<()> {
         && health_check(&ready.address)
     {
         open_studio(&ready.url);
+        supervise_existing_daemon(&layout, &ready).await?;
         return Ok(());
     }
 
     let _ = fs::remove_file(&layout.ready_file);
     let mut child = spawn_daemon(&layout)?;
-    let ready = wait_for_ready(&layout.ready_file, &mut child, DAEMON_READY_TIMEOUT)?;
+    let ready = wait_for_ready(&layout.ready_file, &mut child, DAEMON_READY_TIMEOUT).await?;
     open_studio(&ready.url);
+    supervise_spawned_daemon(&layout, child).await?;
     Ok(())
 }
 
@@ -85,7 +91,8 @@ impl PortableLayout {
             .parent()
             .ok_or_else(|| anyhow!("current executable has no parent directory"))?;
         let root = infer_bundle_root(executable_dir);
-        let daemon = resolve_daemon(&root, executable_dir)?;
+        let daemon = resolve_binary(&root, executable_dir, "novasightd")?;
+        let control = resolve_binary(&root, executable_dir, "novasightctl")?;
         let config = root.join(CONFIG_PATH);
         let data_dir = root.join(DATA_DIR);
         let model_dir = root.join(MODEL_DIR);
@@ -96,6 +103,7 @@ impl PortableLayout {
         Ok(Self {
             root,
             daemon,
+            control,
             config,
             data_dir,
             model_dir,
@@ -117,8 +125,8 @@ fn infer_bundle_root(executable_dir: &Path) -> PathBuf {
     executable_dir.to_owned()
 }
 
-fn resolve_daemon(root: &Path, executable_dir: &Path) -> Result<PathBuf> {
-    let name = executable_name("novasightd");
+fn resolve_binary(root: &Path, executable_dir: &Path, binary: &'static str) -> Result<PathBuf> {
+    let name = executable_name(binary);
     let candidates = [
         root.join("bin").join(name),
         root.join(name),
@@ -127,13 +135,14 @@ fn resolve_daemon(root: &Path, executable_dir: &Path) -> Result<PathBuf> {
     candidates
         .into_iter()
         .find(|path| path.is_file())
-        .ok_or_else(|| anyhow!("novasightd was not found below {}", root.display()))
+        .ok_or_else(|| anyhow!("{binary} was not found below {}", root.display()))
 }
 
 fn executable_name(name: &'static str) -> &'static str {
     if cfg!(windows) {
         match name {
             "novasightd" => "novasightd.exe",
+            "novasightctl" => "novasightctl.exe",
             _ => name,
         }
     } else {
@@ -246,7 +255,7 @@ fn set_mapping_field(document: &mut Value, section: &str, key: &str, value: Valu
     Ok(true)
 }
 
-fn spawn_daemon(layout: &PortableLayout) -> Result<std::process::Child> {
+fn spawn_daemon(layout: &PortableLayout) -> Result<Child> {
     let log = OpenOptions::new()
         .create(true)
         .append(true)
@@ -265,9 +274,9 @@ fn spawn_daemon(layout: &PortableLayout) -> Result<std::process::Child> {
         .with_context(|| format!("start {}", layout.daemon.display()))
 }
 
-fn wait_for_ready(
+async fn wait_for_ready(
     ready_file: &Path,
-    child: &mut std::process::Child,
+    child: &mut Child,
     timeout: Duration,
 ) -> Result<ReadyDocument> {
     let started = Instant::now();
@@ -287,7 +296,98 @@ fn wait_for_ready(
                 ready_file.display()
             );
         }
-        thread::sleep(Duration::from_millis(100));
+        time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn supervise_existing_daemon(layout: &PortableLayout, ready: &ReadyDocument) -> Result<()> {
+    eprintln!("NOVASIGHT_RUNNING: press Ctrl+C to stop NovaSight");
+    wait_for_shutdown_signal().await?;
+    request_daemon_shutdown(layout).await?;
+    wait_until_daemon_stops(&ready.address, DAEMON_SHUTDOWN_TIMEOUT).await
+}
+
+async fn supervise_spawned_daemon(layout: &PortableLayout, mut child: Child) -> Result<()> {
+    eprintln!("NOVASIGHT_RUNNING: press Ctrl+C to stop NovaSight");
+    tokio::select! {
+        status = child.wait() => {
+            let status = status.context("wait for novasightd process")?;
+            if status.success() {
+                Ok(())
+            } else {
+                bail!("novasightd exited with status {status}")
+            }
+        }
+        signal = wait_for_shutdown_signal() => {
+            signal?;
+            stop_owned_daemon(layout, &mut child).await
+        }
+    }
+}
+
+async fn stop_owned_daemon(layout: &PortableLayout, child: &mut Child) -> Result<()> {
+    eprintln!("NOVASIGHT_SHUTDOWN_REQUESTED: stopping novasightd");
+    if let Err(error) = request_daemon_shutdown(layout).await {
+        eprintln!("NOVASIGHT_SHUTDOWN_FALLBACK: {error:#}");
+    }
+    match time::timeout(DAEMON_SHUTDOWN_TIMEOUT, child.wait()).await {
+        Ok(status) => {
+            let _ = status.context("wait for novasightd process")?;
+            Ok(())
+        }
+        Err(_) => {
+            child
+                .start_kill()
+                .context("force stop unresponsive novasightd")?;
+            let _ = child.wait().await.context("wait for killed novasightd")?;
+            Ok(())
+        }
+    }
+}
+
+async fn request_daemon_shutdown(layout: &PortableLayout) -> Result<()> {
+    let status = Command::new(&layout.control)
+        .arg("shutdown")
+        .current_dir(&layout.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .with_context(|| format!("run {}", layout.control.display()))?;
+    if !status.success() {
+        bail!("novasightctl shutdown exited with {status}");
+    }
+    Ok(())
+}
+
+async fn wait_until_daemon_stops(address: &str, timeout: Duration) -> Result<()> {
+    let started = Instant::now();
+    loop {
+        if !health_check(address) {
+            return Ok(());
+        }
+        if started.elapsed() >= timeout {
+            bail!("novasightd did not stop within {timeout:?}");
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut interrupt = signal(SignalKind::interrupt()).context("register SIGINT handler")?;
+        let mut terminate = signal(SignalKind::terminate()).context("register SIGTERM handler")?;
+        tokio::select! {
+            _ = interrupt.recv() => Ok(()),
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.context("wait for Ctrl+C")
     }
 }
 
@@ -330,7 +430,7 @@ fn open_browser(url: &str) -> Result<()> {
     if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
         bail!("no graphical session detected");
     }
-    Command::new("xdg-open")
+    StdCommand::new("xdg-open")
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -342,7 +442,7 @@ fn open_browser(url: &str) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn open_browser(url: &str) -> Result<()> {
-    Command::new("open")
+    StdCommand::new("open")
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -354,7 +454,7 @@ fn open_browser(url: &str) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn open_browser(url: &str) -> Result<()> {
-    Command::new("cmd")
+    StdCommand::new("cmd")
         .args(["/C", "start", "", url])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -421,6 +521,7 @@ mod tests {
         let layout = PortableLayout {
             root: root.clone(),
             daemon: root.join("bin/novasightd"),
+            control: root.join("bin/novasightctl"),
             config: root.join(CONFIG_PATH),
             data_dir: root.join(DATA_DIR),
             model_dir: root.join(MODEL_DIR),

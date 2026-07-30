@@ -78,7 +78,8 @@ The launcher owns startup orchestration:
   and `run/ready.json`;
 - waits for the daemon to become healthy;
 - prints the Web UI URL from `run/ready.json` and tries to open it when a
-  desktop browser is available.
+  desktop browser is available;
+- stays in the foreground so `Ctrl+C` stops the package-local daemon.
 
 NovaSight-owned runtime files stay inside the package:
 
@@ -115,7 +116,8 @@ cat run/ready.json
 bin/novasightctl license status
 ```
 
-Stop the package-local daemon before rebuilding the same output directory:
+Stop the package-local daemon before rebuilding the same output directory.
+Prefer `Ctrl+C` in the launcher terminal; if that terminal is gone, use:
 
 ```bash
 bin/novasightctl shutdown
@@ -142,7 +144,8 @@ behind the same license gate as the Web API. Before activation, use
 - `run/ready.json` contains a loopback URL and package-local control socket.
 - `web/index.html` is served by `novasightd` from the same origin as the API.
 - `bin/novasightctl license status` connects through `run/novasightd.sock`.
-- `bin/novasightctl shutdown` closes the package-local daemon before rebuilds.
+- `Ctrl+C` in the launcher terminal, or `bin/novasightctl shutdown`, closes the
+  package-local daemon before rebuilds.
 - `logs/novasightd.log` is created inside the package.
 - No NovaSight-owned runtime files are created outside the package directory.
 
