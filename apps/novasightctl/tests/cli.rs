@@ -675,7 +675,7 @@ fn run_cli(socket: &Path, command: &str) -> std::process::Output {
 
 fn run_cli_args(socket: &Path, arguments: &[&str]) -> std::process::Output {
     Command::new(binary())
-        .args(["--socket", socket.to_str().expect("UTF-8 socket")])
+        .env("NOVASIGHT_CONTROL_SOCKET", socket)
         .args(arguments)
         .output()
         .expect("run novasightctl")

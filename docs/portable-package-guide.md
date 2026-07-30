@@ -48,7 +48,7 @@ The packager does all required assembly work:
 - validates that the package has the required runtime files.
 
 The generated package is the deliverable. Do not ask users to run Cargo, pnpm,
-`novasightd --config`, or systemd commands.
+direct `novasightd`, or systemd commands.
 
 Optional archive step after packaging:
 
@@ -70,9 +70,8 @@ The launcher owns startup orchestration:
 
 - ensures `data`, `logs`, and `run` exist;
 - starts `bin/novasightd`;
-- passes `--config data/novasight.yaml`;
-- passes `--web-root web`;
-- passes `--ready-file run/ready.json`;
+- lets the daemon use the package conventions `data/novasight.yaml`, `web/`,
+  and `run/ready.json`;
 - waits for the daemon to become healthy;
 - opens the Web UI URL from `run/ready.json`.
 

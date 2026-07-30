@@ -65,14 +65,9 @@ cd out/package/NovaSight
 ./NovaSight
 ```
 
-The launcher writes package-local paths into `data/novasight.yaml`, starts:
-
-```bash
-bin/novasightd \
-  --config data/novasight.yaml \
-  --web-root web \
-  --ready-file run/ready.json
-```
+The launcher starts `bin/novasightd` without startup arguments. The daemon uses
+the package conventions directly: `data/novasight.yaml`, `web/`, and
+`run/ready.json`.
 
 `novasightd` binds a loopback port, writes `run/ready.json`, and serves both
 Studio and the API from that origin. The launcher prints and opens the URL.
@@ -91,9 +86,8 @@ bin/novasightctl status
 bin/novasightctl emergency-stop
 ```
 
-`novasightctl` resolves the package socket automatically when
-`run/novasightd.sock` exists. Use `--socket` or `NOVASIGHT_CONTROL_SOCKET` only
-for diagnostics.
+`novasightctl` resolves the package socket automatically from
+`run/novasightd.sock`.
 
 ## Hardware Prerequisites
 
@@ -119,7 +113,7 @@ which tegrastats
 
 ```bash
 cd out/package/NovaSight
-bin/novasightd --config data/novasight.yaml --check
+bin/novasightd --check
 ./NovaSight
 bin/novasightctl license status
 ```

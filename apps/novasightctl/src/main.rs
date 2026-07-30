@@ -17,17 +17,12 @@ use serde::Serialize;
 use thiserror::Error;
 use tracing_subscriber::EnvFilter;
 
-const SYSTEM_CONTROL_SOCKET: &str = "/run/novasight/novasightd.sock";
 const PORTABLE_CONTROL_SOCKET: &str = "run/novasightd.sock";
 const CONTROL_SOCKET_ENV: &str = "NOVASIGHT_CONTROL_SOCKET";
 
 #[derive(Parser, Debug)]
 #[command(name = "novasightctl", about = "NovaSight daemon command-line client")]
 struct Cli {
-    /// Unix domain socket exposed by novasightd.
-    #[arg(long)]
-    socket: Option<PathBuf>,
-
     #[command(subcommand)]
     command: Command,
 }
@@ -298,7 +293,7 @@ async fn main() -> ExitCode {
 }
 
 async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
-    let client = ControlClient::new(resolve_control_socket(cli.socket));
+    let client = ControlClient::new(resolve_control_socket());
     match cli.command {
         Command::Status => client
             .status()
@@ -534,29 +529,47 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
     .map_err(CliError::Client)
 }
 
-fn resolve_control_socket(explicit: Option<PathBuf>) -> PathBuf {
-    if let Some(socket) = explicit {
-        return socket;
-    }
+fn resolve_control_socket() -> PathBuf {
     if let Some(socket) = std::env::var_os(CONTROL_SOCKET_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
     {
         return socket;
     }
-    portable_control_socket().unwrap_or_else(|| PathBuf::from(SYSTEM_CONTROL_SOCKET))
+    portable_control_socket()
 }
 
-fn portable_control_socket() -> Option<PathBuf> {
-    let executable = std::env::current_exe().ok()?;
-    let executable_dir = executable.parent()?;
-    let root = if executable_dir.file_name().is_some_and(|name| name == "bin") {
-        executable_dir.parent()?
+fn portable_control_socket() -> PathBuf {
+    let executable_root = std::env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(PathBuf::from))
+        .map(|executable_dir| {
+            if executable_dir.file_name().is_some_and(|name| name == "bin") {
+                executable_dir
+                    .parent()
+                    .map(PathBuf::from)
+                    .unwrap_or(executable_dir)
+            } else {
+                executable_dir
+            }
+        });
+    let executable_socket = executable_root
+        .as_ref()
+        .map(|root| root.join(PORTABLE_CONTROL_SOCKET));
+    if let Some(socket) = executable_socket.as_ref().filter(|socket| socket.exists()) {
+        return socket.to_owned();
+    }
+    if let Ok(current_dir) = std::env::current_dir() {
+        let current_socket = current_dir.join(PORTABLE_CONTROL_SOCKET);
+        if current_socket.exists() {
+            return current_socket;
+        }
+    }
+    if let Some(socket) = executable_socket {
+        socket
     } else {
-        executable_dir
-    };
-    let socket = root.join(PORTABLE_CONTROL_SOCKET);
-    socket.exists().then_some(socket)
+        PathBuf::from(PORTABLE_CONTROL_SOCKET)
+    }
 }
 
 #[derive(Debug, Error)]

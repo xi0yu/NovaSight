@@ -175,7 +175,6 @@ cargo build --release -p novasightd --features deepstream
 cargo build --release -p novasightctl
 
 out/cargo/release/novasightd \
-  --config deploy/novasight.production.yaml \
   --check
 ```
 

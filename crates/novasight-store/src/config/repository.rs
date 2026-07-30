@@ -61,8 +61,8 @@ impl YamlConfigRepository {
     /// Load the canonical runtime configuration, creating it exactly once
     /// when the default local file has not been initialized yet.
     ///
-    /// Ordinary `load` remains strict so a misspelled custom `--config` path
-    /// is never replaced by an invented file.
+    /// Ordinary `load` remains strict so callers cannot replace a missing
+    /// configuration with an invented file by accident.
     pub fn load_or_initialize_default(path: impl AsRef<Path>) -> Result<AppConfig, ConfigError> {
         let path = path.as_ref();
         match Self::load(path) {

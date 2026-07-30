@@ -31,6 +31,9 @@ use thiserror::Error;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::watch;
 
+const DEFAULT_WEB_ROOT: &str = "web";
+const DEFAULT_READY_FILE: &str = "run/ready.json";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DaemonMode {
     Hardware,
@@ -51,19 +54,12 @@ impl DaemonMode {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub(super) struct DaemonOptions {
-    pub(super) web_root: Option<PathBuf>,
-    pub(super) ready_file: Option<PathBuf>,
-}
-
 pub(super) async fn run_daemon(
     loaded: LoadedApplication,
     dependencies: RuntimeDependencies,
     config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
     mode: DaemonMode,
-    options: DaemonOptions,
 ) -> Result<(), DaemonRunError> {
     let _instance_lock = acquire_instance_lock(mode.hardware_output_enabled())?;
     let host = loaded.config().server.host.clone();
@@ -97,7 +93,7 @@ pub(super) async fn run_daemon(
         mode.hardware_output_enabled(),
         server_shutdown_rx.clone(),
     );
-    let web_root = effective_web_root(options.web_root.as_deref());
+    let web_root = effective_web_root(Path::new(DEFAULT_WEB_ROOT));
     let router = attach_web_ui(api_router.clone(), web_root.as_deref());
     let control_router = with_trusted_local_control(api_router);
     let http_server = axum::serve(listener, router)
@@ -126,10 +122,15 @@ pub(super) async fn run_daemon(
     ));
     let mut runtime_exit = Box::pin(runtime.wait_for_supervisor_exit());
 
-    let _ready_file_guard = options.ready_file.clone().map(ReadyFileGuard::new);
-    if let Some(path) = options.ready_file.as_ref() {
-        write_ready_file(path, address, &control_socket, mode, web_root.as_deref())?;
-    }
+    let ready_file = Path::new(DEFAULT_READY_FILE);
+    let _ready_file_guard = ReadyFileGuard::new(ready_file.to_owned());
+    write_ready_file(
+        ready_file,
+        address,
+        &control_socket,
+        mode,
+        web_root.as_deref(),
+    )?;
     eprintln!(
         "novasightd ready mode={} address={address} socket={}",
         mode.label(),
@@ -186,8 +187,7 @@ pub(super) async fn run_daemon(
     }
 }
 
-fn effective_web_root(web_root: Option<&Path>) -> Option<PathBuf> {
-    let web_root = web_root?;
+fn effective_web_root(web_root: &Path) -> Option<PathBuf> {
     let index = web_root.join("index.html");
     if index.is_file() {
         Some(web_root.to_owned())
@@ -1015,10 +1015,10 @@ mod tests {
         let web = path.0.with_file_name("web");
         std::fs::create_dir(&web).expect("create web root");
 
-        assert!(effective_web_root(Some(&web)).is_none());
+        assert!(effective_web_root(&web).is_none());
 
         std::fs::write(web.join("index.html"), "").expect("write index");
-        assert_eq!(effective_web_root(Some(&web)), Some(web));
+        assert_eq!(effective_web_root(&web), Some(web));
     }
 
     #[test]

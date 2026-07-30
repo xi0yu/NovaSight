@@ -186,7 +186,8 @@ cd web && npm run build
 Jetson-only smoke gate:
 
 ```bash
-novasightd --config deploy/novasight.production.yaml --check
+cd out/package/NovaSight
+bin/novasightd --check
 novasightctl status
 ```
 

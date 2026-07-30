@@ -55,7 +55,10 @@ fn initializes_the_single_local_runtime_config() {
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
-    assert_eq!(config.server.control_socket, Path::new("@novasightd-dev"));
+    assert_eq!(
+        config.server.control_socket,
+        Path::new("run/novasightd.sock")
+    );
     assert!(config.replay.enabled);
     assert_eq!(config.replay.frame_interval_ms, 16);
     assert!(!config.replay.output_gate_open);
@@ -250,7 +253,7 @@ fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
     assert_eq!(config.server.port, 5174);
     assert_eq!(
         config.server.control_socket,
-        Path::new("/run/novasight/novasightd.sock")
+        Path::new("run/novasightd.sock")
     );
     assert!(config.replay.enabled);
     assert_eq!(config.replay.frame_interval_ms, 16);

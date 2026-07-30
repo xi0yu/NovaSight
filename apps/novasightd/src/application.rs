@@ -21,25 +21,13 @@ use crate::server;
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
 use crate::live_perception;
 
-const DEFAULT_CONFIG_PATH: &str = ".config/novasight.yaml";
+const DEFAULT_CONFIG_PATH: &str = "data/novasight.yaml";
 const PRODUCTION_RUNTIME_UNAVAILABLE: &str =
     "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream";
 
 #[derive(Parser, Debug)]
 #[command(about = "NovaSight runtime daemon")]
 struct Args {
-    /// Path to the external NovaSight YAML configuration.
-    #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
-    config: PathBuf,
-
-    /// Directory containing the built NovaSight Studio Web assets.
-    #[arg(long)]
-    web_root: Option<PathBuf>,
-
-    /// Write the bound daemon address and control socket after startup.
-    #[arg(long)]
-    ready_file: Option<PathBuf>,
-
     /// Run preflight checks and exit; do not start the pipeline.
     #[arg(long)]
     check: bool,
@@ -56,11 +44,8 @@ fn init_logging() {
 pub async fn entry() -> ExitCode {
     init_logging();
     let args = Args::parse();
-    let load = if args.config == Path::new(DEFAULT_CONFIG_PATH) {
-        LoadedApplication::load_or_initialize_default(&args.config).await
-    } else {
-        LoadedApplication::load(&args.config).await
-    };
+    let config_path = Path::new(DEFAULT_CONFIG_PATH);
+    let load = LoadedApplication::load_or_initialize_default(config_path).await;
     let loaded = match load {
         Ok(loaded) => loaded,
         Err(error) => {
@@ -131,7 +116,7 @@ pub async fn entry() -> ExitCode {
                 } else {
                     "production"
                 },
-                args.config.display(),
+                config_path.display(),
                 loaded.config().control.output_enabled,
                 pointer_adapter
             );
@@ -179,20 +164,7 @@ pub async fn entry() -> ExitCode {
     #[cfg(feature = "deepstream")]
     let dependencies = dependencies.with_model_jobs(NativeModelJobRunner::new());
     let dependencies = dependencies.with_output_enabled(loaded.config().control.output_enabled);
-    let daemon_options = server::DaemonOptions {
-        web_root: args.web_root,
-        ready_file: args.ready_file,
-    };
-    match server::run_daemon(
-        loaded,
-        dependencies,
-        config_service,
-        model_catalog,
-        mode,
-        daemon_options,
-    )
-    .await
-    {
+    match server::run_daemon(loaded, dependencies, config_service, model_catalog, mode).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}: {error}", error.code());

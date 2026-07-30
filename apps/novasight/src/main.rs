@@ -25,18 +25,13 @@ const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Parser, Debug)]
 #[command(name = "novasight", about = "NovaSight portable launcher")]
-struct Args {
-    /// NovaSight portable bundle root. Defaults to the executable directory.
-    #[arg(long)]
-    bundle_root: Option<PathBuf>,
-}
+struct Args {}
 
 #[derive(Clone, Debug)]
 struct PortableLayout {
     root: PathBuf,
     daemon: PathBuf,
     config: PathBuf,
-    web_root: PathBuf,
     data_dir: PathBuf,
     model_dir: PathBuf,
     log_dir: PathBuf,
@@ -62,8 +57,8 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let args = Args::parse();
-    let layout = PortableLayout::discover(args.bundle_root)?;
+    let _args = Args::parse();
+    let layout = PortableLayout::discover()?;
     prepare_layout(&layout)?;
     ensure_portable_config(&layout)?;
     std::env::set_current_dir(&layout.root)
@@ -84,15 +79,14 @@ fn run() -> Result<()> {
 }
 
 impl PortableLayout {
-    fn discover(bundle_root: Option<PathBuf>) -> Result<Self> {
+    fn discover() -> Result<Self> {
         let current_exe = std::env::current_exe().context("read current executable path")?;
         let executable_dir = current_exe
             .parent()
             .ok_or_else(|| anyhow!("current executable has no parent directory"))?;
-        let root = bundle_root.unwrap_or_else(|| infer_bundle_root(executable_dir));
+        let root = infer_bundle_root(executable_dir);
         let daemon = resolve_daemon(&root, executable_dir)?;
         let config = root.join(CONFIG_PATH);
-        let web_root = resolve_web_root(&root).unwrap_or_else(|| root.join("web"));
         let data_dir = root.join(DATA_DIR);
         let model_dir = root.join(MODEL_DIR);
         let log_dir = root.join(LOG_DIR);
@@ -103,7 +97,6 @@ impl PortableLayout {
             root,
             daemon,
             config,
-            web_root,
             data_dir,
             model_dir,
             log_dir,
@@ -135,19 +128,6 @@ fn resolve_daemon(root: &Path, executable_dir: &Path) -> Result<PathBuf> {
         .into_iter()
         .find(|path| path.is_file())
         .ok_or_else(|| anyhow!("novasightd was not found below {}", root.display()))
-}
-
-fn resolve_web_root(root: &Path) -> Option<PathBuf> {
-    let mut candidates = vec![root.join("web")];
-    if let Some(parent) = root.parent() {
-        candidates.push(parent.join("web"));
-    }
-    if let Ok(current_dir) = std::env::current_dir() {
-        candidates.push(current_dir.join("out/web"));
-    }
-    candidates
-        .into_iter()
-        .find(|path| path.join("index.html").is_file())
 }
 
 fn executable_name(name: &'static str) -> &'static str {
@@ -278,21 +258,11 @@ fn spawn_daemon(layout: &PortableLayout) -> Result<std::process::Child> {
     let mut command = Command::new(&layout.daemon);
     command
         .current_dir(&layout.root)
-        .arg("--config")
-        .arg(relative_to_root(&layout.root, &layout.config))
-        .arg("--web-root")
-        .arg(relative_to_root(&layout.root, &layout.web_root))
-        .arg("--ready-file")
-        .arg(relative_to_root(&layout.root, &layout.ready_file))
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(log));
     command
         .spawn()
         .with_context(|| format!("start {}", layout.daemon.display()))
-}
-
-fn relative_to_root(root: &Path, path: &Path) -> PathBuf {
-    path.strip_prefix(root).unwrap_or(path).to_owned()
 }
 
 fn wait_for_ready(
@@ -431,21 +401,6 @@ mod tests {
     }
 
     #[test]
-    fn resolves_packaged_web_root() {
-        let root = std::env::temp_dir().join(format!(
-            "novasight-launcher-web-root-{}",
-            std::process::id()
-        ));
-        let web = root.join("web");
-        fs::create_dir_all(&web).unwrap();
-        fs::write(web.join("index.html"), "").unwrap();
-
-        assert_eq!(resolve_web_root(&root), Some(web));
-
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn portable_config_is_rewritten_to_package_local_paths() {
         let root =
             std::env::temp_dir().join(format!("novasight-launcher-config-{}", std::process::id()));
@@ -453,7 +408,6 @@ mod tests {
             root: root.clone(),
             daemon: root.join("bin/novasightd"),
             config: root.join(CONFIG_PATH),
-            web_root: root.join("web"),
             data_dir: root.join(DATA_DIR),
             model_dir: root.join(MODEL_DIR),
             log_dir: root.join(LOG_DIR),

@@ -154,13 +154,15 @@ Current implementation:
   - capture stop;
   - runtime stop.
   The next start rebuilds the pipeline from the current manifest, `deepstream.ini`, capture profile, and ROI.
-- `novasightd --config deploy/novasight.production.yaml --check` is the Jetson-side smoke gate for the generated `model.manifest.json` + `deepstream.ini` pair.
+- `bin/novasightd --check` from the packaged `NovaSight/` directory is the Jetson-side smoke gate for the generated `model.manifest.json` + `deepstream.ini` pair.
 - The Rust DeepStream backend is the production runtime path.
 
 Jetson smoke command:
 
 ```bash
-novasightd --config deploy/novasight.production.yaml --check
+cargo run -p novasight-packager -- --profile jetson-release
+cd out/package/NovaSight
+bin/novasightd --check
 ```
 
 The command must fail loudly when DeepStream, TensorRT, the parser, or the
@@ -265,7 +267,7 @@ The current engineering slice is no longer basic model scanning; it is Jetson va
 
 - Keep the generated DeepStream pipeline opt-in and reproducible from the model manifest plus runtime config.
 - Keep stale pipeline cleanup explicit across model switch, capture switch, source switch, runtime stop, and failed start paths.
-- Use `novasightd --config deploy/novasight.production.yaml --check` and
+- Use `bin/novasightd --check` from the packaged `NovaSight/` directory and
   `novasightctl status` on Jetson to verify tensor-meta FPS, DetectionBatch FPS,
   frame age, and parser correctness before enabling control decisions from
   DeepStream output.

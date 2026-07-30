@@ -90,14 +90,9 @@ cd out/package/NovaSight
 ./NovaSight
 ```
 
-`novasightd` accepts portable packaging options used by the launcher:
-
-```bash
-bin/novasightd \
-  --config data/novasight.yaml \
-  --web-root web \
-  --ready-file run/ready.json
-```
+The launcher starts `bin/novasightd` with no startup arguments. The daemon uses
+the package conventions directly: `data/novasight.yaml`, `web/`, and
+`run/ready.json`.
 
 When `web/index.html` exists, `novasightd` serves the Web UI and API from the
 same loopback origin. Direct `novasightd` startup remains a diagnostic path,
@@ -117,9 +112,8 @@ bin/novasightctl license status
 ```
 
 `novasightctl` talks to the same daemon authority as the Web UI. It is a
-control surface, not a second backend. Socket resolution is portable-first:
-explicit `--socket`, then `NOVASIGHT_CONTROL_SOCKET`, then
-`run/novasightd.sock` next to the package, then the old system fallback.
+control surface, not a second backend. It resolves `run/novasightd.sock` from
+the portable package.
 Runtime `status` is still protected by the same license gate as the Web API.
 
 ## Development build checks

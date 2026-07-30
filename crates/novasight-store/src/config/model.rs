@@ -1755,7 +1755,7 @@ const fn default_server_port() -> u16 {
 }
 
 fn default_control_socket() -> PathBuf {
-    PathBuf::from("/run/novasight/novasightd.sock")
+    PathBuf::from("run/novasightd.sock")
 }
 
 const fn default_replay_enabled() -> bool {

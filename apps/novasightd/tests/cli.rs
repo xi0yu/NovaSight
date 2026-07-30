@@ -32,28 +32,24 @@ impl Drop for TempDirectory {
     }
 }
 
-fn temp_config() -> (TempDirectory, PathBuf) {
+fn temp_bundle_config() -> (TempDirectory, PathBuf) {
     let directory = TempDirectory::new();
-    let path = directory.join("novasight.yaml");
-    let socket = directory.join("novasightd.sock");
+    let data = directory.join("data");
+    fs::create_dir_all(&data).expect("create data directory");
+    let path = data.join("novasight.yaml");
     fs::write(
         &path,
-        format!(
-            "server:\n  host: 127.0.0.1\n  port: 0\n  control_socket: {}\npaths:\n  data_dir: {}\n  model_dir: {}\n  database: {}\n  license: {}\n",
-            socket.display(),
-            directory.join("data").display(),
-            directory.join("data/models").display(),
-            directory.join("data/novasight.db").display(),
-            directory.join("license.json").display()
-        ),
+        "server:\n  host: 127.0.0.1\n  port: 0\n  control_socket: run/novasightd.sock\npaths:\n  data_dir: data\n  model_dir: data/models\n  database: data/novasight.db\n  license: data/license.json\n",
     )
     .expect("write config");
     (directory, path)
 }
 
-fn production_config() -> (TempDirectory, PathBuf) {
+fn production_bundle_config() -> (TempDirectory, PathBuf) {
     let directory = TempDirectory::new();
-    let path = directory.join("novasight.yaml");
+    let data = directory.join("data");
+    fs::create_dir_all(&data).expect("create data directory");
+    let path = data.join("novasight.yaml");
     novasight_store::config::YamlConfigRepository::initialize_default(&path)
         .expect("initialize bundled production configuration");
     (directory, path)
@@ -65,7 +61,9 @@ fn help_documents_yaml_check_without_test_runtime_flags() {
     let stdout = String::from_utf8(output.stdout).expect("UTF-8 help");
 
     assert!(output.status.success());
-    assert!(stdout.contains(".config/novasight.yaml"));
+    assert!(!stdout.contains("--config"));
+    assert!(!stdout.contains("--web-root"));
+    assert!(!stdout.contains("--ready-file"));
     assert!(stdout.contains("--check"));
     assert!(!stdout.contains("--dry-run"));
 }
@@ -102,17 +100,20 @@ fn build_info_is_machine_readable_and_reports_compiled_capabilities() {
 }
 
 #[test]
-fn missing_config_exits_nonzero_with_stable_code() {
+fn malformed_default_config_exits_nonzero_with_stable_code() {
     let directory = TempDirectory::new();
-    let missing = directory.join("missing.yaml");
+    let config_path = directory.join("data/novasight.yaml");
+    fs::create_dir_all(config_path.parent().expect("config parent")).expect("create data");
+    fs::write(&config_path, "server: [").expect("write malformed config");
     let output = daemon_command()
-        .args(["--config", missing.to_str().expect("UTF-8 path"), "--check"])
+        .current_dir(&directory.0)
+        .arg("--check")
         .output()
-        .expect("run missing config");
+        .expect("run malformed config");
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
 
     assert!(!output.status.success());
-    assert!(stderr.contains("CONFIG_NOT_FOUND"));
+    assert!(stderr.contains("CONFIG_PARSE_ERROR"));
 }
 
 #[test]
@@ -126,7 +127,7 @@ fn missing_default_config_is_created_before_preflight() {
         .output()
         .expect("run first-start preflight");
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
-    let config_path = directory.join(".config/novasight.yaml");
+    let config_path = directory.join("data/novasight.yaml");
 
     assert!(
         config_path.is_file(),
@@ -141,9 +142,10 @@ fn missing_default_config_is_created_before_preflight() {
 
 #[test]
 fn production_check_rejects_incomplete_adapter_configuration() {
-    let (_directory, path) = temp_config();
+    let (directory, _path) = temp_bundle_config();
     let output = daemon_command()
-        .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
+        .current_dir(&directory.0)
+        .arg("--check")
         .output()
         .expect("run production check");
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
@@ -155,9 +157,9 @@ fn production_check_rejects_incomplete_adapter_configuration() {
 
 #[test]
 fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
-    let (_directory, path) = temp_config();
+    let (directory, _path) = temp_bundle_config();
     let output = daemon_command()
-        .args(["--config", path.to_str().expect("UTF-8 path")])
+        .current_dir(&directory.0)
         .output()
         .expect("run production mode");
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
@@ -169,9 +171,10 @@ fn normal_mode_fails_closed_when_production_adapter_sections_are_missing() {
 
 #[test]
 fn development_hardware_check_is_not_blocked_by_formal_license_configuration() {
-    let (_directory, path) = production_config();
+    let (directory, _path) = production_bundle_config();
     let output = daemon_command()
-        .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
+        .current_dir(&directory.0)
+        .arg("--check")
         .env("NOVASIGHT_LICENSE_PUBLIC_KEY", "not a PEM public key")
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
         .output()
@@ -185,10 +188,11 @@ fn development_hardware_check_is_not_blocked_by_formal_license_configuration() {
 
 #[test]
 fn development_hardware_check_ignores_an_unreadable_formal_key_file() {
-    let (_directory, path) = production_config();
-    let missing_key = path.with_file_name("missing-license-public.pem");
+    let (directory, _path) = production_bundle_config();
+    let missing_key = directory.join("missing-license-public.pem");
     let output = daemon_command()
-        .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
+        .current_dir(&directory.0)
+        .arg("--check")
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .env("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE", &missing_key)
         .output()
@@ -202,9 +206,10 @@ fn development_hardware_check_ignores_an_unreadable_formal_key_file() {
 
 #[test]
 fn valid_production_authority_reaches_the_platform_build_boundary() {
-    let (_directory, path) = production_config();
+    let (directory, _path) = production_bundle_config();
     let output = daemon_command()
-        .args(["--config", path.to_str().expect("UTF-8 path"), "--check"])
+        .current_dir(&directory.0)
+        .arg("--check")
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .env_remove("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
         .output()
