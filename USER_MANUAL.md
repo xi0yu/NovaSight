@@ -61,11 +61,6 @@ cd NovaSight
 如果浏览器没有自动打开，请使用终端输出的地址，或者打开 `run/ready.json`，复制里面的本机地址到浏览器。Jetson 没有桌面浏览器时，这是正常路径，不代表后端启动失败。
 
 正常情况下，用户不需要直接运行 `bin/novasightd`，也不需要安装系统服务。
-如果原启动终端已经不在，仍然可以在交付包目录关闭后台服务：
-
-```bash
-bin/novasightctl shutdown
-```
 
 ## 4. 授权
 
@@ -403,3 +398,5 @@ bin/novasightctl shutdown
 ```bash
 ./NovaSight
 ```
+
+普通用户只需要用启动终端里的 `Ctrl+C` 退出。`novasightctl` 是现场维护入口，不是日常启动/退出路径。

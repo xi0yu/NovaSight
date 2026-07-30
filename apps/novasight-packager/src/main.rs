@@ -1,12 +1,18 @@
 use std::ffi::OsStr;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
+use serde::Deserialize;
 
 const DEFAULT_OUTPUT: &str = "out/package/NovaSight";
+const READY_FILE: &str = "run/ready.json";
+const CONTROL_SOCKET: &str = "run/novasightd.sock";
 const RUST_PACKAGES: [&str; 3] = ["novasight", "novasightctl", "novasightd"];
 
 #[derive(Parser, Debug)]
@@ -41,6 +47,11 @@ struct PackageLayout {
     data: PathBuf,
     logs: PathBuf,
     run: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadyDocument {
+    address: String,
 }
 
 fn main() -> ExitCode {
@@ -149,13 +160,7 @@ where
 }
 
 fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) -> Result<()> {
-    if output.join("run/ready.json").exists() {
-        bail!(
-            "{} appears to be running; press Ctrl+C in the launcher terminal or run `cd {} && bin/novasightctl shutdown` before rebuilding the package",
-            output.display(),
-            output.display()
-        );
-    }
+    prepare_output_for_rebuild(output)?;
     if output.exists() {
         fs::remove_dir_all(output)
             .with_context(|| format!("remove previous package {}", output.display()))?;
@@ -206,10 +211,89 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
     )?;
     fs::write(
         layout.root.join("README-USER.txt"),
-        "Run ./NovaSight from this directory. If a browser does not open automatically, use the printed URL. Press Ctrl+C in the launcher terminal to stop NovaSight; use bin/novasightctl shutdown if that terminal is gone. Open USER_MANUAL.md for the user guide.\n",
+        "Run ./NovaSight from this directory. If a browser does not open automatically, use the printed URL. Press Ctrl+C in the launcher terminal to stop NovaSight. Open USER_MANUAL.md for the user guide.\n",
     )
     .with_context(|| format!("write {}", layout.root.join("README-USER.txt").display()))?;
     Ok(())
+}
+
+fn prepare_output_for_rebuild(output: &Path) -> Result<()> {
+    prepare_output_for_rebuild_with(output, health_check, control_socket_is_live)
+}
+
+fn prepare_output_for_rebuild_with(
+    output: &Path,
+    mut http_ready_is_live: impl FnMut(&str) -> bool,
+    mut control_socket_is_live: impl FnMut(&Path) -> bool,
+) -> Result<()> {
+    let ready_file = output.join(READY_FILE);
+    let control_socket = output.join(CONTROL_SOCKET);
+    let ready_exists = ready_file.exists();
+    let socket_exists = control_socket.exists();
+    if !ready_exists && !socket_exists {
+        return Ok(());
+    }
+    let ready_is_live = ready_exists
+        && read_ready_file(&ready_file)
+            .ok()
+            .is_some_and(|ready| http_ready_is_live(&ready.address));
+    let control_is_live = socket_exists && control_socket_is_live(&control_socket);
+    if ready_is_live || control_is_live {
+        bail!(
+            "{} appears to be running; press Ctrl+C in the NovaSight launcher terminal before rebuilding the package",
+            output.display(),
+        );
+    }
+    if ready_exists {
+        fs::remove_file(&ready_file)
+            .with_context(|| format!("remove stale {}", ready_file.display()))?;
+    }
+    if socket_exists {
+        fs::remove_file(&control_socket)
+            .with_context(|| format!("remove stale {}", control_socket.display()))?;
+    }
+    eprintln!(
+        "NOVASIGHT_PACKAGE_STALE_RUN_STATE: removed stale run markers below {}",
+        output.display()
+    );
+    Ok(())
+}
+
+fn read_ready_file(path: &Path) -> Result<ReadyDocument> {
+    let file = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    serde_json::from_reader(file).with_context(|| format!("parse {}", path.display()))
+}
+
+fn health_check(address: &str) -> bool {
+    let Ok(address) = address.parse::<SocketAddr>() else {
+        return false;
+    };
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(300)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
+    if stream
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut buffer = [0_u8; 64];
+    let Ok(read) = stream.read(&mut buffer) else {
+        return false;
+    };
+    buffer[..read].starts_with(b"HTTP/1.1 200") || buffer[..read].starts_with(b"HTTP/1.0 200")
+}
+
+#[cfg(unix)]
+fn control_socket_is_live(path: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(path).is_ok()
+}
+
+#[cfg(not(unix))]
+fn control_socket_is_live(_path: &Path) -> bool {
+    false
 }
 
 impl PackageProfile {
@@ -344,6 +428,20 @@ fn validate_package(output: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn temp_package_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "novasight-packager-{name}-{}-{}",
+            std::process::id(),
+            unique_id()
+        ))
+    }
+
+    fn unique_id() -> u64 {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    }
+
     #[test]
     fn profile_selects_the_expected_artifact_directory() {
         assert_eq!(PackageProfile::Debug.artifact_dir(), "debug");
@@ -371,6 +469,66 @@ mod tests {
         assert_eq!(layout.data, Path::new("/tmp/NovaSight/data"));
         assert_eq!(layout.logs, Path::new("/tmp/NovaSight/logs"));
         assert_eq!(layout.run, Path::new("/tmp/NovaSight/run"));
+    }
+
+    #[test]
+    fn live_ready_marker_blocks_rebuild() {
+        let output = temp_package_root("live-ready");
+        fs::create_dir_all(output.join("run")).unwrap();
+        fs::write(
+            output.join(READY_FILE),
+            r#"{"address":"127.0.0.1:37629","url":"http://127.0.0.1:37629/"}"#,
+        )
+        .unwrap();
+
+        let error = prepare_output_for_rebuild_with(&output, |_| true, |_| false).unwrap_err();
+
+        assert!(error.to_string().contains("appears to be running"));
+        assert!(output.join(READY_FILE).exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn live_control_socket_blocks_rebuild_even_without_ready_file() {
+        let output = temp_package_root("live-socket");
+        fs::create_dir_all(output.join("run")).unwrap();
+        fs::write(output.join(CONTROL_SOCKET), b"socket marker").unwrap();
+
+        let error = prepare_output_for_rebuild_with(&output, |_| false, |_| true).unwrap_err();
+
+        assert!(error.to_string().contains("appears to be running"));
+        assert!(output.join(CONTROL_SOCKET).exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn stale_run_markers_are_removed_before_rebuild() {
+        let output = temp_package_root("stale");
+        fs::create_dir_all(output.join("run")).unwrap();
+        fs::write(
+            output.join(READY_FILE),
+            r#"{"address":"127.0.0.1:37629","url":"http://127.0.0.1:37629/"}"#,
+        )
+        .unwrap();
+        fs::write(output.join(CONTROL_SOCKET), b"stale socket marker").unwrap();
+
+        prepare_output_for_rebuild_with(&output, |_| false, |_| false).unwrap();
+
+        assert!(!output.join(READY_FILE).exists());
+        assert!(!output.join(CONTROL_SOCKET).exists());
+        fs::remove_dir_all(output).unwrap();
+    }
+
+    #[test]
+    fn malformed_ready_marker_without_live_socket_is_treated_as_stale() {
+        let output = temp_package_root("malformed-ready");
+        fs::create_dir_all(output.join("run")).unwrap();
+        fs::write(output.join(READY_FILE), b"not json").unwrap();
+
+        prepare_output_for_rebuild_with(&output, |_| true, |_| false).unwrap();
+
+        assert!(!output.join(READY_FILE).exists());
+        fs::remove_dir_all(output).unwrap();
     }
 
     #[test]
