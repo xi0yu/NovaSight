@@ -1,9 +1,9 @@
 schema_version: 1
 revision: 0
 server:
-  host: 0.0.0.0
-  port: 5174
-  control_socket: /run/novasight/novasightd.sock
+  host: 127.0.0.1
+  port: 0
+  control_socket: run/novasightd.sock
 replay:
   enabled: false
   frame_interval_ms: 16
@@ -80,14 +80,14 @@ inference:
   confidence_threshold: 0.25
   nms_threshold: 0.45
   inference_input_deadline_ms: 55.0
-  deepstream_parser_library: /opt/novasight/current/lib/libnovasight_parser.so
+  deepstream_parser_library: auto
   deepstream_io_mode: 2
   deepstream_batched_push_timeout_us: 0
   deepstream_component_id: 1
   deepstream_source_id: 0
   deepstream_probe_element: primary-infer
   deepstream_probe_pad: src
-  deepstream_nvinfer_config: /var/lib/novasight/runtime/deepstream/active-nvinfer.ini
+  deepstream_nvinfer_config: data/runtime/deepstream/active-nvinfer.ini
   model_width: 640
   model_height: 640
   deepstream_startup_timeout_ms: 10000
@@ -105,7 +105,7 @@ hardware:
   monitor_timeout_ms: 250
   trigger_poll_interval_ms: 4
 paths:
-  data_dir: /var/lib/novasight
-  model_dir: /var/lib/novasight/models
-  database: /var/lib/novasight/novasight.db
-  license: /var/lib/novasight/license.json
+  data_dir: data
+  model_dir: data/models
+  database: data/novasight.db
+  license: data/license.json

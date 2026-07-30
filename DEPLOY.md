@@ -1,70 +1,112 @@
-# NovaSight Deployment
+# NovaSight Portable Deployment
 
 ## Target
 
-NovaSight is deployed as a Jetson-side runtime service. The Jetson owns capture,
-DeepStream inference, target selection, control, and kmNet/HID output. Studio
-clients connect over REST and WebSocket.
+NovaSight ships as a Jetson-side portable application. The Jetson owns capture,
+DeepStream inference, target selection, control, and kmNet/HID output. Users
+start the `NovaSight` launcher; it starts `novasightd` as a package-local child
+process and opens the Web UI served by that daemon.
+
+NovaSight does not install a system service by default. It should not write to
+`/etc`, `/usr`, `/var/lib`, `/var/log`, or `/run/novasight` in the normal
+portable path.
 
 ## Layout
 
-- Application: `/opt/novasight`
-- Runtime config: `/etc/novasight/novasight.yaml`
-- Runtime data: `/var/lib/novasight`
-- Runtime logs: `/var/log/novasight/novasight.log`
-- Instance guard: automatic Linux abstract socket (no filesystem entry)
-- systemd unit: `deploy/novasight.service`
-- Optional nvtracker config: `deploy/deepstream-tracker-iou.yml`
+```text
+NovaSight/
+├── NovaSight
+├── bin/
+│   ├── novasightd
+│   └── novasightctl
+├── web/
+├── data/
+│   ├── models/
+│   ├── novasight.db
+│   └── license.json
+├── logs/
+│   └── novasightd.log
+└── run/
+    ├── novasightd.sock
+    └── ready.json
+```
 
-## Install
+`data`, `logs`, and `run` are created by the launcher when missing. Deleting
+the `NovaSight/` directory removes NovaSight-owned runtime state.
+
+## Build
+
+Run on the Jetson build host with DeepStream, TensorRT, Node, pnpm, and Rust
+installed:
 
 ```bash
-# Run on the Jetson host with the DeepStream SDK and Rust toolchain installed.
+cargo build --release -p novasight
 cargo build --release -p novasightd --features deepstream
 cargo build --release -p novasightctl
-sudo mkdir -p /opt/novasight/current/bin /etc/novasight /var/lib/novasight
-sudo install -m 0755 out/cargo/release/novasightd /opt/novasight/current/bin/novasightd
-sudo install -m 0755 out/cargo/release/novasightctl /opt/novasight/current/bin/novasightctl
-sudo install -m 0640 deploy/novasight.production.yaml /etc/novasight/novasight.yaml
-sudo cp deploy/deepstream-tracker-iou.yml /etc/novasight/deepstream-tracker-iou.yml
-sudo cp deploy/novasight.service /etc/systemd/system/novasight.service
-sudo systemctl daemon-reload
-sudo systemctl enable novasight
+pnpm --dir web build
 ```
 
-Set the production log directory in `/etc/novasight/novasight.yaml`:
+Prepare the portable directory:
 
-```yaml
-logging:
-  level: INFO
-  dir: /var/log/novasight
+```bash
+mkdir -p out/package/NovaSight/bin out/package/NovaSight/web
+cp out/cargo/release/novasight out/package/NovaSight/NovaSight
+cp out/cargo/release/novasightd out/package/NovaSight/bin/novasightd
+cp out/cargo/release/novasightctl out/package/NovaSight/bin/novasightctl
+cp -R out/web/. out/package/NovaSight/web/
 ```
 
-For Jetson DeepStream runs, point the runtime at the generated model files and
-the deployed tracker config:
+## Run
 
-```yaml
-inference:
-  backend: deepstream_nvinfer
-  deepstream_manifest_path: /var/lib/novasight/models/<model>/model.manifest.json
-  deepstream_parser_library: auto
-  deepstream_nvinfer_config: /var/lib/novasight/models/<model>/deepstream.ini
-  deepstream_tracker_config_path: /etc/novasight/deepstream-tracker-iou.yml
+Start:
+
+```bash
+cd out/package/NovaSight
+./NovaSight
 ```
 
-## Jetson Prerequisites
+The launcher writes package-local paths into `data/novasight.yaml`, starts:
+
+```bash
+bin/novasightd \
+  --config data/novasight.yaml \
+  --web-root web \
+  --ready-file run/ready.json
+```
+
+`novasightd` binds a loopback port, writes `run/ready.json`, and serves both
+Studio and the API from that origin. The launcher prints and opens the URL.
+
+## Local Control
+
+```bash
+cd out/package/NovaSight
+bin/novasightctl license status
+```
+
+After license activation or debug temporary access:
+
+```bash
+bin/novasightctl status
+bin/novasightctl emergency-stop
+```
+
+`novasightctl` resolves the package socket automatically when
+`run/novasightd.sock` exists. Use `--socket` or `NOVASIGHT_CONTROL_SOCKET` only
+for diagnostics.
+
+## Hardware Prerequisites
 
 - JetPack with DeepStream and TensorRT installed.
 - `v4l2-ctl`, `gst-launch-1.0`, `tegrastats`, and the camera driver visible to
-  the service user.
+  the current user.
 - kmNet/HID network access from the Jetson to the configured hardware endpoint.
-- Model assets under `/var/lib/novasight/models` with generated manifest and
-  DeepStream config files.
-- Optional `nvtracker` low-level config deployed from
-  `deploy/deepstream-tracker-iou.yml` or replaced by a Jetson-validated tracker
-  config for the selected DeepStream tracker library.
+- Model assets under `data/models` with generated manifest and DeepStream
+  config files.
+- Optional `nvtracker` low-level config from `deploy/deepstream-tracker-iou.yml`
+  copied into the package or model runtime directory.
 
-Check the host before enabling the service:
+Check the host before a hardware run:
 
 ```bash
 v4l2-ctl --list-devices
@@ -73,75 +115,19 @@ gst-inspect-1.0 nvinfer
 which tegrastats
 ```
 
-## Start And Stop
+## Acceptance
 
 ```bash
-sudo systemctl start novasight
-sudo systemctl status novasight
-sudo journalctl -u novasight -f
-sudo systemctl stop novasight
+cd out/package/NovaSight
+bin/novasightd --config data/novasight.yaml --check
+./NovaSight --no-open
+bin/novasightctl license status
 ```
 
-## Watchdog
+Expected result:
 
-The service uses `Type=notify` and `WatchdogSec=10`. NovaSight sends `READY=1`
-on app startup and sends `WATCHDOG=1` at half of `WATCHDOG_USEC` while the API
-process is alive.
-
-Logs are written to journald through `StandardOutput=journal` and
-`StandardError=journal`. The runtime also writes rotating local logs to
-`/var/log/novasight/novasight.log`; `deploy/novasight.service` declares
-`LogsDirectory=novasight` so systemd creates that directory before startup.
-
-## Hardware Checks
-
-```bash
-v4l2-ctl --list-formats-ext --device /dev/video0
-gst-inspect-1.0 nvinfer
-/opt/novasight/current/bin/novasightd --config /etc/novasight/novasight.yaml --check
-/opt/novasight/current/bin/novasightctl --help
-```
-
-## Runtime API Checks
-
-```bash
-curl http://127.0.0.1:5174/healthz
-curl http://127.0.0.1:5174/api/device/capabilities
-curl http://127.0.0.1:5174/api/v1/system/status
-```
-
-Protected API and WebSocket endpoints require a valid license.
-
-## Fault Injection
-
-Run these checks with HID output enabled only when the physical rig is safe.
-Use the Rust daemon state endpoints and system logs as evidence:
-
-- Capture loss must stop control/HID output and report an unavailable or
-  degraded state.
-- Runtime must continue serving health, status, and system endpoints.
-- Model conversion errors must stay isolated to the model job/API response.
-
-## Production Acceptance
-
-Run the Rust daemon preflight after installing the service file, then check the
-health endpoint after the service is running:
-
-```bash
-/opt/novasight/current/bin/novasightd --config /etc/novasight/novasight.yaml --check
-curl -fsS http://127.0.0.1:5174/healthz
-```
-
-- `systemctl start novasight`, `systemctl stop novasight`, and restart on
-  failure work through systemd.
-- Watchdog notifications are active with `WatchdogSec=10`.
-- A second service process cannot acquire the kernel-owned instance guard.
-- Runtime telemetry remains fresh and bounded before a 24-hour soak is started.
-- The 24-hour soak has no service crash, unbounded memory growth, or sustained
-  stale detections.
-
-During the soak, record process memory from the system API:
-
-```bash
-watch -n 60 'curl -s http://127.0.0.1:5174/api/v1/system | jq .process'
-```
+- No systemd unit is installed or enabled.
+- No NovaSight-owned file is created outside the package directory.
+- `run/ready.json` contains the loopback URL opened by the launcher.
+- `logs/novasightd.log` contains daemon stdout/stderr.
+- Web UI and API are served from the same loopback origin.

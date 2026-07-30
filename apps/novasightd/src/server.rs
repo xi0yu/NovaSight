@@ -1,15 +1,23 @@
 //! Production HTTP, Unix-socket, and shutdown server ownership.
 
-use std::fs::File;
+use std::fs::{self, File};
 use std::future::IntoFuture;
 use std::io;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::process;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::{
+    Router,
+    extract::State,
+    http::{StatusCode, Uri, header},
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use novasight_api::{build_control_router_with_platform_queries, with_trusted_local_control};
 use novasight_core::CaptureCapabilityProbe;
 use novasight_runtime::{
@@ -18,6 +26,7 @@ use novasight_runtime::{
 };
 use novasight_store::license::{FileLicenseRepository, LicenseError, LicensePolicy};
 use novasight_store::model_catalog::SqliteModelCatalog;
+use serde::Serialize;
 use thiserror::Error;
 use tokio::net::{TcpListener, UnixListener, UnixStream};
 use tokio::sync::watch;
@@ -45,12 +54,19 @@ impl DaemonMode {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+pub(super) struct DaemonOptions {
+    pub(super) web_root: Option<PathBuf>,
+    pub(super) ready_file: Option<PathBuf>,
+}
+
 pub(super) async fn run_daemon(
     loaded: LoadedApplication,
     dependencies: RuntimeDependencies,
     config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
     mode: DaemonMode,
+    options: DaemonOptions,
 ) -> Result<(), DaemonRunError> {
     let _instance_lock = acquire_instance_lock(mode.hardware_output_enabled())?;
     let host = loaded.config().server.host.clone();
@@ -75,7 +91,7 @@ pub(super) async fn run_daemon(
     let (server_shutdown_tx, mut server_shutdown_rx) = watch::channel(false);
     let capture_probe = platform_capture_probe();
     let runtime = application.runtime();
-    let router = build_control_router_with_platform_queries(
+    let api_router = build_control_router_with_platform_queries(
         runtime.clone(),
         config_service,
         license_repository.clone(),
@@ -84,8 +100,10 @@ pub(super) async fn run_daemon(
         mode.hardware_output_enabled(),
         server_shutdown_rx.clone(),
     );
-    let control_router = with_trusted_local_control(router.clone());
-    let http_server = axum::serve(listener, router.clone())
+    let web_root = effective_web_root(options.web_root.as_deref());
+    let router = attach_web_ui(api_router.clone(), web_root.as_deref());
+    let control_router = with_trusted_local_control(api_router);
+    let http_server = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             if !*server_shutdown_rx.borrow() {
                 let _ = server_shutdown_rx.changed().await;
@@ -115,6 +133,10 @@ pub(super) async fn run_daemon(
         tracing::warn!(
             "novasightd is running in explicit dry-run mode; hardware output is disabled"
         );
+    }
+    let _ready_file_guard = options.ready_file.clone().map(ReadyFileGuard::new);
+    if let Some(path) = options.ready_file.as_ref() {
+        write_ready_file(path, address, &control_socket, mode, web_root.as_deref())?;
     }
     eprintln!(
         "novasightd ready mode={} address={address} socket={}",
@@ -169,6 +191,167 @@ pub(super) async fn run_daemon(
             primary: Box::new(primary),
             cleanup: Box::new(cleanup),
         }),
+    }
+}
+
+fn effective_web_root(web_root: Option<&Path>) -> Option<PathBuf> {
+    let web_root = web_root?;
+    let index = web_root.join("index.html");
+    if index.is_file() {
+        Some(web_root.to_owned())
+    } else {
+        tracing::warn!(
+            web_root = %web_root.display(),
+            "NovaSight Studio web root is missing index.html; HTTP API remains available"
+        );
+        None
+    }
+}
+
+fn attach_web_ui(router: Router, web_root: Option<&Path>) -> Router {
+    let Some(web_root) = web_root else {
+        return router;
+    };
+    router.fallback(get(serve_web_ui).with_state(WebUiState {
+        root: Arc::new(web_root.to_owned()),
+    }))
+}
+
+#[derive(Clone)]
+struct WebUiState {
+    root: Arc<PathBuf>,
+}
+
+async fn serve_web_ui(State(state): State<WebUiState>, uri: Uri) -> Response {
+    let request_path = uri.path();
+    if is_api_path(request_path) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(asset_path) = web_asset_path(&state.root, request_path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = content_type_for_path(&asset_path);
+    match tokio::fs::read(&asset_path).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
+        Err(_) if asset_path != state.root.join("index.html") => {
+            let index = state.root.join("index.html");
+            match tokio::fs::read(&index).await {
+                Ok(bytes) => {
+                    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], bytes).into_response()
+                }
+                Err(_) => StatusCode::NOT_FOUND.into_response(),
+            }
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+fn is_api_path(path: &str) -> bool {
+    matches!(path, "/api" | "/healthz" | "/ws")
+        || path.starts_with("/api/")
+        || path.starts_with("/ws/")
+}
+
+fn web_asset_path(root: &Path, request_path: &str) -> Option<PathBuf> {
+    let trimmed = request_path.trim_start_matches('/');
+    let relative = if trimmed.is_empty() {
+        Path::new("index.html")
+    } else {
+        Path::new(trimmed)
+    };
+    let mut sanitized = PathBuf::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => sanitized.push(part),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    let candidate = root.join(sanitized);
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        Some(root.join("index.html"))
+    }
+}
+
+fn content_type_for_path(path: &Path) -> &'static str {
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some("css") => "text/css; charset=utf-8",
+        Some("html") => "text/html; charset=utf-8",
+        Some("ico") => "image/x-icon",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("wasm") => "application/wasm",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
+}
+
+#[derive(Serialize)]
+struct ReadyDocument {
+    schema_version: u32,
+    pid: u32,
+    mode: String,
+    address: String,
+    url: String,
+    control_socket: String,
+    web_root: Option<String>,
+}
+
+fn write_ready_file(
+    path: &Path,
+    address: std::net::SocketAddr,
+    control_socket: &Path,
+    mode: DaemonMode,
+    web_root: Option<&Path>,
+) -> Result<(), DaemonRunError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| DaemonRunError::ReadyFileDirectory {
+            path: parent.to_owned(),
+            source,
+        })?;
+    }
+    let document = ReadyDocument {
+        schema_version: 1,
+        pid: process::id(),
+        mode: mode.label().to_owned(),
+        address: address.to_string(),
+        url: format!("http://{address}/"),
+        control_socket: control_socket.display().to_string(),
+        web_root: web_root.map(|path| path.display().to_string()),
+    };
+    let payload =
+        serde_json::to_vec_pretty(&document).map_err(DaemonRunError::ReadyFileSerialize)?;
+    let temporary = path.with_extension(format!("tmp.{}", process::id()));
+    fs::write(&temporary, payload).map_err(|source| DaemonRunError::ReadyFileWrite {
+        path: temporary.clone(),
+        source,
+    })?;
+    fs::rename(&temporary, path).map_err(|source| DaemonRunError::ReadyFileRename {
+        source,
+        from: temporary,
+        to: path.to_owned(),
+    })?;
+    Ok(())
+}
+
+struct ReadyFileGuard {
+    path: PathBuf,
+}
+
+impl ReadyFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for ReadyFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -608,6 +791,27 @@ pub(super) enum DaemonRunError {
     },
     #[error("failed to read bound HTTP address: {0}")]
     LocalAddress(io::Error),
+    #[error("failed to create ready-file directory {}: {source}", path.display())]
+    ReadyFileDirectory {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to serialize ready file: {0}")]
+    ReadyFileSerialize(serde_json::Error),
+    #[error("failed to write ready file {}: {source}", path.display())]
+    ReadyFileWrite {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to publish ready file {} from {}: {source}", to.display(), from.display())]
+    ReadyFileRename {
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("failed to register shutdown signal: {0}")]
     Signal(io::Error),
     #[error("HTTP server failed: {0}")]
@@ -712,6 +916,10 @@ impl DaemonRunError {
             Self::LicenseEnforcement(_) => "LICENSE_ENFORCEMENT_FAILED",
             Self::Bind { .. } => "SERVER_BIND_FAILED",
             Self::LocalAddress(_) => "SERVER_LOCAL_ADDRESS_FAILED",
+            Self::ReadyFileDirectory { .. } => "READY_FILE_DIRECTORY_FAILED",
+            Self::ReadyFileSerialize(_) => "READY_FILE_SERIALIZE_FAILED",
+            Self::ReadyFileWrite { .. } => "READY_FILE_WRITE_FAILED",
+            Self::ReadyFileRename { .. } => "READY_FILE_RENAME_FAILED",
             Self::Signal(_) => "SHUTDOWN_SIGNAL_FAILED",
             Self::HttpServe(_) => "SERVER_FAILED",
             Self::ControlServe(_) => "CONTROL_SERVER_FAILED",
@@ -771,6 +979,61 @@ mod tests {
                 let _ = std::fs::remove_dir_all(parent);
             }
         }
+    }
+
+    #[test]
+    fn ready_file_records_bound_runtime_entrypoint() {
+        let path = TestPath::new();
+        let ready = path.0.with_file_name("ready.json");
+        write_ready_file(
+            &ready,
+            "127.0.0.1:49152".parse().unwrap(),
+            &path.0,
+            DaemonMode::DryRun,
+            Some(Path::new("web")),
+        )
+        .expect("write ready file");
+
+        let document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&ready).expect("read ready file"))
+                .expect("ready JSON");
+        assert_eq!(document["schema_version"], 1);
+        assert_eq!(document["mode"], "dry-run");
+        assert_eq!(document["address"], "127.0.0.1:49152");
+        assert_eq!(document["url"], "http://127.0.0.1:49152/");
+        assert!(
+            document["control_socket"]
+                .as_str()
+                .unwrap()
+                .ends_with("control.sock")
+        );
+        assert_eq!(document["web_root"], "web");
+    }
+
+    #[test]
+    fn web_root_requires_a_built_index() {
+        let path = TestPath::new();
+        let web = path.0.with_file_name("web");
+        std::fs::create_dir(&web).expect("create web root");
+
+        assert!(effective_web_root(Some(&web)).is_none());
+
+        std::fs::write(web.join("index.html"), "").expect("write index");
+        assert_eq!(effective_web_root(Some(&web)), Some(web));
+    }
+
+    #[test]
+    fn ready_file_guard_removes_the_runtime_marker() {
+        let path = TestPath::new();
+        let ready = path.0.with_file_name("ready.json");
+        std::fs::write(&ready, "{}").expect("write marker");
+
+        {
+            let _guard = ReadyFileGuard::new(ready.clone());
+            assert!(ready.exists());
+        }
+
+        assert!(!ready.exists());
     }
 
     #[tokio::test]

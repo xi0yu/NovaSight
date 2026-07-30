@@ -182,7 +182,7 @@ out/cargo/release/novasightd \
 Cargo builds the native parser for the daemon. The installed Rust daemon never
 compiles native code at runtime: `novasightd --check` must prove that the
 parser, TensorRT runtime, and DeepStream bridge are ABI compatible before
-systemd starts capture.
+the portable launcher or a direct daemon run starts capture.
 
 ## Runtime Failure Ownership
 

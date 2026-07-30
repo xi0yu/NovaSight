@@ -30,6 +30,14 @@ struct Args {
     #[arg(long, default_value = DEFAULT_CONFIG_PATH)]
     config: PathBuf,
 
+    /// Directory containing the built NovaSight Studio Web assets.
+    #[arg(long)]
+    web_root: Option<PathBuf>,
+
+    /// Write the bound daemon address and control socket after startup.
+    #[arg(long)]
+    ready_file: Option<PathBuf>,
+
     /// Run preflight checks and exit; do not start the pipeline.
     #[arg(long)]
     check: bool,
@@ -214,7 +222,20 @@ pub async fn entry() -> ExitCode {
     #[cfg(feature = "deepstream")]
     let dependencies = dependencies.with_model_jobs(NativeModelJobRunner::new());
     let dependencies = dependencies.with_output_enabled(loaded.config().control.output_enabled);
-    match server::run_daemon(loaded, dependencies, config_service, model_catalog, mode).await {
+    let daemon_options = server::DaemonOptions {
+        web_root: args.web_root,
+        ready_file: args.ready_file,
+    };
+    match server::run_daemon(
+        loaded,
+        dependencies,
+        config_service,
+        model_catalog,
+        mode,
+        daemon_options,
+    )
+    .await
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}: {error}", error.code());

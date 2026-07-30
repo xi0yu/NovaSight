@@ -17,12 +17,16 @@ use serde::Serialize;
 use thiserror::Error;
 use tracing_subscriber::EnvFilter;
 
+const SYSTEM_CONTROL_SOCKET: &str = "/run/novasight/novasightd.sock";
+const PORTABLE_CONTROL_SOCKET: &str = "run/novasightd.sock";
+const CONTROL_SOCKET_ENV: &str = "NOVASIGHT_CONTROL_SOCKET";
+
 #[derive(Parser, Debug)]
 #[command(name = "novasightctl", about = "NovaSight daemon command-line client")]
 struct Cli {
     /// Unix domain socket exposed by novasightd.
-    #[arg(long, default_value = "/run/novasight/novasightd.sock")]
-    socket: PathBuf,
+    #[arg(long)]
+    socket: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -294,7 +298,7 @@ async fn main() -> ExitCode {
 }
 
 async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
-    let client = ControlClient::new(cli.socket);
+    let client = ControlClient::new(resolve_control_socket(cli.socket));
     match cli.command {
         Command::Status => client
             .status()
@@ -528,6 +532,31 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
             .map(CommandOutput::Preview),
     }
     .map_err(CliError::Client)
+}
+
+fn resolve_control_socket(explicit: Option<PathBuf>) -> PathBuf {
+    if let Some(socket) = explicit {
+        return socket;
+    }
+    if let Some(socket) = std::env::var_os(CONTROL_SOCKET_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return socket;
+    }
+    portable_control_socket().unwrap_or_else(|| PathBuf::from(SYSTEM_CONTROL_SOCKET))
+}
+
+fn portable_control_socket() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let executable_dir = executable.parent()?;
+    let root = if executable_dir.file_name().is_some_and(|name| name == "bin") {
+        executable_dir.parent()?
+    } else {
+        executable_dir
+    };
+    let socket = root.join(PORTABLE_CONTROL_SOCKET);
+    socket.exists().then_some(socket)
 }
 
 #[derive(Debug, Error)]
