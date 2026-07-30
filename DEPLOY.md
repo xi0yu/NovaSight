@@ -75,9 +75,10 @@ The launcher starts `bin/novasightd` without startup arguments. The daemon uses
 the package conventions directly: `data/novasight.yaml`, `web/`, and
 `run/ready.json`.
 
-`novasightd` binds a loopback port, writes `run/ready.json`, and serves both
-Studio and the API from that origin. The launcher prints the URL and treats
-browser opening as best-effort.
+Portable packages bind an ephemeral `0.0.0.0` port, write `run/ready.json`, and
+serve both Studio and the API from that origin. The launcher prints the
+`0.0.0.0` listener URL, prints a LAN URL for another machine on the same
+network, and treats browser opening as best-effort.
 
 ## Local Control
 
@@ -131,6 +132,6 @@ Expected result:
 
 - No systemd unit is installed or enabled.
 - No NovaSight-owned file is created outside the package directory.
-- `run/ready.json` contains the loopback URL opened by the launcher.
+- `run/ready.json` records the bound address and a package-local control socket.
 - `logs/novasightd.log` contains daemon stdout/stderr.
-- Web UI and API are served from the same loopback origin.
+- Web UI and API are served from the same origin.

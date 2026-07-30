@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
@@ -211,7 +211,7 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
     )?;
     fs::write(
         layout.root.join("README-USER.txt"),
-        "Run ./NovaSight from this directory. If a browser does not open automatically, use the printed URL. Press Ctrl+C in the launcher terminal to stop NovaSight. Open USER_MANUAL.md for the user guide.\n",
+        "Run ./NovaSight from this directory. NovaSight listens on the printed 0.0.0.0 Studio URL; use the printed LAN URL from another computer on the same network. Press Ctrl+C in the launcher terminal to stop NovaSight. Open USER_MANUAL.md for the user guide.\n",
     )
     .with_context(|| format!("write {}", layout.root.join("README-USER.txt").display()))?;
     Ok(())
@@ -265,7 +265,7 @@ fn read_ready_file(path: &Path) -> Result<ReadyDocument> {
 }
 
 fn health_check(address: &str) -> bool {
-    let Ok(address) = address.parse::<SocketAddr>() else {
+    let Ok(address) = address.parse::<SocketAddr>().map(connectable_local_address) else {
         return false;
     };
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(300)) else {
@@ -284,6 +284,16 @@ fn health_check(address: &str) -> bool {
         return false;
     };
     buffer[..read].starts_with(b"HTTP/1.1 200") || buffer[..read].starts_with(b"HTTP/1.0 200")
+}
+
+fn connectable_local_address(address: SocketAddr) -> SocketAddr {
+    if !address.ip().is_unspecified() {
+        return address;
+    }
+    match address {
+        SocketAddr::V4(address) => SocketAddr::new(Ipv4Addr::LOCALHOST.into(), address.port()),
+        SocketAddr::V6(address) => SocketAddr::new(Ipv6Addr::LOCALHOST.into(), address.port()),
+    }
 }
 
 #[cfg(unix)]
@@ -469,6 +479,18 @@ mod tests {
         assert_eq!(layout.data, Path::new("/tmp/NovaSight/data"));
         assert_eq!(layout.logs, Path::new("/tmp/NovaSight/logs"));
         assert_eq!(layout.run, Path::new("/tmp/NovaSight/run"));
+    }
+
+    #[test]
+    fn unspecified_ready_address_is_checked_through_loopback() {
+        assert_eq!(
+            connectable_local_address("0.0.0.0:37629".parse().unwrap()),
+            "127.0.0.1:37629".parse().unwrap()
+        );
+        assert_eq!(
+            connectable_local_address("[::]:37629".parse().unwrap()),
+            "[::1]:37629".parse().unwrap()
+        );
     }
 
     #[test]

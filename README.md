@@ -83,10 +83,13 @@ out/package/NovaSight/
 
 Users start `NovaSight`. The launcher creates package-local `data`, `logs`,
 and `run` directories, starts `bin/novasightd`, waits for `run/ready.json`, and
-prints the Web UI URL. It also tries to open a desktop browser when one is
-available. The launcher stays in the foreground; pressing `Ctrl+C` stops the
-package-local daemon. It does not install systemd units, write to `/etc`,
-`/usr`, `/var/lib`, or `/run/novasight`, or require root.
+prints the Studio Web UI listener and LAN URLs. Portable packages listen on
+`0.0.0.0` so a browser on another machine in the same LAN can open the printed
+LAN URL. The
+launcher also tries to open a desktop browser when one is available. It stays in
+the foreground; pressing `Ctrl+C` stops the package-local daemon. It does not
+install systemd units, write to `/etc`, `/usr`, `/var/lib`, or
+`/run/novasight`, or require root.
 
 Developer and user run:
 
@@ -100,8 +103,8 @@ the package conventions directly: `data/novasight.yaml`, `web/`, and
 `run/ready.json`.
 
 When `web/index.html` exists, `novasightd` serves the Web UI and API from the
-same loopback origin. Direct `novasightd` startup remains a diagnostic path,
-not the documented normal run path.
+same origin. Direct `novasightd` startup remains a diagnostic path, not the
+documented normal run path.
 
 Debug builds expose process-local development access through the Web UI and
 `POST /api/license/temporary`. The daemon decides this from its compiled build

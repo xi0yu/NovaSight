@@ -3,6 +3,7 @@
 use std::fs::{self, File};
 use std::future::IntoFuture;
 use std::io;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -296,7 +297,7 @@ struct ReadyDocument {
 
 fn write_ready_file(
     path: &Path,
-    address: std::net::SocketAddr,
+    address: SocketAddr,
     control_socket: &Path,
     mode: DaemonMode,
     web_root: Option<&Path>,
@@ -312,7 +313,7 @@ fn write_ready_file(
         pid: process::id(),
         mode: mode.label().to_owned(),
         address: address.to_string(),
-        url: format!("http://{address}/"),
+        url: ready_url(address),
         control_socket: control_socket.display().to_string(),
         web_root: web_root.map(|path| path.display().to_string()),
     };
@@ -329,6 +330,20 @@ fn write_ready_file(
         to: path.to_owned(),
     })?;
     Ok(())
+}
+
+fn ready_url(address: SocketAddr) -> String {
+    format!("http://{}/", connectable_local_address(address))
+}
+
+fn connectable_local_address(address: SocketAddr) -> SocketAddr {
+    if !address.ip().is_unspecified() {
+        return address;
+    }
+    match address {
+        SocketAddr::V4(address) => SocketAddr::new(Ipv4Addr::LOCALHOST.into(), address.port()),
+        SocketAddr::V6(address) => SocketAddr::new(Ipv6Addr::LOCALHOST.into(), address.port()),
+    }
 }
 
 struct ReadyFileGuard {
@@ -1007,6 +1022,26 @@ mod tests {
                 .ends_with("control.sock")
         );
         assert_eq!(document["web_root"], "web");
+    }
+
+    #[test]
+    fn ready_file_uses_loopback_url_for_unspecified_bind_address() {
+        let path = TestPath::new();
+        let ready = path.0.with_file_name("ready.json");
+        write_ready_file(
+            &ready,
+            "0.0.0.0:49152".parse().unwrap(),
+            &path.0,
+            DaemonMode::Hardware,
+            Some(Path::new("web")),
+        )
+        .expect("write ready file");
+
+        let document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&ready).expect("read ready file"))
+                .expect("ready JSON");
+        assert_eq!(document["address"], "0.0.0.0:49152");
+        assert_eq!(document["url"], "http://127.0.0.1:49152/");
     }
 
     #[test]

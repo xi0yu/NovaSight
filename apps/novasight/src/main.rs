@@ -1,6 +1,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, ExitCode, Stdio};
 use std::time::{Duration, Instant};
@@ -22,6 +22,7 @@ const LOG_DIR: &str = "logs";
 const RUN_DIR: &str = "run";
 const CONTROL_SOCKET: &str = "run/novasightd.sock";
 const READY_FILE: &str = "run/ready.json";
+const PORTABLE_BIND_HOST: &str = "0.0.0.0";
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -71,7 +72,7 @@ async fn run() -> Result<()> {
     if let Some(ready) = read_ready_file(&layout.ready_file).ok()
         && health_check(&ready.address)
     {
-        open_studio(&ready.url);
+        open_studio(&ready);
         supervise_existing_daemon(&layout, &ready).await?;
         return Ok(());
     }
@@ -79,7 +80,7 @@ async fn run() -> Result<()> {
     let _ = fs::remove_file(&layout.ready_file);
     let mut child = spawn_daemon(&layout)?;
     let ready = wait_for_ready(&layout.ready_file, &mut child, DAEMON_READY_TIMEOUT).await?;
-    open_studio(&ready.url);
+    open_studio(&ready);
     supervise_spawned_daemon(&layout, child).await?;
     Ok(())
 }
@@ -187,7 +188,7 @@ fn ensure_portable_config(layout: &PortableLayout) -> Result<()> {
         &mut document,
         "server",
         "host",
-        Value::String("127.0.0.1".to_owned()),
+        Value::String(PORTABLE_BIND_HOST.to_owned()),
     )?;
     changed |= set_mapping_field(
         &mut document,
@@ -397,7 +398,7 @@ fn read_ready_file(path: &Path) -> Result<ReadyDocument> {
 }
 
 fn health_check(address: &str) -> bool {
-    let Ok(address) = address.parse::<SocketAddr>() else {
+    let Ok(address) = address.parse::<SocketAddr>().map(connectable_local_address) else {
         return false;
     };
     let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(300)) else {
@@ -418,17 +419,102 @@ fn health_check(address: &str) -> bool {
     buffer[..read].starts_with(b"HTTP/1.1 200") || buffer[..read].starts_with(b"HTTP/1.0 200")
 }
 
-fn open_studio(url: &str) {
-    println!("{}", studio_ready_message(url));
-    if let Err(error) = open_browser(url) {
+fn open_studio(ready: &ReadyDocument) {
+    for message in studio_ready_messages(ready, detect_lan_ip()) {
+        println!("{message}");
+    }
+    let url = browser_open_url(ready);
+    if let Err(error) = open_browser(&url) {
         eprintln!(
             "NOVASIGHT_BROWSER_OPEN_SKIPPED: {error:#}; open the NovaSight Studio Web UI URL above manually"
         );
     }
 }
 
-fn studio_ready_message(url: &str) -> String {
-    format!("NovaSight Studio Web UI: {url}")
+fn studio_ready_messages(ready: &ReadyDocument, lan_ip: Option<IpAddr>) -> Vec<String> {
+    let Some(address) = ready_address(ready) else {
+        return vec![format!("NovaSight Studio Web UI: {}", ready.url)];
+    };
+    if !address.ip().is_unspecified() {
+        return vec![format!("NovaSight Studio Web UI: {}", ready.url)];
+    }
+
+    let mut messages = vec![format!("NovaSight Studio Web UI: {}", http_url(address))];
+    let lan_url = lan_ip
+        .map(|ip| http_url(SocketAddr::new(ip, address.port())))
+        .unwrap_or_else(|| format!("http://<this-machine-ip>:{}/", address.port()));
+    messages.push(format!("NovaSight Studio Web UI (LAN): {lan_url}"));
+    messages.push(format!(
+        "NovaSight Studio Web UI (this machine): {}",
+        http_url(connectable_local_address(address))
+    ));
+    messages
+}
+
+fn browser_open_url(ready: &ReadyDocument) -> String {
+    ready_address(ready)
+        .map(connectable_local_address)
+        .map(http_url)
+        .unwrap_or_else(|| ready.url.clone())
+}
+
+fn ready_address(ready: &ReadyDocument) -> Option<SocketAddr> {
+    ready.address.parse().ok()
+}
+
+fn connectable_local_address(address: SocketAddr) -> SocketAddr {
+    if !address.ip().is_unspecified() {
+        return address;
+    }
+    match address {
+        SocketAddr::V4(address) => SocketAddr::new(Ipv4Addr::LOCALHOST.into(), address.port()),
+        SocketAddr::V6(address) => SocketAddr::new(Ipv6Addr::LOCALHOST.into(), address.port()),
+    }
+}
+
+fn http_url(address: SocketAddr) -> String {
+    format!("http://{address}/")
+}
+
+fn detect_lan_ip() -> Option<IpAddr> {
+    detect_lan_ip_by_udp_route().or_else(detect_lan_ip_from_hostname)
+}
+
+fn detect_lan_ip_by_udp_route() -> Option<IpAddr> {
+    let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).ok()?;
+    socket.connect(SocketAddr::from(([8, 8, 8, 8], 80))).ok()?;
+    let ip = socket.local_addr().ok()?.ip();
+    candidate_lan_ip(ip)
+}
+
+#[cfg(target_os = "linux")]
+fn detect_lan_ip_from_hostname() -> Option<IpAddr> {
+    let output = StdCommand::new("hostname").arg("-I").output().ok()?;
+    let text = String::from_utf8(output.stdout).ok()?;
+    first_lan_ip_from_whitespace(&text)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn detect_lan_ip_from_hostname() -> Option<IpAddr> {
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn first_lan_ip_from_whitespace(text: &str) -> Option<IpAddr> {
+    text.split_whitespace()
+        .filter_map(|candidate| candidate.parse().ok())
+        .find_map(candidate_lan_ip)
+}
+
+fn candidate_lan_ip(ip: IpAddr) -> Option<IpAddr> {
+    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+        return None;
+    }
+    match ip {
+        IpAddr::V4(ip) if ip.is_link_local() => None,
+        IpAddr::V6(ip) if ip.is_unicast_link_local() => None,
+        _ => Some(ip),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -521,10 +607,58 @@ mod tests {
     }
 
     #[test]
-    fn studio_ready_message_names_the_web_ui() {
+    fn studio_ready_messages_use_ready_url_for_loopback() {
+        let ready = ReadyDocument {
+            address: "127.0.0.1:37279".to_owned(),
+            url: "http://127.0.0.1:37279/".to_owned(),
+        };
+
         assert_eq!(
-            studio_ready_message("http://127.0.0.1:37279/"),
-            "NovaSight Studio Web UI: http://127.0.0.1:37279/"
+            studio_ready_messages(&ready, None),
+            vec!["NovaSight Studio Web UI: http://127.0.0.1:37279/"]
+        );
+    }
+
+    #[test]
+    fn studio_ready_messages_show_lan_and_local_urls_for_unspecified_bind() {
+        let ready = ReadyDocument {
+            address: "0.0.0.0:41147".to_owned(),
+            url: "http://0.0.0.0:41147/".to_owned(),
+        };
+
+        assert_eq!(
+            studio_ready_messages(&ready, Some(IpAddr::V4(Ipv4Addr::new(192, 168, 2, 80)))),
+            vec![
+                "NovaSight Studio Web UI: http://0.0.0.0:41147/",
+                "NovaSight Studio Web UI (LAN): http://192.168.2.80:41147/",
+                "NovaSight Studio Web UI (this machine): http://127.0.0.1:41147/"
+            ]
+        );
+        assert_eq!(browser_open_url(&ready), "http://127.0.0.1:41147/");
+    }
+
+    #[test]
+    fn studio_ready_messages_keep_unspecified_bind_visible_when_lan_ip_is_unknown() {
+        let ready = ReadyDocument {
+            address: "0.0.0.0:41147".to_owned(),
+            url: "http://0.0.0.0:41147/".to_owned(),
+        };
+
+        assert_eq!(
+            studio_ready_messages(&ready, None),
+            vec![
+                "NovaSight Studio Web UI: http://0.0.0.0:41147/",
+                "NovaSight Studio Web UI (LAN): http://<this-machine-ip>:41147/",
+                "NovaSight Studio Web UI (this machine): http://127.0.0.1:41147/"
+            ]
+        );
+    }
+
+    #[test]
+    fn first_lan_ip_from_whitespace_skips_loopback_and_unspecified_addresses() {
+        assert_eq!(
+            first_lan_ip_from_whitespace("127.0.0.1 0.0.0.0 192.168.2.80 fe80::1"),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 2, 80)))
         );
     }
 
@@ -549,7 +683,7 @@ mod tests {
         ensure_portable_config(&layout).unwrap();
 
         let config = YamlConfigRepository::load(&layout.config).unwrap();
-        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.host, PORTABLE_BIND_HOST);
         assert_eq!(config.server.port, 0);
         assert_eq!(config.server.control_socket, Path::new(CONTROL_SOCKET));
         assert_eq!(config.paths.data_dir, Path::new(DATA_DIR));

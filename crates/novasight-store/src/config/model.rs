@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::IpAddr;
 use std::path::PathBuf;
 
 use novasight_core::tracking::KalmanConfig;
@@ -108,12 +107,6 @@ impl AppConfig {
         &self,
     ) -> Result<ProductionAdapterConfig<'_>, ConfigValidationError> {
         let vision = self.require_vision_adapters()?;
-        if !is_loopback_server_host(&self.server.host) {
-            return Err(ConfigValidationError::new(
-                "server.host",
-                "must be a loopback address until authenticated TLS transport is configured",
-            ));
-        }
         let device = self.device.as_ref().ok_or_else(|| {
             ConfigValidationError::new(
                 "hardware",
@@ -1740,14 +1733,6 @@ const fn default_schema_version() -> u32 {
 
 fn default_server_host() -> String {
     "127.0.0.1".to_owned()
-}
-
-fn is_loopback_server_host(host: &str) -> bool {
-    let host = host.trim();
-    host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
 }
 
 const fn default_server_port() -> u16 {

@@ -183,20 +183,20 @@ fn document_replacement_cannot_remove_hardware_while_output_is_enabled() {
 }
 
 #[test]
-fn production_preflight_rejects_an_unauthenticated_public_http_binding() {
+fn production_preflight_accepts_a_lan_http_binding() {
     let directory = TempDirectory::new();
     let source = default_runtime_config(&directory);
-    let path = directory.join("public-http.yaml");
+    let path = directory.join("lan-http.yaml");
     let document = fs::read_to_string(source)
         .unwrap()
         .replace("host: 127.0.0.1", "host: 0.0.0.0");
     fs::write(&path, document).unwrap();
 
     let config = YamlConfigRepository::load(path).unwrap();
-    let error = config.require_production_adapters().unwrap_err();
+    let adapters = config.require_production_adapters().unwrap();
 
-    assert_eq!(error.field, "server.host");
-    assert!(error.message.contains("loopback"));
+    assert_eq!(config.server.host, "0.0.0.0");
+    assert!(adapters.device.auto_connect);
 }
 
 #[test]

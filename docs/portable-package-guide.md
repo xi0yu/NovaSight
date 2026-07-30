@@ -77,8 +77,9 @@ The launcher owns startup orchestration:
 - lets the daemon use the package conventions `data/novasight.yaml`, `web/`,
   and `run/ready.json`;
 - waits for the daemon to become healthy;
-- prints the Web UI URL from `run/ready.json` and tries to open it when a
-  desktop browser is available;
+- prints the `0.0.0.0` Studio listener URL, prints a LAN URL for another browser
+  on the same network, and tries to open a local desktop browser when one is
+  available;
 - stays in the foreground so `Ctrl+C` stops the package-local daemon.
 
 NovaSight-owned runtime files stay inside the package:
@@ -123,12 +124,17 @@ Prefer `Ctrl+C` in the launcher terminal; if that terminal is gone, use:
 bin/novasightctl shutdown
 ```
 
-Use the URL in `run/ready.json` for HTTP checks:
+Use the printed port for HTTP checks on the target host:
 
 ```bash
 curl -fsS http://127.0.0.1:<port>/healthz
 curl -fsS http://127.0.0.1:<port>/ >/dev/null
 ```
+
+For remote Studio access, open the printed
+`NovaSight Studio Web UI (LAN): http://<target-lan-ip>:<port>/` URL from a
+browser on the same LAN. `0.0.0.0` is the bind address; remote browsers use the
+target machine's LAN IP.
 
 Runtime `status`, `start`, `emergency-stop`, and similar control commands are
 behind the same license gate as the Web API. Before activation, use
@@ -141,7 +147,9 @@ behind the same license gate as the Web API. Before activation, use
   `out/package/NovaSight`.
 - `out/package/NovaSight/NovaSight` starts the packaged daemon and writes
   `run/ready.json`.
-- `run/ready.json` contains a loopback URL and package-local control socket.
+- `run/ready.json` records the bound address and package-local control socket.
+- The launcher prints the `0.0.0.0` listener URL and a LAN Studio URL when the
+  package binds `0.0.0.0`.
 - `web/index.html` is served by `novasightd` from the same origin as the API.
 - `bin/novasightctl license status` connects through `run/novasightd.sock`.
 - `Ctrl+C` in the launcher terminal, or `bin/novasightctl shutdown`, closes the
