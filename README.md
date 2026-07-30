@@ -49,7 +49,7 @@ user, and test workflow split.
 Developer package:
 
 ```bash
-cargo run -p novasight-packager -- --profile debug
+cargo run -p novasight-packager
 ```
 
 Release package:
@@ -83,8 +83,9 @@ out/package/NovaSight/
 
 Users start `NovaSight`. The launcher creates package-local `data`, `logs`,
 and `run` directories, starts `bin/novasightd`, waits for `run/ready.json`, and
-opens the Web UI served by the daemon. It does not install systemd units, write
-to `/etc`, `/usr`, `/var/lib`, or `/run/novasight`, or require root.
+prints the Web UI URL. It also tries to open a desktop browser when one is
+available. It does not install systemd units, write to `/etc`, `/usr`,
+`/var/lib`, or `/run/novasight`, or require root.
 
 Developer and user run:
 
@@ -124,7 +125,7 @@ Runtime `status` is still protected by the same license gate as the Web API.
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo run -p novasight-packager -- --profile debug
+cargo run -p novasight-packager
 ```
 
 Local runtime databases, models, logs, generated native artifacts, Cargo

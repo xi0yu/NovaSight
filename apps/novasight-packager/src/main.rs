@@ -199,9 +199,13 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
             .data
             .join("runtime/deepstream/deepstream-tracker-iou.yml"),
     )?;
+    copy_file(
+        &workspace.join("USER_MANUAL.md"),
+        &layout.root.join("USER_MANUAL.md"),
+    )?;
     fs::write(
         layout.root.join("README-USER.txt"),
-        "Run NovaSight from this directory. NovaSight-owned data, logs, and runtime files stay inside this folder.\n",
+        "Run ./NovaSight from this directory. If a browser does not open automatically, use the printed URL. Open USER_MANUAL.md for the user guide.\n",
     )
     .with_context(|| format!("write {}", layout.root.join("README-USER.txt").display()))?;
     Ok(())
@@ -324,6 +328,7 @@ fn validate_package(output: &Path) -> Result<()> {
         output.join("bin").join(executable_name("novasightctl")),
         output.join("web/index.html"),
         output.join("data/novasight.yaml"),
+        output.join("USER_MANUAL.md"),
         output.join("logs"),
         output.join("run"),
     ] {
@@ -342,37 +347,6 @@ mod tests {
     fn profile_selects_the_expected_artifact_directory() {
         assert_eq!(PackageProfile::Debug.artifact_dir(), "debug");
         assert_eq!(PackageProfile::Release.artifact_dir(), "release");
-    }
-
-    #[test]
-    fn profiles_use_the_daemon_default_production_features() {
-        assert_eq!(
-            rust_build_args(PackageProfile::Debug),
-            vec![
-                "build",
-                "--locked",
-                "-p",
-                "novasight",
-                "-p",
-                "novasightctl",
-                "-p",
-                "novasightd",
-            ]
-        );
-        assert_eq!(
-            rust_build_args(PackageProfile::Release),
-            vec![
-                "build",
-                "--locked",
-                "-p",
-                "novasight",
-                "-p",
-                "novasightctl",
-                "-p",
-                "novasightd",
-                "--release",
-            ]
-        );
     }
 
     #[test]

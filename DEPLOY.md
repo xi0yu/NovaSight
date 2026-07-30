@@ -5,7 +5,8 @@
 NovaSight ships as a Jetson-side portable application. The Jetson owns capture,
 DeepStream inference, target selection, control, and kmNet/HID output. Users
 start the `NovaSight` launcher; it starts `novasightd` as a package-local child
-process and opens the Web UI served by that daemon.
+process, prints the Web UI URL, and tries to open a desktop browser when one is
+available.
 
 NovaSight does not install a system service by default. It should not write to
 `/etc`, `/usr`, `/var/lib`, `/var/log`, or `/run/novasight` in the normal
@@ -52,7 +53,7 @@ runtime, builds the Web UI, writes
 same package shape:
 
 ```bash
-cargo run -p novasight-packager -- --profile debug
+cargo run -p novasight-packager
 ```
 
 `debug` and `release` package the same runtime capability. The difference is
@@ -74,7 +75,8 @@ the package conventions directly: `data/novasight.yaml`, `web/`, and
 `run/ready.json`.
 
 `novasightd` binds a loopback port, writes `run/ready.json`, and serves both
-Studio and the API from that origin. The launcher prints and opens the URL.
+Studio and the API from that origin. The launcher prints the URL and treats
+browser opening as best-effort.
 
 ## Local Control
 

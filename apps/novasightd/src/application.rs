@@ -22,6 +22,7 @@ use crate::server;
 use crate::live_perception;
 
 const DEFAULT_CONFIG_PATH: &str = "data/novasight.yaml";
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
 const PRODUCTION_RUNTIME_UNAVAILABLE: &str =
     "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream";
 

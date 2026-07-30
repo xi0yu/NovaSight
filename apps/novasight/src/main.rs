@@ -67,14 +67,14 @@ fn run() -> Result<()> {
     if let Some(ready) = read_ready_file(&layout.ready_file).ok()
         && health_check(&ready.address)
     {
-        open_studio(&ready.url)?;
+        open_studio(&ready.url);
         return Ok(());
     }
 
     let _ = fs::remove_file(&layout.ready_file);
     let mut child = spawn_daemon(&layout)?;
     let ready = wait_for_ready(&layout.ready_file, &mut child, DAEMON_READY_TIMEOUT)?;
-    open_studio(&ready.url)?;
+    open_studio(&ready.url);
     Ok(())
 }
 
@@ -318,17 +318,25 @@ fn health_check(address: &str) -> bool {
     buffer[..read].starts_with(b"HTTP/1.1 200") || buffer[..read].starts_with(b"HTTP/1.0 200")
 }
 
-fn open_studio(url: &str) -> Result<()> {
+fn open_studio(url: &str) {
     println!("{url}");
-    open_browser(url)
+    if let Err(error) = open_browser(url) {
+        eprintln!("NOVASIGHT_BROWSER_OPEN_SKIPPED: {error:#}; open {url} manually");
+    }
 }
 
 #[cfg(target_os = "linux")]
 fn open_browser(url: &str) -> Result<()> {
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        bail!("no graphical session detected");
+    }
     Command::new("xdg-open")
         .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
-        .context("open browser with xdg-open")?;
+        .context("start browser with xdg-open")?;
     Ok(())
 }
 
@@ -336,8 +344,11 @@ fn open_browser(url: &str) -> Result<()> {
 fn open_browser(url: &str) -> Result<()> {
     Command::new("open")
         .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
-        .context("open browser")?;
+        .context("start browser")?;
     Ok(())
 }
 
@@ -345,8 +356,11 @@ fn open_browser(url: &str) -> Result<()> {
 fn open_browser(url: &str) -> Result<()> {
     Command::new("cmd")
         .args(["/C", "start", "", url])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
-        .context("open browser")?;
+        .context("start browser")?;
     Ok(())
 }
 

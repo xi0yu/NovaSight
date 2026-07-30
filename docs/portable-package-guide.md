@@ -26,7 +26,7 @@ not the normal product path.
 Developer package:
 
 ```bash
-cargo run -p novasight-packager -- --profile debug
+cargo run -p novasight-packager
 ```
 
 Release package:
@@ -77,7 +77,8 @@ The launcher owns startup orchestration:
 - lets the daemon use the package conventions `data/novasight.yaml`, `web/`,
   and `run/ready.json`;
 - waits for the daemon to become healthy;
-- opens the Web UI URL from `run/ready.json`.
+- prints the Web UI URL from `run/ready.json` and tries to open it when a
+  desktop browser is available.
 
 NovaSight-owned runtime files stay inside the package:
 
