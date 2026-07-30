@@ -153,6 +153,7 @@ pub fn build_control_router_with_platform_queries(
         .route("/api/v1/runtime/stop", post(stop))
         .route("/api/v1/runtime/restart", post(restart))
         .route("/api/v1/runtime/emergency-stop", post(emergency_stop))
+        .route("/api/v1/daemon/shutdown", post(shutdown_daemon))
         .route("/api/v1/events", get(events))
         .route("/api/config", get(config).post(update_legacy_config))
         .route("/api/config/schema", get(config_schema))
@@ -550,7 +551,10 @@ fn is_license_open_path(method: &Method, path: &str) -> bool {
         || (*method == Method::POST
             && matches!(
                 path,
-                "/api/runtime/stop" | "/api/v1/runtime/stop" | "/api/v1/runtime/emergency-stop"
+                "/api/runtime/stop"
+                    | "/api/v1/runtime/stop"
+                    | "/api/v1/runtime/emergency-stop"
+                    | "/api/v1/daemon/shutdown"
             ))
         || !path.starts_with("/api/")
 }
@@ -1196,6 +1200,21 @@ async fn emergency_stop(
     Ok(Json(state.runtime.emergency_stop().await?))
 }
 
+async fn shutdown_daemon(
+    State(state): State<ControlState>,
+    trusted_local_control: Option<Extension<TrustedLocalControl>>,
+) -> Result<Json<serde_json::Value>, ControlApiError> {
+    if trusted_local_control.is_none() {
+        return Err(ControlApiError::LocalControlRequired);
+    }
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    state.runtime.shutdown_daemon().await?;
+    Ok(Json(serde_json::json!({
+        "shutdown": true,
+        "message": "NovaSight daemon shutdown requested",
+    })))
+}
+
 async fn events(websocket: WebSocketUpgrade, State(state): State<ControlState>) -> Response {
     websocket.on_upgrade(move |socket| stream_events(socket, state.runtime, state.shutdown))
 }
@@ -1429,6 +1448,7 @@ enum ControlApiError {
     CaptureProbeUnavailable,
     CaptureSelection(CaptureSelectionError),
     CaptureSelectionRequiresStoppedRuntime,
+    LocalControlRequired,
 }
 
 impl From<LicenseError> for ControlApiError {
@@ -1775,6 +1795,11 @@ impl IntoResponse for ControlApiError {
                 StatusCode::CONFLICT,
                 "CAPTURE_SELECTION_REQUIRES_STOPPED_RUNTIME",
                 "stop the runtime before changing its concrete capture profile".to_owned(),
+            ),
+            Self::LocalControlRequired => (
+                StatusCode::NOT_FOUND,
+                "LOCAL_CONTROL_REQUIRED",
+                "daemon shutdown is available only through the local control socket".to_owned(),
             ),
         };
         let body = ControlErrorBody {

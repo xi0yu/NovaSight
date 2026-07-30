@@ -1540,6 +1540,8 @@ async fn emergency_stop_is_exposed_without_a_daemon_shutdown_route() {
 
     let (status, _) = request(&runtime, "POST", "/api/v1/runtime/shutdown-daemon").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = request(&runtime, "POST", "/api/v1/daemon/shutdown").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     shutdown(supervisor, &runtime).await;
 }

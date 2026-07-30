@@ -115,6 +115,12 @@ cat run/ready.json
 bin/novasightctl license status
 ```
 
+Stop the package-local daemon before rebuilding the same output directory:
+
+```bash
+bin/novasightctl shutdown
+```
+
 Use the URL in `run/ready.json` for HTTP checks:
 
 ```bash
@@ -124,7 +130,8 @@ curl -fsS http://127.0.0.1:<port>/ >/dev/null
 
 Runtime `status`, `start`, `emergency-stop`, and similar control commands are
 behind the same license gate as the Web API. Before activation, use
-`license status` as the unauthenticated package-socket check.
+`license status` as the unauthenticated package-socket check. Daemon
+`shutdown` is local-socket only and does not require a browser session.
 
 ## Acceptance Checklist
 
@@ -135,6 +142,7 @@ behind the same license gate as the Web API. Before activation, use
 - `run/ready.json` contains a loopback URL and package-local control socket.
 - `web/index.html` is served by `novasightd` from the same origin as the API.
 - `bin/novasightctl license status` connects through `run/novasightd.sock`.
+- `bin/novasightctl shutdown` closes the package-local daemon before rebuilds.
 - `logs/novasightd.log` is created inside the package.
 - No NovaSight-owned runtime files are created outside the package directory.
 

@@ -83,6 +83,7 @@ browser opening as best-effort.
 ```bash
 cd out/package/NovaSight
 bin/novasightctl license status
+bin/novasightctl shutdown
 ```
 
 After license activation or debug temporary access:
@@ -93,7 +94,8 @@ bin/novasightctl emergency-stop
 ```
 
 `novasightctl` resolves the package socket automatically from
-`run/novasightd.sock`.
+`run/novasightd.sock`. `shutdown` closes the package-local daemon so the same
+package directory can be rebuilt.
 
 ## Hardware Prerequisites
 

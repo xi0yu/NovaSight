@@ -195,6 +195,11 @@ impl ControlClient {
             .await
     }
 
+    pub async fn shutdown_daemon(&self) -> Result<Value, ClientError> {
+        self.request(Method::POST, "/api/v1/daemon/shutdown", None::<&()>)
+            .await
+    }
+
     pub async fn config(&self) -> Result<AppConfig, ClientError> {
         self.request(Method::GET, "/api/v1/config", None::<&()>)
             .await

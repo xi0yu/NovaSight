@@ -113,12 +113,14 @@ access and require the configured production public key for signed activation.
 ```bash
 cd out/package/NovaSight
 bin/novasightctl license status
+bin/novasightctl shutdown
 ```
 
 `novasightctl` talks to the same daemon authority as the Web UI. It is a
 control surface, not a second backend. It resolves `run/novasightd.sock` from
-the portable package.
-Runtime `status` is still protected by the same license gate as the Web API.
+the portable package. Runtime `status` is still protected by the same license
+gate as the Web API. `shutdown` is local-socket only and closes the package
+daemon before rebuilds.
 
 ## Development build checks
 

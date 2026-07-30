@@ -82,6 +82,7 @@ fn help_documents_the_real_command_surface() {
         "stop",
         "restart",
         "emergency-stop",
+        "shutdown",
         "config",
         "license",
         "model",
@@ -667,6 +668,38 @@ async fn commands_print_the_snapshot_returned_by_the_daemon() {
         .await
         .expect("shutdown supervisor");
     supervisor.join().await.expect("join supervisor");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_command_closes_the_package_local_daemon() {
+    let socket = SocketPath::new();
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind control socket");
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let server_runtime = runtime.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            with_trusted_local_control(build_control_router(server_runtime)),
+        )
+        .await
+        .expect("serve trusted control socket")
+    });
+
+    let socket_path = socket.0.clone();
+    let output = tokio::task::spawn_blocking(move || run_cli(&socket_path, "shutdown"))
+        .await
+        .expect("join CLI process");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let response: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("shutdown JSON");
+    assert_eq!(response["shutdown"], true);
+
+    supervisor.join().await.expect("join supervisor");
+    server.abort();
 }
 
 fn run_cli(socket: &Path, command: &str) -> std::process::Output {

@@ -84,6 +84,29 @@ async fn typed_client_drives_the_same_runtime_over_a_unix_socket() {
     server.abort();
 }
 
+#[tokio::test]
+async fn typed_client_requests_daemon_shutdown_over_trusted_local_control() {
+    let socket = SocketPath::new();
+    let listener = tokio::net::UnixListener::bind(&socket.0).expect("bind Unix control socket");
+    let (supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+    let server_runtime = runtime.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            with_trusted_local_control(build_control_router(server_runtime)),
+        )
+        .await
+        .expect("serve trusted Unix control socket")
+    });
+    let client = ControlClient::new(&socket.0);
+
+    let response = client.shutdown_daemon().await.expect("shutdown daemon");
+    assert_eq!(response["shutdown"], true);
+
+    supervisor.join().await.expect("join supervisor");
+    server.abort();
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn typed_client_connects_over_a_linux_abstract_socket() {

@@ -151,7 +151,8 @@ where
 fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) -> Result<()> {
     if output.join("run/ready.json").exists() {
         bail!(
-            "{} appears to be running; stop NovaSight before rebuilding the package",
+            "{} appears to be running; run `cd {} && bin/novasightctl shutdown` before rebuilding the package",
+            output.display(),
             output.display()
         );
     }
@@ -205,7 +206,7 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
     )?;
     fs::write(
         layout.root.join("README-USER.txt"),
-        "Run ./NovaSight from this directory. If a browser does not open automatically, use the printed URL. Open USER_MANUAL.md for the user guide.\n",
+        "Run ./NovaSight from this directory. If a browser does not open automatically, use the printed URL. Run bin/novasightctl shutdown to close the background service. Open USER_MANUAL.md for the user guide.\n",
     )
     .with_context(|| format!("write {}", layout.root.join("README-USER.txt").display()))?;
     Ok(())

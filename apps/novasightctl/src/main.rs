@@ -38,6 +38,8 @@ enum Command {
     Restart,
     /// Immediately close output and stop the runtime pipeline.
     EmergencyStop,
+    /// Gracefully stop the package-local NovaSight daemon.
+    Shutdown,
     /// Read or update the daemon's persisted YAML configuration.
     Config {
         #[command(subcommand)]
@@ -310,6 +312,7 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
             .await
             .map(Box::new)
             .map(CommandOutput::Runtime),
+        Command::Shutdown => client.shutdown_daemon().await.map(CommandOutput::Json),
         Command::Config {
             command: ConfigCommand::Show,
         } => client
