@@ -1443,6 +1443,7 @@ export function StudioConsoleView({
   const kmnetButtonRight = kmnetStatus.button_right === true;
   const previewEnabled = consumersConfig.preview !== false;
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
+  const activeModelPublished = runtime?.active_model !== null && runtime?.active_model !== undefined;
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
   const registeredInputShape = version?.input_shape === "engine-probe-required"
@@ -2068,7 +2069,23 @@ export function StudioConsoleView({
     }
   }, [runtimeMainlineSelected, onRefresh, onRuntimeStateChange]);
 
+  const requirePublishedModelBeforeMainline = useCallback(() => {
+    if (activeModelPublished) {
+      return true;
+    }
+    const message = "请先在模型管理中发布一个 ready TensorRT engine，再启动视觉链路。";
+    setLocalError(message);
+    setActivePage("infer");
+    setLaunchDialogOpen(false);
+    setModelManagerDialogOpen(true);
+    void onEnsureProjects(false).catch(() => undefined);
+    return false;
+  }, [activeModelPublished, onEnsureProjects]);
+
   const startInferenceThread = useCallback(async () => {
+    if (!requirePublishedModelBeforeMainline()) {
+      return;
+    }
     setBusy("runtime.start");
     setLocalError(null);
     try {
@@ -2085,7 +2102,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [onRefresh]);
+  }, [onRefresh, requirePublishedModelBeforeMainline]);
 
   const waitForLaunchFeedback = useCallback((ms: number) => new Promise<void>((resolve) => {
     if (launchTimerRef.current !== null) {
@@ -2192,6 +2209,9 @@ export function StudioConsoleView({
     if (launchStatus === "running") {
       return;
     }
+    if (!requirePublishedModelBeforeMainline()) {
+      return;
+    }
     launchCancelledRef.current = false;
     setBusy("runtime.start");
     setLocalError(null);
@@ -2285,6 +2305,7 @@ export function StudioConsoleView({
     launchStatus,
     onRefresh,
     onRuntimeStateChange,
+    requirePublishedModelBeforeMainline,
     showLaunchToast,
     waitForLaunchFeedback,
     waitForRuntimeEvidence
@@ -2329,11 +2350,21 @@ export function StudioConsoleView({
       return;
     }
     if (runtimeMainlineSelected) {
+      if (!requirePublishedModelBeforeMainline()) {
+        return;
+      }
       openMainlineLaunchDialog();
       return;
     }
     await applyCapture();
-  }, [applyCapture, runtimeControlRequested, runtimeMainlineSelected, openMainlineLaunchDialog, stopCurrentCapture]);
+  }, [
+    applyCapture,
+    requirePublishedModelBeforeMainline,
+    runtimeControlRequested,
+    runtimeMainlineSelected,
+    openMainlineLaunchDialog,
+    stopCurrentCapture
+  ]);
 
   const updateConfigField = useCallback(
     async (
