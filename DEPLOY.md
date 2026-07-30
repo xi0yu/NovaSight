@@ -40,20 +40,17 @@ Run on the Jetson build host with DeepStream, TensorRT, Node, pnpm, and Rust
 installed:
 
 ```bash
-cargo build --release -p novasight
-cargo build --release -p novasightd --features deepstream
-cargo build --release -p novasightctl
-pnpm --dir web build
+cargo run -p novasight-packager -- --profile jetson-release
 ```
 
-Prepare the portable directory:
+The packager builds the Rust binaries, builds the Web UI, writes
+`out/package/NovaSight`, and validates the required files. Developers use the
+same package shape:
 
 ```bash
-mkdir -p out/package/NovaSight/bin out/package/NovaSight/web
-cp out/cargo/release/novasight out/package/NovaSight/NovaSight
-cp out/cargo/release/novasightd out/package/NovaSight/bin/novasightd
-cp out/cargo/release/novasightctl out/package/NovaSight/bin/novasightctl
-cp -R out/web/. out/package/NovaSight/web/
+cargo run -p novasight-packager -- --profile dev
+cd out/package/NovaSight
+./NovaSight --dry-run
 ```
 
 ## Run

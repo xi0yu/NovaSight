@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "apps/novasight",
+  "apps/novasight-packager",
   "apps/novasightd",
   "apps/novasightctl",
   "crates/novasight-api",

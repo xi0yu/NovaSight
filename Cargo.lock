@@ -1224,6 +1224,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "novasight-packager"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+]
+
+[[package]]
 name = "novasight-pipeline"
 version = "0.1.0"
 dependencies = [
