@@ -13,6 +13,8 @@ export default defineConfig({
     },
   },
   build: {
+    outDir: "../out/web",
+    emptyOutDir: true,
     rollupOptions: {
       input: {
         // 控制台 React 工程 (不改动, 维持原行为)

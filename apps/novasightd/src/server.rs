@@ -186,7 +186,7 @@ fn platform_capture_probe() -> Option<Arc<dyn CaptureCapabilityProbe>> {
 }
 
 fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
-    // A debug `cargo run` exposes process-local development access through the
+    // A debug build exposes process-local development access through the
     // local API. It never creates a license document and disappears when this
     // daemon exits. Only release artifacts enforce deployment key provisioning.
     let development_build = cfg!(debug_assertions);

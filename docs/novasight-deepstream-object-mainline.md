@@ -40,11 +40,11 @@ inference:
   backend: deepstream_nvinfer
   deepstream_io_mode: 2
   deepstream_batched_push_timeout_us: 0
-  deepstream_parser_library: build/deepstream-parser/libnovasight_parser.so
+  deepstream_parser_library: auto
 ```
 
 The dataclass default remains development-safe. The tracked Jetson example
-selects `deepstream_nvinfer`; it fails closed when DeepStream, pyds, the parser
+selects `deepstream_nvinfer`; it fails closed when DeepStream, the parser
 library, a complete capture profile, or an active validated engine is missing.
 
 ## What The Code Audit Found
@@ -174,7 +174,7 @@ C++ metadata postprocess: present
 cargo build --release -p novasightd --features deepstream
 cargo build --release -p novasightctl
 
-target/release/novasightd \
+out/cargo/release/novasightd \
   --config deploy/novasight.production.yaml \
   --check
 ```

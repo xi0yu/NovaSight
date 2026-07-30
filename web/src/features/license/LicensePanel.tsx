@@ -45,7 +45,7 @@ export function LicensePanel({
         onLicenseChange(status);
         setFailure({
           title: "当前构建不支持临时权限",
-          message: "Release 后端只接受正式签名授权；请运行 cargo run 启动 Debug 后端进行开发验证。"
+          message: "Release 后端只接受正式签名授权；请启动 Debug 构建的 novasightd 进行开发验证。"
         });
         return;
       }

@@ -14,6 +14,7 @@ __pycache__/
 /.config/novasight.yaml
 data/
 logs/
+out/
 build/
 web/node_modules/
 web/dist/

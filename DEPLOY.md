@@ -23,8 +23,8 @@ clients connect over REST and WebSocket.
 cargo build --release -p novasightd --features deepstream
 cargo build --release -p novasightctl
 sudo mkdir -p /opt/novasight/current/bin /etc/novasight /var/lib/novasight
-sudo install -m 0755 target/release/novasightd /opt/novasight/current/bin/novasightd
-sudo install -m 0755 target/release/novasightctl /opt/novasight/current/bin/novasightctl
+sudo install -m 0755 out/cargo/release/novasightd /opt/novasight/current/bin/novasightd
+sudo install -m 0755 out/cargo/release/novasightctl /opt/novasight/current/bin/novasightctl
 sudo install -m 0640 deploy/novasight.production.yaml /etc/novasight/novasight.yaml
 sudo cp deploy/deepstream-tracker-iou.yml /etc/novasight/deepstream-tracker-iou.yml
 sudo cp deploy/novasight.service /etc/systemd/system/novasight.service
