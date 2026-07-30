@@ -100,6 +100,20 @@ When developing from the repository, place model assets in workspace
 matching manifest files into `out/package/NovaSight/data/models`. Scripts and
 notes in that directory are not copied into the user package.
 
+## Developer Source Run
+
+Developers can run without packaging:
+
+```bash
+cargo run -p novasight
+```
+
+When the launcher detects that it was started from Cargo's `out/cargo` artifact
+directory, it treats the workspace root as the runtime root. It uses source-tree
+`data/models`, `data/novasight.yaml`, `logs`, and `run`. It also builds
+`novasightd`, `novasightctl`, and `out/web` before starting the daemon, so the
+source run still uses the same compiled Rust backend and built Studio assets.
+
 ## Same-Path Testing
 
 Yes: testing can use the same startup mode as users. That should be the default

@@ -113,6 +113,28 @@ profile, makes no external authorization request, and writes no license file;
 access ends when that daemon process exits. Release builds reject temporary
 access and require the configured production public key for signed activation.
 
+## Developer Source Run
+
+For source-tree development without assembling `out/package/NovaSight`, run the
+launcher through Cargo from the workspace root:
+
+```bash
+cargo run -p novasight
+```
+
+In this mode the launcher uses the workspace root as the runtime root. Models,
+configuration, logs, and run markers are read from the source tree:
+
+- models: `data/models/`
+- config: `data/novasight.yaml`
+- logs: `logs/`
+- ready/control socket: `run/`
+
+The launcher builds `novasightd` and `novasightctl` into `out/cargo`, builds the
+Web UI into `out/web`, then starts the daemon with `NOVASIGHT_WEB_ROOT=out/web`.
+This is a developer convenience path; the user-facing path remains
+`out/package/NovaSight/NovaSight`.
+
 ## Local Control CLI
 
 ```bash

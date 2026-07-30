@@ -32,6 +32,7 @@ struct Args {}
 
 #[derive(Clone, Debug)]
 struct PortableLayout {
+    mode: LayoutMode,
     root: PathBuf,
     daemon: PathBuf,
     control: PathBuf,
@@ -42,6 +43,13 @@ struct PortableLayout {
     run_dir: PathBuf,
     ready_file: PathBuf,
     daemon_log: PathBuf,
+    web_root_override: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LayoutMode {
+    Package,
+    Developer,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +73,7 @@ async fn run() -> Result<()> {
     let _args = Args::parse();
     let layout = PortableLayout::discover()?;
     prepare_layout(&layout)?;
+    ensure_developer_artifacts(&layout)?;
     ensure_portable_config(&layout)?;
     std::env::set_current_dir(&layout.root)
         .with_context(|| format!("set bundle root {}", layout.root.display()))?;
@@ -91,9 +100,28 @@ impl PortableLayout {
         let executable_dir = current_exe
             .parent()
             .ok_or_else(|| anyhow!("current executable has no parent directory"))?;
+        if let Some(workspace) = developer_workspace_root(executable_dir) {
+            return Ok(Self::new(
+                LayoutMode::Developer,
+                workspace.clone(),
+                executable_dir.join(executable_name("novasightd")),
+                executable_dir.join(executable_name("novasightctl")),
+                Some(PathBuf::from("out/web")),
+            ));
+        }
         let root = infer_bundle_root(executable_dir);
         let daemon = resolve_binary(&root, executable_dir, "novasightd")?;
         let control = resolve_binary(&root, executable_dir, "novasightctl")?;
+        Ok(Self::new(LayoutMode::Package, root, daemon, control, None))
+    }
+
+    fn new(
+        mode: LayoutMode,
+        root: PathBuf,
+        daemon: PathBuf,
+        control: PathBuf,
+        web_root_override: Option<PathBuf>,
+    ) -> Self {
         let config = root.join(CONFIG_PATH);
         let data_dir = root.join(DATA_DIR);
         let model_dir = root.join(MODEL_DIR);
@@ -101,7 +129,8 @@ impl PortableLayout {
         let run_dir = root.join(RUN_DIR);
         let ready_file = root.join(READY_FILE);
         let daemon_log = log_dir.join("novasightd.log");
-        Ok(Self {
+        Self {
+            mode,
             root,
             daemon,
             control,
@@ -112,8 +141,25 @@ impl PortableLayout {
             run_dir,
             ready_file,
             daemon_log,
-        })
+            web_root_override,
+        }
     }
+}
+
+fn developer_workspace_root(executable_dir: &Path) -> Option<PathBuf> {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir.parent()?.parent()?.to_owned();
+    if !looks_like_workspace_root(&workspace) {
+        return None;
+    }
+    let cargo_artifacts = workspace.join("out/cargo");
+    executable_dir
+        .starts_with(cargo_artifacts)
+        .then_some(workspace)
+}
+
+fn looks_like_workspace_root(path: &Path) -> bool {
+    path.join("Cargo.toml").is_file() && path.join("apps").is_dir() && path.join("web").is_dir()
 }
 
 fn infer_bundle_root(executable_dir: &Path) -> PathBuf {
@@ -169,6 +215,53 @@ fn ensure_private_directory(path: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))
             .with_context(|| format!("set private permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn ensure_developer_artifacts(layout: &PortableLayout) -> Result<()> {
+    if layout.mode != LayoutMode::Developer {
+        return Ok(());
+    }
+    run_developer_command(
+        &layout.root,
+        "cargo",
+        [
+            "build",
+            "--locked",
+            "-p",
+            "novasightd",
+            "-p",
+            "novasightctl",
+        ],
+        &[],
+    )?;
+    run_developer_command(
+        &layout.root,
+        "pnpm",
+        ["--dir", "web", "build"],
+        &[("CI", "true")],
+    )
+}
+
+fn run_developer_command<I, S>(
+    cwd: &Path,
+    program: &str,
+    args: I,
+    envs: &[(&str, &str)],
+) -> Result<()>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut command = StdCommand::new(program);
+    command.args(args).current_dir(cwd);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let status = command.status().with_context(|| format!("run {program}"))?;
+    if !status.success() {
+        bail!("{program} exited with {status}");
     }
     Ok(())
 }
@@ -270,6 +363,9 @@ fn spawn_daemon(layout: &PortableLayout) -> Result<Child> {
         .current_dir(&layout.root)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(log));
+    if let Some(web_root) = &layout.web_root_override {
+        command.env("NOVASIGHT_WEB_ROOT", web_root);
+    }
     command
         .spawn()
         .with_context(|| format!("start {}", layout.daemon.display()))
@@ -584,6 +680,39 @@ mod tests {
     }
 
     #[test]
+    fn cargo_artifact_launcher_uses_workspace_as_developer_root() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+
+        assert_eq!(
+            developer_workspace_root(&workspace.join("out/cargo/debug")),
+            Some(workspace.to_owned())
+        );
+    }
+
+    #[test]
+    fn developer_layout_uses_source_runtime_paths() {
+        let root = PathBuf::from("/repo/NovaSight");
+        let layout = PortableLayout::new(
+            LayoutMode::Developer,
+            root.clone(),
+            root.join("out/cargo/debug/novasightd"),
+            root.join("out/cargo/debug/novasightctl"),
+            Some(PathBuf::from("out/web")),
+        );
+
+        assert_eq!(layout.root, root);
+        assert_eq!(
+            layout.config,
+            Path::new("/repo/NovaSight/data/novasight.yaml")
+        );
+        assert_eq!(layout.model_dir, Path::new("/repo/NovaSight/data/models"));
+        assert_eq!(layout.web_root_override, Some(PathBuf::from("out/web")));
+    }
+
+    #[test]
     fn mapping_field_update_is_idempotent() {
         let mut document = Value::Mapping(Mapping::new());
         assert!(
@@ -667,6 +796,7 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("novasight-launcher-config-{}", std::process::id()));
         let layout = PortableLayout {
+            mode: LayoutMode::Package,
             root: root.clone(),
             daemon: root.join("bin/novasightd"),
             control: root.join("bin/novasightctl"),
@@ -677,6 +807,7 @@ mod tests {
             run_dir: root.join(RUN_DIR),
             ready_file: root.join(READY_FILE),
             daemon_log: root.join(LOG_DIR).join("novasightd.log"),
+            web_root_override: None,
         };
 
         prepare_layout(&layout).unwrap();

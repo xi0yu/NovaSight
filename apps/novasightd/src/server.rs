@@ -34,6 +34,7 @@ use tokio::sync::watch;
 
 const DEFAULT_WEB_ROOT: &str = "web";
 const DEFAULT_READY_FILE: &str = "run/ready.json";
+const WEB_ROOT_ENV: &str = "NOVASIGHT_WEB_ROOT";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DaemonMode {
@@ -94,7 +95,7 @@ pub(super) async fn run_daemon(
         mode.hardware_output_enabled(),
         server_shutdown_rx.clone(),
     );
-    let web_root = effective_web_root(Path::new(DEFAULT_WEB_ROOT));
+    let web_root = effective_web_root(&configured_web_root());
     let router = attach_web_ui(api_router.clone(), web_root.as_deref());
     let control_router = with_trusted_local_control(api_router);
     let http_server = axum::serve(listener, router)
@@ -199,6 +200,12 @@ fn effective_web_root(web_root: &Path) -> Option<PathBuf> {
         );
         None
     }
+}
+
+fn configured_web_root() -> PathBuf {
+    std::env::var_os(WEB_ROOT_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_WEB_ROOT))
 }
 
 fn attach_web_ui(router: Router, web_root: Option<&Path>) -> Router {
