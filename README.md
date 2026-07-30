@@ -26,24 +26,25 @@ longer require entering a `rust/` directory or passing `--manifest-path`.
 
 Install the JetPack/DeepStream development packages and Rust toolchain first.
 On first start NovaSight creates the Git-ignored `.config/novasight.yaml` from
-its bundled Jetson baseline and continues startup. Run the real Jetson backend
-from the repository root:
+its bundled Jetson baseline and continues startup. Build the real Jetson
+backend from the repository root, then start it through the daemon binary:
 
 ```bash
-cargo run -p novasightd --features deepstream
+cargo build -p novasightd --features deepstream
+target/debug/novasightd
 ```
 
 After the first launch, review the generated capture, model, ROI, and kmNet
 values through the Web UI or the local configuration file.
 
 Live DeepStream perception is the normal Jetson path. It does not need a
-`--live-perception` switch, a preparatory build script, or Python. Cargo builds
-the native DeepStream/TensorRT integration required by the daemon.
+`--live-perception` switch, a preparatory script, or Python. Cargo builds the
+native DeepStream/TensorRT integration required by the daemon.
 
 To validate configuration and the HTTP API without opening capture or hardware:
 
 ```bash
-cargo run -p novasightd -- --dry-run
+target/debug/novasightd --dry-run
 ```
 
 Without `--config`, NovaSight reads exactly `.config/novasight.yaml` relative
@@ -70,6 +71,16 @@ pnpm --dir web dev --host 0.0.0.0
 Open `http://<jetson-ip>:5173`. Vite proxies `/api`, `/healthz`, and `/ws` to
 the backend on port 5174. When the Web UI and backend are on different hosts,
 set `VITE_NOVASIGHT_API_BASE` and `VITE_NOVASIGHT_WS_BASE` explicitly.
+
+## Local Control CLI
+
+```bash
+cargo build -p novasightctl
+target/debug/novasightctl status
+```
+
+`novasightctl` talks to the same daemon authority as the Web UI. It is a
+control surface, not a second backend.
 
 ## Development build checks
 

@@ -171,19 +171,18 @@ C++ metadata postprocess: present
 ## Build And Verify On Jetson
 
 ```bash
-scripts/setup_jetson.sh
+cargo build --release -p novasightd --features deepstream
+cargo build --release -p novasightctl
 
-build/jetson-release/bin/novasightd \
+target/release/novasightd \
   --config deploy/novasight.production.yaml \
   --check
-
-scripts/run_deepstream_gst_pipeline.sh
 ```
 
-The setup step builds the native parser by default. The installed Rust daemon
-never compiles native code at runtime: packaging and `novasightd --check` must
-prove that the parser and DeepStream bridge are already present and ABI
-compatible before systemd starts capture.
+Cargo builds the native parser for the daemon. The installed Rust daemon never
+compiles native code at runtime: `novasightd --check` must prove that the
+parser, TensorRT runtime, and DeepStream bridge are ABI compatible before
+systemd starts capture.
 
 ## Runtime Failure Ownership
 

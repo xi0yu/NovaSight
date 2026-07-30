@@ -26,8 +26,11 @@ ctest --test-dir build/tensorrt-contract --output-on-failure
 Build the production library on Jetson:
 
 ```bash
-scripts/build_tensorrt_runtime.sh
-export NOVASIGHT_TENSORRT_RUNTIME_DIR="$PWD/build/jetson-native"
+cmake -S native/tensorrt-runtime -B build/tensorrt-runtime \
+  -DNOVASIGHT_TENSORRT_IMPL=jetson \
+  -DNOVASIGHT_TENSORRT_BUILD_TESTS=OFF
+cmake --build build/tensorrt-runtime --parallel
+export NOVASIGHT_TENSORRT_RUNTIME_DIR="$PWD/build/tensorrt-runtime"
 ```
 
 `novasight_tensorrt_execute` does not return until its CUDA stream has

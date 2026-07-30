@@ -19,10 +19,13 @@ clients connect over REST and WebSocket.
 ## Install
 
 ```bash
-sudo mkdir -p /opt/novasight /etc/novasight /var/lib/novasight
-sudo cp -a . /opt/novasight
-cd /opt/novasight
-sudo cp config/novasight.yaml /etc/novasight/novasight.yaml
+# Run on the Jetson host with the DeepStream SDK and Rust toolchain installed.
+cargo build --release -p novasightd --features deepstream
+cargo build --release -p novasightctl
+sudo mkdir -p /opt/novasight/current/bin /etc/novasight /var/lib/novasight
+sudo install -m 0755 target/release/novasightd /opt/novasight/current/bin/novasightd
+sudo install -m 0755 target/release/novasightctl /opt/novasight/current/bin/novasightctl
+sudo install -m 0640 deploy/novasight.production.yaml /etc/novasight/novasight.yaml
 sudo cp deploy/deepstream-tracker-iou.yml /etc/novasight/deepstream-tracker-iou.yml
 sudo cp deploy/novasight.service /etc/systemd/system/novasight.service
 sudo systemctl daemon-reload
@@ -42,9 +45,10 @@ the deployed tracker config:
 
 ```yaml
 inference:
-  backend: deepstream
+  backend: deepstream_nvinfer
   deepstream_manifest_path: /var/lib/novasight/models/<model>/model.manifest.json
-  deepstream_config_path: /var/lib/novasight/models/<model>/deepstream.ini
+  deepstream_parser_library: auto
+  deepstream_nvinfer_config: /var/lib/novasight/models/<model>/deepstream.ini
   deepstream_tracker_config_path: /etc/novasight/deepstream-tracker-iou.yml
 ```
 
@@ -94,17 +98,16 @@ Logs are written to journald through `StandardOutput=journal` and
 ```bash
 v4l2-ctl --list-formats-ext --device /dev/video0
 gst-inspect-1.0 nvinfer
-build/jetson-release/bin/novasightd --config /etc/novasight/novasight.yaml --check
-build/jetson-release/bin/novasightctl --help
-scripts/run_deepstream_gst_pipeline.sh
+/opt/novasight/current/bin/novasightd --config /etc/novasight/novasight.yaml --check
+/opt/novasight/current/bin/novasightctl --help
 ```
 
 ## Runtime API Checks
 
 ```bash
-curl http://127.0.0.1:8000/healthz
-curl http://127.0.0.1:8000/api/device/capabilities
-curl http://127.0.0.1:8000/api/v1/system/status
+curl http://127.0.0.1:5174/healthz
+curl http://127.0.0.1:5174/api/device/capabilities
+curl http://127.0.0.1:5174/api/v1/system/status
 ```
 
 Protected API and WebSocket endpoints require a valid license.
@@ -125,7 +128,7 @@ Run the Rust daemon preflight after installing the service file, then check the
 health endpoint after the service is running:
 
 ```bash
-build/jetson-release/bin/novasightd --config /etc/novasight/novasight.yaml --check
+/opt/novasight/current/bin/novasightd --config /etc/novasight/novasight.yaml --check
 curl -fsS http://127.0.0.1:5174/healthz
 ```
 
@@ -140,5 +143,5 @@ curl -fsS http://127.0.0.1:5174/healthz
 During the soak, record process memory from the system API:
 
 ```bash
-watch -n 60 'curl -s http://127.0.0.1:8000/api/v1/system | jq .process'
+watch -n 60 'curl -s http://127.0.0.1:5174/api/v1/system | jq .process'
 ```

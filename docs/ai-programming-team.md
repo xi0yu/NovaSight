@@ -186,20 +186,8 @@ cd web && npm run build
 Jetson-only smoke gate:
 
 ```bash
-novasight doctor deepstream-smoke \
-  --manifest data/models/<model>/<version>/model.manifest.json \
-  --nvinfer-config data/models/<model>/<version>/deepstream.ini \
-  --device /dev/video0 \
-  --capture-width 1920 \
-  --capture-height 1080 \
-  --fps 120 \
-  --roi-left 720 \
-  --roi-top 300 \
-  --roi-size 480 \
-  --io-mode 2 \
-  --batched-push-timeout-us 0 \
-  --seconds 10 \
-  --report-json /tmp/novasight-deepstream-smoke.json
+novasightd --config deploy/novasight.production.yaml --check
+novasightctl status
 ```
 
 ### 8. Workspace Steward

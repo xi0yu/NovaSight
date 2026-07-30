@@ -154,52 +154,26 @@ Current implementation:
   - capture stop;
   - runtime stop.
   The next start rebuilds the pipeline from the current manifest, `deepstream.ini`, capture profile, and ROI.
-- `novasightd --config deploy/novasight.production.yaml --check` and `scripts/run_deepstream_gst_pipeline.sh` are the Jetson-side smoke gates for the generated `model.manifest.json` + `deepstream.ini` pair.
+- `novasightd --config deploy/novasight.production.yaml --check` is the Jetson-side smoke gate for the generated `model.manifest.json` + `deepstream.ini` pair.
 - The Rust DeepStream backend is the production runtime path.
 
 Jetson smoke command:
 
 ```bash
-novasight doctor deepstream-smoke \
-  --manifest data/models/<model>/<version>/model.manifest.json \
-  --nvinfer-config data/models/<model>/<version>/deepstream.ini \
-  --device /dev/video0 \
-  --capture-width 1920 \
-  --capture-height 1080 \
-  --fps 120 \
-  --roi-left 720 \
-  --roi-top 300 \
-  --roi-size 480 \
-  --io-mode 2 \
-  --batched-push-timeout-us 0 \
-  --seconds 10 \
-  --report-json /tmp/novasight-deepstream-smoke.json
+novasightd --config deploy/novasight.production.yaml --check
 ```
 
-The command must fail loudly when `gi/Gst` or `pyds` is missing. It must not fall back to CPU capture.
-It also prints the exact `engine`, `model_fingerprint`, `nvinfer_config_fingerprint`,
+The command must fail loudly when DeepStream, TensorRT, the parser, or the
+model contract is missing. It must not fall back to CPU capture. It also prints
+the exact `engine`, `model_fingerprint`, `nvinfer_config_fingerprint`,
 `model_input`, `model_output`, `io_mode`, and `batched_push_timeout_us` before starting
 the pipeline, so a Jetson run can verify that the selected engine, manifest, generated
 `deepstream.ini`, parser contract, and GStreamer runtime knobs are the same artifact pair.
-When `--report-json` is provided, the same evidence is written to a structured report so Jetson
-runs can be compared across models, ROI sizes, and GStreamer runtime knobs without relying on
-terminal scrollback.
-The structured report can be checked later with:
-
-```bash
-novasight doctor deepstream-smoke-report \
-  --report-json /tmp/novasight-deepstream-smoke.json \
-  --min-tensor-meta-fps 115 \
-  --min-postprocess-fps 115 \
-  --min-detection-batch-fps 115 \
-  --max-frame-age-ms 20
-```
-
-This report check rejects incomplete or unsafe evidence, including missing tensor-meta counts,
-missing model/config fingerprints, failed smoke result, unavailable DeepStream dependencies,
-non-ROI `DetectionBatch` coordinates, non-`capture_to_tensor_meta_done` latency source, or
-non-`gst_clock_base_time_pts` timestamp source. The optional threshold flags are the Jetson
-measurement gate for deciding whether the DeepStream path is fast enough to feed control.
+Runtime status can be inspected through the Web UI or `novasightctl status`
+after the daemon starts. The daemon check rejects incomplete or unsafe evidence,
+including missing model/config fingerprints, unavailable DeepStream
+dependencies, non-ROI `DetectionBatch` coordinates, non-`capture_to_tensor_meta_done`
+latency source, or non-`gst_clock_base_time_pts` timestamp source.
 The smoke command and runtime startup also verify that `deepstream.ini` `model-engine-file`
 resolves to the current manifest artifact engine. A matching config fingerprint alone is not
 enough, because a stale config can otherwise point `nvinfer` at an older `.engine` after a
@@ -210,11 +184,17 @@ Runtime startup rejects non-MJPEG `capture.pixel_format` values while this backe
 DeepStream backend latency status is reported as `capture_to_tensor_meta_done`: from the frame timestamp to the nvinfer src-pad tensor-meta probe. It is not pure TensorRT kernel time.
 Runtime `DetectionBatch` handling preserves this as `capture_to_tensor_meta_ms` in inference status and pipeline timings, so dashboards do not have to infer it from `engine_ms`.
 For `DetectionBatch` sources, parser/NMS has already happened before runtime handoff; runtime therefore reports `stage_postprocess_ms=0` and exposes handoff wait separately as `stage_handoff_ms`.
-`novasight doctor deepstream-smoke` prints both `latency_source` and `capture_to_tensor_meta_ms` for the same reason.
+`novasightd` and `novasightctl status` expose both `latency_source` and
+`capture_to_tensor_meta_ms` for the same reason.
 Runtime confidence and NMS thresholds override manifest defaults for the DeepStream Python tensor-meta parser. These thresholds are hot-updated on the live `DeepStreamDetectionBackend`; changing them must not rebuild the GStreamer/nvinfer pipeline because they only affect Python postprocess after tensor meta is produced.
 Invalid `DetectionBatch` payloads are rejected before Tracker/Selector/Kalman/Controller. The runtime rejects non-ROI coordinate spaces, non-finite bbox values, scores outside `[0,1]`, non-positive boxes, and ROI-space boxes whose center falls outside the ROI. Rejection resets the control observation state so continuous control cannot keep driving from a stale target.
 `DeepStreamDetectionBackend` only publishes and exposes `DetectionBatch` objects while the source is running and not in a terminal error state. Late tensor probes after stop, EOS, or a bus error must not update `last_result`, `published_batches`, or the control input stream.
-DeepStream timestamp health is explicit. Backend status, runtime statistics, Studio, and `novasight doctor deepstream-smoke` expose `timestamp_source`; Jetson smoke acceptance now requires `gst_clock_base_time_pts`. `first_probe_offset_pts` and `observed_probe_time_invalid_pts` are fallback modes and must fail the smoke/report gate because frame age is not trustworthy enough for Kalman prediction and latency compensation.
+DeepStream timestamp health is explicit. Backend status, runtime statistics,
+Studio, and `novasightctl status` expose `timestamp_source`; Jetson acceptance
+requires `gst_clock_base_time_pts`. `first_probe_offset_pts` and
+`observed_probe_time_invalid_pts` are fallback modes and must fail the gate
+because frame age is not trustworthy enough for Kalman prediction and latency
+compensation.
 
 Next:
 
@@ -285,5 +265,8 @@ The current engineering slice is no longer basic model scanning; it is Jetson va
 
 - Keep the generated DeepStream pipeline opt-in and reproducible from the model manifest plus runtime config.
 - Keep stale pipeline cleanup explicit across model switch, capture switch, source switch, runtime stop, and failed start paths.
-- Use `novasight doctor deepstream-smoke` on Jetson to verify tensor-meta FPS, DetectionBatch FPS, frame age, and parser correctness before enabling control decisions from DeepStream output.
+- Use `novasightd --config deploy/novasight.production.yaml --check` and
+  `novasightctl status` on Jetson to verify tensor-meta FPS, DetectionBatch FPS,
+  frame age, and parser correctness before enabling control decisions from
+  DeepStream output.
 - Do not change Tracker, TargetSelector, Kalman, Controller, or kmNet defaults until a Jetson run proves `DetectionBatch(coordinate_space="roi")` is correct and fresh.

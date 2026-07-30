@@ -368,11 +368,8 @@ The current repo still carries legacy names for compatibility:
 - `gst_cpu_latest`: current default compatible capture bridge. It uses
   GStreamer/NVIDIA decode and `nvvidconv` ROI/resize, then appsink system
   memory plus CPU host preprocessing before TensorRT CUDA upload.
-  `novasight doctor gst-cpu-latest-smoke` is the 60-second acceptance gate for
-  this path; its saved report includes final evidence plus per-second
-  `metric_samples` for capture FPS, broker depth, preprocessing/H2D/inference
-  timing, host-frame copy cost, stale drops, control observation FPS, RSS memory, and
-  `capture_ts_ns`/`inference_end_ts_ns`/`control_now_ts_ns` timing evidence.
+  This legacy compatibility path is not a new runtime entry. Current acceptance
+  uses `novasightd --check`, Web runtime status, and `novasightctl status`.
 - `tensorrt`: current default GPU inference path. CPU/ONNXRuntime fallback is
   not a runtime execution mode.
 - `nvmm_latest`: explicit target/experimental NVMM exchange path requiring
