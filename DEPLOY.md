@@ -11,6 +11,9 @@ NovaSight does not install a system service by default. It should not write to
 `/etc`, `/usr`, `/var/lib`, `/var/log`, or `/run/novasight` in the normal
 portable path.
 
+For the full programmer packaging, user running, and same-path testing guide,
+see [Portable Package Guide](docs/portable-package-guide.md).
+
 ## Layout
 
 ```text
