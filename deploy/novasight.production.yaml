@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 9
 revision: 0
 server:
   host: 0.0.0.0
@@ -17,17 +17,18 @@ pipeline:
   near_threshold_px: 12.0
   projection_fov_x_deg: 105.0
   projection_counts_per_360: 9980.0
-  atan_scale_counts: 1024.0
-  far_kp: 0.90
-  far_max_counts_per_update: 600.0
-  near_kp: 0.30
-  near_max_counts_per_update: 120.0
+  atan_scale_counts: 256.0
+  far_kp: 0.30
+  far_max_counts_per_update: 127.0
+  near_kp: 0.20
+  near_max_counts_per_update: 72.0
   velocity_smoothing_frames: 3.0
   velocity_history_reset_gap_ms: 80.0
   velocity_spread_base_px_ms: 0.12
   velocity_spread_relative: 0.50
   velocity_change_base_px_ms: 0.20
   velocity_change_relative: 0.75
+  prediction_enabled: true
   prediction_lead_frames: 1.0
   prediction_far_absolute_cap_px: 10.0
   prediction_far_base_cap_px: 1.25

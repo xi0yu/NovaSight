@@ -20,13 +20,22 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use xattr::FileExt as XattrFileExt;
 
-use serde_yaml::Value;
+use serde_yaml::{Mapping, Value};
 
-use super::{AppConfig, ConfigValidationError};
+use super::{AppConfig, CURRENT_SCHEMA_VERSION, ConfigValidationError, PipelineRuntimeConfig};
 
 const CONFIG_LOCK_WAIT: Duration = Duration::from_millis(250);
 const CONFIG_LOCK_RETRY: Duration = Duration::from_millis(2);
 const DEFAULT_RUNTIME_CONFIG: &str = include_str!("bootstrap.yaml");
+const LEGACY_ATAN_SCALE_COUNTS: f64 = 256.0;
+const LEGACY_FAR_MAX_COUNTS_PER_UPDATE: f64 = 127.0;
+const LEGACY_NEAR_MAX_COUNTS_PER_UPDATE: f64 = 72.0;
+const RESPONSIVE_ATAN_SCALE_COUNTS: f64 = 256.0;
+const RESPONSIVE_FAR_KP: f64 = 0.30;
+const RESPONSIVE_FAR_MAX_COUNTS_PER_UPDATE: f64 = 127.0;
+const RESPONSIVE_NEAR_KP: f64 = 0.20;
+const RESPONSIVE_NEAR_MAX_COUNTS_PER_UPDATE: f64 = 72.0;
+const RESPONSIVE_TARGET_TRACK_MAX_AGE: u64 = 5;
 
 pub trait ConfigRepository {
     type Error: Error + Send + Sync + 'static;
@@ -562,78 +571,40 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     {
         control.remove(Value::String("humanized_motion".to_owned()));
     }
-    if schema_version >= 8 {
+    let migrated_responsive_profile = schema_version < CURRENT_SCHEMA_VERSION
+        && uses_legacy_generated_response_profile(&config.pipeline);
+    if migrated_responsive_profile {
+        apply_responsive_response_profile(&mut config.pipeline);
+    }
+
+    if schema_version >= CURRENT_SCHEMA_VERSION {
         return;
     }
 
-    let mut migrated_aggressive_profile = false;
-    let mut migrated_delay_unstable_far_gain = false;
     if schema_version < 6 {
-        let pipeline = &mut config.pipeline;
-        migrated_aggressive_profile = schema_version == 3
-            && pipeline.atan_scale_counts == 1_024.0
-            && pipeline.far_kp == 0.90
-            && pipeline.far_max_counts_per_update == 600.0
-            && pipeline.near_kp == 0.30
-            && pipeline.near_max_counts_per_update == 120.0;
-        if migrated_aggressive_profile {
-            pipeline.atan_scale_counts = 256.0;
-            pipeline.far_kp = 0.45;
-            pipeline.far_max_counts_per_update = 127.0;
-            pipeline.near_kp = 0.22;
-            pipeline.near_max_counts_per_update = 72.0;
-        }
-        migrated_delay_unstable_far_gain = pipeline.atan_scale_counts == 256.0
-            && pipeline.far_kp == 0.45
-            && pipeline.far_max_counts_per_update == 127.0
-            && pipeline.near_kp == 0.22
-            && pipeline.near_max_counts_per_update == 72.0;
-        if migrated_delay_unstable_far_gain {
-            pipeline.far_kp = 0.22;
-            pipeline.near_kp = 0.20;
-        }
-        pipeline.prediction_enabled = false;
+        config.pipeline.prediction_enabled = true;
     }
-    config.schema_version = 8;
+    config.schema_version = CURRENT_SCHEMA_VERSION;
 
     let Value::Mapping(root) = document else {
         return;
     };
     root.insert(
         Value::String("schema_version".to_owned()),
-        Value::Number(8_u64.into()),
+        Value::Number(u64::from(CURRENT_SCHEMA_VERSION).into()),
     );
-    if schema_version < 6 {
-        let pipeline = root
-            .entry(Value::String("pipeline".to_owned()))
-            .or_insert_with(|| Value::Mapping(Default::default()));
-        if let Value::Mapping(pipeline) = pipeline {
+    let pipeline = root
+        .entry(Value::String("pipeline".to_owned()))
+        .or_insert_with(|| Value::Mapping(Default::default()));
+    if let Value::Mapping(pipeline) = pipeline {
+        if schema_version < 6 {
             pipeline.insert(
                 Value::String("prediction_enabled".to_owned()),
-                Value::Bool(false),
+                Value::Bool(true),
             );
-            if migrated_delay_unstable_far_gain {
-                for (key, value) in [("far_kp", 0.22), ("near_kp", 0.20)] {
-                    pipeline.insert(
-                        Value::String(key.to_owned()),
-                        serde_yaml::to_value(value).expect("finite control migration value"),
-                    );
-                }
-            }
-            if migrated_aggressive_profile {
-                for (key, value) in [
-                    ("atan_scale_counts", 256.0),
-                    ("far_kp", 0.22),
-                    ("far_max_counts_per_update", 127.0),
-                    ("near_kp", 0.20),
-                    ("near_max_counts_per_update", 72.0),
-                ] {
-                    pipeline.insert(
-                        Value::String(key.to_owned()),
-                        serde_yaml::to_value(value).expect("finite control migration value"),
-                    );
-                }
-            }
+        }
+        if migrated_responsive_profile {
+            write_responsive_response_profile(pipeline);
         }
     }
     let control = root
@@ -656,6 +627,80 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
                 .or_insert_with(|| Value::Number(config.control.recoil.y_counts.into()));
         }
     }
+}
+
+fn uses_legacy_generated_response_profile(pipeline: &PipelineRuntimeConfig) -> bool {
+    response_profile_matches(
+        pipeline,
+        LEGACY_ATAN_SCALE_COUNTS,
+        0.22,
+        LEGACY_FAR_MAX_COUNTS_PER_UPDATE,
+        0.20,
+        LEGACY_NEAR_MAX_COUNTS_PER_UPDATE,
+    ) || response_profile_matches(
+        pipeline,
+        LEGACY_ATAN_SCALE_COUNTS,
+        0.45,
+        LEGACY_FAR_MAX_COUNTS_PER_UPDATE,
+        0.22,
+        LEGACY_NEAR_MAX_COUNTS_PER_UPDATE,
+    ) || response_profile_matches(pipeline, 1_024.0, 0.90, 600.0, 0.30, 120.0)
+}
+
+fn response_profile_matches(
+    pipeline: &PipelineRuntimeConfig,
+    atan_scale_counts: f64,
+    far_kp: f64,
+    far_max_counts_per_update: f64,
+    near_kp: f64,
+    near_max_counts_per_update: f64,
+) -> bool {
+    pipeline.atan_scale_counts == atan_scale_counts
+        && pipeline.far_kp == far_kp
+        && pipeline.far_max_counts_per_update == far_max_counts_per_update
+        && pipeline.near_kp == near_kp
+        && pipeline.near_max_counts_per_update == near_max_counts_per_update
+}
+
+fn apply_responsive_response_profile(pipeline: &mut PipelineRuntimeConfig) {
+    pipeline.atan_scale_counts = RESPONSIVE_ATAN_SCALE_COUNTS;
+    pipeline.far_kp = RESPONSIVE_FAR_KP;
+    pipeline.far_max_counts_per_update = RESPONSIVE_FAR_MAX_COUNTS_PER_UPDATE;
+    pipeline.near_kp = RESPONSIVE_NEAR_KP;
+    pipeline.near_max_counts_per_update = RESPONSIVE_NEAR_MAX_COUNTS_PER_UPDATE;
+    pipeline.prediction_enabled = true;
+    if pipeline.target_track_max_age == 2 {
+        pipeline.target_track_max_age = RESPONSIVE_TARGET_TRACK_MAX_AGE;
+    }
+}
+
+fn write_responsive_response_profile(pipeline: &mut Mapping) {
+    for (key, value) in [
+        ("atan_scale_counts", RESPONSIVE_ATAN_SCALE_COUNTS),
+        ("far_kp", RESPONSIVE_FAR_KP),
+        (
+            "far_max_counts_per_update",
+            RESPONSIVE_FAR_MAX_COUNTS_PER_UPDATE,
+        ),
+        ("near_kp", RESPONSIVE_NEAR_KP),
+        (
+            "near_max_counts_per_update",
+            RESPONSIVE_NEAR_MAX_COUNTS_PER_UPDATE,
+        ),
+    ] {
+        pipeline.insert(
+            Value::String(key.to_owned()),
+            serde_yaml::to_value(value).expect("finite responsive control value"),
+        );
+    }
+    pipeline.insert(
+        Value::String("prediction_enabled".to_owned()),
+        Value::Bool(true),
+    );
+    pipeline.insert(
+        Value::String("target_track_max_age".to_owned()),
+        Value::Number(RESPONSIVE_TARGET_TRACK_MAX_AGE.into()),
+    );
 }
 
 fn nested_section_has_fields(

@@ -749,7 +749,10 @@ fn filtered_classes_age_out_the_previous_track() {
 
 #[test]
 fn lost_track_cannot_produce_a_target_object_id() {
-    let mut core = TargetingCore::new(TargetingConfig::default());
+    let mut core = TargetingCore::new(TargetingConfig {
+        track_max_age: 2,
+        ..TargetingConfig::default()
+    });
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
     core.select(&[head], OBSERVATION_CENTER);
     // Two empty frames in a row force the lock to Lost; the next

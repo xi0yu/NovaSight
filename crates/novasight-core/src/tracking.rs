@@ -30,7 +30,7 @@ pub use kalman::KalmanConfig;
 use kalman::KalmanState;
 
 /// Timestamp-free replay fallback for expiring a non-matched track.
-pub const DEFAULT_TRACK_MAX_AGE: u64 = 2;
+pub const DEFAULT_TRACK_MAX_AGE: u64 = 5;
 pub const DEFAULT_TRACK_MAX_LOST_AGE_MS: f64 = 120.0;
 const TRACK_CONFIRM_HITS: u64 = 2;
 const IMMEDIATE_CONFIRM_CONFIDENCE: f32 = 0.75;

@@ -3,7 +3,7 @@
 Date: 2026-07-26
 
 Status: `dual_phase_atan_robust_predictive_v2` remains the serialized mainline
-ID for compatibility. Its production behavior is measured-error-only
+ID for compatibility. Its production behavior is single-target prediction plus
 dual-phase Atan control.
 
 ## Mainline Route
@@ -15,6 +15,7 @@ latest DetectionBatch
 -> shared bbox aim point
 -> frozen crosshair/geometry reference
 -> current measured ROI error
+-> bounded four-point / three-segment velocity prediction
 -> FAR / NEAR transition weight
 -> source/FOV/counts projection
 -> continuously blended counts-domain Atan response
@@ -24,10 +25,9 @@ latest DetectionBatch
 -> at most one move(dx, dy) per output tick
 ```
 
-The controller creates neither a future position nor a trajectory plan. A new
-observation replaces an unsent older command. `Kp + Atan + per-update limit`
-already forms the incremental closed-loop response; splitting it again would
-create a stale open-loop tail.
+The controller predicts only the current selected target. A new observation
+replaces an unsent older command, so prediction changes the next aim error
+instead of creating a queued trajectory.
 
 ## Target And Aim Inputs
 
@@ -45,7 +45,9 @@ different target point from the controller.
 
 ```text
 e_meas = current measured aim - crosshair
-e_ctrl = e_meas
+v = average(last three aim-position segments)
+prediction = clamp(v * horizon * confidence, dynamic_near_far_cap)
+e_ctrl = e_meas + prediction
 
 source_error = e_ctrl * roi_size / observation_size
 theta = atan(source_error / focal_length)
@@ -60,10 +62,8 @@ u = clamp(u, -limit, limit)
 
 The configured radial-error threshold is the center of a continuous transition,
 not a hard mode switch. Outside the 75%-125% transition band, the original
-NEAR or FAR response is unchanged. No velocity estimate, position prediction,
-D term or velocity feed-forward enters `e_ctrl` or `u`.
-The old `predictive_v2` identifier and zero-valued prediction telemetry remain
-only for compatibility.
+NEAR or FAR response is unchanged. Prediction is bounded before projection;
+the per-update count limit still owns the final device output ceiling.
 
 ## Quantization And Latest-Replace Delivery
 
@@ -86,36 +86,30 @@ range. It does not merge pending counts or split one command into a trajectory.
 ## Production Configuration
 
 ```yaml
-control:
-  active_algorithm: dual_phase_atan_robust_predictive_v2
-  algorithms:
-    dual_phase_atan_robust_predictive_v2:
-      schema_version: 9
-      prediction:
-        enabled: false
-      mode:
-        near_threshold_px: 12.0
-      atan:
-        scale_counts: 256.0
-        far:
-          kp: 0.45
-          max_counts_per_update: 127.0
-        near:
-          kp: 0.22
-          max_counts_per_update: 72.0
+schema_version: 9
+pipeline:
+  near_threshold_px: 12.0
+  atan_scale_counts: 256.0
+  far_kp: 0.30
+  far_max_counts_per_update: 127.0
+  near_kp: 0.20
+  near_max_counts_per_update: 72.0
+  prediction_enabled: true
+  prediction_lead_frames: 1.0
+  prediction_far_absolute_cap_px: 10.0
+  prediction_near_absolute_cap_px: 3.0
 ```
 
-The Rust root schema is version 6 and uses `pipeline.prediction_enabled: false`.
-Both runtimes migrate older configurations to prediction disabled, reject an
-attempt to enable it, and omit prediction/velocity tuning from public schemas.
+The Rust root schema is version 9 and uses `pipeline.prediction_enabled: true`.
+Older generated response profiles are migrated to the responsive baseline;
+custom response profiles are left intact.
 
 ## User-Facing Telemetry
 
 The useful control display is limited to selected target/class, measured aim,
-crosshair, current control error, dominant FAR/NEAR region, projected full counts, Atan
-demand, integer command, delivery state and block reason. Prediction is shown
-only as disabled. Internal compatibility fields are not presented as live
-motion measurements.
+crosshair, current control error, dominant FAR/NEAR region, prediction velocity,
+prediction offset, projected full counts, Atan demand, integer command,
+delivery state and block reason.
 
 ## Calibration Boundary
 

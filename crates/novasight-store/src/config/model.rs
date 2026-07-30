@@ -5,6 +5,8 @@ use novasight_core::tracking::KalmanConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
+pub const CURRENT_SCHEMA_VERSION: u32 = 9;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default = "default_schema_version")]
@@ -1018,7 +1020,7 @@ const fn default_atan_scale_counts() -> f64 {
 }
 
 const fn default_far_kp() -> f64 {
-    0.22
+    0.30
 }
 
 const fn default_far_max_counts_per_update() -> f64 {
@@ -1062,7 +1064,7 @@ const fn default_velocity_change_relative() -> f64 {
 }
 
 const fn default_prediction_enabled() -> bool {
-    false
+    true
 }
 
 const fn default_prediction_lead_frames() -> f64 {
@@ -1106,7 +1108,7 @@ const fn default_target_min_confidence() -> f32 {
 }
 
 const fn default_target_track_max_age() -> u64 {
-    2
+    5
 }
 const fn default_target_track_max_lost_age_ms() -> f64 {
     120.0
@@ -1728,7 +1730,7 @@ impl Default for PathConfig {
 }
 
 const fn default_schema_version() -> u32 {
-    8
+    CURRENT_SCHEMA_VERSION
 }
 
 fn default_server_host() -> String {

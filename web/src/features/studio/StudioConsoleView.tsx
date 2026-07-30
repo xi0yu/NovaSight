@@ -1326,7 +1326,7 @@ export function StudioConsoleView({
   const trackerMaxMatchDistance = readNumber(rustPipelineConfig.tracker_max_match_distance, 1.5);
   const trackerPositionCostWeight = readNumber(rustPipelineConfig.tracker_position_cost_weight, 0.75);
   const trackerIouCostWeight = readNumber(rustPipelineConfig.tracker_iou_cost_weight, 0.25);
-  const targetTrackMaxAge = readNumber(rustPipelineConfig.target_track_max_age, 2);
+  const targetTrackMaxAge = readNumber(rustPipelineConfig.target_track_max_age, 5);
   const targetLostGraceMs = readNumber(rustPipelineConfig.target_track_max_lost_age_ms, 120);
   const targetSwitchPreferenceAdvantage = readNumber(rustPipelineConfig.target_switch_min_preference_advantage, 0.08);
   const targetSwitchContinuityScore = readNumber(rustPipelineConfig.target_switch_min_continuity_score, 0.7);
@@ -1335,13 +1335,13 @@ export function StudioConsoleView({
   const dualPhaseFovX = readNumber(rustPipelineConfig.projection_fov_x_deg, 105);
   const dualPhaseCountsPer360 = readNumber(rustPipelineConfig.projection_counts_per_360, 9980);
   const dualPhaseNearThreshold = readNumber(rustPipelineConfig.near_threshold_px, 12);
-  const dualPhaseFarKp = readNumber(rustPipelineConfig.far_kp, 0.22);
+  const dualPhaseFarKp = readNumber(rustPipelineConfig.far_kp, 0.30);
   const dualPhaseNearKp = readNumber(rustPipelineConfig.near_kp, 0.20);
   const dualPhaseAtanScale = readNumber(rustPipelineConfig.atan_scale_counts, 256);
   const dualPhaseFarMaxCounts = readNumber(rustPipelineConfig.far_max_counts_per_update, 127);
   const dualPhaseNearMaxCounts = readNumber(rustPipelineConfig.near_max_counts_per_update, 72);
   const dualPhaseArrivalRadiusCounts = readNumber(rustPipelineConfig.arrival_radius_counts, 3);
-  const dualPhasePredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, false);
+  const dualPhasePredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, true);
   const dualPhasePredictionSmoothingFrames = readNumber(rustPipelineConfig.velocity_smoothing_frames, 3);
   const dualPhasePredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
   const velocitySpreadBasePxMs = readNumber(rustPipelineConfig.velocity_spread_base_px_ms, 0.12);
