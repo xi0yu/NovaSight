@@ -155,6 +155,8 @@ ROI 用来决定送入模型的画面区域。页面里可以调整 ROI 尺寸�
 data/models/
 ```
 
+这里的 `data/models/` 指当前正在运行的 `NovaSight/` 交付包目录下面的路径。例如启动 `out/package/NovaSight/NovaSight` 时，模型目录就是 `out/package/NovaSight/data/models/`，不是仓库根目录的 `data/models/`。
+
 推荐使用 `.engine` 模型文件。`.onnx` 文件可能会被目录识别，但当前正式运行主链以 `.engine` 为主要使用对象。
 
 启动主链前必须先完成一次模型切换。Studio 顶部或“模型推理”页面如果显示“未发布模型”，表示还没有 active deployment，主链不会启动。
@@ -349,7 +351,7 @@ data/models/
 
 ### 模型目录为空
 
-确认模型文件已经放入 `data/models/`，然后在“模型管理与切换”中点击“刷新模型”。
+确认模型文件已经放入当前运行包的 `data/models/`，然后在“模型管理与切换”中点击“刷新模型”。如果你是从源码仓库运行 `out/package/NovaSight/NovaSight`，目录应是 `out/package/NovaSight/data/models/`。
 
 ### 提示 no active model deployment
 

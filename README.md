@@ -41,7 +41,8 @@ entry.
 
 Install the JetPack/DeepStream development packages and Rust toolchain first.
 The Rust packager builds the three runtime binaries, builds the Web UI, seeds
-`data/novasight.yaml`, and validates the portable directory. It is an author
+`data/novasight.yaml`, copies model assets from workspace `data/models` into
+the package when present, and validates the portable directory. It is an author
 tool, not a user startup path. See
 [Portable Package Guide](docs/portable-package-guide.md) for the programmer,
 user, and test workflow split.

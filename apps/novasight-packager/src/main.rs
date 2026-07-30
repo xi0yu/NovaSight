@@ -195,6 +195,7 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
         &layout.bin.join(executable_name("novasightctl")),
     )?;
     copy_runtime_web_tree(&workspace.join("out/web"), &layout.web)?;
+    copy_model_asset_tree_if_present(&workspace.join("data/models"), &layout.data.join("models"))?;
     copy_file(
         &workspace.join("deploy/novasight.production.yaml"),
         &layout.data.join("novasight.yaml"),
@@ -364,6 +365,55 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
 
 fn copy_runtime_web_tree(source: &Path, destination: &Path) -> Result<()> {
     copy_runtime_web_tree_from_root(source, source, destination)
+}
+
+fn copy_model_asset_tree_if_present(source: &Path, destination: &Path) -> Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+    copy_model_asset_tree_from_root(source, source, destination)
+}
+
+fn copy_model_asset_tree_from_root(
+    model_root: &Path,
+    source: &Path,
+    destination: &Path,
+) -> Result<()> {
+    if !source.is_dir() {
+        bail!("{} is not a directory", source.display());
+    }
+    for entry in fs::read_dir(source).with_context(|| format!("read {}", source.display()))? {
+        let entry = entry.with_context(|| format!("read entry below {}", source.display()))?;
+        let source_path = entry.path();
+        let metadata = entry
+            .metadata()
+            .with_context(|| format!("inspect {}", source_path.display()))?;
+        if metadata.is_dir() {
+            copy_model_asset_tree_from_root(
+                model_root,
+                &source_path,
+                &destination.join(entry.file_name()),
+            )?;
+        } else if metadata.is_file() && should_package_model_asset_path(model_root, &source_path) {
+            copy_file(&source_path, &destination.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+fn should_package_model_asset_path(model_root: &Path, path: &Path) -> bool {
+    if path.strip_prefix(model_root).is_err() {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    name.ends_with(".engine")
+        || name.ends_with(".onnx")
+        || name.ends_with(".engine.manifest.json")
+        || name.ends_with(".onnx.manifest.json")
 }
 
 fn copy_runtime_web_tree_from_root(
@@ -577,5 +627,36 @@ mod tests {
             web_root,
             &web_root.join("assets/landing-abc123.js")
         ));
+    }
+
+    #[test]
+    fn model_asset_package_copies_engines_manifests_and_onnx_without_scripts() {
+        let root = temp_package_root("model-assets");
+        let source = root.join("source");
+        let destination = root.join("package/data/models");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("detector.engine"), b"engine").unwrap();
+        fs::write(
+            source.join("detector.engine.manifest.json"),
+            br#"{"manifest":true}"#,
+        )
+        .unwrap();
+        fs::write(source.join("candidate.onnx"), b"onnx").unwrap();
+        fs::write(source.join("batch_onnx2engine_run.sh"), b"script").unwrap();
+        fs::write(source.join("notes.txt"), b"notes").unwrap();
+        fs::write(source.join("nested/large.engine"), b"nested").unwrap();
+
+        copy_model_asset_tree_if_present(&source, &destination).unwrap();
+
+        assert_eq!(
+            fs::read(destination.join("detector.engine")).unwrap(),
+            b"engine"
+        );
+        assert!(destination.join("detector.engine.manifest.json").exists());
+        assert!(destination.join("candidate.onnx").exists());
+        assert!(destination.join("nested/large.engine").exists());
+        assert!(!destination.join("batch_onnx2engine_run.sh").exists());
+        assert!(!destination.join("notes.txt").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }

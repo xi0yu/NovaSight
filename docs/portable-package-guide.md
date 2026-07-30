@@ -47,6 +47,8 @@ The packager does all required assembly work:
 - copies binaries into `NovaSight` and `bin/`;
 - copies Web assets into `web/`;
 - seeds `data/novasight.yaml` from the packaged production template;
+- copies model assets from workspace `data/models` into package `data/models`
+  when they exist;
 - creates `data/models`, `data/runtime/deepstream`, `logs`, and `run`;
 - copies the bundled DeepStream tracker config;
 - validates that the package has the required runtime files.
@@ -92,6 +94,11 @@ NovaSight-owned runtime files stay inside the package:
 Removing the `NovaSight/` directory removes NovaSight-owned state. The normal
 portable path does not install systemd units, does not require root, and does
 not write to `/etc`, `/usr`, `/var/lib`, `/var/log`, or `/run/novasight`.
+
+When developing from the repository, place model assets in workspace
+`data/models` before packaging. The packager copies `.engine`, `.onnx`, and
+matching manifest files into `out/package/NovaSight/data/models`. Scripts and
+notes in that directory are not copied into the user package.
 
 ## Same-Path Testing
 
