@@ -55,7 +55,7 @@ cd NovaSight
 - 创建缺失的 `data/`、`logs/`、`run/` 目录。
 - 启动本机 NovaSight 后端服务。
 - 等待服务就绪。
-- 输出 NovaSight Studio 地址，并在有桌面浏览器时尝试自动打开。
+- 输出 `NovaSight Studio Web UI: ...` 地址，并在有桌面浏览器时尝试自动打开。
 - 保持终端运行；按 `Ctrl+C` 会关闭包内后台服务。
 
 如果浏览器没有自动打开，请使用终端输出的地址，或者打开 `run/ready.json`，复制里面的本机地址到浏览器。Jetson 没有桌面浏览器时，这是正常路径，不代表后端启动失败。

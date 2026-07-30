@@ -419,10 +419,16 @@ fn health_check(address: &str) -> bool {
 }
 
 fn open_studio(url: &str) {
-    println!("{url}");
+    println!("{}", studio_ready_message(url));
     if let Err(error) = open_browser(url) {
-        eprintln!("NOVASIGHT_BROWSER_OPEN_SKIPPED: {error:#}; open {url} manually");
+        eprintln!(
+            "NOVASIGHT_BROWSER_OPEN_SKIPPED: {error:#}; open the NovaSight Studio Web UI URL above manually"
+        );
     }
+}
+
+fn studio_ready_message(url: &str) -> String {
+    format!("NovaSight Studio Web UI: {url}")
 }
 
 #[cfg(target_os = "linux")]
@@ -511,6 +517,14 @@ mod tests {
                 Value::String(CONTROL_SOCKET.to_owned()),
             )
             .unwrap()
+        );
+    }
+
+    #[test]
+    fn studio_ready_message_names_the_web_ui() {
+        assert_eq!(
+            studio_ready_message("http://127.0.0.1:37279/"),
+            "NovaSight Studio Web UI: http://127.0.0.1:37279/"
         );
     }
 
