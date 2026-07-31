@@ -960,7 +960,7 @@ async fn apply_runtime_reloadable_config(
     if was_running {
         state.runtime.start().await?;
         update.message =
-            "configuration persisted and applied by restarting the runtime pipeline".to_owned();
+            "configuration persisted and applied by refreshing the runtime pipeline".to_owned();
     } else {
         update.message =
             "configuration persisted and installed for the next runtime start".to_owned();
