@@ -3,3 +3,4 @@ export * from "./NovaIcon";
 export * from "./StatusBadge";
 export * from "./ThemeGallery";
 export * from "./ThemeToggle";
+export * from "./themeRegistry";

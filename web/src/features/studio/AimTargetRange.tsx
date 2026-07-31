@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
 import mannequinTarget from "../../assets/aim-target/mannequin-target-v2.webp";
+import { ParameterNumberControl } from "./StudioControls";
 
 export type AimRole = "head" | "body" | "other";
 export type AimRoleRatios = Record<AimRole, number>;
@@ -125,35 +126,35 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
                     <span className="aim-role-guide-line before" aria-hidden="true" />
                   </span>
                   <button
-                aria-label={`${meta.label}瞄点，当前为框内 ${Math.round(draft[role] * 100)}%`}
-                aria-orientation="vertical"
-                aria-valuemax={100}
-                aria-valuemin={0}
-                aria-valuenow={Math.round(draft[role] * 100)}
-                className="aim-role-guide-handle"
-                disabled={disabled}
-                onKeyDown={(event) => handleKey(role, event)}
-                onPointerCancel={(event) => {
-                  draggingRef.current = null;
-                  event.currentTarget.releasePointerCapture(event.pointerId);
-                  setDraft(ratios);
-                }}
-                onPointerDown={(event) => beginDrag(role, event)}
-                onPointerMove={(event) => {
-                  if (draggingRef.current === role) {
-                    updateDraft(role, ratioFromPointer(role, event.clientY));
-                  }
-                }}
-                onPointerUp={(event) => {
-                  if (draggingRef.current === role) {
-                    const next = ratioFromPointer(role, event.clientY);
-                    draggingRef.current = null;
-                    event.currentTarget.releasePointerCapture(event.pointerId);
-                    commit(role, next);
-                  }
-                }}
-                role="slider"
-                type="button"
+                    aria-label={`${meta.label}瞄点，当前为框内 ${Math.round(draft[role] * 100)}%`}
+                    aria-orientation="vertical"
+                    aria-valuemax={100}
+                    aria-valuemin={0}
+                    aria-valuenow={Math.round(draft[role] * 100)}
+                    className="aim-role-guide-handle"
+                    disabled={disabled}
+                    onKeyDown={(event) => handleKey(role, event)}
+                    onPointerCancel={(event) => {
+                      draggingRef.current = null;
+                      event.currentTarget.releasePointerCapture(event.pointerId);
+                      setDraft(ratios);
+                    }}
+                    onPointerDown={(event) => beginDrag(role, event)}
+                    onPointerMove={(event) => {
+                      if (draggingRef.current === role) {
+                        updateDraft(role, ratioFromPointer(role, event.clientY));
+                      }
+                    }}
+                    onPointerUp={(event) => {
+                      if (draggingRef.current === role) {
+                        const next = ratioFromPointer(role, event.clientY);
+                        draggingRef.current = null;
+                        event.currentTarget.releasePointerCapture(event.pointerId);
+                        commit(role, next);
+                      }
+                    }}
+                    role="slider"
+                    type="button"
                   />
                   <span className="aim-role-guide-line after" aria-hidden="true" />
                 </div>
@@ -168,28 +169,27 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
         {ROLES.map((role) => {
           const meta = ROLE_META[role];
           return (
-            <label className={`aim-role-control aim-role-control-${role}`} key={role}>
-              <span><i />{meta.label}<small>{meta.caption}</small></span>
-              <span className="aim-role-control-input">
-                <button disabled={disabled || draft[role] <= 0} onClick={() => commit(role, draft[role] - 0.01)} type="button">−</button>
-                <input
-                  aria-label={`${meta.label}框内垂直瞄点百分比`}
-                  disabled={disabled}
-                  max={100}
-                  min={0}
-                  onChange={(event) => updateDraft(role, Number(event.target.value) / 100)}
-                  onBlur={() => commit(role, draft[role])}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") event.currentTarget.blur();
-                  }}
-                  step={1}
-                  type="number"
-                  value={Math.round(draft[role] * 100)}
-                />
-                <em>%</em>
-                <button disabled={disabled || draft[role] >= 1} onClick={() => commit(role, draft[role] + 0.01)} type="button">+</button>
+            <section className={`aim-role-control aim-role-control-${role}`} key={role}>
+              <span className="aim-role-control-heading">
+                <i />
+                <b>{meta.label}</b>
+                <small>{meta.caption}</small>
               </span>
-            </label>
+              <ParameterNumberControl
+                applyMode="save"
+                disabled={disabled}
+                kind="slider"
+                label="框内垂直瞄点"
+                max={100}
+                min={0}
+                onDraftChange={(next) => updateDraft(role, next / 100)}
+                onCommit={(next) => commit(role, next / 100)}
+                riskLevel="calibration"
+                step={1}
+                unit="%"
+                value={Math.round(ratios[role] * 100)}
+              />
+            </section>
           );
         })}
       </div>

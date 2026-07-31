@@ -74,6 +74,12 @@
   --signal-info: #1a73e8;
   --signal-attention: #b66a00;
   --signal-ink: #171217;
+  --role-head: var(--signal-target);
+  --role-head-fg: color-mix(in srgb, var(--role-head) 82%, var(--text-primary));
+  --role-body: var(--signal-compute);
+  --role-body-fg: color-mix(in srgb, var(--role-body) 82%, var(--text-primary));
+  --role-other: var(--signal-info);
+  --role-other-fg: color-mix(in srgb, var(--role-other) 82%, var(--text-primary));
   --selection-strong-bg: #171217;
   --selection-strong-fg: #fff8fa;
   --selection-strong-muted: #d9cbd1;
@@ -166,18 +172,54 @@
   --card-border: var(--border-default);
   --card-radius: var(--radius-4);
   --card-shadow: var(--shadow-card);
+  --control-field-bg: var(--bg-subtle);
+  --control-field-border: var(--border-subtle);
+  --control-field-bg-hover: var(--bg-hover);
+  --control-field-fg: var(--text-primary);
+  --control-field-muted: var(--text-secondary);
+  --control-chip-bg: var(--bg-surface);
+  --control-chip-border: var(--border-default);
+  --control-accent: var(--brand-primary);
+  --control-active-fg: var(--brand-primary-active);
+  --range-accent: var(--brand-primary);
+  --range-track-bg: var(--border-default);
+  --range-recommended-bg: color-mix(in srgb, var(--range-accent) 18%, var(--range-track-bg));
+  --segmented-bg: var(--bg-subtle);
+  --segmented-border: var(--border-default);
+  --segmented-active-bg: var(--bg-surface);
+  --segmented-active-fg: var(--control-active-fg);
+  --switch-off-bg: var(--bg-surface);
+  --switch-off-fg: var(--text-secondary);
+  --switch-on-bg: var(--brand-soft);
+  --switch-on-fg: var(--control-active-fg);
+  --overlay-scrim-bg: rgba(20, 14, 18, 0.42);
+  --overlay-scrim-strong-bg: rgba(17, 21, 31, 0.58);
   --theme-keyart: url("../assets/themes/elysia-sakura-keyart.webp");
   --theme-portrait: url("../assets/themes/elysia-sakura-portrait.webp");
   --theme-scene: url("../assets/themes/elysia-sakura-scene.webp");
   --theme-art-position: center bottom;
   --theme-art-opacity: 0.23;
   --theme-glow: rgba(232, 59, 87, 0.18);
+  --theme-choice-swatch-momo: linear-gradient(135deg, #fff8fb 12%, #ffc4d8 48%, #e73572 76%, #5f1534);
+  --theme-choice-swatch-elysia: linear-gradient(135deg, #fffafb 16%, #f4a9c0 58%, #a3264b);
+  --theme-choice-swatch-rem: linear-gradient(135deg, #ffffff 12%, #83bcea 58%, #244e83);
+  --theme-choice-swatch-lusha: linear-gradient(135deg, #fff8e6 12%, #be8336 55%, #4b2c1c);
+  --theme-choice-swatch-tayama: linear-gradient(135deg, #2a2528 10%, #9e1838 58%, #080709);
+  --theme-choice-art-momo: var(--theme-choice-swatch-momo);
+  --theme-choice-art-elysia: url("../assets/themes/elysia-sakura-portrait.webp");
+  --theme-choice-art-rem: url("../assets/themes/rem-azure-portrait.webp");
+  --theme-choice-art-lusha: url("../assets/themes/lusha-gilded-portrait.webp");
+  --theme-choice-art-tayama: url("../assets/themes/tayama-crimson-portrait.webp");
 
   /* Status component tokens */
   --status-normal-bg: var(--ns-green-50);
   --status-normal-border: var(--ns-green-100);
   --status-normal-fg: var(--ns-green-700);
   --status-normal-icon: var(--ns-green-500);
+  --status-success-bg: var(--status-normal-bg);
+  --status-success-border: var(--status-normal-border);
+  --status-success-fg: var(--status-normal-fg);
+  --status-success-icon: var(--status-normal-icon);
   --status-running-bg: var(--ns-blue-50);
   --status-running-border: var(--ns-blue-100);
   --status-running-fg: var(--ns-blue-700);
@@ -259,9 +301,15 @@
   --signal-ink: #3d1226;
   --button-radius: 8px;
   --card-radius: 8px;
-  --theme-keyart: url("../assets/themes/elysia-sakura-keyart.webp");
-  --theme-portrait: url("../assets/themes/elysia-sakura-portrait.webp");
-  --theme-scene: url("../assets/themes/elysia-sakura-scene.webp");
+  --theme-keyart:
+    radial-gradient(circle at 50% 18%, color-mix(in srgb, var(--selection-strong-fg) 72%, transparent), transparent 24%),
+    linear-gradient(135deg, var(--brand-border), var(--brand-primary));
+  --theme-portrait:
+    radial-gradient(circle at 50% 42%, var(--selection-strong-fg) 0 18%, transparent 19%),
+    linear-gradient(135deg, var(--brand-border), var(--brand-primary));
+  --theme-scene:
+    radial-gradient(circle at 20% 24%, color-mix(in srgb, var(--brand-primary) 24%, transparent), transparent 30%),
+    linear-gradient(135deg, var(--bg-elevated), var(--brand-soft));
   --theme-art-position: center bottom;
   --theme-art-opacity: 0.14;
   --theme-glow: rgba(231, 53, 114, 0.22);
@@ -370,6 +418,9 @@
   --card-border: #30252a;
   --input-bg: #0d0b0e;
   --input-border: #382a31;
+  --control-active-fg: var(--status-error-fg);
+  --segmented-active-fg: var(--control-active-fg);
+  --switch-on-fg: var(--control-active-fg);
   --selection-strong-bg: #261018;
   --selection-strong-fg: #fff7f9;
   --selection-strong-muted: #d8aebc;
@@ -378,6 +429,32 @@
   --signal-info: #6ca7ff;
   --signal-attention: #f0a83b;
   --signal-ink: #fff7f9;
+  --status-normal-bg: #142414;
+  --status-normal-border: #2f5f2c;
+  --status-normal-fg: #a9e87f;
+  --status-normal-icon: #8bcf16;
+  --status-running-bg: #111f33;
+  --status-running-border: #284f85;
+  --status-running-fg: #9ac4ff;
+  --status-running-icon: #6ca7ff;
+  --status-waiting-bg: #1f1b20;
+  --status-waiting-border: #3b333b;
+  --status-waiting-fg: #c0b3bb;
+  --status-waiting-icon: #aa949e;
+  --status-warning-bg: #2b2011;
+  --status-warning-border: #5c431e;
+  --status-warning-fg: #ffd18a;
+  --status-warning-icon: #f0a83b;
+  --status-error-bg: #2b1119;
+  --status-error-border: #5e2231;
+  --status-error-fg: #ff9caf;
+  --status-error-icon: #ff4d6d;
+  --status-disabled-bg: #171318;
+  --status-disabled-border: #30252a;
+  --status-disabled-fg: #8b7a82;
+  --status-disabled-icon: #705e66;
+  --overlay-scrim-bg: rgba(0, 0, 0, 0.62);
+  --overlay-scrim-strong-bg: rgba(0, 0, 0, 0.72);
   --surface-1: var(--bg-elevated);
   --surface-2: var(--bg-surface);
   --surface-3: var(--bg-subtle);

@@ -130,7 +130,7 @@
   font-size: var(--text-page-title);
   font-weight: 650;
   line-height: var(--leading-page-title);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   text-wrap: balance;
 }
 

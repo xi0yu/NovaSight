@@ -1,4 +1,15 @@
-import { ChangeEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  ChangeEvent,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent
+} from "react";
 
 import {
   CaptureCapabilitiesResponse,
@@ -62,7 +73,23 @@ import {
   type ActionConfirmationRequest
 } from "./ActionConfirmationDialog";
 import { AimTargetRange, type AimRole, type AimRoleRatios } from "./AimTargetRange";
-import { CommitNumberControl, InlineTextControl, NumberControl, TextControl } from "./StudioControls";
+import {
+  InlineNumberControl,
+  InlineTextControl,
+  ParameterNumberControl,
+  ParameterPresetControl,
+  SelectControl,
+  TextControl
+} from "./StudioControls";
+import {
+  PREDICTION_PRESETS,
+  buildAlgorithmParameterGroups,
+  buildTargetingParameterGroups,
+  type AlgorithmNumberParameter,
+  type DualPhasePipelineField,
+  type TargetingNumberParameter,
+  type TargetingPipelineField
+} from "./algorithmParameterModel";
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
 import { StudioPageHeader } from "./StudioPageHeader";
 import { KvCard, Metric, SectionTitle } from "./StudioPresentation";
@@ -72,6 +99,7 @@ import "./studio-settings.css";
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
 const CONTROL_ALGORITHM_LABEL = "双阶段 Atan 控制";
 const CONTROL_ALGORITHM_DESCRIPTION = "唯一生产控制器：单目标预测、角度投影、连续双阶段 Atan 响应、限幅与量化。";
+type KmnetTestMessageTone = "success" | "warning";
 const loadModelManagerDialog = () => import("../models/ModelManagerDialog");
 const ModelManagerDialog = lazy(() =>
   loadModelManagerDialog().then((module) => ({
@@ -139,60 +167,42 @@ type LaunchStatus = "idle" | "running" | "success" | "failed" | "cancelled";
 type LaunchStepState = "pending" | "running" | "success" | "failed";
 type ConfigDialogId = "class-config" | "target-weights" | "algorithm" | "target-advanced" | "tracker";
 type AlgorithmSettingsSection = "response" | "prediction" | "stability" | "calibration";
-type DualPhasePipelineField =
-  | "freshness_threshold_ms"
-  | "projection_fov_x_deg"
-  | "projection_counts_per_360"
-  | "near_threshold_px"
-  | "far_kp"
-  | "near_kp"
-  | "atan_scale_counts"
-  | "far_max_counts_per_update"
-  | "near_max_counts_per_update"
-  | "prediction_enabled"
-  | "velocity_smoothing_frames"
-  | "velocity_history_reset_gap_ms"
-  | "velocity_spread_base_px_ms"
-  | "velocity_spread_relative"
-  | "velocity_change_base_px_ms"
-  | "velocity_change_relative"
-  | "prediction_lead_frames"
-  | "prediction_far_absolute_cap_px"
-  | "prediction_far_base_cap_px"
-  | "prediction_far_relative_cap"
-  | "prediction_near_absolute_cap_px"
-  | "prediction_near_base_cap_px"
-  | "prediction_near_relative_cap"
-  | "arrival_radius_counts"
-  | "residual_cap"
-  | "actuation_feedback_delay_ms";
-
-type TargetingPipelineField =
-  | "target_fov_radius_px"
-  | "target_min_confidence"
-  | "target_track_max_age"
-  | "target_track_max_lost_age_ms"
-  | "tracker_max_match_distance"
-  | "tracker_position_cost_weight"
-  | "tracker_iou_cost_weight"
-  | "tracker_scale_cost_weight"
-  | "tracker_max_size_ratio"
-  | "tracker_max_association_dt_ms"
-  | "tracker_kalman_acceleration_noise"
-  | "tracker_kalman_measurement_noise_x"
-  | "tracker_kalman_measurement_noise_y"
-  | "tracker_kalman_nis_threshold"
-  | "tracker_kalman_nis_hard_reject"
-  | "target_selection_class_ratio"
-  | "target_switch_min_preference_advantage"
-  | "target_switch_min_continuity_score"
-  | "target_switch_delay_ms"
-  | "candidate_max_aspect_ratio";
-
 type LaunchStage = {
   title: string;
   caption: string;
 };
+
+const ALGORITHM_SETTINGS_SECTIONS: Array<{
+  id: AlgorithmSettingsSection;
+  label: string;
+  detail: string;
+  panelId: string;
+}> = [
+  {
+    id: "response",
+    label: "响应算法",
+    detail: "远近速度、过冲与 Atan 手感",
+    panelId: "algorithm-settings-response"
+  },
+  {
+    id: "prediction",
+    label: "目标预测",
+    detail: "移动目标跟随、提前量与可信度",
+    panelId: "algorithm-settings-prediction"
+  },
+  {
+    id: "stability",
+    label: "到位与输出",
+    detail: "临近抖动、单次限幅与反馈等待",
+    panelId: "algorithm-settings-stability"
+  },
+  {
+    id: "calibration",
+    label: "标定与时效",
+    detail: "FOV、设备 counts 与过期画面",
+    panelId: "algorithm-settings-calibration"
+  }
+];
 
 const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
 const LAUNCH_STATUS_REQUEST_TIMEOUT_MS = 15000;
@@ -406,6 +416,10 @@ function finiteNumber(value: unknown): number | null {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function numbersClose(left: number, right: number, tolerance = 0.000_001): boolean {
+  return Math.abs(left - right) <= tolerance;
 }
 
 function readString(value: unknown, fallback = ""): string {
@@ -718,6 +732,7 @@ export function StudioConsoleView({
   const [kmnetTestDx, setKmnetTestDx] = useState(10);
   const [kmnetTestDy, setKmnetTestDy] = useState(0);
   const [kmnetTestMessage, setKmnetTestMessage] = useState("");
+  const [kmnetTestMessageTone, setKmnetTestMessageTone] = useState<KmnetTestMessageTone>("warning");
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [errorCenterOpen, setErrorCenterOpen] = useState(false);
@@ -798,6 +813,35 @@ export function StudioConsoleView({
     setDialogSaveError(null);
   }, [setConfigDialogVisibility]);
 
+  const focusAlgorithmSettingsSection = useCallback((section: AlgorithmSettingsSection) => {
+    setAlgorithmSettingsSection(section);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`algorithm-settings-${section}-tab`)?.focus();
+    });
+  }, []);
+
+  const handleAlgorithmSettingsTabKeyDown = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    const currentIndex = ALGORITHM_SETTINGS_SECTIONS.findIndex((section) => section.id === algorithmSettingsSection);
+    if (currentIndex < 0) {
+      return;
+    }
+    const lastIndex = ALGORITHM_SETTINGS_SECTIONS.length - 1;
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = currentIndex === lastIndex ? 0 : currentIndex + 1;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = currentIndex === 0 ? lastIndex : currentIndex - 1;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = lastIndex;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    focusAlgorithmSettingsSection(ALGORITHM_SETTINGS_SECTIONS[nextIndex].id);
+  }, [algorithmSettingsSection, focusAlgorithmSettingsSection]);
+
   const openConfigDialog = useCallback((dialog: ConfigDialogId) => {
     if (dialogSavingRef.current || pendingConfigWritesRef.current > 0) {
       return;
@@ -854,7 +898,7 @@ export function StudioConsoleView({
       reportSuccess(
         "配置已保存",
         result.restart_required
-          ? "新参数已写入配置；重启 novasightd 后进入运行主链。"
+          ? "新参数已写入配置；仍有进程级配置等待 novasightd 重启。"
           : "新参数已经应用。",
         "config-dialog"
       );
@@ -2522,7 +2566,6 @@ export function StudioConsoleView({
         false,
         { optimistic: false, rethrow: true }
       );
-      return;
     }
     setConfirmationRequest({
       eyebrow: "物理输出",
@@ -2683,6 +2726,188 @@ export function StudioConsoleView({
       await updateConfigField("pipeline", key, value);
     },
     [updateConfigField]
+  );
+
+  const updateDualPhaseFields = useCallback(
+    async (fields: Partial<Record<DualPhasePipelineField, RuntimeConfigValue>>) => {
+      const entries = Object.entries(fields).filter((entry): entry is [DualPhasePipelineField, RuntimeConfigValue] => entry[1] !== undefined);
+      if (entries.length === 0) {
+        return;
+      }
+      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+      const next = base ? normalizeRuntimeConfig(base) : null;
+      if (!next) {
+        return;
+      }
+      const pipeline = {
+        ...asRecord(next.pipeline)
+      };
+      for (const [key, value] of entries) {
+        pipeline[key] = value;
+      }
+      next.pipeline = pipeline as RuntimeConfig[string];
+      if (activeConfigDialogRef.current !== null) {
+        stageConfigDialogDraft(next);
+        return;
+      }
+      for (const [key, value] of entries) {
+        await updateConfigField("pipeline", key, value);
+      }
+    },
+    [runtimeConfig, stageConfigDialogDraft, updateConfigField]
+  );
+
+  const {
+    responseParameters,
+    predictionCoreParameters,
+    predictionConfidenceParameters,
+    predictionCapParameters,
+    stabilityParameters,
+    calibrationParameters
+  } = buildAlgorithmParameterGroups({
+    dualPhaseNearKp,
+    dualPhaseFarKp,
+    dualPhaseNearThreshold,
+    dualPhaseAtanScale,
+    actuationFeedbackDelayMs,
+    dualPhasePredictionLeadFrames,
+    dualPhasePredictionSmoothingFrames,
+    dualPhasePredictionHistoryResetGapMs,
+    velocitySpreadBasePxMs,
+    velocitySpreadRelative,
+    velocityChangeBasePxMs,
+    velocityChangeRelative,
+    dualPhasePredictionFarCapPx,
+    dualPhasePredictionFarBaseCapPx,
+    dualPhasePredictionFarRelativeCap,
+    dualPhasePredictionNearCapPx,
+    dualPhasePredictionNearBaseCapPx,
+    dualPhasePredictionNearRelativeCap,
+    dualPhaseNearMaxCounts,
+    dualPhaseFarMaxCounts,
+    dualPhaseArrivalRadiusCounts,
+    residualCap,
+    dualPhaseFovX,
+    dualPhaseCountsPer360,
+    freshnessThresholdMs
+  });
+
+  const predictionValuesByField: Partial<Record<DualPhasePipelineField, number>> = {
+    prediction_lead_frames: dualPhasePredictionLeadFrames,
+    velocity_smoothing_frames: dualPhasePredictionSmoothingFrames,
+    velocity_history_reset_gap_ms: dualPhasePredictionHistoryResetGapMs
+  };
+  const predictionPresetOptions = PREDICTION_PRESETS.map((preset) => ({
+    id: preset.id,
+    label: preset.label,
+    detail: preset.detail,
+    active: Object.entries(preset.values).every(([key, value]) => {
+      const current = predictionValuesByField[key as DualPhasePipelineField];
+      return typeof current === "number" && numbersClose(current, value, 0.001);
+    }),
+    onSelect: () => updateDualPhaseFields(preset.values)
+  }));
+  const activePredictionPreset = predictionPresetOptions.find((option) => option.active);
+  const algorithmTuningBrief: Array<{
+    id: AlgorithmSettingsSection;
+    label: string;
+    value: string;
+    detail: string;
+    icon: Parameters<typeof NovaIcon>[0]["name"];
+  }> = [
+    {
+      id: "response",
+      label: "响应",
+      value: `NEAR ${formatNumber(dualPhaseNearKp, 3)} · FAR ${formatNumber(dualPhaseFarKp, 3)}`,
+      detail: `过渡 ${formatNumber(dualPhaseNearThreshold, 1)} px · Atan ${formatNumber(dualPhaseAtanScale, 1)}`,
+      icon: "response-curve"
+    },
+    {
+      id: "prediction",
+      label: "预测",
+      value: dualPhasePredictionEnabled ? activePredictionPreset?.label ?? "自定义" : "关闭",
+      detail: dualPhasePredictionEnabled
+        ? `提前 ${formatNumber(dualPhasePredictionLeadFrames, 1)} 帧 · 平滑 ${formatNumber(dualPhasePredictionSmoothingFrames, 1)} 帧`
+        : "当前观测直接进入控制器",
+      icon: "target"
+    },
+    {
+      id: "stability",
+      label: "限制",
+      value: `NEAR ${formatNumber(dualPhaseNearMaxCounts, 0)} · FAR ${formatNumber(dualPhaseFarMaxCounts, 0)}`,
+      detail: `到位 ${formatNumber(dualPhaseArrivalRadiusCounts, 1)} counts · 残差 ${formatNumber(residualCap, 2)}`,
+      icon: "control"
+    },
+    {
+      id: "calibration",
+      label: "标定",
+      value: `${formatNumber(dualPhaseFovX, 1)}° · ${formatNumber(dualPhaseCountsPer360, 0)} counts`,
+      detail: `观测最大帧龄 ${formatNumber(freshnessThresholdMs, 1)} ms`,
+      icon: "settings"
+    }
+  ];
+
+  const renderAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) => (
+    <ParameterNumberControl
+      key={parameter.key}
+      label={parameter.label}
+      detail={parameter.detail}
+      value={parameter.value}
+      min={parameter.min}
+      max={parameter.max}
+      recommendedMin={parameter.recommendedMin}
+      recommendedMax={parameter.recommendedMax}
+      step={parameter.step}
+      unit={parameter.unit}
+      kind={parameter.kind}
+      applyMode={parameter.applyMode}
+      riskLevel={parameter.riskLevel}
+      onCommit={(value) => updateDualPhaseField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
+    />
+  );
+
+  const {
+    targetAdvancedParameters,
+    trackerCoreParameters,
+    trackerKalmanParameters
+  } = buildTargetingParameterGroups({
+    targetMinConfidence,
+    candidateRatioMaxAspect,
+    targetSwitchPreferenceAdvantage,
+    targetSwitchContinuityScore,
+    targetSwitchDelayMs,
+    trackerMaxMatchDistance,
+    trackerPositionCostWeight,
+    trackerIouCostWeight,
+    trackerScaleCostWeight,
+    trackerMaxSizeRatio,
+    trackerMaxAssociationDtMs,
+    targetTrackMaxAge,
+    targetLostGraceMs,
+    trackerKalmanAccelerationNoise,
+    trackerKalmanMeasurementNoiseX,
+    trackerKalmanMeasurementNoiseY,
+    trackerKalmanNisThreshold,
+    trackerKalmanNisHardReject
+  });
+
+  const renderTargetingNumberParameter = (parameter: TargetingNumberParameter) => (
+    <ParameterNumberControl
+      key={parameter.key}
+      label={parameter.label}
+      detail={parameter.detail}
+      value={parameter.value}
+      min={parameter.min}
+      max={parameter.max}
+      recommendedMin={parameter.recommendedMin}
+      recommendedMax={parameter.recommendedMax}
+      step={parameter.step}
+      unit={parameter.unit}
+      kind={parameter.kind}
+      applyMode={parameter.applyMode}
+      riskLevel={parameter.riskLevel}
+      onCommit={(value) => updatePipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
+    />
   );
 
   const handleLearnCrosshair = useCallback(async () => {
@@ -3052,8 +3277,10 @@ export function StudioConsoleView({
     setLocalError(null);
     try {
       const result = await updateConfigSection("hardware", KMNET_RECOMMENDED);
+      const needsRestart = result?.restart_required;
+      setKmnetTestMessageTone(needsRestart ? "warning" : "success");
       setKmnetTestMessage(
-        result?.restart_required
+        needsRestart
           ? "kmNet 参数已保存；请重启 novasightd，使新的物理设备适配器生效。"
           : "kmNet 参数已经是推荐值。"
       );
@@ -3108,11 +3335,13 @@ export function StudioConsoleView({
           setConfigDraft(applied);
           onRuntimeConfigChange(applied);
         }
+        setKmnetTestMessageTone("success");
         setKmnetTestMessage(
           "kmNet 已断开；采集、推理与目标计算继续运行，物理偏移输出已关闭。"
         );
       } else {
         await connectKmNet();
+        setKmnetTestMessageTone("success");
         setKmnetTestMessage("kmNet 连接成功；若偏移输出已允许，新的实时命令现在可以发送。");
       }
       await onRefresh();
@@ -3146,13 +3375,14 @@ export function StudioConsoleView({
         Math.round(dx),
         Math.round(dy)
       );
-      const status = asRecord(result.status);
       const metadata = asRecord(result.metadata);
       const stepsSent = readNumber(result.steps_sent, result.sent === true ? 1 : 0);
       const apiName = readString(metadata.api_name, "rust_pointer_device_send");
+      const sent = result.sent === true;
+      setKmnetTestMessageTone(sent ? "success" : "warning");
       setKmnetTestMessage(
-        result.sent === true
-          ? `已通过 ${apiName} 发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/1 步 · 诊断累计 ${readNumber(status.diagnostic_move_count, 0)} 次`
+        sent
+          ? `已通过 ${apiName} 发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/1 步`
           : `未发送 raw：${readString(result.message, "未知原因")} · ${stepsSent}/1 步`
       );
       await onRefresh();
@@ -3628,28 +3858,36 @@ export function StudioConsoleView({
             <Metric title="采集状态" value={captureStatusText} small={capture?.device || configuredCaptureDevice || "等待设备"} />
             <Metric title="主链输入 FPS" value={formatOptionalNumber(nvinferInputFps)} small="nvinfer sink 有效输入" />
             <Metric title="配置输入 FPS" value={formatOptionalNumber(configuredCaptureFps, 0)} small="配置值 · 非实时测量" />
-            <Metric title="输入累计" value={formatOptionalInteger(statistics?.nvinfer_input_counter)} small="当前运行周期" />
+            <Metric title="ROI 应用" value={roiApplyLabel} small={runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : "等待运行 ROI"} />
           </div>
           <div className="console-grid2 capture-config-grid compact-content-grid">
               <div className="console-card">
                 <SectionTitle title="采集设备" />
-                <label>视频设备</label>
-                <input
+                <TextControl
+                  label="视频设备"
+                  detail="更换设备路径后先检测能力；启动主链时提交当前待选设备。"
                   value={device}
-                  onChange={(event) => {
-                    setDevice(event.target.value);
+                  applyMode="launch"
+                  onCommit={(value) => {
+                    setDevice(value);
                     setCaps(null);
                     setSelectedChoiceId("");
                   }}
                 />
-                <label>采集格式</label>
                 <div className="capture-format-control">
-                  <select value={selectedChoice ? choiceId(selectedChoice) : ""} onChange={(event) => setSelectedChoiceId(event.target.value)}>
-                    {choices.map((choice) => (
-                      <option key={choiceId(choice)} value={choiceId(choice)}>{choiceLabel(choice)}</option>
-                    ))}
-                    {choices.length === 0 ? <option>请先检测设备能力</option> : null}
-                  </select>
+                  <SelectControl
+                    label="采集格式"
+                    detail={caps ? "从设备实际返回的格式中选择；启动主链时提交。" : "未检测前使用已保存格式；更换采集卡后建议重新检测。"}
+                    value={selectedChoice ? choiceId(selectedChoice) : ""}
+                    applyMode="launch"
+                    options={choices.length > 0
+                      ? choices.map((choice) => ({
+                          value: choiceId(choice),
+                          label: choiceLabel(choice)
+                        }))
+                      : [{ value: "", label: "请先检测设备能力", disabled: true }]}
+                    onCommit={setSelectedChoiceId}
+                  />
                   <button className="console-button secondary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
                     <NovaIcon name="refresh" size={15} />
                     {busy === "caps" ? "检测中..." : "检测设备能力"}
@@ -3660,49 +3898,44 @@ export function StudioConsoleView({
                     ? `已读取 ${choices.length} 组设备格式；更换采集卡或设备路径后请重新检测。`
                     : "当前使用已保存的采集格式，不会在打开页面时自动探测设备。"}
                 </p>
-                <label>推理画面预览</label>
-                <div className="mini-segmented" role="group" aria-label="推理画面预览帧率">
-                  {[15, 30].map((fps) => (
-                    <button
-                      className={previewFps === fps ? "active" : ""}
-                      disabled={busy === "limits.stream_fps"}
-                      key={fps}
-                      onClick={() => void updateConfigField("limits", "stream_fps", fps)}
-                      type="button"
-                    >
-                      {fps}fps
-                    </button>
-                  ))}
-                </div>
-                <p className="console-section-note">
-                  这是 NVJPEG 预览分支的最高帧率；远程观看时还可以在画面上选择省流档。
-                </p>
+                <ParameterPresetControl
+                  label="推理画面预览"
+                  detail="NVJPEG 预览分支最高帧率；远程观看时还可以在画面上选择省流档。"
+                  options={[15, 30].map((fps) => ({
+                    id: `preview-${fps}`,
+                    label: `${fps}fps`,
+                    detail: fps === 15 ? "省带宽" : "更顺滑",
+                    active: previewFps === fps,
+                    disabled: busy === "limits.stream_fps",
+                    onSelect: () => updateConfigField("limits", "stream_fps", fps)
+                  }))}
+                />
               </div>
 
               <div className="console-card">
                 <SectionTitle title="ROI 裁剪" />
-                <label>ROI 尺寸</label>
-                <CommitNumberControl
+                <ParameterNumberControl
+                  label="ROI 尺寸"
+                  detail="主链按 ROI 正中心裁剪后送入推理；尺寸越大覆盖越广，越小目标细节越密。"
                   value={roiSize}
                   min={256}
                   max={640}
                   step={16}
-                  digits={0}
+                  unit="px"
                   onCommit={handleCenteredRoiSizeChange}
                 />
-                <div className="mini-segmented roi-size-segmented" role="group" aria-label="ROI 尺寸">
-                  {ROI_SIZE_CHOICES.map((size) => (
-                    <button
-                      className={roiSize === size ? "active" : ""}
-                      disabled={busy === "roi.size" || busy === "capture.roi"}
-                      key={size}
-                      onClick={() => void handleCenteredRoiSizeChange(size)}
-                      type="button"
-                    >
-                      {size}
-                    </button>
-                  ))}
-                </div>
+                <ParameterPresetControl
+                  label="ROI 快捷尺寸"
+                  detail="只改中心裁剪尺寸；采集源分辨率不变。"
+                  options={ROI_SIZE_CHOICES.map((size) => ({
+                    id: `roi-${size}`,
+                    label: `${size}`,
+                    detail: size <= 320 ? "近距细节" : size >= 560 ? "大视野" : "平衡",
+                    active: roiSize === size,
+                    disabled: busy === "roi.size" || busy === "capture.roi",
+                    onSelect: () => handleCenteredRoiSizeChange(size)
+                  }))}
+                />
                 <div className="console-kv compact-kv">
                   <span>源画面</span><b>{sourceWidth > 0 ? `${sourceWidth}x${sourceHeight}` : NO_SAMPLE}</b>
                   <span>配置 ROI</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}, ${rustControlPlane ? `${configuredRoiWidth}x${configuredRoiHeight}` : `${roiSize}x${roiSize}`}` : NO_SAMPLE}</b>
@@ -3729,7 +3962,6 @@ export function StudioConsoleView({
               <SectionTitle title="主链输入健康" />
               <div className="console-kv">
                 <span>nvinfer 输入 FPS</span><b>{formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
-                <span>nvinfer 输入累计</span><b>{formatOptionalInteger(statistics?.nvinfer_input_counter)}</b>
                 <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
                 <span>统计状态</span><b>{runtimeMetricsStatus}</b>
                 <span>说明</span><b>当前后端未提供采集卡原始 FPS 与协商 Caps</b>
@@ -3759,22 +3991,26 @@ export function StudioConsoleView({
           <div className="console-grid2 inference-config-grid">
             <div className="console-card">
               <SectionTitle title="推理参数" />
-              <label>配置置信度</label>
-              <CommitNumberControl
+              <ParameterNumberControl
+                label="配置置信度"
+                detail="低于该分数的检测框会被过滤；调低更敏感，调高更干净。"
                 value={confidence}
                 min={0}
                 max={1}
+                recommendedMin={0.05}
+                recommendedMax={0.9}
                 step={0.01}
-                digits={2}
                 onCommit={(value) => updateConfigField("inference", "confidence_threshold", value)}
               />
-              <label>配置 NMS</label>
-              <CommitNumberControl
+              <ParameterNumberControl
+                label="配置 NMS"
+                detail="同一目标附近的重叠框会按该阈值合并；过低容易误删，过高容易重复。"
                 value={nms}
                 min={0}
                 max={1}
+                recommendedMin={0.1}
+                recommendedMax={0.9}
                 step={0.01}
-                digits={2}
                 onCommit={(value) => updateConfigField("inference", "nms_threshold", value)}
               />
               <div className="console-kv compact-kv">
@@ -3933,7 +4169,7 @@ export function StudioConsoleView({
                   </button>
                   <small>
                     {rustControlPlane
-                      ? "保留已有选择，并加入本帧检测到的 cls；保存后重启主链生效。"
+                      ? "保留已有选择，并加入本帧检测到的 cls；保存后进入当前目标选择配置。"
                       : "保留已有选择，并加入本帧检测到的 cls；保存后立即热更新。"}
                   </small>
                 </div>
@@ -3991,7 +4227,6 @@ export function StudioConsoleView({
                 <span>不发包原因</span><b>{controlNoSendReason || NO_SAMPLE}</b>
                 <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
                 <span>发送语义</span><b>仅保留最新观测</b>
-                <span>设备接受累计</span><b>{formatOptionalInteger(acceptedCommandCount)}</b>
                 <span>最近设备已接受</span><b>{hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE}</b>
                 <span>主链设备通道</span><b>{kmnetRuntimeConnectionLabel}</b>
               </div>
@@ -4050,7 +4285,7 @@ export function StudioConsoleView({
               </div>
               <ModuleSwitch
                 label="启用 X / Y 目标预测"
-                detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。保存后重启主链生效。"
+                detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。保存后进入实时控制配置。"
                 enabled={dualPhasePredictionEnabled}
                 onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)}
               />
@@ -4089,12 +4324,16 @@ export function StudioConsoleView({
                   <span>生产控制器</span><b>{CONTROL_ALGORITHM_LABEL}</b>
                 </div>
                 <p className="console-section-note">{CONTROL_ALGORITHM_DESCRIPTION}</p>
-                <label>触发方式</label>
-                <select value={triggerMode} onChange={(event) => void updateConfigField("control", "trigger_mode", event.target.value)}>
-                  <option value="hardware">kmNet 硬件按键触发</option>
-                  <option value="always">检测到目标后自动控制</option>
-                </select>
-                <p className="console-section-note">硬件触发直接使用 daemon 缓存的 kmNet 按键状态；自动控制只要求存在合格目标。</p>
+                <SelectControl
+                  label="触发方式"
+                  detail="硬件触发使用 daemon 缓存的 kmNet 按键状态；自动控制只要求存在合格目标。"
+                  value={triggerMode}
+                  options={[
+                    { value: "hardware", label: "kmNet 硬件按键触发" },
+                    { value: "always", label: "检测到目标后自动控制" }
+                  ]}
+                  onCommit={(value) => updateConfigField("control", "trigger_mode", value)}
+                />
                 <div className="control-aim-source-note">
                   <span>
                     <b>瞄点规则由三种类型统一提供</b>
@@ -4201,32 +4440,102 @@ export function StudioConsoleView({
                 <details className="crosshair-advanced-settings">
                   <summary>采样高级设置</summary>
                   <div className="advanced-settings-grid">
-                    <NumberControl label="中心搜索区 px" detail="只截取 ROI 正中心的小区域，不扫描整幅画面。" value={crosshairSearchSize} min={32} max={Math.max(32, roiSize)} step={2} onCommit={(value) => updateConfigField("crosshair", "search_size", Math.round(value / 2) * 2)} />
-                    <NumberControl label="观测频率 Hz" detail="已与推理支路隔离；10 Hz 通常足够验证固定 HUD 准星。" value={crosshairSampleHz} min={1} max={30} step={1} onCommit={(value) => updateConfigField("crosshair", "sample_hz", Math.round(value))} />
-                    <NumberControl label="学习采样帧数" detail="使用多帧中位图减少动态背景对模板的污染。" value={crosshairSampleFrames} min={3} max={15} step={1} onCommit={(value) => updateConfigField("crosshair", "sample_frames", Math.round(value))} />
+                    <ParameterNumberControl
+                      label="中心搜索区"
+                      detail="只截取 ROI 正中心的小区域，不扫描整幅画面。"
+                      value={crosshairSearchSize}
+                      min={32}
+                      max={Math.max(32, roiSize)}
+                      step={2}
+                      unit="px"
+                      kind="stepper"
+                      riskLevel="advanced"
+                      onCommit={(value) => updateConfigField("crosshair", "search_size", Math.round(value / 2) * 2)}
+                    />
+                    <ParameterNumberControl
+                      label="观测频率"
+                      detail="已与推理支路隔离；10 Hz 通常足够验证固定 HUD 准星。"
+                      value={crosshairSampleHz}
+                      min={1}
+                      max={30}
+                      step={1}
+                      unit="Hz"
+                      kind="stepper"
+                      riskLevel="advanced"
+                      onCommit={(value) => updateConfigField("crosshair", "sample_hz", Math.round(value))}
+                    />
+                    <ParameterNumberControl
+                      label="学习采样帧数"
+                      detail="使用多帧中位图减少动态背景对模板的污染。"
+                      value={crosshairSampleFrames}
+                      min={3}
+                      max={15}
+                      step={1}
+                      unit="帧"
+                      kind="stepper"
+                      riskLevel="advanced"
+                      onCommit={(value) => updateConfigField("crosshair", "sample_frames", Math.round(value))}
+                    />
                   </div>
                 </details>
               </div>
 
               <div className="console-card">
-                  <SectionTitle title="Y 轴压枪" />
-                  <ModuleSwitch label="启用压枪" detail="真实左键按下后按设定间隔，把 +Y 与最新安全画面的跟踪量合并；每张画面最多发送一条 move。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
-                  <ModuleSwitch label="只在存在目标时压枪" detail="开启后要求当前有效目标；单帧漏检时沿用“目标丢失保持”窗口，但不会用预测框继续跟踪。关闭后，无目标时到期压枪量也能组成当轮唯一 move。" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
-                  {recoilEnabled ? (
-                    <details className="crosshair-advanced-settings">
-                      <summary>间隔叠加参数</summary>
-                      <p className="console-section-note">首次开火先等待一个完整间隔；达到间隔后只叠加一次，不补发错过的次数。发送失败也不会提前消耗本次压枪机会。</p>
-                      <div className="advanced-settings-grid">
-                        <NumberControl label="压枪叠加间隔 ms" detail="距离上一次成功包含压枪量的 move 达到该时长后，在下一张安全新画面中再次叠加；不会用独立定时器补发。" value={recoilIntervalMs} min={1} max={5000} step={1} onCommit={(value) => updateControlGroupField("recoil", "interval_ms", Math.round(value))} />
-                        <NumberControl label="每次叠加 +Y counts" detail="达到间隔时合入当轮 Y 输出的正向压枪量。" value={recoilYCounts} min={1} max={32767} step={1} onCommit={(value) => updateControlGroupField("recoil", "y_counts", Math.round(value))} />
-                      </div>
-                    </details>
-                  ) : null}
-                </div>
+                <SectionTitle title="Y 轴压枪" />
+                <ModuleSwitch label="启用压枪" detail="真实左键按下后按设定间隔，把 +Y 与最新安全画面的跟踪量合并；每张画面最多发送一条 move。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
+                <ModuleSwitch label="只在存在目标时压枪" detail="开启后要求当前有效目标；单帧漏检时沿用“目标丢失保持”窗口，但不会用预测框继续跟踪。关闭后，无目标时到期压枪量也能组成当轮唯一 move。" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
+                {recoilEnabled ? (
+                  <details className="crosshair-advanced-settings">
+                    <summary>间隔叠加参数</summary>
+                    <p className="console-section-note">首次开火先等待一个完整间隔；达到间隔后只叠加一次，不补发错过的次数。发送失败也不会提前消耗本次压枪机会。</p>
+                    <div className="advanced-settings-grid">
+                      <ParameterNumberControl
+                        label="压枪叠加间隔"
+                        detail="距离上一次成功包含压枪量的 move 达到该时长后，在下一张安全新画面中再次叠加；不会用独立定时器补发。"
+                        value={recoilIntervalMs}
+                        min={1}
+                        max={5000}
+                        recommendedMin={1}
+                        recommendedMax={250}
+                        step={1}
+                        unit="ms"
+                        kind="stepper"
+                        riskLevel="advanced"
+                        onCommit={(value) => updateControlGroupField("recoil", "interval_ms", Math.round(value))}
+                      />
+                      <ParameterNumberControl
+                        label="每次叠加 +Y"
+                        detail="达到间隔时合入当轮 Y 输出的正向压枪量。"
+                        value={recoilYCounts}
+                        min={1}
+                        max={32767}
+                        recommendedMin={1}
+                        recommendedMax={200}
+                        step={1}
+                        unit="counts"
+                        kind="stepper"
+                        riskLevel="advanced"
+                        onCommit={(value) => updateControlGroupField("recoil", "y_counts", Math.round(value))}
+                      />
+                    </div>
+                  </details>
+                ) : null}
+              </div>
 
               <div className="console-card">
                 <SectionTitle title="目标选择与切换 · 通用参数" />
-                <NumberControl label="目标选择半径（640 基准 px）" detail="以 640×640 ROI 为基准；运行时按当前 ROI 尺寸同比缩放，保证 320～640 ROI 使用一致的相对选择范围。" value={targetFovRadiusPx} min={1} max={640} step={1} onCommit={(value) => updatePipelineField("target_fov_radius_px", value)} />
+                <ParameterNumberControl
+                  label="目标选择半径（640 基准）"
+                  detail="以 640×640 ROI 为基准；运行时按当前 ROI 尺寸同比缩放，保证 320～640 ROI 使用一致的相对选择范围。"
+                  value={targetFovRadiusPx}
+                  min={0.000001}
+                  max={100000}
+                  recommendedMin={1}
+                  recommendedMax={640}
+                  step={1}
+                  unit="px"
+                  onCommit={(value) => updatePipelineField("target_fov_radius_px", value)}
+                />
                 <div className="target-weight-summary">
                   <div>
                     <span>当前综合分权重</span>
@@ -4276,8 +4585,8 @@ export function StudioConsoleView({
             <Metric title="执行器可用" value={kmnetRestartRequired ? "等待装载" : kmnetExecutorAvailable ? "可用" : "不可用"} small="kmNet" />
             <Metric title="按键数据" value={kmnetStatus.buttons_available === true ? "可用" : "不可用"} small="最近轮询" />
             <Metric title="自动连接" value={kmnetAutoConnect ? kmnetRestartRequired ? "重启后启用" : "已启用" : "已关闭"} small="startup" />
-            <Metric title="主链接受命令" value={formatOptionalInteger(kmnetStatus.accepted_command_count)} small="device receipts" />
-            <Metric title="最近接受位移" value={formatPoint(kmnetStatus.last_accepted_dx, kmnetStatus.last_accepted_dy, 0)} small="dx / dy" />
+            <Metric title="主链设备通道" value={kmnetRuntimeConnectionLabel} small={kmnetRuntimeConnected ? "runtime lane" : "等待设备"} />
+            <Metric title="命令门控" value={control.will_emit === true ? "允许" : control.will_emit === false ? "阻止" : NO_SAMPLE} small={controlNoSendReason || "当前控制样本"} />
           </div>
           <div className="console-grid2 control-test-grid">
             <div className="console-card">
@@ -4295,18 +4604,6 @@ export function StudioConsoleView({
                   <span>执行器</span>
                   <b>{kmnetExecutorAvailable ? "可用" : "不可用"}</b>
                 </div>
-                <div className="kmnet-status-tile">
-                  <span>执行器</span>
-                  <b>{readString(executorStatus.selected, NO_SAMPLE)}</b>
-                </div>
-                <div className="kmnet-status-tile">
-                  <span>主链接受命令</span>
-                  <b>{formatOptionalInteger(kmnetStatus.accepted_command_count)}</b>
-                </div>
-                <div className="kmnet-status-tile">
-                  <span>最近接受位移</span>
-                  <b>{formatPoint(kmnetStatus.last_accepted_dx, kmnetStatus.last_accepted_dy, 0)}</b>
-                </div>
                 <div className={control.will_emit === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>当前命令门控</span>
                   <b>{control.will_emit === true ? "允许" : control.will_emit === false ? "阻止" : NO_SAMPLE}</b>
@@ -4316,24 +4613,12 @@ export function StudioConsoleView({
                   <b>{kmnetRuntimeConnectionLabel}</b>
                 </div>
                 <div className="kmnet-status-tile">
-                  <span>设备接受状态</span>
-                  <b>{acceptedCommandCount === null ? NO_SAMPLE : hasAcceptedCommand ? "已有协议回执" : "尚无回执"}</b>
-                </div>
-                <div className="kmnet-status-tile">
                   <span>连接阶段</span>
                   <b>{readString(kmnetStatus.connection_state, NO_SAMPLE)}</b>
                 </div>
                 <div className={kmnetConfigurationReady ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>配置装载</span>
                   <b>{kmnetRestartRequired ? `${effectiveConfigRevision} → ${desiredConfigRevision}` : kmnetConfigurationReady ? "已生效" : "未委任"}</b>
-                </div>
-                <div className="kmnet-status-tile">
-                  <span>设备恢复次数</span>
-                  <b>{formatOptionalInteger(kmnetStatus.device_recovery_count)}</b>
-                </div>
-                <div className={readNumber(kmnetStatus.device_error_count, 0) > 0 ? "kmnet-status-tile bad" : "kmnet-status-tile idle"}>
-                  <span>设备错误次数</span>
-                  <b>{formatOptionalInteger(kmnetStatus.device_error_count)}</b>
                 </div>
                 <div className="kmnet-status-tile">
                   <span>最近设备错误</span>
@@ -4404,10 +4689,46 @@ export function StudioConsoleView({
                       : "请先启动主链；Runtime Epoch 建立后才能控制 kmNet 会话。"}
                 </span>
               </div>
-              <TextControl label="kmnetip" value={kmnetHost} onCommit={(value) => updateConfigField("hardware", "host", value)} />
-              <NumberControl label="kmnetport" value={kmnetPort} min={rustControlPlane ? 1 : 0} max={65535} step={1} onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))} />
-              <TextControl label="kmnetuuid" value={kmnetUuid} onCommit={(value) => updateConfigField("hardware", "uuid", value)} />
-              <NumberControl label="monitor_port" value={kmnetMonitorPort} min={rustControlPlane ? 1024 : 0} max={rustControlPlane ? 49151 : 65535} step={1} onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))} />
+              <TextControl
+                label="kmNet 地址"
+                detail="设备控制器的局域网 IP 或主机名；Rust 后端会在进程启动时装载硬件会话。"
+                value={kmnetHost}
+                applyMode="restart"
+                riskLevel="advanced"
+                onCommit={(value) => updateConfigField("hardware", "host", value)}
+              />
+              <ParameterNumberControl
+                label="kmNet 控制端口"
+                detail="kmNet 主控制连接端口。"
+                value={kmnetPort}
+                min={rustControlPlane ? 1 : 0}
+                max={65535}
+                step={1}
+                kind="stepper"
+                applyMode="restart"
+                riskLevel="advanced"
+                onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))}
+              />
+              <TextControl
+                label="kmNet UUID"
+                detail="硬件授权标识；与设备地址一起组成当前进程内的输出会话。"
+                value={kmnetUuid}
+                applyMode="restart"
+                riskLevel="advanced"
+                onCommit={(value) => updateConfigField("hardware", "uuid", value)}
+              />
+              <ParameterNumberControl
+                label="kmNet 监控端口"
+                detail="kmNet 监控连接端口。"
+                value={kmnetMonitorPort}
+                min={rustControlPlane ? 1024 : 0}
+                max={rustControlPlane ? 49151 : 65535}
+                step={1}
+                kind="stepper"
+                applyMode="restart"
+                riskLevel="advanced"
+                onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))}
+              />
               <ModuleSwitch
                 label={rustControlPlane ? "主链启动时连接设备" : "后端服务启动时自动连接"}
                 detail={rustControlPlane
@@ -4416,13 +4737,32 @@ export function StudioConsoleView({
                 enabled={kmnetAutoConnect}
                 onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
               />
-              <label>命令调度</label>
+              <div className="kmnet-section-heading">
+                <span>命令调度</span>
+              </div>
               <div className="console-kv compact-kv">
                 <span>执行层</span><b>Latest Replace Scheduler</b>
                 <span>行为</span><b>新观测覆盖未发送的旧命令</b>
                 <span>待发送容量</span><b>1 条完整命令</b>
                 <span>最终校验</span><b>Rust DeviceLane</b>
               </div>
+              <details className="kmnet-diagnostic-details">
+                <summary>
+                  <span>
+                    <b>原始诊断</b>
+                    <small>累计计数与协议回执只用于排查，不作为当前移动结果展示。</small>
+                  </span>
+                  <i>6 项</i>
+                </summary>
+                <div className="console-kv compact-kv">
+                  <span>执行器</span><b>{readString(executorStatus.selected, NO_SAMPLE)}</b>
+                  <span>设备接受状态</span><b>{acceptedCommandCount === null ? NO_SAMPLE : hasAcceptedCommand ? "已有协议回执" : "尚无回执"}</b>
+                  <span>主链接受累计</span><b>{formatOptionalInteger(kmnetStatus.accepted_command_count)}</b>
+                  <span>最近接受位移</span><b>{formatPoint(kmnetStatus.last_accepted_dx, kmnetStatus.last_accepted_dy, 0)}</b>
+                  <span>设备恢复累计</span><b>{formatOptionalInteger(kmnetStatus.device_recovery_count)}</b>
+                  <span>设备错误累计</span><b>{formatOptionalInteger(kmnetStatus.device_error_count)}</b>
+                </div>
+              </details>
               <div className="console-action-row">
                 <button
                   className="console-button"
@@ -4437,18 +4777,20 @@ export function StudioConsoleView({
                 <div className="kmnet-test-inputs">
                   <label>
                     <span>dx</span>
-                    <input
-                      type="number"
+                    <InlineNumberControl
+                      ariaLabel="kmNet 诊断 dx"
+                      disabled={kmnetDiagnosticDisabled}
                       value={kmnetTestDx}
-                      onChange={(event) => setKmnetTestDx(Number(event.target.value))}
+                      onCommit={setKmnetTestDx}
                     />
                   </label>
                   <label>
                     <span>dy</span>
-                    <input
-                      type="number"
+                    <InlineNumberControl
+                      ariaLabel="kmNet 诊断 dy"
+                      disabled={kmnetDiagnosticDisabled}
                       value={kmnetTestDy}
-                      onChange={(event) => setKmnetTestDy(Number(event.target.value))}
+                      onCommit={setKmnetTestDy}
                     />
                   </label>
                 </div>
@@ -4475,9 +4817,9 @@ export function StudioConsoleView({
                 </div>
                 <div className="kmnet-test-result">
                   <span>最近诊断移动</span>
-                  <b>{`${formatPoint(kmnetStatus.last_diagnostic_dx, kmnetStatus.last_diagnostic_dy, 0)} · ${formatOptionalInteger(kmnetStatus.diagnostic_move_count)} 次`}</b>
+                  <b>{formatPoint(kmnetStatus.last_diagnostic_dx, kmnetStatus.last_diagnostic_dy, 0)}</b>
                 </div>
-                {kmnetTestMessage ? <div className="kmnet-test-message">{kmnetTestMessage}</div> : null}
+                {kmnetTestMessage ? <div className={`kmnet-test-message ${kmnetTestMessageTone}`}>{kmnetTestMessage}</div> : null}
               </div>
             </div>
           </div>
@@ -4534,28 +4876,55 @@ export function StudioConsoleView({
         saving={dialogSaving}
         title={`${controlModeLabel} · 高级参数`}
       >
+        <div className="algorithm-settings-brief" aria-label="当前算法调参摘要">
+          {algorithmTuningBrief.map((item) => {
+            const selected = algorithmSettingsSection === item.id;
+            return (
+              <button
+                aria-pressed={selected}
+                className={selected ? "algorithm-settings-brief-card active" : "algorithm-settings-brief-card"}
+                key={item.id}
+                onClick={() => focusAlgorithmSettingsSection(item.id)}
+                type="button"
+              >
+                <span className="algorithm-settings-brief-icon" aria-hidden="true">
+                  <NovaIcon name={item.icon} size={16} strokeWidth={1.9} />
+                </span>
+                <span>
+                  <small>{item.label}</small>
+                  <b>{item.value}</b>
+                  <em>{item.detail}</em>
+                </span>
+              </button>
+            );
+          })}
+        </div>
         <div className="algorithm-settings-layout">
-          <nav aria-label="控制算法调参分类" className="algorithm-settings-nav">
-            <button aria-controls="algorithm-settings-response" aria-pressed={algorithmSettingsSection === "response"} className={algorithmSettingsSection === "response" ? "active" : ""} onClick={() => setAlgorithmSettingsSection("response")} type="button">
-              <b>响应算法</b>
-              <small>远近速度、过冲与 Atan 手感</small>
-            </button>
-            <button aria-controls="algorithm-settings-prediction" aria-pressed={algorithmSettingsSection === "prediction"} className={algorithmSettingsSection === "prediction" ? "active" : ""} onClick={() => setAlgorithmSettingsSection("prediction")} type="button">
-              <b>目标预测</b>
-              <small>移动目标跟随、提前量与可信度</small>
-            </button>
-            <button aria-controls="algorithm-settings-stability" aria-pressed={algorithmSettingsSection === "stability"} className={algorithmSettingsSection === "stability" ? "active" : ""} onClick={() => setAlgorithmSettingsSection("stability")} type="button">
-              <b>到位与输出</b>
-              <small>临近抖动、单次限幅与反馈等待</small>
-            </button>
-            <button aria-controls="algorithm-settings-calibration" aria-pressed={algorithmSettingsSection === "calibration"} className={algorithmSettingsSection === "calibration" ? "active" : ""} onClick={() => setAlgorithmSettingsSection("calibration")} type="button">
-              <b>标定与时效</b>
-              <small>FOV、设备 counts 与过期画面</small>
-            </button>
+          <nav aria-label="控制算法调参分类" className="algorithm-settings-nav" role="tablist">
+            {ALGORITHM_SETTINGS_SECTIONS.map((section) => {
+              const selected = algorithmSettingsSection === section.id;
+              return (
+                <button
+                  aria-controls={section.panelId}
+                  aria-selected={selected}
+                  className={selected ? "active" : ""}
+                  id={`${section.panelId}-tab`}
+                  key={section.id}
+                  onClick={() => focusAlgorithmSettingsSection(section.id)}
+                  onKeyDown={handleAlgorithmSettingsTabKeyDown}
+                  role="tab"
+                  tabIndex={selected ? 0 : -1}
+                  type="button"
+                >
+                  <b>{section.label}</b>
+                  <small>{section.detail}</small>
+                </button>
+              );
+            })}
           </nav>
 
           {algorithmSettingsSection === "response" ? (
-            <section aria-labelledby="algorithm-settings-response-title" className="algorithm-settings-panel" id="algorithm-settings-response">
+            <section aria-labelledby="algorithm-settings-response-tab" className="algorithm-settings-panel" id="algorithm-settings-response" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
                 <span>CONTROL RESPONSE</span>
                 <h3 id="algorithm-settings-response-title">响应算法</h3>
@@ -4563,50 +4932,46 @@ export function StudioConsoleView({
               </header>
               <div className="algorithm-tuning-order"><b>建议顺序</b><span>近距离响应 → 远距离响应 → 过渡位置 → Atan 曲线尺度</span></div>
               <div className="advanced-settings-grid two-column">
-                <NumberControl label="近距离响应强度（NEAR Kp）" detail="目标接近准星后的主要手感参数。过高会过冲和左右往返，过低会贴近后跟不上。" value={dualPhaseNearKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("near_kp", value)} />
-                <NumberControl label="远距离响应强度（FAR Kp）" detail="目标离准星较远时的追赶强度。它不是 KMNet 设备能力上限。" value={dualPhaseFarKp} min={0.001} max={0.999} step={0.001} onCommit={(value) => updateDualPhaseField("far_kp", value)} />
-                <NumberControl label="近远过渡位置 px" detail="误差在该位置附近时，从 NEAR 平滑过渡到 FAR；决定多近开始进入精细控制。" value={dualPhaseNearThreshold} min={0} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("near_threshold_px", value)} />
-                <NumberControl label="Atan 曲线尺度 counts" detail="决定大误差何时开始被曲线压缩。增大后中远距离输出更接近线性，减小则更早压缩。" value={dualPhaseAtanScale} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("atan_scale_counts", value)} />
+                {responseParameters.map(renderAlgorithmNumberParameter)}
               </div>
             </section>
           ) : null}
 
           {algorithmSettingsSection === "prediction" ? (
-            <section aria-labelledby="algorithm-settings-prediction-title" className="algorithm-settings-panel" id="algorithm-settings-prediction">
+            <section aria-labelledby="algorithm-settings-prediction-tab" className="algorithm-settings-panel" id="algorithm-settings-prediction" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
                 <span>PREDICTION</span>
                 <h3 id="algorithm-settings-prediction-title">唯一锁定目标的 X / Y 预测</h3>
-                <p>只想改变提前量时，先改“预测提前量”；移动目标的预测点发抖时，再增加速度平滑。其余参数属于异常保护。</p>
+                <p>普通用户先选预设，再按需要微调提前量和平滑窗口。其余参数属于异常保护。</p>
               </header>
               <ModuleSwitch label="启用 X / Y 目标预测" detail="X、Y 两轴使用同一套时间与可信度参数，只预测 Tracker 当前锁定的一个目标。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)} />
               <div className="advanced-settings-grid two-column">
-                <NumberControl label="执行与反馈延迟 ms" detail="统一表示命令发出到画面可观察到响应的延迟：预测会补偿这段时间，发送后也会等待这段时间再接受新画面反馈。" value={actuationFeedbackDelayMs} min={0} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("actuation_feedback_delay_ms", value)} />
+                {predictionCoreParameters
+                  .filter((parameter) => parameter.key === "actuation_feedback_delay_ms")
+                  .map(renderAlgorithmNumberParameter)}
               </div>
               {dualPhasePredictionEnabled ? (
                 <>
+                  <ParameterPresetControl
+                    label="预测手感预设"
+                    detail="只调整提前量、速度平滑和历史重置窗口；高级保护参数保持不变。"
+                    options={predictionPresetOptions}
+                  />
                   <div className="advanced-settings-grid two-column">
-                    <NumberControl label="预测提前量（帧）" detail="在补偿当前观测帧龄后，再沿目标速度额外预测多少帧。跟不上移动目标时小幅增加；明显超前时降低。" value={dualPhasePredictionLeadFrames} min={0} max={10} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_lead_frames", value)} />
-                    <NumberControl label="速度平滑窗口（帧）" detail="增大可降低预测点抖动，但会让速度变化响应更慢。" value={dualPhasePredictionSmoothingFrames} min={0.1} max={120} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_smoothing_frames", value)} />
-                    <NumberControl label="断流历史重置 ms" detail="相邻有效画面超过该时间后丢弃旧速度，避免断流后继续沿旧方向预测。" value={dualPhasePredictionHistoryResetGapMs} min={0.1} max={10000} step={0.1} onCommit={(value) => updateDualPhaseField("velocity_history_reset_gap_ms", value)} />
+                    {predictionCoreParameters
+                      .filter((parameter) => parameter.key !== "actuation_feedback_delay_ms")
+                      .map(renderAlgorithmNumberParameter)}
                   </div>
                   <details className="algorithm-settings-disclosure">
                     <summary><span><b>预测可信度保护</b><small>检测速度异常时降低或取消预测，一般不需要修改</small></span><i>4 项</i></summary>
                     <div className="advanced-settings-grid two-column">
-                      <NumberControl label="速度离散基础容差 px/ms" detail="多段速度样本离散程度超过基础值加相对值后，预测可信度会降低。" value={velocitySpreadBasePxMs} min={0.01} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_spread_base_px_ms", value)} />
-                      <NumberControl label="速度离散相对容差" detail="按当前速度幅度放宽离散容差，避免高速目标被固定阈值误判。" value={velocitySpreadRelative} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_spread_relative", value)} />
-                      <NumberControl label="速度变化基础容差 px/ms" detail="限制相邻平滑速度的突变；超过阈值时降低预测可信度。" value={velocityChangeBasePxMs} min={0.01} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_change_base_px_ms", value)} />
-                      <NumberControl label="速度变化相对容差" detail="按已有速度幅度放宽变化阈值，适应高速但连续的运动。" value={velocityChangeRelative} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("velocity_change_relative", value)} />
+                      {predictionConfidenceParameters.map(renderAlgorithmNumberParameter)}
                     </div>
                   </details>
                   <details className="algorithm-settings-disclosure">
                     <summary><span><b>预测位移上限</b><small>防止提前量超过当前误差，只有确认预测被截断时再修改</small></span><i>6 项</i></summary>
                     <div className="advanced-settings-grid two-column">
-                      <NumberControl label="远距离预测硬上限 px" detail="远距离阶段允许的最终预测位移硬上限。" value={dualPhasePredictionFarCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_far_absolute_cap_px", value)} />
-                      <NumberControl label="远距离预测基础上限 px" detail="动态上限的基础部分；最终仍受硬上限约束。" value={dualPhasePredictionFarBaseCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_far_base_cap_px", value)} />
-                      <NumberControl label="远距离预测相对上限" detail="当前误差越大，允许的预测位移按该比例增加。" value={dualPhasePredictionFarRelativeCap} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("prediction_far_relative_cap", value)} />
-                      <NumberControl label="近距离预测硬上限 px" detail="接近准星时允许的最终预测位移硬上限。" value={dualPhasePredictionNearCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_near_absolute_cap_px", value)} />
-                      <NumberControl label="近距离预测基础上限 px" detail="近距离动态上限的基础部分，用于避免小误差被过量提前。" value={dualPhasePredictionNearBaseCapPx} min={0} max={100000} step={0.1} onCommit={(value) => updateDualPhaseField("prediction_near_base_cap_px", value)} />
-                      <NumberControl label="近距离预测相对上限" detail="按当前误差比例增加近距离允许的预测位移。" value={dualPhasePredictionNearRelativeCap} min={0} max={100} step={0.01} onCommit={(value) => updateDualPhaseField("prediction_near_relative_cap", value)} />
+                      {predictionCapParameters.map(renderAlgorithmNumberParameter)}
                     </div>
                   </details>
                 </>
@@ -4617,7 +4982,7 @@ export function StudioConsoleView({
           ) : null}
 
           {algorithmSettingsSection === "stability" ? (
-            <section aria-labelledby="algorithm-settings-stability-title" className="algorithm-settings-panel" id="algorithm-settings-stability">
+            <section aria-labelledby="algorithm-settings-stability-tab" className="algorithm-settings-panel" id="algorithm-settings-stability" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
                 <span>CONVERGENCE & OUTPUT</span>
                 <h3 id="algorithm-settings-stability-title">到位稳定与单次输出</h3>
@@ -4625,16 +4990,13 @@ export function StudioConsoleView({
               </header>
               <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低近距离单次上限，再检查到位半径；执行反馈延迟在“目标预测”中统一管理</span></div>
               <div className="advanced-settings-grid two-column">
-                <NumberControl label="近距离单次上限 counts" detail="靠近目标时每轮最多输出多少。降低可抑制越过瞄点，但过低会降低收敛速度。" value={dualPhaseNearMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("near_max_counts_per_update", value)} />
-                <NumberControl label="远距离单次上限 counts" detail="远距离追赶时每轮最多输出多少；它独立于 KMNet 的 signed-16 协议上限。" value={dualPhaseFarMaxCounts} min={1} max={2000} step={1} onCommit={(value) => updateDualPhaseField("far_max_counts_per_update", value)} />
-                <NumberControl label="到位停止半径 counts" detail="每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞。" value={dualPhaseArrivalRadiusCounts} min={0.5} max={100} step={0.5} onCommit={(value) => updateDualPhaseField("arrival_radius_counts", value)} />
-                <NumberControl label="小数残差上限 counts" detail="限制不足一个设备计数的累计余量，范围为 0～1；不是额外移动速度。" value={residualCap} min={0} max={1} step={0.01} onCommit={(value) => updateDualPhaseField("residual_cap", value)} />
+                {stabilityParameters.map(renderAlgorithmNumberParameter)}
               </div>
             </section>
           ) : null}
 
           {algorithmSettingsSection === "calibration" ? (
-            <section aria-labelledby="algorithm-settings-calibration-title" className="algorithm-settings-panel" id="algorithm-settings-calibration">
+            <section aria-labelledby="algorithm-settings-calibration-tab" className="algorithm-settings-panel" id="algorithm-settings-calibration" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
                 <span>CALIBRATION & FRESHNESS</span>
                 <h3 id="algorithm-settings-calibration-title">坐标标定与观测时效</h3>
@@ -4642,9 +5004,7 @@ export function StudioConsoleView({
               </header>
               <div className="algorithm-settings-warning"><b>不要用标定参数修手感</b><span>整体移动比例不对才检查标定；只是远近速度不合适，请回到“响应算法”。</span></div>
               <div className="advanced-settings-grid two-column">
-                <NumberControl label="水平视场角 FOVX" detail="当前游戏水平视场角，用于把像素误差换算成角度误差。" value={dualPhaseFovX} min={30} max={179} step={0.1} onCommit={(value) => updateDualPhaseField("projection_fov_x_deg", value)} />
-                <NumberControl label="设备每圈 counts" detail="鼠标完成 360°转向所需的真实设备计数，用于把角度需求换算成输出 counts。" value={dualPhaseCountsPer360} min={1} max={100000} step={1} onCommit={(value) => updateDualPhaseField("projection_counts_per_360", value)} />
-                <NumberControl label="可用观测最大帧龄 ms" detail="超过该帧龄的 DetectionBatch 不会进入控制器；它是安全时效门，不是固定推理时长。" value={freshnessThresholdMs} min={1} max={1000} step={0.1} onCommit={(value) => updateDualPhaseField("freshness_threshold_ms", value)} />
+                {calibrationParameters.map(renderAlgorithmNumberParameter)}
               </div>
             </section>
           ) : null}
@@ -4664,11 +5024,7 @@ export function StudioConsoleView({
         title="目标切换高级设置"
       >
         <div className="advanced-settings-grid two-column">
-          <NumberControl label="控制目标最低置信度" detail="推理结果通过模型阈值后，还必须达到该值才允许进入目标选择。" value={targetMinConfidence} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_min_confidence", value)} />
-          <NumberControl label="候选框最大宽高比" detail="拒绝宽高比或高宽比超过此值的异常细长框。值越大越宽松。" value={candidateRatioMaxAspect} min={1} max={20} step={0.1} onCommit={(value) => updatePipelineField("candidate_max_aspect_ratio", value)} />
-          <NumberControl label="切换最小优势" detail="新候选综合分减去当前锁定目标综合分，至少达到此值才允许切换。" value={targetSwitchPreferenceAdvantage} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_switch_min_preference_advantage", value)} />
-          <NumberControl label="切换最小连续性" detail="新候选 Track 的身份连续性至少达到此值，才允许进入切换确认。" value={targetSwitchContinuityScore} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_switch_min_continuity_score", value)} />
-          <NumberControl label="目标切换确认延迟 ms" detail="新候选持续满足优势和连续性阈值达到此时间后，才正式替换当前目标。" value={targetSwitchDelayMs} min={0} max={500} step={1} onCommit={(value) => updatePipelineField("target_switch_delay_ms", value)} />
+          {targetAdvancedParameters.map(renderTargetingNumberParameter)}
         </div>
       </AdvancedSettingsDialog>
 
@@ -4685,23 +5041,12 @@ export function StudioConsoleView({
         title="Tracker 高级设置"
       >
         <div className="advanced-settings-grid two-column">
-          <NumberControl label="归一化匹配距离" value={trackerMaxMatchDistance} min={0.1} max={5} step={0.05} onCommit={(value) => updatePipelineField("tracker_max_match_distance", value)} />
-          <NumberControl label="位置代价权重" value={trackerPositionCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("tracker_position_cost_weight", value)} />
-          <NumberControl label="IoU 代价权重" value={trackerIouCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("tracker_iou_cost_weight", value)} />
-          <NumberControl label="尺度代价权重" detail="候选框尺寸变化参与身份匹配的权重。" value={trackerScaleCostWeight} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("tracker_scale_cost_weight", value)} />
-          <NumberControl label="最大尺寸变化倍数" detail="宽或高相对上一帧变化超过该倍数时，不允许关联为同一目标。" value={trackerMaxSizeRatio} min={1} max={100} step={0.1} onCommit={(value) => updatePipelineField("tracker_max_size_ratio", value)} />
-          <NumberControl label="最大关联时间间隔 ms" detail="两次观测间隔超过该值时，不使用旧轨迹继续关联。" value={trackerMaxAssociationDtMs} min={1} max={10000} step={1} onCommit={(value) => updatePipelineField("tracker_max_association_dt_ms", value)} />
-          <NumberControl label="无时间戳漏检上限（帧）" detail="只用于没有有效捕获时间戳的回放或降级输入；Jetson 正常主链优先使用毫秒保持时间。" value={targetTrackMaxAge} min={1} max={120} step={1} onCommit={(value) => updatePipelineField("target_track_max_age", Math.round(value))} />
-          <NumberControl label="目标丢失保持 ms" detail="锁定目标短暂漏检时暂停输出并保留原身份；超过该时间后才允许其他目标接管。" value={targetLostGraceMs} min={1} max={10000} step={1} onCommit={(value) => updatePipelineField("target_track_max_lost_age_ms", value)} />
+          {trackerCoreParameters.map(renderTargetingNumberParameter)}
         </div>
         <details className="algorithm-settings-disclosure">
           <summary><span><b>卡尔曼关联与马氏门控</b><small>只维护目标身份，不直接平滑鼠标 AimPoint；画面稳定时通常保持默认值</small></span><i>5 项</i></summary>
           <div className="advanced-settings-grid two-column">
-            <NumberControl label="运动响应噪声" detail="越大越允许轨迹速度快速变化，但预测协方差也会更快增长；它只影响身份关联。" value={trackerKalmanAccelerationNoise} min={0.001} max={1000000} step={10} onCommit={(value) => updatePipelineField("tracker_kalman_acceleration_noise", value)} />
-            <NumberControl label="X 轴观测噪声 px²" detail="检测框中心在 X 轴的预期方差。增大后更容忍横向框抖动，但关联门会相应变宽。" value={trackerKalmanMeasurementNoiseX} min={0.001} max={100000} step={0.5} onCommit={(value) => updatePipelineField("tracker_kalman_measurement_noise_x", value)} />
-            <NumberControl label="Y 轴观测噪声 px²" detail="检测框中心在 Y 轴的预期方差。Y 轴框高变化明显时可以独立调整。" value={trackerKalmanMeasurementNoiseY} min={0.001} max={100000} step={0.5} onCommit={(value) => updatePipelineField("tracker_kalman_measurement_noise_y", value)} />
-            <NumberControl label="NIS 可信阈值" detail="创新量低于该值时卡尔曼状态可作为可信关联预测；必须不高于硬拒绝阈值。" value={trackerKalmanNisThreshold} min={0.001} max={trackerKalmanNisHardReject} step={0.1} onCommit={(value) => updatePipelineField("tracker_kalman_nis_threshold", value)} />
-            <NumberControl label="NIS 硬拒绝阈值" detail="创新量超过该值时，该检测与旧 Track 不允许关联。降低会减少误关联，过低会造成频繁断轨。" value={trackerKalmanNisHardReject} min={Math.max(0.001, trackerKalmanNisThreshold)} max={1000000} step={0.1} onCommit={(value) => updatePipelineField("tracker_kalman_nis_hard_reject", value)} />
+            {trackerKalmanParameters.map(renderTargetingNumberParameter)}
           </div>
         </details>
         <div className="advanced-settings-divider">
@@ -4767,7 +5112,15 @@ export function StudioConsoleView({
                   <span><i className="distance" />距离 <b>{(normalizedSelectionDistanceWeight * 100).toFixed(0)}%</b></span>
                 </div>
                 <div className="target-weight-controls">
-                  <NumberControl label="类别偏好比例" detail="类别顺序按 1、0.5、0.25…递减；距离自动使用剩余比例。提高后更倾向高优先类别。" value={normalizedSelectionClassWeight} min={0} max={1} step={0.01} onCommit={(value) => updatePipelineField("target_selection_class_ratio", value)} />
+                  <ParameterNumberControl
+                    label="类别偏好比例"
+                    detail="类别顺序按 1、0.5、0.25…递减；距离自动使用剩余比例。提高后更倾向高优先类别。"
+                    value={normalizedSelectionClassWeight}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    onCommit={(value) => updatePipelineField("target_selection_class_ratio", value)}
+                  />
                 </div>
               </section>
 
@@ -4856,17 +5209,15 @@ export function StudioConsoleView({
                   ))}
                 </div>
                 <div className="class-profile-create">
-                  <label htmlFor="new-class-profile">新建配置</label>
-                  <input
-                    id="new-class-profile"
-                    onChange={(event) => setNewClassProfileName(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        void createClassProfile(false);
-                      }
-                    }}
+                  <TextControl
+                    label="新建配置"
+                    detail="输入新配置名后创建空白配置，或复制当前配置作为起点。"
                     placeholder="例如 valorant"
                     value={newClassProfileName}
+                    disabled={busy !== null}
+                    onDraftChange={setNewClassProfileName}
+                    onCommit={setNewClassProfileName}
+                    onEnter={() => createClassProfile(false)}
                   />
                   <div className="class-profile-create-actions">
                     <button
@@ -4892,14 +5243,14 @@ export function StudioConsoleView({
 
               <div className="class-config-workspace">
                 <div className="class-config-profile-bar">
-                  <div>
-                    <span>当前配置名称</span>
-                    <small>重命名会同步迁移该配置对应的类别瞄点类型映射。</small>
-                  </div>
-                  <input
-                    aria-label="当前类别配置名称"
-                    onChange={(event) => setRenamedClassProfileName(event.target.value)}
+                  <TextControl
+                    label="当前配置名称"
+                    detail="重命名会同步迁移该配置对应的类别瞄点类型映射。"
                     value={renamedClassProfileName}
+                    disabled={busy !== null}
+                    onDraftChange={setRenamedClassProfileName}
+                    onCommit={setRenamedClassProfileName}
+                    onEnter={renameClassProfile}
                   />
                   <button
                     className="console-button"
@@ -5009,19 +5360,29 @@ export function StudioConsoleView({
                           placeholder={`未知类别（cls ${classId}）`}
                           onCommit={(value) => updateDetectionClassName(classId, value)}
                         />
-                        <label className="class-priority-control">
-                          <span className="visually-hidden">cls {classId} 目标优先级</span>
-                          <select
-                            aria-label={`cls ${classId} 目标优先级`}
-                            disabled={busy !== null}
-                            value={priorityIndex}
-                            onChange={(event) => void setClassPriorityPosition(classId, Number(event.target.value))}
+                        <div className="class-priority-control" aria-label={`cls ${classId} 目标优先级，第 ${priorityIndex + 1} 位`}>
+                          <span className="class-priority-rank">#{priorityIndex + 1}</span>
+                          <button
+                            aria-label={`提高 cls ${classId} 目标优先级`}
+                            className="class-priority-button up"
+                            disabled={busy !== null || priorityIndex <= 0}
+                            onClick={() => void setClassPriorityPosition(classId, priorityIndex - 1)}
+                            title="上移"
+                            type="button"
                           >
-                            {orderedClassEditorIds.map((_, index) => (
-                              <option key={`priority-${classId}-${index}`} value={index}>第 {index + 1} 位</option>
-                            ))}
-                          </select>
-                        </label>
+                            <NovaIcon name="expand" size={14} />
+                          </button>
+                          <button
+                            aria-label={`降低 cls ${classId} 目标优先级`}
+                            className="class-priority-button down"
+                            disabled={busy !== null || priorityIndex >= orderedClassEditorIds.length - 1}
+                            onClick={() => void setClassPriorityPosition(classId, priorityIndex + 1)}
+                            title="下移"
+                            type="button"
+                          >
+                            <NovaIcon name="expand" size={14} />
+                          </button>
+                        </div>
                         <div className="class-role-segmented" role="group" aria-label={`cls ${classId} 瞄点类型`}>
                           {(["head", "body", "other"] as AimRole[]).map((role) => (
                             <button
@@ -5384,6 +5745,8 @@ function ModuleSwitch({
 
   return (
     <button
+      aria-busy={pending}
+      aria-pressed={visualEnabled}
       className={visualEnabled ? "module-switch on" : "module-switch"}
       onClick={() => void toggle()}
       disabled={pending || disabled}
@@ -5393,7 +5756,7 @@ function ModuleSwitch({
         <b>{label}</b>
         <small>{detail}</small>
       </span>
-      <i>{pending ? "处理中" : visualEnabled ? "开" : "关"}</i>
+      <i aria-hidden="true">{pending ? "处理中" : visualEnabled ? "开" : "关"}</i>
     </button>
   );
 }
@@ -5615,20 +5978,18 @@ function PreviewFrame({
     >
       {supported && active ? (
         <div className="console-preview-live-control">
-          <span>实时预览</span>
-          <div className="console-preview-rate-control" role="group" aria-label="远程预览省流档位">
-            {[5, 10, 15, 30].filter((fps) => fps <= previewFps).map((fps) => (
-              <button
-                aria-pressed={transportFps === fps}
-                className={transportFps === fps ? "active" : ""}
-                key={fps}
-                onClick={() => setTransportFps(fps)}
-                type="button"
-              >
-                {fps}
-              </button>
-            ))}
-          </div>
+          <ParameterPresetControl
+            density="compact"
+            label="实时预览"
+            detail={`上限 ${previewFps}fps`}
+            options={[5, 10, 15, 30].filter((fps) => fps <= previewFps).map((fps) => ({
+              id: `transport-${fps}`,
+              label: `${fps}`,
+              detail: "fps",
+              active: transportFps === fps,
+              onSelect: () => setTransportFps(fps)
+            }))}
+          />
           <button disabled={togglePending} onClick={() => onToggle(false)} type="button">
             {togglePending ? "正在关闭…" : "关闭预览"}
           </button>
