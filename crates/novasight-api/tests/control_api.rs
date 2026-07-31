@@ -283,7 +283,7 @@ async fn pipeline_config_update_installs_into_the_stopped_runtime_without_daemon
 }
 
 #[tokio::test]
-async fn pipeline_config_update_restarts_the_running_runtime_without_daemon_restart() {
+async fn pipeline_config_update_refreshes_live_control_without_restarting_pipeline() {
     let directory = ConfigDirectory::new();
     let path = directory.0.join("novasight.yaml");
     YamlConfigRepository::initialize_default(&path).unwrap();
@@ -330,12 +330,12 @@ async fn pipeline_config_update_restarts_the_running_runtime_without_daemon_rest
         update["message"]
             .as_str()
             .unwrap()
-            .contains("runtime pipeline")
+            .contains("live control path")
     );
     assert_eq!(config.effective_revision(), 1);
     assert_eq!(config.blocking_effective_snapshot().pipeline.far_kp, 0.31);
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
-    assert_eq!(runtime.snapshot().pipeline.epoch.unwrap().0, 2);
+    assert_eq!(runtime.snapshot().pipeline.epoch.unwrap().0, 1);
 
     shutdown(supervisor, &runtime).await;
 }

@@ -424,6 +424,11 @@ impl TargetingCore {
         }
     }
 
+    pub fn set_config(&mut self, config: TargetingConfig) {
+        self.config = config;
+        self.pending_switch = None;
+    }
+
     pub fn reset(&mut self) {
         self.tracks.clear();
         self.locked = None;

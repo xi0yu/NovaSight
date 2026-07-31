@@ -164,6 +164,60 @@ impl PersistedRecoil<'_> {
     }
 }
 
+pub(crate) struct PersistedPipeline<'a> {
+    _update_guard: MutexGuard<'a, ()>,
+    current_guard: RwLockWriteGuard<'a, AppConfig>,
+    effective_revision: &'a AtomicU64,
+    effective_config: &'a std::sync::RwLock<AppConfig>,
+    config: AppConfig,
+    pending_sections: Vec<&'static str>,
+}
+
+impl PersistedPipeline<'_> {
+    pub(crate) fn config(&self) -> &AppConfig {
+        &self.config
+    }
+
+    pub(crate) fn commit(mut self, live_pipeline: bool) -> ConfigUpdate {
+        *self.current_guard = self.config.clone();
+        let restart_required = !self.pending_sections.is_empty();
+        if restart_required {
+            self.effective_config
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pipeline
+                .clone_from(&self.config.pipeline);
+        } else {
+            *self
+                .effective_config
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.config.clone();
+            self.effective_revision
+                .store(self.config.revision, Ordering::Release);
+        }
+        let applied_target = if live_pipeline {
+            "applied to the live control path"
+        } else {
+            "installed for the next runtime start"
+        };
+        let message = if restart_required {
+            format!(
+                "pipeline configuration persisted and {applied_target}; other sections remain pending [{}]",
+                self.pending_sections.join(", ")
+            )
+        } else {
+            format!("pipeline configuration persisted and {applied_target}")
+        };
+        ConfigUpdate {
+            config: self.config,
+            restart_required,
+            applied: true,
+            rolled_back: false,
+            message,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ConfigService {
     inner: Arc<ConfigServiceInner>,
@@ -238,14 +292,6 @@ impl ConfigService {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
-    }
-
-    pub async fn pending_process_restart_sections(
-        &self,
-    ) -> Result<Vec<&'static str>, ConfigServiceError> {
-        let effective = self.blocking_effective_snapshot();
-        let desired = self.inner.current.read().await.clone();
-        process_restart_sections(&effective, &desired)
     }
 
     pub async fn ensure_effective(&self) -> Result<(), ConfigServiceError> {
@@ -492,6 +538,14 @@ impl ConfigService {
         runtime.update_recoil_config(self.clone(), update).await
     }
 
+    pub async fn update_pipeline(
+        &self,
+        runtime: &RuntimeHandle,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        runtime.update_pipeline_config(self.clone(), update).await
+    }
+
     pub(crate) fn output_gate_value(
         update: &ConfigFieldUpdate,
     ) -> Result<bool, ConfigServiceError> {
@@ -698,6 +752,54 @@ impl ConfigService {
         })
     }
 
+    pub(crate) async fn persist_pipeline(
+        &self,
+        update: ConfigFieldUpdate,
+    ) -> Result<PersistedPipeline<'_>, ConfigServiceError> {
+        if update.section != "pipeline" {
+            return Err(ConfigServiceError::PipelineUpdateInvalid);
+        }
+        let _update_guard = self.inner.update_lock.lock().await;
+        let current_guard = self.inner.current.write().await;
+        let current = current_guard.clone();
+        let expected_revision = update.expected_revision.unwrap_or(current.revision);
+        if expected_revision != current.revision {
+            return Err(ConfigError::RevisionConflict {
+                path: self.inner.repository.path().to_owned(),
+                expected: expected_revision,
+                actual: current.revision,
+            }
+            .into());
+        }
+
+        let yaml_value =
+            serde_yaml::to_value(update.value).map_err(ConfigServiceError::SerializeFieldValue)?;
+        let repository = self.inner.repository.clone();
+        let section = update.section;
+        let key = update.key;
+        let config = tokio::task::spawn_blocking(move || {
+            repository.save_field(&section, &key, yaml_value, expected_revision)
+        })
+        .await
+        .map_err(ConfigServiceError::SaveTask)??;
+        let effective = self
+            .inner
+            .effective_config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let pending_sections = non_pipeline_pending_sections(&effective, &config)?;
+
+        Ok(PersistedPipeline {
+            _update_guard,
+            current_guard,
+            effective_revision: &self.inner.effective_revision,
+            effective_config: &self.inner.effective_config,
+            config,
+            pending_sections,
+        })
+    }
+
     pub(crate) fn mark_output_gate_diverged(&self) {
         self.inner
             .output_gate_consistent
@@ -778,6 +880,8 @@ pub enum ConfigServiceError {
     RecoilUpdateInvalid,
     #[error("recoil update is incompatible with the current configuration: {0}")]
     RecoilValidation(novasight_store::config::ConfigValidationError),
+    #[error("pipeline update must target the pipeline section")]
+    PipelineUpdateInvalid,
     #[error(
         "control.output_enabled, control.trigger_mode, and control.recoil require the coordinated runtime configuration transaction"
     )]
@@ -828,6 +932,7 @@ impl ConfigServiceError {
             Self::TriggerModeValidation(_) => "CONFIG_VALIDATION_ERROR",
             Self::RecoilUpdateInvalid => "CONFIG_FIELD_VALUE_INVALID",
             Self::RecoilValidation(_) => "CONFIG_VALIDATION_ERROR",
+            Self::PipelineUpdateInvalid => "CONFIG_FIELD_VALUE_INVALID",
             Self::HotUpdateTransactionRequired => "CONFIG_HOT_UPDATE_TRANSACTION_REQUIRED",
             Self::OutputGateDisabledButNotPersisted { .. } => {
                 "CONFIG_OUTPUT_GATE_DISABLED_NOT_PERSISTED"
@@ -867,6 +972,68 @@ fn process_restart_sections(
         (
             "crosshair",
             config_value_differs(&effective.crosshair, &desired.crosshair)?,
+        ),
+        (
+            "hardware",
+            config_value_differs(&effective.device, &desired.device)?,
+        ),
+        (
+            "legacy",
+            config_value_differs(&effective.legacy, &desired.legacy)?,
+        ),
+    ] {
+        if differs {
+            changed.push(name);
+        }
+    }
+    Ok(changed)
+}
+
+fn non_pipeline_pending_sections(
+    effective: &AppConfig,
+    desired: &AppConfig,
+) -> Result<Vec<&'static str>, ConfigServiceError> {
+    let mut changed = Vec::new();
+    for (name, differs) in [
+        (
+            "schema_version",
+            config_value_differs(&effective.schema_version, &desired.schema_version)?,
+        ),
+        (
+            "server",
+            config_value_differs(&effective.server, &desired.server)?,
+        ),
+        (
+            "replay",
+            config_value_differs(&effective.replay, &desired.replay)?,
+        ),
+        (
+            "control",
+            config_value_differs(&effective.control, &desired.control)?,
+        ),
+        (
+            "paths",
+            config_value_differs(&effective.paths, &desired.paths)?,
+        ),
+        (
+            "consumers",
+            config_value_differs(&effective.consumers, &desired.consumers)?,
+        ),
+        (
+            "crosshair",
+            config_value_differs(&effective.crosshair, &desired.crosshair)?,
+        ),
+        (
+            "limits",
+            config_value_differs(&effective.limits, &desired.limits)?,
+        ),
+        (
+            "capture",
+            config_value_differs(&effective.capture, &desired.capture)?,
+        ),
+        (
+            "inference",
+            config_value_differs(&effective.inference, &desired.inference)?,
         ),
         (
             "hardware",

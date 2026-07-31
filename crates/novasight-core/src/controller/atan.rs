@@ -427,6 +427,14 @@ impl DualPhaseControl {
         }
     }
 
+    pub fn set_config(&mut self, config: DualPhaseConfig) {
+        self.config = config;
+        self.prediction.set_config(config.prediction_config());
+        self.limiter.reset();
+        self.arrival_x.reset();
+        self.arrival_y.reset();
+    }
+
     pub fn reset(&mut self) {
         self.limiter.reset();
         self.last_generation = None;

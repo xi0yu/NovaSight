@@ -19,8 +19,9 @@ use novasight_core::{
 use novasight_pipeline::{
     CrosshairHub, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate, PerceptionAdapter,
     PerceptionEvent, PerceptionMetrics, PerceptionModelContract, PerceptionRuntimeContract,
-    PerceptionSession, PipelineConfig, PipelineEvent, PipelineIngress, PipelineMetrics,
-    PipelineRuntime, PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription, TriggerMode,
+    PerceptionSession, PipelineConfig, PipelineEvent, PipelineIngress, PipelineLiveConfig,
+    PipelineMetrics, PipelineRuntime, PipelineStatus, PreviewHub, PreviewSnapshot,
+    PreviewSubscription, TriggerMode,
 };
 use novasight_store::config::{
     AppConfig, RecoilConfig as ConfigRecoilConfig, TriggerMode as ConfigTriggerMode,
@@ -256,6 +257,39 @@ impl RuntimeDependencies {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = pipeline;
         Ok(())
+    }
+
+    fn live_pipeline_config(&self, config: &AppConfig) -> Result<PipelineLiveConfig, RuntimeError> {
+        let trigger_poll_interval_ms = self
+            .pipeline
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .trigger_poll_interval_ms;
+        let mut pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
+            .map_err(RuntimeError::pipeline_rejected)?;
+        if let Some(geometry) = self.model_geometry() {
+            pipeline.control.source_width = geometry.source_width;
+            pipeline.control.roi_width = geometry.roi_width;
+            pipeline.control.roi_height = geometry.roi_height;
+            pipeline.control.observation_width = geometry.roi_width;
+            pipeline.control.observation_height = geometry.roi_height;
+        }
+        Ok(PipelineLiveConfig::from(&pipeline))
+    }
+
+    fn install_live_pipeline_config(
+        &self,
+        config: &AppConfig,
+    ) -> Result<PipelineLiveConfig, RuntimeError> {
+        let live = self.live_pipeline_config(config)?;
+        let mut pipeline = self
+            .pipeline
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pipeline.targeting.clone_from(&live.targeting);
+        pipeline.control = live.control;
+        pipeline.actuation_feedback_delay_ns = live.actuation_feedback_delay_ns;
+        Ok(live)
     }
 
     fn trigger_mode(&self) -> TriggerMode {
@@ -970,6 +1004,25 @@ impl RuntimeHandle {
             .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
     }
 
+    pub(crate) async fn update_pipeline_config(
+        &self,
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::UpdatePipelineConfig {
+                service,
+                update,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
+    }
+
     pub fn preview_snapshot(&self) -> Option<PreviewSnapshot> {
         self.preview.as_ref().map(PreviewHub::snapshot)
     }
@@ -1426,6 +1479,15 @@ async fn handle_command(
         RuntimeCommand::SetTriggerMode { mode, reply } => {
             let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
             let result = install_trigger_mode(ingress, dependencies, mode).await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::UpdatePipelineConfig {
+            service,
+            update,
+            reply,
+        } => {
+            let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
+            let result = update_pipeline_config_state(service, update, ingress, dependencies).await;
             let _ = reply.send(result);
         }
         RuntimeCommand::UpdateOutputConfig {
@@ -2705,6 +2767,40 @@ async fn install_trigger_mode(
     }
     dependencies.set_trigger_mode(mode);
     Ok(())
+}
+
+async fn install_pipeline_live_config(
+    ingress: Option<PipelineIngress>,
+    config: PipelineLiveConfig,
+) -> Result<bool, RuntimeError> {
+    let Some(ingress) = ingress else {
+        return Ok(false);
+    };
+    tokio::task::spawn_blocking(move || ingress.set_live_config(config))
+        .await
+        .map_err(|error| {
+            RuntimeError::pipeline_rejected(format!(
+                "pipeline configuration transition task failed: {error}"
+            ))
+        })?
+        .map_err(|error| RuntimeError::pipeline_rejected(error.to_string()))?;
+    Ok(true)
+}
+
+async fn update_pipeline_config_state(
+    service: ConfigService,
+    update: ConfigFieldUpdate,
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ConfigUpdate, ConfigServiceError> {
+    let transaction = service.persist_pipeline(update).await?;
+    let config = dependencies
+        .install_live_pipeline_config(transaction.config())
+        .map_err(ConfigServiceError::Runtime)?;
+    let live_pipeline = install_pipeline_live_config(ingress, config)
+        .await
+        .map_err(ConfigServiceError::Runtime)?;
+    Ok(transaction.commit(live_pipeline))
 }
 
 async fn update_trigger_mode_config_state(

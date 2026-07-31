@@ -27,6 +27,7 @@ pub use preview::{PreviewError, PreviewFrame, PreviewHub, PreviewSnapshot, Previ
 
 pub use runtime::{
     DetectionTelemetry, DetectionTelemetryItem, PipelineConfig, PipelineError, PipelineEvent,
-    PipelineIngress, PipelineMetrics, PipelineRuntime, PipelineStatus, TriggerMode,
+    PipelineIngress, PipelineLiveConfig, PipelineMetrics, PipelineRuntime, PipelineStatus,
+    TriggerMode,
 };
 pub use slot::{LatestSlot, SlotClosed, SlotMetrics, TryPublishError};

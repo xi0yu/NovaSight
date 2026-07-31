@@ -933,42 +933,15 @@ fn runtime_reloadable_config_update(update: &ConfigFieldUpdate) -> bool {
     update.section == "pipeline"
 }
 
-async fn apply_runtime_reloadable_config(
+async fn apply_pipeline_config_update(
     state: &ControlState,
     service: &ConfigService,
-    mut update: ConfigUpdate,
+    update: ConfigFieldUpdate,
 ) -> Result<ConfigUpdate, ControlApiError> {
-    let process_sections = service.pending_process_restart_sections().await?;
-    if !process_sections.is_empty() {
-        update.message = format!(
-            "configuration persisted; restart novasightd to apply process-owned sections [{}]",
-            process_sections.join(", ")
-        );
-        return Ok(update);
-    }
-
-    let pipeline_state = state.runtime.snapshot().pipeline.state;
-    let was_running = matches!(
-        pipeline_state,
-        PipelineState::Running | PipelineState::Standby
-    );
-    if was_running {
-        ensure_runtime_license(state).await?;
-        state.runtime.stop().await?;
-    }
-    prepare_config_for_start(state).await?;
-    if was_running {
-        state.runtime.start().await?;
-        update.message =
-            "configuration persisted and applied by refreshing the runtime pipeline".to_owned();
-    } else {
-        update.message =
-            "configuration persisted and installed for the next runtime start".to_owned();
-    }
-    update.restart_required = false;
-    update.applied = true;
-    update.rolled_back = false;
-    Ok(update)
+    service
+        .update_pipeline(&state.runtime, update)
+        .await
+        .map_err(ControlApiError::Config)
 }
 
 async fn ensure_runtime_license(state: &ControlState) -> Result<(), ControlApiError> {
@@ -1165,8 +1138,7 @@ async fn update_config(
     } else if hot_recoil {
         service.update_recoil(&state.runtime, update).await?
     } else if runtime_reloadable {
-        let update = service.update_field(update).await?;
-        apply_runtime_reloadable_config(&state, service, update).await?
+        apply_pipeline_config_update(&state, service, update).await?
     } else {
         service.update_field(update).await?
     };
@@ -1205,8 +1177,7 @@ async fn update_legacy_config(
         } else if hot_recoil {
             service.update_recoil(&state.runtime, field_update).await?
         } else if runtime_reloadable {
-            let update = service.update_field(field_update).await?;
-            apply_runtime_reloadable_config(&state, service, update).await?
+            apply_pipeline_config_update(&state, service, field_update).await?
         } else {
             service.update_field(field_update).await?
         }

@@ -126,6 +126,12 @@ impl SingleTargetPredictor {
         }
     }
 
+    pub fn set_config(&mut self, config: SingleTargetPredictionConfig) {
+        self.config = config;
+        self.velocity_x.set_config(config);
+        self.velocity_y.set_config(config);
+    }
+
     pub fn config_valid(&self) -> bool {
         self.config.is_valid()
     }
@@ -327,6 +333,10 @@ impl RobustVelocityEstimator {
             initialized_velocity: false,
             complete_window_updates: 0,
         }
+    }
+
+    fn set_config(&mut self, config: SingleTargetPredictionConfig) {
+        self.config = config;
     }
 
     fn history_position_count(&self) -> usize {

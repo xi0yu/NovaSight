@@ -94,6 +94,23 @@ pub struct PipelineConfig {
     pub recoil: RecoilConfig,
 }
 
+#[derive(Clone, Debug)]
+pub struct PipelineLiveConfig {
+    pub targeting: TargetingConfig,
+    pub control: DualPhaseConfig,
+    pub actuation_feedback_delay_ns: u64,
+}
+
+impl From<&PipelineConfig> for PipelineLiveConfig {
+    fn from(config: &PipelineConfig) -> Self {
+        Self {
+            targeting: config.targeting.clone(),
+            control: config.control,
+            actuation_feedback_delay_ns: config.actuation_feedback_delay_ns,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct DeviceWorkerConfig {
     epoch: RuntimeEpoch,
@@ -104,7 +121,6 @@ struct DeviceWorkerConfig {
 struct ControlWorkerConfig {
     epoch: RuntimeEpoch,
     control: DualPhaseConfig,
-    actuation_feedback_delay_ns: u64,
 }
 
 impl Default for PipelineConfig {
@@ -338,6 +354,9 @@ struct SharedState {
     last_vision_telemetry_at_ns: AtomicU64,
     latest_successful_send_x_ts_ns: AtomicU64,
     latest_successful_send_y_ts_ns: AtomicU64,
+    targeting_config_version: AtomicU64,
+    control_config_version: AtomicU64,
+    actuation_feedback_delay_ns: AtomicU64,
     recoil_config_version: AtomicU64,
     recoil_enabled: AtomicBool,
     recoil_require_target: AtomicBool,
@@ -345,6 +364,8 @@ struct SharedState {
     device_lane: Mutex<()>,
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
+    targeting_config: Mutex<TargetingConfig>,
+    control_config: Mutex<DualPhaseConfig>,
     recoil_config: Mutex<RecoilConfig>,
 }
 
@@ -354,6 +375,7 @@ impl SharedState {
         external_stop: Arc<AtomicUsize>,
         device_connected: bool,
         trigger_mode: TriggerMode,
+        live_config: PipelineLiveConfig,
         recoil_config: RecoilConfig,
     ) -> Self {
         let metrics = AtomicMetrics {
@@ -387,6 +409,9 @@ impl SharedState {
             last_vision_telemetry_at_ns: AtomicU64::new(0),
             latest_successful_send_x_ts_ns: AtomicU64::new(0),
             latest_successful_send_y_ts_ns: AtomicU64::new(0),
+            targeting_config_version: AtomicU64::new(1),
+            control_config_version: AtomicU64::new(1),
+            actuation_feedback_delay_ns: AtomicU64::new(live_config.actuation_feedback_delay_ns),
             recoil_config_version: AtomicU64::new(1),
             recoil_enabled: AtomicBool::new(recoil_config.enabled),
             recoil_require_target: AtomicBool::new(recoil_config.require_target),
@@ -394,6 +419,8 @@ impl SharedState {
             device_lane: Mutex::new(()),
             event_tx,
             metrics,
+            targeting_config: Mutex::new(live_config.targeting),
+            control_config: Mutex::new(live_config.control),
             recoil_config: Mutex::new(recoil_config),
         }
     }
@@ -618,6 +645,7 @@ impl Drop for WorkerGuard {
 pub struct PipelineIngress {
     epoch: RuntimeEpoch,
     batches: LatestSlot<DetectionBatch>,
+    command_slot: LatestSlot<OutputPlan>,
     shared: Arc<SharedState>,
 }
 
@@ -778,6 +806,50 @@ impl PipelineIngress {
         self.shared
             .recoil_config_version
             .fetch_add(1, Ordering::Release);
+        self.shared.clear_control_telemetry();
+        Ok(())
+    }
+
+    /// Replace targeting and mouse-control tuning for the active epoch without
+    /// rebuilding capture, inference, or the pointer device lane.
+    pub fn set_live_config(&self, config: PipelineLiveConfig) -> Result<(), PipelineError> {
+        if config.actuation_feedback_delay_ns > 100_000_000 {
+            return Err(PipelineError::InvalidActuationFeedbackDelay {
+                actual_ns: config.actuation_feedback_delay_ns,
+            });
+        }
+        let _lane = self
+            .shared
+            .device_lane
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *self
+            .shared
+            .targeting_config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config.targeting;
+        *self
+            .shared
+            .control_config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config.control;
+        self.shared
+            .actuation_feedback_delay_ns
+            .store(config.actuation_feedback_delay_ns, Ordering::Release);
+        self.shared
+            .targeting_config_version
+            .fetch_add(1, Ordering::Release);
+        self.shared
+            .control_config_version
+            .fetch_add(1, Ordering::Release);
+        let next_generation = self
+            .shared
+            .latest_seen_generation()
+            .map_or(0, |generation| generation.0.saturating_add(1));
+        self.shared
+            .output_gate_min_generation
+            .store(next_generation, Ordering::Release);
+        let _ = self.command_slot.try_take();
         self.shared.clear_control_telemetry();
         Ok(())
     }
@@ -982,6 +1054,7 @@ impl PipelineRuntime {
             external_stop,
             initial_device_error.is_none(),
             config.trigger_mode,
+            PipelineLiveConfig::from(&config),
             config.recoil,
         ));
         if let Some(error) = &initial_device_error {
@@ -1013,7 +1086,6 @@ impl PipelineRuntime {
             ControlWorkerConfig {
                 epoch: config.epoch,
                 control: config.control,
-                actuation_feedback_delay_ns: config.actuation_feedback_delay_ns,
             },
         ) {
             Ok(handle) => handle,
@@ -1065,6 +1137,7 @@ impl PipelineRuntime {
         let ingress = PipelineIngress {
             epoch: config.epoch,
             batches: batch_slot.clone(),
+            command_slot: command_slot.clone(),
             shared: Arc::clone(&shared),
         };
         let started = (
@@ -1308,9 +1381,21 @@ fn spawn_targeting_worker(
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "targeting", || {
                 let mut targeting = TargetingCore::new(config);
+                let mut config_version = shared.targeting_config_version.load(Ordering::Acquire);
                 while let Some(batch) = input.wait_take() {
                     if shared.status() != PipelineStatus::Running {
                         break;
+                    }
+                    let latest_config_version =
+                        shared.targeting_config_version.load(Ordering::Acquire);
+                    if latest_config_version != config_version {
+                        let config = shared
+                            .targeting_config
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .clone();
+                        targeting.set_config(config);
+                        config_version = latest_config_version;
                     }
                     shared
                         .metrics
@@ -1421,11 +1506,22 @@ fn spawn_control_worker(
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "control", || {
                 let mut control = DualPhaseControl::new(config.control);
+                let mut config_version = shared.control_config_version.load(Ordering::Acquire);
                 let mut previous_capture_ts_ns = None;
                 let mut next_telemetry_at_ns = 0;
                 while let Some(target) = input.wait_take() {
                     if shared.status() != PipelineStatus::Running {
                         break;
+                    }
+                    let latest_config_version =
+                        shared.control_config_version.load(Ordering::Acquire);
+                    if latest_config_version != config_version {
+                        let config = *shared
+                            .control_config
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        control.set_config(config);
+                        config_version = latest_config_version;
                     }
                     let control_now_ns = clock.now().0;
                     let target_id = target.target_id.unwrap_or(0);
@@ -1460,8 +1556,9 @@ fn spawn_control_worker(
                         })
                         .unwrap_or(0);
                     previous_capture_ts_ns = Some(target.stamp.captured_at.0);
-                    let visible_after_delay_ns = config
+                    let visible_after_delay_ns = shared
                         .actuation_feedback_delay_ns
+                        .load(Ordering::Acquire)
                         .saturating_add(measurement_guard_ns);
                     let pending_for_axis = |accepted_at_ns: u64| {
                         accepted_at_ns != 0
