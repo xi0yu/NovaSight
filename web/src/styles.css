@@ -1529,6 +1529,120 @@ tbody tr:hover {
   line-height: 1.5;
 }
 
+.license-gift-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 0.82fr);
+  gap: 16px;
+  overflow: hidden;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--brand-primary) 28%, var(--border-subtle));
+  border-radius: var(--radius-inner);
+  background:
+    radial-gradient(circle at 92% 0%, color-mix(in srgb, var(--brand-primary) 18%, transparent), transparent 36%),
+    linear-gradient(135deg, color-mix(in srgb, var(--brand-soft) 82%, var(--bg-elevated)), var(--bg-elevated));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, #ffffff 34%, transparent),
+    0 16px 34px color-mix(in srgb, var(--theme-glow) 28%, transparent);
+}
+
+.license-gift-card.valid {
+  border-color: color-mix(in srgb, var(--green) 28%, var(--brand-primary));
+}
+
+.license-gift-card::after {
+  content: "";
+  position: absolute;
+  top: 15px;
+  right: 16px;
+  width: 48px;
+  height: 48px;
+  border: 1px dashed color-mix(in srgb, var(--brand-primary) 36%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--brand-primary) 10%, #ffffff);
+  opacity: 0.74;
+  pointer-events: none;
+}
+
+.license-gift-ribbon {
+  position: absolute;
+  inset: 0 auto 0 20px;
+  width: 18px;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, transparent 41%, rgba(255, 255, 255, 0.78) 42% 58%, transparent 59%),
+    linear-gradient(180deg, var(--brand-primary), color-mix(in srgb, var(--brand-primary) 68%, var(--signal-attention)));
+  opacity: 0.88;
+}
+
+.license-gift-copy {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding-left: 28px;
+}
+
+.license-gift-copy > span {
+  color: var(--brand-primary);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+.license-gift-copy strong {
+  color: var(--text-primary);
+  font-size: 1.1rem;
+  line-height: 1.25;
+}
+
+.license-gift-copy p {
+  max-width: 520px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.license-gift-trace {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.license-gift-trace > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--brand-primary) 18%, var(--border-subtle));
+  border-radius: max(6px, calc(var(--radius-inner) - 5px));
+  background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
+}
+
+.license-gift-trace dt {
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  font-weight: 730;
+}
+
+.license-gift-trace dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 760;
+  overflow-wrap: anywhere;
+}
+
 .license-features span {
   border-radius: 999px;
   background: color-mix(in srgb, var(--primary) 16%, var(--surface-2));
@@ -1540,6 +1654,14 @@ tbody tr:hover {
 }
 
 @media (max-width: 640px) {
+  .license-gift-card {
+    grid-template-columns: 1fr;
+  }
+
+  .license-gift-trace {
+    grid-template-columns: 1fr;
+  }
+
   .temporary-license-action {
     align-items: stretch;
     flex-direction: column;
@@ -5657,6 +5779,7 @@ body::after {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--bg-surface) 70%, transparent);
 }
 
+.theme-swatch-momo { background: linear-gradient(135deg, #fff8fb 12%, #ffc4d8 48%, #e73572 76%, #5f1534); }
 .theme-swatch-elysia { background: linear-gradient(135deg, #fffafb 16%, #f4a9c0 58%, #a3264b); }
 .theme-swatch-rem { background: linear-gradient(135deg, #ffffff 12%, #83bcea 58%, #244e83); }
 .theme-swatch-lusha { background: linear-gradient(135deg, #fff8e6 12%, #be8336 55%, #4b2c1c); }
@@ -5728,6 +5851,7 @@ body::after {
   transform: rotate(-2deg);
 }
 
+.theme-option-art-momo { background-image: url("./assets/themes/elysia-sakura-portrait.webp"); }
 .theme-option-art-elysia { background-image: url("./assets/themes/elysia-sakura-portrait.webp"); }
 .theme-option-art-rem { background-image: url("./assets/themes/rem-azure-portrait.webp"); }
 .theme-option-art-lusha { background-image: url("./assets/themes/lusha-gilded-portrait.webp"); }
@@ -5799,6 +5923,39 @@ body::after {
 
 [data-theme="tayama"] .console-main {
   background: var(--bg-app);
+}
+
+[data-theme="momo"] body::before {
+  background:
+    radial-gradient(circle at 86% 12%, rgba(231, 53, 114, 0.14) 0 36px, transparent 37px),
+    linear-gradient(118deg, transparent 66%, rgba(231, 53, 114, 0.08));
+}
+
+[data-theme="momo"] .console-app {
+  box-shadow:
+    0 0 0 1px rgba(231, 53, 114, 0.06),
+    0 18px 48px rgba(123, 24, 64, 0.1);
+}
+
+[data-theme="momo"] .console-sidebar::before {
+  content: "";
+  position: absolute;
+  top: 74px;
+  right: 12px;
+  z-index: 0;
+  width: 58px;
+  height: 58px;
+  pointer-events: none;
+  border-radius: 18px 18px 18px 6px;
+  background:
+    linear-gradient(90deg, transparent 42%, rgba(255, 255, 255, 0.92) 43% 56%, transparent 57%),
+    linear-gradient(0deg, transparent 42%, rgba(255, 255, 255, 0.88) 43% 56%, transparent 57%),
+    linear-gradient(135deg, #ff8fb5, #e73572);
+  box-shadow:
+    0 0 0 1px rgba(231, 53, 114, 0.22),
+    0 12px 30px rgba(231, 53, 114, 0.18);
+  opacity: 0.7;
+  transform: rotate(5deg);
 }
 
 [data-theme="elysia"] body::before {
@@ -6470,9 +6627,9 @@ body::after {
 }
 
 /* ============================================================
- * Character gallery wing
- * A deliberately maximal anime layer for wide Studio workspaces.
- * Operational content remains in the center pane; fandom lives here.
+ * Theme archive wing
+ * Anime styling is contained in one narrow support rail so controls keep
+ * their operational hierarchy and the theme reads as product skin.
  * ============================================================ */
 
 .theme-gallery {
@@ -6493,14 +6650,14 @@ body::after {
     min-width: 0;
     min-height: 0;
     display: grid;
-    grid-template-rows: 116px minmax(220px, 1fr) auto auto;
+    grid-template-rows: 96px minmax(210px, 1fr) auto auto;
     grid-column: 3;
     grid-row: 2;
     overflow: hidden;
     border-left: 1px solid color-mix(in srgb, var(--brand-primary) 38%, var(--border-default));
     background:
-      radial-gradient(circle at 50% 30%, var(--theme-glow), transparent 42%),
-      var(--bg-elevated);
+      radial-gradient(circle at 50% 25%, var(--theme-glow), transparent 38%),
+      linear-gradient(180deg, var(--bg-elevated), color-mix(in srgb, var(--brand-soft) 42%, var(--bg-elevated)));
     color: var(--text-primary);
     isolation: isolate;
   }
@@ -6567,17 +6724,48 @@ body::after {
     position: relative;
     z-index: 1;
     min-height: 0;
-    margin: -14px 10px 0;
+    margin: -8px 10px 0;
     overflow: hidden;
     border: 1px solid color-mix(in srgb, var(--brand-primary) 30%, var(--border-default));
-    border-radius: max(var(--card-radius), 7px) max(var(--card-radius), 7px) 28px 7px;
+    border-radius: max(var(--card-radius), 8px);
     background:
-      linear-gradient(to bottom, transparent 55%, color-mix(in srgb, var(--bg-elevated) 94%, transparent) 100%),
+      linear-gradient(to bottom, transparent 52%, color-mix(in srgb, var(--bg-elevated) 94%, transparent) 100%),
       var(--theme-keyart) var(--theme-art-position) / cover no-repeat;
     box-shadow:
       0 18px 44px color-mix(in srgb, var(--theme-glow) 54%, transparent),
       inset 0 0 0 1px color-mix(in srgb, #ffffff 20%, transparent);
     animation: theme-stage-breathe 6s ease-in-out infinite alternate;
+  }
+
+  .theme-gallery-stage::before,
+  .theme-gallery-stage::after {
+    content: "";
+    position: absolute;
+    z-index: 3;
+    pointer-events: none;
+    border: 1px solid color-mix(in srgb, #ffffff 68%, transparent);
+    background: color-mix(in srgb, var(--brand-soft) 72%, #ffffff);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--brand-primary) 26%, transparent),
+      0 12px 28px color-mix(in srgb, var(--theme-glow) 48%, transparent);
+  }
+
+  .theme-gallery-stage::before {
+    top: 18px;
+    left: 15px;
+    width: 48px;
+    height: 34px;
+    border-radius: 11px 11px 11px 3px;
+    transform: rotate(-8deg);
+  }
+
+  .theme-gallery-stage::after {
+    right: 15px;
+    bottom: 24px;
+    width: 42px;
+    height: 42px;
+    border-radius: 50% 50% 50% 12px;
+    transform: rotate(9deg);
   }
 
   .theme-gallery-halo {
@@ -6610,17 +6798,17 @@ body::after {
   .theme-gallery-portrait {
     position: absolute;
     z-index: 6;
-    right: 17px;
-    bottom: 150px;
+    right: 18px;
+    bottom: 142px;
     width: 84px;
     height: 84px;
     border: 3px solid var(--bg-elevated);
-    border-radius: 22px 50% 50% 50%;
+    border-radius: 18px;
     background: var(--theme-portrait) center / cover no-repeat;
     box-shadow:
       0 0 0 1px var(--brand-primary),
       0 12px 28px color-mix(in srgb, var(--theme-glow) 72%, rgba(0, 0, 0, 0.18));
-    transform: rotate(3deg);
+    transform: rotate(2deg);
   }
 
   .theme-gallery-stories {
@@ -6629,7 +6817,7 @@ body::after {
     margin: -26px 10px 0;
     padding: 18px 16px 13px;
     border: 1px solid color-mix(in srgb, var(--brand-primary) 32%, var(--border-default));
-    border-radius: 7px 28px 7px 7px;
+    border-radius: max(var(--card-radius), 8px);
     background:
       linear-gradient(145deg, color-mix(in srgb, var(--brand-soft) 86%, var(--bg-elevated)), var(--bg-elevated));
     box-shadow: 0 -12px 34px color-mix(in srgb, var(--theme-glow) 36%, transparent);
@@ -6640,6 +6828,7 @@ body::after {
     gap: 3px;
   }
 
+  [data-theme="momo"] .theme-gallery-story[data-theme-story="momo"],
   [data-theme="elysia"] .theme-gallery-story[data-theme-story="elysia"],
   [data-theme="rem"] .theme-gallery-story[data-theme-story="rem"],
   [data-theme="lusha"] .theme-gallery-story[data-theme-story="lusha"],
@@ -6678,10 +6867,10 @@ body::after {
 
   .theme-gallery-story > h2 {
     color: var(--text-primary);
-    font-family: "Songti SC", "Noto Serif CJK SC", "Yu Mincho", serif;
+    font-family: var(--font-heading);
     font-size: 25px;
     line-height: 30px;
-    letter-spacing: 0.06em;
+    letter-spacing: 0;
   }
 
   .theme-gallery-story > p {
@@ -6727,6 +6916,10 @@ body::after {
     font-size: 10px;
   }
 
+  [data-theme="momo"] .theme-gallery {
+    background: linear-gradient(160deg, #fff8fb 0%, #ffe8f1 48%, #ffbed4 100%);
+  }
+
   [data-theme="elysia"] .theme-gallery {
     background: linear-gradient(160deg, #fff7fb 0%, #ffeaf3 48%, #f4c2d6 100%);
   }
@@ -6761,6 +6954,23 @@ body::after {
 
   [data-theme="tayama"] .theme-gallery-stage {
     clip-path: polygon(0 0, 100% 0, 100% 94%, 92% 100%, 0 100%);
+  }
+
+  [data-theme="momo"] .theme-gallery::before {
+    border-style: dashed;
+  }
+
+  [data-theme="momo"] .theme-gallery-stage::before {
+    background:
+      linear-gradient(90deg, transparent 42%, rgba(255, 255, 255, 0.92) 43% 56%, transparent 57%),
+      linear-gradient(0deg, transparent 42%, rgba(255, 255, 255, 0.88) 43% 56%, transparent 57%),
+      linear-gradient(135deg, #ff96bc, #e73572);
+  }
+
+  [data-theme="momo"] .theme-gallery-stage::after {
+    background:
+      radial-gradient(circle at 50% 42%, #fff 0 18%, transparent 19%),
+      linear-gradient(135deg, #ffd8e6, #ff78a9);
   }
 }
 

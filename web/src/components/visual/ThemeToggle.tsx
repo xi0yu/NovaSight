@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { NovaIcon } from "./NovaIcon";
 
-type ThemeMode = "elysia" | "rem" | "lusha" | "tayama";
+type ThemeMode = "momo" | "elysia" | "rem" | "lusha" | "tayama";
 
 type ThemeOption = {
   id: ThemeMode;
@@ -12,12 +12,13 @@ type ThemeOption = {
 };
 
 const THEME_STORAGE_KEY = "novasight.theme";
-const DEFAULT_THEME: ThemeMode = "elysia";
+const DEFAULT_THEME: ThemeMode = "momo";
 const THEME_OPTIONS: ThemeOption[] = [
-  { id: "elysia", label: "樱晶花园", character: "爱莉希雅", palette: "樱花白 · 粉金" },
-  { id: "rem", label: "苍雪女仆", character: "雷姆", palette: "冰蓝 · 瓷白" },
-  { id: "lusha", label: "鎏金王庭", character: "露莎公主", palette: "暖褐 · 象牙白 · 金" },
-  { id: "tayama", label: "绯夜烟巷", character: "田山小姐", palette: "墨黑 · 深红" }
+  { id: "momo", label: "桃粉礼物", character: "Momo · 成年向导", palette: "礼物粉 · 莓红 · 奶白" },
+  { id: "elysia", label: "樱晶庭院", character: "Sakura · 视觉档案", palette: "樱花白 · 粉金" },
+  { id: "rem", label: "苍雪校准", character: "Azure · 稳定档案", palette: "冰蓝 · 瓷白" },
+  { id: "lusha", label: "鎏金王庭", character: "Gilded · 典藏档案", palette: "暖褐 · 象牙白 · 金" },
+  { id: "tayama", label: "绯夜模式", character: "Crimson · 夜间档案", palette: "墨黑 · 深红" }
 ];
 
 function isThemeMode(value: string | null): value is ThemeMode {
@@ -35,7 +36,13 @@ function getInitialTheme(): ThemeMode {
   }
 
   // Preserve the intent of the retired two-theme system.
-  return storedTheme === "dark" ? "tayama" : DEFAULT_THEME;
+  if (storedTheme === "dark") {
+    return "tayama";
+  }
+  if (storedTheme === "light") {
+    return "elysia";
+  }
+  return DEFAULT_THEME;
 }
 
 export function ThemeToggle() {

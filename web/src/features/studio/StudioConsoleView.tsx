@@ -196,10 +196,15 @@ type LaunchStage = {
 
 const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
 const LAUNCH_STATUS_REQUEST_TIMEOUT_MS = 15000;
+const MODEL_GUIDANCE_OPENED_ERROR = "MODEL_GUIDANCE_OPENED";
 
 // Output delivery is configured and connected independently. Mainline launch
 // only proves capture, inference and mouse-algorithm consumption are ready.
 const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
+  {
+    title: "检查模型配置",
+    caption: "没有已发布 TensorRT Engine 时转入模型管理，配置完成后再继续启动。"
+  },
   {
     title: "检查运行环境",
     caption: "确认 Studio 已连接到 Jetson 运行服务。"
@@ -217,6 +222,32 @@ const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
     caption: "确认目标选择、跟踪与 Atan 鼠标算法已开始消费 DetectionBatch；输出设备不影响本步骤。"
   }
 ];
+
+function modelLaunchCandidateRank(model: ModelCatalogModel): number {
+  const recommendationRank = model.recommendation === "recommended"
+    ? 0
+    : model.recommendation === "unrated"
+      ? 10
+      : 20;
+  const status = model.artifact_status ?? model.scan_status;
+  const statusRank = status === "ready"
+    ? 0
+    : status === "pending" || status === "need_confirm"
+      ? 1
+      : status === "failed"
+        ? 4
+        : 8;
+  return recommendationRank + statusRank;
+}
+
+function flattenLaunchCatalogModels(root: ModelCatalogDirectory | null): ModelCatalogModel[] {
+  if (!root) {
+    return [];
+  }
+  return root.children.flatMap((node) =>
+    node.type === "model" ? [node] : flattenLaunchCatalogModels(node)
+  );
+}
 
 function resolveLaunchStepState(
   index: number,
@@ -2069,21 +2100,55 @@ export function StudioConsoleView({
     }
   }, [runtimeMainlineSelected, onRefresh, onRuntimeStateChange]);
 
-  const requirePublishedModelBeforeMainline = useCallback(() => {
+  const ensurePublishedModelBeforeMainline = useCallback(async () => {
     if (activeModelPublished) {
       return true;
     }
-    const message = "请先在模型管理中发布一个 ready TensorRT engine，再启动视觉链路。";
-    setLocalError(message);
+    const openingMessage = "启动前没有已发布 TensorRT Engine，已转入模型管理。";
+    setLocalError(openingMessage);
+    setModelCatalogMessage(openingMessage);
+    setLaunchProgressDetail("未找到当前模型，正在读取模型目录并打开模型管理。");
     setActivePage("infer");
     setLaunchDialogOpen(false);
     setModelManagerDialogOpen(true);
-    void onEnsureProjects(false).catch(() => undefined);
+    setModelCatalogLoading(true);
+    try {
+      await onEnsureProjects(false).catch(() => undefined);
+      const result = await getModelCatalog(true);
+      applyModelCatalogResult(result);
+      const engineCandidates = flattenLaunchCatalogModels(result.root)
+        .filter((model) => model.kind === "engine")
+        .sort((left, right) =>
+          modelLaunchCandidateRank(left) - modelLaunchCandidateRank(right) ||
+          left.relative_path.localeCompare(right.relative_path)
+        );
+      const selectedCandidate = engineCandidates[0];
+      if (!selectedCandidate) {
+        const message = "启动前没有找到 .engine 模型。请把 TensorRT engine 放入 models 目录，刷新模型后再切换。";
+        setLocalError(message);
+        setModelCatalogMessage(message);
+        return false;
+      }
+      setSelectedModelCatalogPath(selectedCandidate.relative_path);
+      const message = `已预选 ${selectedCandidate.relative_path}。请点击“验证并切换到所选模型”，完成后再次启动主链。`;
+      setLocalError(message);
+      setModelCatalogMessage(message);
+      if (result.updated_files > 0) {
+        await onRefresh();
+      }
+    } catch (err) {
+      const message = `模型管理打开失败：${getErrorMessage(err)}`;
+      setLocalError(message);
+      setModelCatalogMessage(message);
+      reportError(err, { source: "mainline-model-guide", title: "模型管理打开失败" });
+    } finally {
+      setModelCatalogLoading(false);
+    }
     return false;
-  }, [activeModelPublished, onEnsureProjects]);
+  }, [activeModelPublished, applyModelCatalogResult, onEnsureProjects, onRefresh]);
 
   const startInferenceThread = useCallback(async () => {
-    if (!requirePublishedModelBeforeMainline()) {
+    if (!(await ensurePublishedModelBeforeMainline())) {
       return;
     }
     setBusy("runtime.start");
@@ -2102,7 +2167,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [onRefresh, requirePublishedModelBeforeMainline]);
+  }, [ensurePublishedModelBeforeMainline, onRefresh]);
 
   const waitForLaunchFeedback = useCallback((ms: number) => new Promise<void>((resolve) => {
     if (launchTimerRef.current !== null) {
@@ -2209,9 +2274,6 @@ export function StudioConsoleView({
     if (launchStatus === "running") {
       return;
     }
-    if (!requirePublishedModelBeforeMainline()) {
-      return;
-    }
     launchCancelledRef.current = false;
     setBusy("runtime.start");
     setLocalError(null);
@@ -2237,17 +2299,23 @@ export function StudioConsoleView({
 
     try {
       await runStage(0, async () => {
+        const modelReady = await ensurePublishedModelBeforeMainline();
+        if (!modelReady) {
+          throw new Error(MODEL_GUIDANCE_OPENED_ERROR);
+        }
+      });
+      await runStage(1, async () => {
         const state = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
         const status = getRuntimeMainlineStatus(state);
         if (status.failed) {
           throw new Error(status.readinessDetail);
         }
       });
-      await runStage(1, async () => {
+      await runStage(2, async () => {
         const captureState = await selectCaptureProfile(buildCapturePayload());
         assertCaptureLaunchState(captureState);
       });
-      await runStage(2, async () => {
+      await runStage(3, async () => {
         const status = asRecord(await startRuntimePipeline());
         const accepted = readBoolean(status.running, true);
         if (!accepted) {
@@ -2257,7 +2325,7 @@ export function StudioConsoleView({
         setMainlineLaunchAccepted(true);
         setMainlineLaunchMessage("后端已确认主链运行，正在核对运行时消费数据。");
       });
-      await runStage(3, async () => {
+      await runStage(4, async () => {
         const state = await waitForRuntimeEvidence(
           "激活鼠标算法",
           (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
@@ -2276,6 +2344,15 @@ export function StudioConsoleView({
       await onRefresh();
       showLaunchToast();
     } catch (err) {
+      const message = getErrorMessage(err);
+      if (message === MODEL_GUIDANCE_OPENED_ERROR) {
+        setLaunchStatus("idle");
+        setLaunchError("");
+        setLaunchProgressDetail("已转入模型管理，请完成模型切换后重新启动。");
+        setMainlineLaunchAccepted(false);
+        setMainlineLaunchMessage("");
+        return;
+      }
       if (launchCancelledRef.current) {
         setLaunchStatus("cancelled");
         setLaunchError("");
@@ -2283,10 +2360,10 @@ export function StudioConsoleView({
         return;
       }
       setLaunchStatus("failed");
-      setLaunchError(getErrorMessage(err));
+      setLaunchError(message);
       setMainlineLaunchAccepted(false);
       setMainlineLaunchMessage("");
-      setLocalError(`启动主链失败：${getErrorMessage(err)}`);
+      setLocalError(`启动主链失败：${message}`);
 
       reportError(err, { source: "mainline-launch", title: "启动主链失败" });
       try {
@@ -2302,12 +2379,11 @@ export function StudioConsoleView({
   }, [
     assertCaptureLaunchState,
     buildCapturePayload,
+    ensurePublishedModelBeforeMainline,
     launchStatus,
     onRefresh,
     onRuntimeStateChange,
-    requirePublishedModelBeforeMainline,
     showLaunchToast,
-    waitForLaunchFeedback,
     waitForRuntimeEvidence
   ]);
 
@@ -2350,16 +2426,12 @@ export function StudioConsoleView({
       return;
     }
     if (runtimeMainlineSelected) {
-      if (!requirePublishedModelBeforeMainline()) {
-        return;
-      }
       openMainlineLaunchDialog();
       return;
     }
     await applyCapture();
   }, [
     applyCapture,
-    requirePublishedModelBeforeMainline,
     runtimeControlRequested,
     runtimeMainlineSelected,
     openMainlineLaunchDialog,

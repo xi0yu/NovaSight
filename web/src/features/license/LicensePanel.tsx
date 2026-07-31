@@ -33,6 +33,16 @@ export function LicensePanel({
   const [failure, setFailure] = useState<LicenseActionFailure | null>(null);
   const currentTime = new Date().toLocaleString("zh-CN", { hour12: false });
   const temporarySupported = license?.temporary_access_supported === true;
+  const traceSource = license?.token_id || license?.license_id || license?.fingerprint || "";
+  const giftTraceCode = formatTraceFragment(traceSource);
+  const fingerprintTraceCode = formatTraceFragment(license?.fingerprint);
+  const licenseTraceCode = formatTraceFragment(license?.license_id);
+  const signedAt = license?.valid
+    ? formatEpoch(license.activated_at ?? license.created_at)
+    : "等待签收";
+  const giftTitle = license?.valid
+    ? "个人授权礼物已签收"
+    : "等待签收个人授权礼物";
 
   const requestTemporary = useCallback(async () => {
     setFailure(null);
@@ -160,6 +170,34 @@ export function LicensePanel({
           {license?.valid ? "授权有效" : "尚未授权"}
         </StatusIndicator>
       </div>
+      <div className={license?.valid ? "license-gift-card valid" : "license-gift-card"}>
+        <span className="license-gift-ribbon" aria-hidden="true" />
+        <div className="license-gift-copy">
+          <span>PERSONAL GIFT LICENSE</span>
+          <strong>{giftTitle}</strong>
+          <p>
+            每份授权都作为单一可追踪签收对象管理；界面只展示追踪片段，不回显完整凭证。
+          </p>
+        </div>
+        <dl className="license-gift-trace">
+          <div>
+            <dt>礼物追踪码</dt>
+            <dd>{giftTraceCode}</dd>
+          </div>
+          <div>
+            <dt>设备指纹</dt>
+            <dd>{fingerprintTraceCode}</dd>
+          </div>
+          <div>
+            <dt>授权编号</dt>
+            <dd>{licenseTraceCode}</dd>
+          </div>
+          <div>
+            <dt>签收时间</dt>
+            <dd>{signedAt}</dd>
+          </div>
+        </dl>
+      </div>
       <div className="field-grid">
         <Field label="授权类型" value={license?.tier ? formatTier(license.tier) : "未授权"} />
         <Field label="凭证格式" value={formatCredentialFormat(license?.credential_format)} />
@@ -238,6 +276,17 @@ export function LicensePanel({
       </div>
     </div>
   );
+}
+
+function formatTraceFragment(value: string | null | undefined): string {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return "未生成";
+  }
+  if (normalized.length <= 16) {
+    return normalized.toUpperCase();
+  }
+  return `${normalized.slice(0, 8).toUpperCase()}-${normalized.slice(-6).toUpperCase()}`;
 }
 
 function formatTier(tier: string): string {

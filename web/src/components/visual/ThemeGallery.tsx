@@ -1,39 +1,48 @@
 const THEME_STORIES = [
   {
-    id: "elysia",
+    id: "momo",
     index: "01",
-    work: "崩坏三",
-    character: "爱莉希雅",
-    title: "樱晶花园",
-    line: "愿每一次命中，都像飞花般绚烂。",
-    tags: ["粉色妖精", "水晶花庭", "浪漫主义"]
+    work: "NOVA GIFT",
+    character: "Momo",
+    title: "桃粉礼物",
+    line: "个人授权被包装成一份可追溯的生日礼物；每一步启动都有下一步。",
+    tags: ["成年向导", "礼物贴纸", "粉色工作台"]
+  },
+  {
+    id: "elysia",
+    index: "02",
+    work: "NOVA SAKURA",
+    character: "Sakura",
+    title: "樱晶庭院",
+    line: "把视觉链路收进温柔的粉白层次，保留工作台的清晰边界。",
+    tags: ["樱色档案", "水晶花庭", "柔和校准"]
   },
   {
     id: "rem",
-    index: "02",
-    work: "Re:Zero",
-    character: "雷姆",
-    title: "苍雪女仆",
-    line: "蓝色月光之下，守望稳定而精确。",
-    tags: ["鬼族女仆", "月下绣球", "蓝白幻想"]
+    index: "03",
+    work: "NOVA AZURE",
+    character: "Azure",
+    title: "苍雪校准",
+    line: "蓝色只服务稳定和状态，不把画面变成另一个系统。",
+    tags: ["低温校准", "蓝白档案", "稳定优先"]
   },
   {
     id: "lusha",
-    index: "03",
-    work: "死馆 2",
-    character: "露莎公主",
+    index: "04",
+    work: "NOVA GILDED",
+    character: "Gilded",
     title: "鎏金王庭",
-    line: "黄金照耀王庭，也照亮每一条轨迹。",
-    tags: ["褐金王女", "白金宫殿", "华丽幻想"]
+    line: "金色只出现在收藏和档案层，运行控件保持克制。",
+    tags: ["典藏档案", "暖金边界", "礼装感"]
   },
   {
     id: "tayama",
-    index: "04",
-    work: "超市后烟二人",
-    character: "田山小姐",
-    title: "绯夜烟巷",
-    line: "霓虹熄灭之前，保持一点从容。",
-    tags: ["夜班休憩", "黑红霓虹", "成熟漫画"]
+    index: "05",
+    work: "NOVA CRIMSON",
+    character: "Crimson",
+    title: "绯夜模式",
+    line: "夜间主题降低亮面干扰，把红色留给目标和危险动作。",
+    tags: ["夜间工作台", "深红信号", "成熟漫画"]
   }
 ] as const;
 
@@ -41,7 +50,7 @@ export function ThemeGallery() {
   return (
     <aside className="theme-gallery" aria-label="当前角色主题画廊">
       <div className="theme-gallery-scene" aria-hidden="true">
-        <span>CHARACTER THEME</span>
+        <span>NOVA THEME</span>
       </div>
       <div className="theme-gallery-stage" aria-hidden="true">
         <span className="theme-gallery-halo" />
@@ -67,7 +76,7 @@ export function ThemeGallery() {
       </div>
       <div className="theme-gallery-footer">
         <span>THEME COLLECTION</span>
-        <b>NovaSight × 二次元主题档案</b>
+        <b>NovaSight 自有角色主题档案</b>
       </div>
     </aside>
   );
