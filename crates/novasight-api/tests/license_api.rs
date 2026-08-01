@@ -337,10 +337,21 @@ async fn license_gate_enforces_features_on_the_server() {
     assert_eq!(body["required_feature"], "hardware_control");
 
     let (status, _, body) = json_response_with_cookie(
-        app,
+        app.clone(),
         "POST",
         "/api/config",
         Body::from(r#"{"section":"server","key":"port","value":6000}"#),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["required_feature"], "config_write");
+
+    let (status, _, body) = json_response_with_cookie(
+        app,
+        "POST",
+        "/api/v1/config/commands",
+        Body::from(r#"{"command":"set_output_gate","enabled":false}"#),
         Some(&cookie),
     )
     .await;

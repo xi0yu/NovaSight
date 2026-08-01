@@ -149,6 +149,7 @@ pub fn build_control_router_with_platform_queries(
         .route("/ws/status", get(legacy_events))
         .route("/api/v1/status", get(status))
         .route("/api/v1/config", get(config).patch(update_config))
+        .route("/api/v1/config/commands", post(apply_config_command))
         .route("/api/v1/runtime/start", post(start))
         .route("/api/v1/runtime/stop", post(stop))
         .route("/api/v1/runtime/restart", post(restart))
@@ -560,6 +561,9 @@ fn is_license_open_path(method: &Method, path: &str) -> bool {
 }
 
 fn required_license_feature(method: &Method, path: &str) -> Option<&'static str> {
+    if path == "/api/v1/config/commands" {
+        return Some("config_write");
+    }
     if path == "/api/config" || path == "/api/v1/config" {
         return Some(if *method == Method::GET {
             "config_read"
@@ -944,6 +948,83 @@ async fn apply_pipeline_config_update(
         .map_err(ControlApiError::Config)
 }
 
+async fn apply_config_field_update(
+    state: &ControlState,
+    service: &ConfigService,
+    update: ConfigFieldUpdate,
+) -> Result<ConfigUpdate, ControlApiError> {
+    let hot_output_gate = update.section == "control" && update.key == "output_enabled";
+    let hot_trigger_mode = update.section == "control" && update.key == "trigger_mode";
+    let hot_recoil = update.section == "control" && update.key == "recoil";
+    let runtime_reloadable = runtime_reloadable_config_update(&update);
+    let result = if hot_output_gate {
+        service.update_output_gate(&state.runtime, update).await?
+    } else if hot_trigger_mode {
+        service.update_trigger_mode(&state.runtime, update).await?
+    } else if hot_recoil {
+        service.update_recoil(&state.runtime, update).await?
+    } else if runtime_reloadable {
+        apply_pipeline_config_update(state, service, update).await?
+    } else {
+        service.update_field(update).await?
+    };
+    Ok(result)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
+enum ConfigCommandRequest {
+    SetOutputGate {
+        enabled: bool,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
+    SetTriggerMode {
+        mode: String,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+    },
+}
+
+impl ConfigCommandRequest {
+    async fn apply(
+        self,
+        state: &ControlState,
+        service: &ConfigService,
+    ) -> Result<ConfigUpdate, ControlApiError> {
+        match self {
+            Self::SetOutputGate {
+                enabled,
+                expected_revision,
+            } => Ok(service
+                .update_output_gate(
+                    &state.runtime,
+                    ConfigFieldUpdate {
+                        section: "control".to_owned(),
+                        key: "output_enabled".to_owned(),
+                        value: serde_json::Value::Bool(enabled),
+                        expected_revision,
+                    },
+                )
+                .await?),
+            Self::SetTriggerMode {
+                mode,
+                expected_revision,
+            } => Ok(service
+                .update_trigger_mode(
+                    &state.runtime,
+                    ConfigFieldUpdate {
+                        section: "control".to_owned(),
+                        key: "trigger_mode".to_owned(),
+                        value: serde_json::Value::String(mode),
+                        expected_revision,
+                    },
+                )
+                .await?),
+        }
+    }
+}
+
 async fn ensure_runtime_license(state: &ControlState) -> Result<(), ControlApiError> {
     let Some(repository) = state.license.as_ref() else {
         return Ok(());
@@ -1127,21 +1208,20 @@ async fn update_config(
         .config
         .as_ref()
         .ok_or(ControlApiError::ConfigUnavailable)?;
-    let hot_output_gate = update.section == "control" && update.key == "output_enabled";
-    let hot_trigger_mode = update.section == "control" && update.key == "trigger_mode";
-    let hot_recoil = update.section == "control" && update.key == "recoil";
-    let runtime_reloadable = runtime_reloadable_config_update(&update);
-    let result = if hot_output_gate {
-        service.update_output_gate(&state.runtime, update).await?
-    } else if hot_trigger_mode {
-        service.update_trigger_mode(&state.runtime, update).await?
-    } else if hot_recoil {
-        service.update_recoil(&state.runtime, update).await?
-    } else if runtime_reloadable {
-        apply_pipeline_config_update(&state, service, update).await?
-    } else {
-        service.update_field(update).await?
-    };
+    let result = apply_config_field_update(&state, service, update).await?;
+    Ok(Json(result))
+}
+
+async fn apply_config_command(
+    State(state): State<ControlState>,
+    Json(command): Json<ConfigCommandRequest>,
+) -> Result<Json<ConfigUpdate>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let service = state
+        .config
+        .as_ref()
+        .ok_or(ControlApiError::ConfigUnavailable)?;
+    let result = command.apply(&state, service).await?;
     Ok(Json(result))
 }
 
@@ -1160,27 +1240,7 @@ async fn update_legacy_config(
     let update = if is_field_update {
         let field_update: ConfigFieldUpdate =
             serde_json::from_value(payload).map_err(ControlApiError::InvalidFieldUpdate)?;
-        let hot_output_gate =
-            field_update.section == "control" && field_update.key == "output_enabled";
-        let hot_trigger_mode =
-            field_update.section == "control" && field_update.key == "trigger_mode";
-        let hot_recoil = field_update.section == "control" && field_update.key == "recoil";
-        let runtime_reloadable = runtime_reloadable_config_update(&field_update);
-        if hot_output_gate {
-            service
-                .update_output_gate(&state.runtime, field_update)
-                .await?
-        } else if hot_trigger_mode {
-            service
-                .update_trigger_mode(&state.runtime, field_update)
-                .await?
-        } else if hot_recoil {
-            service.update_recoil(&state.runtime, field_update).await?
-        } else if runtime_reloadable {
-            apply_pipeline_config_update(&state, service, field_update).await?
-        } else {
-            service.update_field(field_update).await?
-        }
+        apply_config_field_update(&state, service, field_update).await?
     } else {
         service.replace(payload).await?
     };

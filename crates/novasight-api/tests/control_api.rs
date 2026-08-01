@@ -446,6 +446,95 @@ async fn output_gate_config_is_persisted_and_applied_without_runtime_restart() {
 }
 
 #[tokio::test]
+async fn config_command_updates_output_gate_through_runtime_transaction() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(&path, commissioned_config(0, true)).unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let output_enabled = initial.control.output_enabled;
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) = RuntimeSupervisor::spawn(
+        RuntimeDependencies::recording().with_output_enabled(output_enabled),
+    );
+    runtime.start().await.unwrap();
+    assert!(runtime.snapshot().pipeline_metrics.output_gate_open);
+    let app = build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"command":"set_output_gate","enabled":false}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["config"]["control"]["output_enabled"], false);
+    assert_eq!(body["applied"], true);
+    assert_eq!(body["restart_required"], false);
+    assert_eq!(config.effective_revision(), 1);
+    assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
+async fn config_command_updates_trigger_mode_without_runtime_restart() {
+    let directory = ConfigDirectory::new();
+    let path = directory.0.join("novasight.yaml");
+    fs::write(
+        &path,
+        commissioned_config(0, true).replace(
+            "control:\n  output_enabled: true",
+            "control:\n  output_enabled: true\n  trigger_mode: always",
+        ),
+    )
+    .unwrap();
+    let initial = YamlConfigRepository::load(&path).unwrap();
+    let config = ConfigService::new(&path, initial);
+    let (supervisor, runtime) =
+        RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_output_enabled(true));
+    let started = runtime.start().await.unwrap();
+    let app = build_control_router_with_services(runtime.clone(), Some(config.clone()), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/commands")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"command":"set_trigger_mode","mode":"hardware"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["config"]["control"]["trigger_mode"], "hardware");
+    assert_eq!(body["applied"], true);
+    assert_eq!(body["restart_required"], false);
+    assert_eq!(config.effective_revision(), 1);
+    assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
+    assert_eq!(
+        runtime.snapshot().pipeline.epoch,
+        started.pipeline.epoch,
+        "trigger-mode command must not restart the runtime"
+    );
+
+    shutdown(supervisor, &runtime).await;
+}
+
+#[tokio::test]
 async fn trigger_mode_config_is_applied_to_the_running_pipeline_without_restart() {
     #[derive(Debug)]
     struct FixedClock;

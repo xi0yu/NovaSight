@@ -47,6 +47,8 @@ import {
   publishModel,
   registerCatalogModel,
   selectCaptureProfile,
+  setRuntimeOutputGate,
+  setRuntimeTriggerMode,
   setCapturePreviewEnabled,
   startRuntimePipeline,
   stopCapture,
@@ -669,6 +671,26 @@ function runtimeConfigValuesEqual(left: unknown, right: unknown): boolean {
 
 function runtimeConfigsEqual(left: RuntimeConfig | null, right: RuntimeConfig | null): boolean {
   return runtimeConfigValuesEqual(left, right);
+}
+
+function persistRuntimeConfigField(
+  section: string,
+  key: string,
+  value: RuntimeConfigValue
+) {
+  if (section === "control" && key === "output_enabled") {
+    if (typeof value !== "boolean") {
+      throw new Error("物理输出开关需要布尔值。");
+    }
+    return setRuntimeOutputGate(value);
+  }
+  if (section === "control" && key === "trigger_mode") {
+    if (typeof value !== "string") {
+      throw new Error("触发模式需要字符串值。");
+    }
+    return setRuntimeTriggerMode(value);
+  }
+  return updateRuntimeConfigField(section, key, value);
 }
 
 const CONFIG_SECTION_LABELS: Record<string, string> = {
@@ -2658,7 +2680,7 @@ export function StudioConsoleView({
       }
       try {
         const request = configWriteQueueRef.current.then(() =>
-          updateRuntimeConfigField(section, key, value)
+          persistRuntimeConfigField(section, key, value)
         );
         configWriteQueueRef.current = request.then(
           () => undefined,

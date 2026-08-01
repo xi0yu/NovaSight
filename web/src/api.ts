@@ -564,6 +564,18 @@ export type ConfigUpdateResponse = {
   sections?: OperationReportSection[];
 };
 
+export type ConfigCommandPayload =
+  | {
+      command: "set_output_gate";
+      enabled: boolean;
+      expected_revision?: number;
+    }
+  | {
+      command: "set_trigger_mode";
+      mode: string;
+      expected_revision?: number;
+    };
+
 export type LicenseFeature =
   | "capture"
   | "runtime"
@@ -629,6 +641,7 @@ export const API_PATHS = {
   runtimeStop: "/api/runtime/stop",
   runtimeEmergencyStop: "/api/v1/runtime/emergency-stop",
   config: "/api/config",
+  configCommands: "/api/v1/config/commands",
   configSchema: "/api/config/schema",
   captureCapabilities: "/api/capture/capabilities",
   captureSelect: "/api/capture/select",
@@ -915,6 +928,32 @@ export function updateRuntimeConfigField(
       "Content-Type": "application/json"
     },
     body: JSON.stringify({ section, key, value })
+  });
+}
+
+export function updateRuntimeConfigCommand(
+  command: ConfigCommandPayload
+): Promise<ConfigUpdateResponse> {
+  return requestJson<ConfigUpdateResponse>(API_PATHS.configCommands, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(command)
+  });
+}
+
+export function setRuntimeOutputGate(enabled: boolean): Promise<ConfigUpdateResponse> {
+  return updateRuntimeConfigCommand({
+    command: "set_output_gate",
+    enabled
+  });
+}
+
+export function setRuntimeTriggerMode(mode: string): Promise<ConfigUpdateResponse> {
+  return updateRuntimeConfigCommand({
+    command: "set_trigger_mode",
+    mode
   });
 }
 
