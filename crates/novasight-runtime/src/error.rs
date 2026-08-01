@@ -28,6 +28,8 @@ pub enum RuntimeErrorKind {
     PipelineUnavailable,
     /// The owned pipeline rejected an input or lifecycle operation.
     PipelineRejected,
+    /// No active model is available for the production perception adapter.
+    ModelUnavailable,
     /// Hardware output is intentionally closed until explicitly commissioned.
     OutputGateClosed,
     /// No physical pointer adapter has been provisioned for this runtime.
@@ -51,6 +53,7 @@ impl RuntimeErrorKind {
             RuntimeErrorKind::RuntimeEpochExhausted => "runtime_epoch_exhausted",
             RuntimeErrorKind::PipelineUnavailable => "pipeline_unavailable",
             RuntimeErrorKind::PipelineRejected => "pipeline_rejected",
+            RuntimeErrorKind::ModelUnavailable => "model_unavailable",
             RuntimeErrorKind::OutputGateClosed => "output_gate_closed",
             RuntimeErrorKind::DeviceUncommissioned => "device_uncommissioned",
             RuntimeErrorKind::DeviceUnavailable => "device_unavailable",
@@ -123,6 +126,10 @@ impl RuntimeError {
 
     pub fn pipeline_rejected(message: impl Into<String>) -> Self {
         Self::new(RuntimeErrorKind::PipelineRejected, message)
+    }
+
+    pub fn model_unavailable(message: impl Into<String>) -> Self {
+        Self::new(RuntimeErrorKind::ModelUnavailable, message)
     }
 
     pub fn output_gate_closed() -> Self {

@@ -87,17 +87,36 @@ pub struct PerceptionMetrics {
     pub timestamp_correlation_misses: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PerceptionErrorKind {
+    Other,
+    ActiveModelMissing,
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 #[error("perception adapter failed: {message}")]
 pub struct PerceptionError {
+    kind: PerceptionErrorKind,
     message: String,
 }
 
 impl PerceptionError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
+            kind: PerceptionErrorKind::Other,
             message: message.into(),
         }
+    }
+
+    pub fn active_model_missing(message: impl Into<String>) -> Self {
+        Self {
+            kind: PerceptionErrorKind::ActiveModelMissing,
+            message: message.into(),
+        }
+    }
+
+    pub fn kind(&self) -> PerceptionErrorKind {
+        self.kind
     }
 
     pub fn message(&self) -> &str {

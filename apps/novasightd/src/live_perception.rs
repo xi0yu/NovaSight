@@ -346,8 +346,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
                 resolve_capture_plan(adapters.capture)
                     .map_err(|error| PerceptionError::new(error.to_string()))
             })?;
-        let model = active_runtime_model(&self.model_catalog)
-            .map_err(|error| PerceptionError::new(error.to_string()))?;
+        let model = active_runtime_model(&self.model_catalog).map_err(perception_error)?;
         let model = resolve_model_nvinfer_config(
             &config,
             &model,
@@ -385,6 +384,15 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
         .map_err(|error| PerceptionError::new(error.to_string()))?;
         DeepStreamAdapter::with_latest_frames(config, self.latest_frames.clone())
             .start(epoch, ingress, clock, events)
+    }
+}
+
+fn perception_error(error: LivePerceptionError) -> PerceptionError {
+    match error {
+        LivePerceptionError::ActiveModelMissing => {
+            PerceptionError::active_model_missing(error.to_string())
+        }
+        error => PerceptionError::new(error.to_string()),
     }
 }
 

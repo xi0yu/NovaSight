@@ -1566,6 +1566,7 @@ impl IntoResponse for ControlApiError {
             Self::Runtime(error) => {
                 let status = match error.kind {
                     RuntimeErrorKind::InvalidPipelineState
+                    | RuntimeErrorKind::ModelUnavailable
                     | RuntimeErrorKind::OutputGateClosed
                     | RuntimeErrorKind::DeviceUncommissioned => StatusCode::CONFLICT,
                     RuntimeErrorKind::SupervisorUnavailable
@@ -1745,6 +1746,7 @@ impl IntoResponse for ControlApiError {
                 ModelActivationError::Runtime(error) => {
                     let status = match error.kind {
                         RuntimeErrorKind::InvalidPipelineState
+                        | RuntimeErrorKind::ModelUnavailable
                         | RuntimeErrorKind::OutputGateClosed
                         | RuntimeErrorKind::DeviceUncommissioned => StatusCode::CONFLICT,
                         RuntimeErrorKind::SupervisorUnavailable
@@ -1812,6 +1814,7 @@ impl IntoResponse for ControlApiError {
                 ModelIngressError::Runtime(error) => {
                     let status = match error.kind {
                         RuntimeErrorKind::InvalidPipelineState
+                        | RuntimeErrorKind::ModelUnavailable
                         | RuntimeErrorKind::OutputGateClosed
                         | RuntimeErrorKind::DeviceUncommissioned => StatusCode::CONFLICT,
                         RuntimeErrorKind::SupervisorUnavailable

@@ -19,9 +19,9 @@ pub use crosshair::{
     CrosshairHub, CrosshairObservation, CrosshairSnapshot, CrosshairTemplateSummary,
 };
 pub use perception::{
-    ModelCandidate, ParserContract, PerceptionAdapter, PerceptionError, PerceptionEvent,
-    PerceptionMetrics, PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession,
-    validate_parser_preset,
+    ModelCandidate, ParserContract, PerceptionAdapter, PerceptionError, PerceptionErrorKind,
+    PerceptionEvent, PerceptionMetrics, PerceptionModelContract, PerceptionRuntimeContract,
+    PerceptionSession, validate_parser_preset,
 };
 pub use preview::{PreviewError, PreviewFrame, PreviewHub, PreviewSnapshot, PreviewSubscription};
 

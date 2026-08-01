@@ -222,6 +222,7 @@ const ALGORITHM_SETTINGS_SECTIONS: Array<{
 const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
 const LAUNCH_STATUS_REQUEST_TIMEOUT_MS = 15000;
 const MODEL_GUIDANCE_OPENED_ERROR = "MODEL_GUIDANCE_OPENED";
+const MODEL_UNAVAILABLE_ERROR_CODE = "model_unavailable";
 
 // Output delivery is configured and connected independently. Mainline launch
 // only proves capture, inference and mouse-algorithm consumption are ready.
@@ -2285,11 +2286,13 @@ export function StudioConsoleView({
     }
   }, [runtimeMainlineSelected, onRefresh, onRuntimeStateChange]);
 
-  const ensurePublishedModelBeforeMainline = useCallback(async () => {
-    if (activeModelPublished) {
+  const ensurePublishedModelBeforeMainline = useCallback(async (options?: { force?: boolean }) => {
+    if (activeModelPublished && options?.force !== true) {
       return true;
     }
-    const openingMessage = "启动前没有已发布 TensorRT Engine，已转入模型管理。";
+    const openingMessage = options?.force === true
+      ? "后端报告当前模型不可用，已转入模型管理。"
+      : "启动前没有已发布 TensorRT Engine，已转入模型管理。";
     setLocalError(openingMessage);
     setModelCatalogMessage(openingMessage);
     setLaunchProgressDetail("未找到当前模型，正在读取模型目录并打开模型管理。");
@@ -2345,6 +2348,10 @@ export function StudioConsoleView({
       }
       await onRefresh();
     } catch (err) {
+      if (getApiErrorCode(err) === MODEL_UNAVAILABLE_ERROR_CODE) {
+        await ensurePublishedModelBeforeMainline({ force: true });
+        return;
+      }
       setLocalError(`启动推理失败：${getErrorMessage(err)}`);
 
       reportError(err, { source: 'studio', title: '操作失败' });
@@ -2531,6 +2538,15 @@ export function StudioConsoleView({
     } catch (err) {
       const message = getErrorMessage(err);
       if (message === MODEL_GUIDANCE_OPENED_ERROR) {
+        setLaunchStatus("idle");
+        setLaunchError("");
+        setLaunchProgressDetail("已转入模型管理，请完成模型切换后重新启动。");
+        setMainlineLaunchAccepted(false);
+        setMainlineLaunchMessage("");
+        return;
+      }
+      if (getApiErrorCode(err) === MODEL_UNAVAILABLE_ERROR_CODE) {
+        await ensurePublishedModelBeforeMainline({ force: true });
         setLaunchStatus("idle");
         setLaunchError("");
         setLaunchProgressDetail("已转入模型管理，请完成模型切换后重新启动。");

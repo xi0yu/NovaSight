@@ -18,10 +18,10 @@ use novasight_core::{
 };
 use novasight_pipeline::{
     CrosshairHub, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate, PerceptionAdapter,
-    PerceptionEvent, PerceptionMetrics, PerceptionModelContract, PerceptionRuntimeContract,
-    PerceptionSession, PipelineConfig, PipelineEvent, PipelineIngress, PipelineLiveConfig,
-    PipelineMetrics, PipelineRuntime, PipelineStatus, PreviewHub, PreviewSnapshot,
-    PreviewSubscription, TriggerMode,
+    PerceptionError, PerceptionErrorKind, PerceptionEvent, PerceptionMetrics,
+    PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession, PipelineConfig,
+    PipelineEvent, PipelineIngress, PipelineLiveConfig, PipelineMetrics, PipelineRuntime,
+    PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription, TriggerMode,
 };
 use novasight_store::config::{
     AppConfig, RecoilConfig as ConfigRecoilConfig, TriggerMode as ConfigTriggerMode,
@@ -2401,7 +2401,7 @@ async fn start_state(
                     "perception runtime-contract task failed: {error}"
                 ))
             })?
-            .map_err(|error| RuntimeError::pipeline_rejected(error.to_string()))?;
+            .map_err(runtime_contract_error)?;
         if let Some(runtime_contract) = runtime_contract {
             dependencies.install_runtime_contract(&runtime_contract);
             state.model.input_width = Some(runtime_contract.model.input_width);
@@ -2967,6 +2967,15 @@ async fn set_device_connection(
     Ok(publish_with_result(snapshot_tx, state, now_ms()))
 }
 
+fn runtime_contract_error(error: PerceptionError) -> RuntimeError {
+    match error.kind() {
+        PerceptionErrorKind::ActiveModelMissing => {
+            RuntimeError::model_unavailable(error.message().to_owned())
+        }
+        PerceptionErrorKind::Other => RuntimeError::pipeline_rejected(error.to_string()),
+    }
+}
+
 async fn shutdown_for_exit(
     snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
     ingress_tx: &watch::Sender<Option<PipelineIngress>>,
@@ -3015,6 +3024,26 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
+    struct MissingActiveModelAdapter;
+
+    impl PerceptionAdapter for MissingActiveModelAdapter {
+        fn runtime_contract(&self) -> Result<Option<PerceptionRuntimeContract>, PerceptionError> {
+            Err(PerceptionError::active_model_missing(
+                "no active model deployment; publish a ready engine before starting perception",
+            ))
+        }
+
+        fn start(
+            &self,
+            _epoch: RuntimeEpoch,
+            _ingress: PipelineIngress,
+            _clock: Arc<dyn Clock>,
+            _events: std::sync::mpsc::SyncSender<PerceptionEvent>,
+        ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
+            unreachable!("runtime_contract should block startup before perception starts")
+        }
+    }
+
     fn handle_with_saturated_command_queue() -> (RuntimeHandle, mpsc::Receiver<RuntimeCommand>) {
         let initial_snapshot = Arc::new(SupervisorState::default().snapshot(now_ms()));
         let (_snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
@@ -3046,6 +3075,24 @@ mod tests {
         })
         .await
         .expect("urgent stop registrations should reach the expected count");
+    }
+
+    #[tokio::test]
+    async fn missing_active_model_reports_stable_model_unavailable_error() {
+        let dependencies =
+            RuntimeDependencies::recording().with_perception(Arc::new(MissingActiveModelAdapter));
+        let (supervisor, runtime) = RuntimeSupervisor::spawn(dependencies);
+
+        let error = runtime
+            .start()
+            .await
+            .expect_err("missing active model must block runtime startup");
+        assert_eq!(error.kind, RuntimeErrorKind::ModelUnavailable);
+        assert_eq!(error.kind.code(), "model_unavailable");
+        assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
+
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
     }
 
     #[tokio::test]
