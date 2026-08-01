@@ -328,9 +328,12 @@ impl SqliteModelCatalog {
     ) -> Result<ModelArtifactMetadata, ModelCatalogError> {
         let tags = normalize_model_tags(tags)?;
         let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(ModelCatalogError::Sqlite)?;
+        require_artifact(&transaction, artifact_id)?;
         let current = {
-            require_artifact(&connection, artifact_id)?;
-            connection
+            transaction
                 .query_row(
                     "SELECT artifact_id, recommendation, tags_json FROM model_artifact_metadata WHERE artifact_id = ?1",
                     [artifact_id],
@@ -342,6 +345,7 @@ impl SqliteModelCatalog {
         if current.as_ref().is_some_and(|metadata| {
             metadata.recommendation == recommendation && metadata.tags == tags
         }) {
+            transaction.commit().map_err(ModelCatalogError::Sqlite)?;
             self.update_cached_artifact_metadata(artifact_id, recommendation, &tags);
             return Ok(ModelArtifactMetadata {
                 artifact_id,
@@ -350,10 +354,6 @@ impl SqliteModelCatalog {
             });
         }
         let tags_json = serde_json::to_string(&tags).map_err(ModelCatalogError::EncodeJson)?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(ModelCatalogError::Sqlite)?;
-        require_artifact(&transaction, artifact_id)?;
         transaction
             .execute(
                 r#"

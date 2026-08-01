@@ -1,12 +1,13 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use novasight_store::model_catalog::{
     ModelCatalogError, ModelIngressCatalogUpdate, ModelRecommendation, SqliteModelCatalog,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -182,6 +183,41 @@ fn artifact_metadata_persists_recommendation_and_tags_in_the_catalog_view() {
         .unwrap();
     assert_eq!(repeated, metadata);
     assert_eq!(sqlite_data_version(&observer), version_before_noop);
+
+    let concurrent_catalog = catalog.clone();
+    let blocking_writer = Connection::open(&database_path).unwrap();
+    blocking_writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    blocking_writer
+        .execute(
+            "UPDATE model_artifact_metadata SET recommendation = ?1, tags_json = ?2 WHERE artifact_id = ?3",
+            params!["not_recommended", "[\"临时\"]", artifact.id],
+        )
+        .unwrap();
+    let (done_tx, done_rx) = mpsc::channel();
+    let artifact_id = artifact.id;
+    let handle = std::thread::spawn(move || {
+        let result = concurrent_catalog.update_artifact_metadata(
+            artifact_id,
+            ModelRecommendation::Recommended,
+            vec!["高精度模型".to_owned(), "延迟大".to_owned()],
+        );
+        done_tx.send(result).unwrap();
+    });
+    match done_rx.recv_timeout(Duration::from_millis(200)) {
+        Ok(result) => {
+            panic!("metadata update returned before the competing writer committed: {result:?}")
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("metadata update thread exited"),
+    }
+    blocking_writer.execute_batch("COMMIT").unwrap();
+    let concurrent = done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    handle.join().unwrap();
+    assert_eq!(concurrent, metadata);
+    assert_eq!(catalog.artifact_metadata(artifact.id).unwrap(), metadata);
 
     let refreshed = catalog.catalog(false).unwrap();
     let model = refreshed.root.children[0].model();
