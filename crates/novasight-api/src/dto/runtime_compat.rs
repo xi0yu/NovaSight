@@ -324,7 +324,16 @@ pub(crate) struct VisionState {
     pub detection_items_truncated: usize,
     pub target: Option<VisionTargetState>,
     pub target_pipeline: TargetPipelineState,
+    pub output_trace: OutputTraceState,
     pub control: VisionControlState,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct OutputTraceState {
+    pub code: &'static str,
+    pub state: &'static str,
+    pub detail: &'static str,
+    pub next_action: &'static str,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -776,6 +785,23 @@ impl CompatibilityRuntimeState {
             .last_error
             .as_ref()
             .map(|error| error.message.clone());
+        let output_trace = output_trace_state(
+            running,
+            inference_running,
+            hardware_output_enabled,
+            snapshot.pipeline_metrics.output_gate_open,
+            snapshot.pipeline_metrics.device_connected,
+            metrics.published_batches,
+            snapshot.pipeline_metrics.received_batches,
+            snapshot.pipeline_metrics.targeting_batches,
+            snapshot.telemetry.detection_data_age_ms,
+            runtime_config.map(|config| config.pipeline.freshness_threshold_ms),
+            &target_pipeline,
+            control_sample,
+            control_reason,
+            dual_phase.emit_allowed,
+            dual_phase.trigger_active,
+        );
         let metadata_extractions = metrics
             .probed_buffers
             .saturating_sub(metrics.unavailable_snapshot_slots)
@@ -968,6 +994,7 @@ impl CompatibilityRuntimeState {
                 },
                 target,
                 target_pipeline,
+                output_trace,
                 control: VisionControlState {
                     global_state: if control_sample { "CALCULATED" } else { "IDLE" },
                     output_enabled: snapshot.pipeline_metrics.output_gate_open,
@@ -1240,6 +1267,133 @@ fn target_pipeline_state(selection: &TargetSelection, has_sample: bool) -> Targe
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn output_trace_state(
+    running: bool,
+    inference_running: bool,
+    hardware_output_enabled: bool,
+    output_gate_open: bool,
+    device_connected: bool,
+    published_batches: u64,
+    consumed_batches: u64,
+    targeting_batches: u64,
+    detection_data_age_ms: Option<f64>,
+    freshness_threshold_ms: Option<f64>,
+    target_pipeline: &TargetPipelineState,
+    control_sample: bool,
+    control_reason: Option<&'static str>,
+    emit_allowed: bool,
+    trigger_active: bool,
+) -> OutputTraceState {
+    if !running {
+        return OutputTraceState {
+            code: "runtime_stopped",
+            state: "idle",
+            detail: "主链未运行，尚未产生检测、目标选择或控制输出。",
+            next_action: "start_mainline",
+        };
+    }
+    if !inference_running {
+        return OutputTraceState {
+            code: "inference_not_running",
+            state: "blocked",
+            detail: "推理子系统未进入运行态，无法产生 DetectionBatch。",
+            next_action: "check_model",
+        };
+    }
+    if published_batches == 0 {
+        return OutputTraceState {
+            code: "no_detection_batches",
+            state: "waiting",
+            detail: "DeepStream 尚未发布 DetectionBatch。",
+            next_action: "check_capture_or_model",
+        };
+    }
+    if consumed_batches == 0 && targeting_batches == 0 {
+        return OutputTraceState {
+            code: "runtime_not_consuming_batches",
+            state: "waiting",
+            detail: "检测批次已发布，但 Rust runtime 尚未消费。",
+            next_action: "inspect_runtime_ingress",
+        };
+    }
+    if detection_data_age_ms
+        .zip(freshness_threshold_ms)
+        .is_some_and(|(age, threshold)| age > threshold)
+    {
+        return OutputTraceState {
+            code: "stale_detection_batch",
+            state: "blocked",
+            detail: "最新检测批次超过控制新鲜度阈值。",
+            next_action: "check_latency",
+        };
+    }
+    if target_pipeline.code != "TARGET_SELECTED" {
+        return OutputTraceState {
+            code: "target_not_selected",
+            state: "blocked",
+            detail: "目标选择没有产出可控目标。",
+            next_action: "check_targeting",
+        };
+    }
+    if !control_sample {
+        return OutputTraceState {
+            code: "control_not_calculated",
+            state: "waiting",
+            detail: "目标已经选择，但控制器尚未产生命令样本。",
+            next_action: "inspect_control",
+        };
+    }
+    if !hardware_output_enabled {
+        return OutputTraceState {
+            code: "hardware_output_disabled",
+            state: "blocked",
+            detail: "当前构建未启用硬件输出能力。",
+            next_action: "check_license_or_build",
+        };
+    }
+    if !output_gate_open {
+        return OutputTraceState {
+            code: "output_gate_closed",
+            state: "blocked",
+            detail: "物理输出门关闭，控制量不会发送到设备。",
+            next_action: "enable_output_gate",
+        };
+    }
+    if !trigger_active {
+        return OutputTraceState {
+            code: "trigger_inactive",
+            state: "waiting",
+            detail: "触发条件未激活，控制器不会发送物理命令。",
+            next_action: "activate_trigger",
+        };
+    }
+    if !device_connected {
+        return OutputTraceState {
+            code: "device_not_connected",
+            state: "blocked",
+            detail: "kmNet 设备未连接，无法发送物理命令。",
+            next_action: "connect_kmnet",
+        };
+    }
+    if !emit_allowed {
+        return OutputTraceState {
+            code: control_reason
+                .filter(|reason| !reason.is_empty())
+                .unwrap_or("control_blocked"),
+            state: "blocked",
+            detail: "控制器已计算样本，但当前样本不允许发送。",
+            next_action: "inspect_control",
+        };
+    }
+    OutputTraceState {
+        code: "ready",
+        state: "ready",
+        detail: "检测、目标选择、控制器、输出门和设备连接均已贯通。",
+        next_action: "monitor_output",
+    }
+}
+
 const fn lock_reason_label(reason: LockReason) -> &'static str {
     match reason {
         LockReason::PreferredClass => "PREFERRED_CLASS",
@@ -1422,6 +1576,12 @@ mod tests {
             block_reason: RecoilBlockReason::None,
         };
         snapshot.pipeline_metrics.targeting_batches = 1;
+        snapshot.pipeline.state = PipelineState::Running;
+        snapshot.subsystems.inference.state = SubsystemState::Running;
+        snapshot.perception_metrics.published_batches = 1;
+        snapshot.pipeline_metrics.received_batches = 1;
+        snapshot.pipeline_metrics.output_gate_open = true;
+        snapshot.pipeline_metrics.device_connected = true;
         snapshot.pipeline_metrics.detections.generation = Some(Generation(9));
         snapshot.pipeline_metrics.detections.coordinate_width = 960;
         snapshot.pipeline_metrics.detections.coordinate_height = 544;
@@ -1456,7 +1616,7 @@ mod tests {
         };
 
         let value = serde_json::to_value(CompatibilityRuntimeState::new(
-            &snapshot, None, None, false, None, None,
+            &snapshot, None, None, true, None, None,
         ))
         .unwrap();
         let pipeline = &value["vision"]["control"]["pipeline"];
@@ -1479,6 +1639,11 @@ mod tests {
         assert_eq!(target["observed_aim_y"], 240.0);
         assert_eq!(target_pipeline["code"], "TARGET_SELECTED");
         assert_eq!(target_pipeline["counts"]["eligible_candidates"], 1);
+        assert_eq!(value["vision"]["output_trace"]["code"], "ready");
+        assert_eq!(
+            value["vision"]["output_trace"]["next_action"],
+            "monitor_output"
+        );
         assert_eq!(value["vision"]["inference"]["input_width"], 960);
         assert_eq!(value["vision"]["inference"]["input_height"], 544);
         assert_eq!(value["vision"]["inference"]["generation"], 9);
@@ -1516,6 +1681,10 @@ mod tests {
     #[test]
     fn projects_rust_class_rejections_without_inventing_a_target() {
         let mut snapshot = RuntimeSnapshot::default();
+        snapshot.pipeline.state = PipelineState::Running;
+        snapshot.subsystems.inference.state = SubsystemState::Running;
+        snapshot.perception_metrics.published_batches = 1;
+        snapshot.pipeline_metrics.received_batches = 1;
         snapshot.pipeline_metrics.targeting_batches = 1;
         snapshot.pipeline_metrics.target_selection = TargetSelection {
             candidates: 3,
@@ -1545,6 +1714,14 @@ mod tests {
         assert_eq!(
             value["vision"]["target_pipeline"]["rejection_reasons"],
             serde_json::json!(["confidence", "class_filter"])
+        );
+        assert_eq!(
+            value["vision"]["output_trace"]["code"],
+            "target_not_selected"
+        );
+        assert_eq!(
+            value["vision"]["output_trace"]["next_action"],
+            "check_targeting"
         );
         assert_eq!(
             value["vision"]["control"]["candidate_filter"]["effective_class_filter"],
