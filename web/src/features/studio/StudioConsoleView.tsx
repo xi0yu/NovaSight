@@ -14,7 +14,6 @@ import {
 import {
   CaptureCapabilitiesResponse,
   CaptureCapability,
-  CaptureState,
   CaptureSelectPayload,
   getApiErrorCode,
   connectKmNet,
@@ -22,8 +21,6 @@ import {
   disconnectKmNet,
   clearCrosshairTemplate,
   crosshairTemplatePreviewUrl,
-  emergencyStopRuntimePipeline,
-  getRuntimeState,
   getRuntimeConfig,
   learnCrosshair,
   HealthResponse,
@@ -49,7 +46,6 @@ import {
   selectCaptureProfile,
   setRuntimeOutputGate,
   setCapturePreviewEnabled,
-  startRuntimePipeline,
   stopCapture,
   stopRuntimePipeline,
   streamUrl,
@@ -102,6 +98,11 @@ import {
   buildLaunchReadiness,
   type LaunchReadinessAction
 } from "./launchReadiness";
+import {
+  resolveMainlineLaunchStepState,
+  useMainlineLaunch,
+  type MainlineLaunchStepState
+} from "./useMainlineLaunch";
 import { buildControlTrace } from "./controlTrace";
 import {
   buildProductConfigProfile,
@@ -178,14 +179,8 @@ type CapabilityChoice = {
   fps: number;
 };
 
-type LaunchStatus = "idle" | "running" | "success" | "failed" | "cancelled";
-type LaunchStepState = "pending" | "running" | "success" | "failed";
 type ConfigDialogId = "class-config" | "target-weights" | "algorithm" | "target-advanced" | "tracker";
 type AlgorithmSettingsSection = "response" | "prediction" | "stability" | "calibration";
-type LaunchStage = {
-  title: string;
-  caption: string;
-};
 
 const ALGORITHM_SETTINGS_SECTIONS: Array<{
   id: AlgorithmSettingsSection;
@@ -220,78 +215,6 @@ const ALGORITHM_SETTINGS_SECTIONS: Array<{
 ];
 
 const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
-const LAUNCH_STATUS_REQUEST_TIMEOUT_MS = 15000;
-const MODEL_GUIDANCE_OPENED_ERROR = "MODEL_GUIDANCE_OPENED";
-const MODEL_UNAVAILABLE_ERROR_CODE = "model_unavailable";
-
-// Output delivery is configured and connected independently. Mainline launch
-// only proves capture, inference and mouse-algorithm consumption are ready.
-const MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT: LaunchStage[] = [
-  {
-    title: "检查模型配置",
-    caption: "没有已发布 TensorRT Engine 时转入模型管理，配置完成后再继续启动。"
-  },
-  {
-    title: "检查运行环境",
-    caption: "确认 Studio 已连接到 Jetson 运行服务。"
-  },
-  {
-    title: "应用采集配置",
-    caption: "按当前设备、格式、分辨率与帧率选择采集配置。"
-  },
-  {
-    title: "启动主链运行管线",
-    caption: "请求后端启动采集、画面识别与控制功能。"
-  },
-  {
-    title: "激活鼠标算法",
-    caption: "确认目标选择、跟踪与 Atan 鼠标算法已开始消费 DetectionBatch；输出设备不影响本步骤。"
-  }
-];
-
-function modelLaunchCandidateRank(model: ModelCatalogModel): number {
-  const recommendationRank = model.recommendation === "recommended"
-    ? 0
-    : model.recommendation === "unrated"
-      ? 10
-      : 20;
-  const status = model.artifact_status ?? model.scan_status;
-  const statusRank = status === "ready"
-    ? 0
-    : status === "pending" || status === "need_confirm"
-      ? 1
-      : status === "failed"
-        ? 4
-        : 8;
-  return recommendationRank + statusRank;
-}
-
-function flattenLaunchCatalogModels(root: ModelCatalogDirectory | null): ModelCatalogModel[] {
-  if (!root) {
-    return [];
-  }
-  return root.children.flatMap((node) =>
-    node.type === "model" ? [node] : flattenLaunchCatalogModels(node)
-  );
-}
-
-function resolveLaunchStepState(
-  index: number,
-  status: LaunchStatus,
-  activeIndex: number,
-  completedStages: number
-): LaunchStepState {
-  if (status === "success" || index < completedStages) {
-    return "success";
-  }
-  if (status === "failed" && index === activeIndex) {
-    return "failed";
-  }
-  if (status === "running" && index === activeIndex) {
-    return "running";
-  }
-  return "pending";
-}
 
 function pageFromUrl(): ConsolePage {
   const raw = new URLSearchParams(window.location.search).get("page");
@@ -764,7 +687,6 @@ export function StudioConsoleView({
   const [modelSwitchProgressDetail, setModelSwitchProgressDetail] = useState("");
   const [modelSwitchDialogError, setModelSwitchDialogError] = useState("");
   const [modelCatalogMessage, setModelCatalogMessage] = useState("");
-  const [launchDialogOpen, setLaunchDialogOpen] = useState(false);
   const [classConfigDialogOpen, setClassConfigDialogOpen] = useState(false);
   const [targetWeightsDialogOpen, setTargetWeightsDialogOpen] = useState(false);
   const [algorithmSettingsDialogOpen, setAlgorithmSettingsDialogOpen] = useState(false);
@@ -777,14 +699,6 @@ export function StudioConsoleView({
   const [newClassProfileName, setNewClassProfileName] = useState("");
   const [renamedClassProfileName, setRenamedClassProfileName] = useState("");
   const [classProfileDeleteArmed, setClassProfileDeleteArmed] = useState(false);
-  const [launchStatus, setLaunchStatus] = useState<LaunchStatus>("idle");
-  const [launchStageIndex, setLaunchStageIndex] = useState(0);
-  const [launchCompletedStages, setLaunchCompletedStages] = useState(0);
-  const [launchError, setLaunchError] = useState("");
-  const [launchProgressDetail, setLaunchProgressDetail] = useState("");
-  const [launchToastVisible, setLaunchToastVisible] = useState(false);
-  const [mainlineLaunchAccepted, setMainlineLaunchAccepted] = useState(false);
-  const [mainlineLaunchMessage, setMainlineLaunchMessage] = useState("");
   const [crosshairMessage, setCrosshairMessage] = useState("");
   const [crosshairPreviewKey, setCrosshairPreviewKey] = useState(0);
   const [previewActiveOverride, setPreviewActiveOverride] = useState<boolean | null>(null);
@@ -805,9 +719,6 @@ export function StudioConsoleView({
   const pendingConfigWritesRef = useRef(0);
   const configWriteSeqRef = useRef(0);
   const configWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const launchCancelledRef = useRef(false);
-  const launchTimerRef = useRef<number | null>(null);
-  const launchTimerResolveRef = useRef<(() => void) | null>(null);
   const classConfigDialogRef = useRef<HTMLElement | null>(null);
   const targetWeightsDialogRef = useRef<HTMLElement | null>(null);
   const errorCenterDialogRef = useRef<HTMLElement | null>(null);
@@ -1086,17 +997,6 @@ export function StudioConsoleView({
   }, [errorCenterOpen]);
 
   useEffect(() => {
-    if (!launchDialogOpen) {
-      return undefined;
-    }
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [launchDialogOpen]);
-
-  useEffect(() => {
     if (!classConfigDialogOpen) {
       return undefined;
     }
@@ -1146,30 +1046,6 @@ export function StudioConsoleView({
     };
   }, [requestDismissConfigDialog, targetWeightsDialogOpen]);
 
-  useEffect(() => {
-    if (!launchDialogOpen || launchStatus === "running") {
-      return undefined;
-    }
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setLaunchDialogOpen(false);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [launchDialogOpen, launchStatus]);
-
-  useEffect(() => () => {
-    if (launchTimerRef.current !== null) {
-      window.clearTimeout(launchTimerRef.current);
-      launchTimerRef.current = null;
-    }
-    if (launchTimerResolveRef.current) {
-      launchTimerResolveRef.current();
-      launchTimerResolveRef.current = null;
-    }
-  }, []);
-
   const capture = runtime?.capture;
   const statistics = runtime?.statistics;
   const config = configDraft ?? runtimeConfig;
@@ -1210,48 +1086,10 @@ export function StudioConsoleView({
   const mainlineRuntimeSelected = RUNTIME_MAINLINE_BACKENDS.has(selectedRuntimeBackend);
   const runtimeMainlineSelected = mainlineRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
-  const mainlineTerminalError = runtimeMainlineStatus.terminalError;
   const runtimeInferenceConfigured = runtimeInference.configured === true;
   const runtimeInferenceReason = readString(runtimeInference.reason, "");
   const runtimeInferenceDetail = readString(runtimeInference.detail, "");
   const runtimeMainlineRunning = runtimeMainlineStatus.running;
-  const mainlineLaunchPending =
-    mainlineRuntimeSelected &&
-    mainlineLaunchAccepted &&
-    !runtimeMainlineRunning &&
-    !runtimeMainlineStatus.failed &&
-    runtime?.fatal_error === null;
-  const captureMainRunning = runtimeMainlineSelected
-    ? (!runtimeMainlineStatus.failed && runtimeMainlineRunning) || mainlineLaunchPending
-    : capture?.available === true;
-  const captureMainConfigured = capture?.available === true || runtimeInferenceConfigured;
-  const captureStatusText = capture?.state === "failed" || capture?.state === "unavailable"
-    ? "采集异常"
-    : capture?.running === true
-      ? "运行中"
-      : mainlineLaunchPending || capture?.state === "starting"
-        ? "启动中"
-        : captureMainConfigured
-          ? "待启动"
-          : "未配置";
-  const inferenceStatusText = runtimeMainlineSelected
-    ? runtimeMainlineStatus.failed
-      ? "管线故障"
-      : runtimeMainlineRunning
-        ? runtimeMainlineStatus.hasRuntimeConsumption
-          ? "runtime 已消费"
-          : runtimeMainlineStatus.hasInferenceSignal
-            ? "DetectionBatch 已产出"
-            : "等待 DetectionBatch"
-      : mainlineLaunchPending
-        ? "等待后端反馈"
-        : runtimeInferenceConfigured
-          ? "待启动"
-          : "未配置"
-    : runtime?.running
-      ? "运行中"
-      : "已停止";
-  const runtimeControlRequested = captureMainRunning;
   const runtimePostprocess = asRecord(runtimeInference.postprocess);
   const executorStatus = asRecord(runtime?.executor);
   const executors = asRecord(executorStatus.executors);
@@ -1358,37 +1196,6 @@ export function StudioConsoleView({
     setRenamedClassProfileName(activeDetectionProfile);
     setClassProfileDeleteArmed(false);
   }, [activeDetectionProfile]);
-  useEffect(() => {
-    if (!runtimeMainlineSelected) {
-      setMainlineLaunchAccepted(false);
-      setMainlineLaunchMessage("");
-      return;
-    }
-    if (runtimeMainlineRunning) {
-      setMainlineLaunchAccepted(false);
-      setMainlineLaunchMessage("");
-      return;
-    }
-    if (
-      mainlineLaunchAccepted &&
-      (runtimeMainlineStatus.failed || runtime?.fatal_error !== null)
-    ) {
-      setMainlineLaunchAccepted(false);
-      setMainlineLaunchMessage("");
-      setLocalError(`主链启动未确认：${runtimeMainlineStatus.readinessDetail || runtimeInferenceDetail || runtimeInferenceReason || "后端运行态未进入运行状态。"}`);
-    }
-  }, [
-    runtimeMainlineSelected,
-    mainlineTerminalError,
-    mainlineLaunchAccepted,
-    runtimeMainlineStatus.failed,
-    runtimeMainlineStatus.failureMessage,
-    runtimeMainlineStatus.readinessDetail,
-    runtime?.fatal_error,
-    runtimeInferenceDetail,
-    runtimeInferenceReason,
-    runtimeMainlineRunning
-  ]);
   const aimConfig = nestedRecord(controlConfig, "aim");
   const rawAimRoleRatios = nestedRecord(aimConfig, "role_y_ratios");
   const aimRoleRatios: AimRoleRatios = {
@@ -2267,11 +2074,93 @@ export function StudioConsoleView({
     }
   }, [buildCapturePayload, onRefresh]);
 
+  const navigateToInference = useCallback(() => {
+    navigatePage("infer");
+  }, [navigatePage]);
+
+  const {
+    accepted: mainlineLaunchAccepted,
+    cancel: cancelMainlineLaunch,
+    clearAccepted: clearMainlineLaunchAccepted,
+    closeDialog: closeLaunchDialog,
+    completedStages: launchCompletedStages,
+    dialogOpen: launchDialogOpen,
+    error: launchError,
+    message: mainlineLaunchMessage,
+    openDialog: openMainlineLaunchDialog,
+    progress: launchProgress,
+    progressDetail: launchProgressDetail,
+    stageIndex: launchStageIndex,
+    stages: launchStages,
+    start: startMainlineLaunch,
+    startInferenceThread,
+    status: launchStatus,
+    summary: launchSummary,
+    toastVisible: launchToastVisible
+  } = useMainlineLaunch({
+    activeModelPublished,
+    applyModelCatalogResult,
+    buildCapturePayload,
+    navigateToInference,
+    onEnsureProjects,
+    onRefresh,
+    onRuntimeStateChange,
+    runtimeFatalError: runtime?.fatal_error !== null,
+    runtimeInferenceDetail,
+    runtimeInferenceReason,
+    runtimeMainlineRunning,
+    runtimeMainlineSelected,
+    runtimeMainlineStatus,
+    setBusy,
+    setLocalError,
+    setModelCatalogLoading,
+    setModelCatalogMessage,
+    setModelManagerDialogOpen,
+    setSelectedModelCatalogPath
+  });
+
+  const mainlineLaunchPending =
+    mainlineRuntimeSelected &&
+    mainlineLaunchAccepted &&
+    !runtimeMainlineRunning &&
+    !runtimeMainlineStatus.failed &&
+    runtime?.fatal_error === null;
+  const captureMainRunning = runtimeMainlineSelected
+    ? (!runtimeMainlineStatus.failed && runtimeMainlineRunning) || mainlineLaunchPending
+    : capture?.available === true;
+  const captureMainConfigured = capture?.available === true || runtimeInferenceConfigured;
+  const captureStatusText = capture?.state === "failed" || capture?.state === "unavailable"
+    ? "采集异常"
+    : capture?.running === true
+      ? "运行中"
+      : mainlineLaunchPending || capture?.state === "starting"
+        ? "启动中"
+        : captureMainConfigured
+          ? "待启动"
+          : "未配置";
+  const inferenceStatusText = runtimeMainlineSelected
+    ? runtimeMainlineStatus.failed
+      ? "管线故障"
+      : runtimeMainlineRunning
+        ? runtimeMainlineStatus.hasRuntimeConsumption
+          ? "runtime 已消费"
+          : runtimeMainlineStatus.hasInferenceSignal
+            ? "DetectionBatch 已产出"
+            : "等待 DetectionBatch"
+      : mainlineLaunchPending
+        ? "等待后端反馈"
+        : runtimeInferenceConfigured
+          ? "待启动"
+          : "未配置"
+    : runtime?.running
+      ? "运行中"
+      : "已停止";
+  const runtimeControlRequested = captureMainRunning;
+
   const stopCurrentCapture = useCallback(async () => {
     setBusy("stop");
     setLocalError(null);
-    setMainlineLaunchAccepted(false);
-    setMainlineLaunchMessage("");
+    clearMainlineLaunchAccepted();
     try {
       if (runtimeMainlineSelected) {
         const stoppedState = await stopRuntimePipeline();
@@ -2285,344 +2174,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [runtimeMainlineSelected, onRefresh, onRuntimeStateChange]);
-
-  const ensurePublishedModelBeforeMainline = useCallback(async (options?: { force?: boolean }) => {
-    if (activeModelPublished && options?.force !== true) {
-      return true;
-    }
-    const openingMessage = options?.force === true
-      ? "后端报告当前模型不可用，已转入模型管理。"
-      : "启动前没有已发布 TensorRT Engine，已转入模型管理。";
-    setLocalError(openingMessage);
-    setModelCatalogMessage(openingMessage);
-    setLaunchProgressDetail("未找到当前模型，正在读取模型目录并打开模型管理。");
-    setActivePage("infer");
-    setLaunchDialogOpen(false);
-    setModelManagerDialogOpen(true);
-    setModelCatalogLoading(true);
-    try {
-      await onEnsureProjects(false).catch(() => undefined);
-      const result = await getModelCatalog(true);
-      applyModelCatalogResult(result);
-      const engineCandidates = flattenLaunchCatalogModels(result.root)
-        .filter((model) => model.kind === "engine")
-        .sort((left, right) =>
-          modelLaunchCandidateRank(left) - modelLaunchCandidateRank(right) ||
-          left.relative_path.localeCompare(right.relative_path)
-        );
-      const selectedCandidate = engineCandidates[0];
-      if (!selectedCandidate) {
-        const message = "启动前没有找到 .engine 模型。请把 TensorRT engine 放入 models 目录，刷新模型后再切换。";
-        setLocalError(message);
-        setModelCatalogMessage(message);
-        return false;
-      }
-      setSelectedModelCatalogPath(selectedCandidate.relative_path);
-      const message = `已预选 ${selectedCandidate.relative_path}。请点击“验证并切换到所选模型”，完成后再次启动主链。`;
-      setLocalError(message);
-      setModelCatalogMessage(message);
-      if (result.updated_files > 0) {
-        await onRefresh();
-      }
-    } catch (err) {
-      const message = `模型管理打开失败：${getErrorMessage(err)}`;
-      setLocalError(message);
-      setModelCatalogMessage(message);
-      reportError(err, { source: "mainline-model-guide", title: "模型管理打开失败" });
-    } finally {
-      setModelCatalogLoading(false);
-    }
-    return false;
-  }, [activeModelPublished, applyModelCatalogResult, onEnsureProjects, onRefresh]);
-
-  const startInferenceThread = useCallback(async () => {
-    if (!(await ensurePublishedModelBeforeMainline())) {
-      return;
-    }
-    setBusy("runtime.start");
-    setLocalError(null);
-    try {
-      const status = asRecord(await startRuntimePipeline());
-      if (readBoolean(status.failed) || !readBoolean(status.running)) {
-        throw new Error(readString(status.last_error, "后端未确认推理管线运行。"));
-      }
-      await onRefresh();
-    } catch (err) {
-      if (getApiErrorCode(err) === MODEL_UNAVAILABLE_ERROR_CODE) {
-        await ensurePublishedModelBeforeMainline({ force: true });
-        return;
-      }
-      setLocalError(`启动推理失败：${getErrorMessage(err)}`);
-
-      reportError(err, { source: 'studio', title: '操作失败' });
-      await onRefresh();
-    } finally {
-      setBusy(null);
-    }
-  }, [ensurePublishedModelBeforeMainline, onRefresh]);
-
-  const waitForLaunchFeedback = useCallback((ms: number) => new Promise<void>((resolve) => {
-    if (launchTimerRef.current !== null) {
-      window.clearTimeout(launchTimerRef.current);
-      launchTimerRef.current = null;
-    }
-    if (launchTimerResolveRef.current) {
-      launchTimerResolveRef.current();
-      launchTimerResolveRef.current = null;
-    }
-    launchTimerResolveRef.current = resolve;
-    launchTimerRef.current = window.setTimeout(() => {
-      launchTimerRef.current = null;
-      launchTimerResolveRef.current = null;
-      resolve();
-    }, ms);
-  }), []);
-
-  const resetLaunchDialog = useCallback(() => {
-    if (launchTimerRef.current !== null) {
-      window.clearTimeout(launchTimerRef.current);
-      launchTimerRef.current = null;
-    }
-    if (launchTimerResolveRef.current) {
-      launchTimerResolveRef.current();
-      launchTimerResolveRef.current = null;
-    }
-    launchCancelledRef.current = false;
-    setLaunchStatus("idle");
-    setLaunchStageIndex(0);
-    setLaunchCompletedStages(0);
-    setLaunchError("");
-    setLaunchProgressDetail("");
-  }, []);
-
-  const openMainlineLaunchDialog = useCallback(() => {
-    resetLaunchDialog();
-    setLaunchDialogOpen(true);
-  }, [resetLaunchDialog]);
-
-  const closeLaunchDialog = useCallback(() => {
-    if (launchStatus === "running") {
-      return;
-    }
-    setLaunchDialogOpen(false);
-  }, [launchStatus]);
-
-  const showLaunchToast = useCallback(() => {
-    setLaunchToastVisible(true);
-    window.setTimeout(() => setLaunchToastVisible(false), 2600);
-  }, []);
-
-  const captureLaunchFailureMessage = useCallback((state: CaptureState): string => {
-    return (
-      readString(state.last_error, "") ||
-      "采集配置未进入可用状态。"
-    );
-  }, []);
-
-  const assertCaptureLaunchState = useCallback((state: CaptureState) => {
-    if (state.available !== true) {
-      throw new Error(`采集阶段失败：${captureLaunchFailureMessage(state)}`);
-    }
-  }, [captureLaunchFailureMessage]);
-
-  const waitForRuntimeEvidence = useCallback(async (
-    stageTitle: string,
-    hasEvidence: (state: RuntimeState) => boolean,
-    missingMessage: string,
-    timeoutMs = 6000,
-    intervalMs = 600
-  ) => {
-    const deadline = Date.now() + timeoutMs;
-    let lastSummary = "";
-    while (Date.now() <= deadline) {
-      if (launchCancelledRef.current) {
-        throw new Error("launch cancelled");
-      }
-      const state = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
-      const status = getRuntimeMainlineStatus(state);
-      lastSummary = status.progressSummary;
-      setLaunchProgressDetail(
-        status.outputTrace?.detail ||
-          (status.progressSummary ? `当前计数：${status.progressSummary}` : "等待主链输出启动证据。")
-      );
-      if (status.failed) {
-        throw new Error(`${stageTitle}失败：${status.outputTrace?.detail || status.readinessDetail || missingMessage}`);
-      }
-      if (!status.running) {
-        await waitForLaunchFeedback(intervalMs);
-        continue;
-      }
-      if (hasEvidence(state)) {
-        setLaunchProgressDetail(
-          status.outputTrace?.detail ||
-            (status.progressSummary ? `已收到启动证据：${status.progressSummary}` : "已收到启动证据。")
-        );
-        return state;
-      }
-      await waitForLaunchFeedback(intervalMs);
-    }
-    throw new Error(`${stageTitle}失败：${missingMessage}${lastSummary ? ` 当前计数：${lastSummary}` : ""}`);
-  }, [waitForLaunchFeedback]);
-
-  const startMainlineLaunch = useCallback(async () => {
-    if (launchStatus === "running") {
-      return;
-    }
-    launchCancelledRef.current = false;
-    setBusy("runtime.start");
-    setLocalError(null);
-    setLaunchStatus("running");
-    setLaunchError("");
-    setLaunchProgressDetail("正在提交启动请求，等待后端阶段反馈。");
-    setLaunchStageIndex(0);
-    setLaunchCompletedStages(0);
-    const ensureNotCancelled = () => {
-      if (launchCancelledRef.current) {
-        throw new Error("launch cancelled");
-      }
-    };
-    const runStage = async (index: number, action?: () => Promise<void>) => {
-      ensureNotCancelled();
-      setLaunchStageIndex(index);
-      if (action) {
-        await action();
-      }
-      ensureNotCancelled();
-      setLaunchCompletedStages(index + 1);
-    };
-
-    try {
-      await runStage(0, async () => {
-        const modelReady = await ensurePublishedModelBeforeMainline();
-        if (!modelReady) {
-          throw new Error(MODEL_GUIDANCE_OPENED_ERROR);
-        }
-      });
-      await runStage(1, async () => {
-        const state = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
-        const status = getRuntimeMainlineStatus(state);
-        if (status.failed) {
-          throw new Error(status.readinessDetail);
-        }
-      });
-      await runStage(2, async () => {
-        const captureState = await selectCaptureProfile(buildCapturePayload());
-        assertCaptureLaunchState(captureState);
-      });
-      await runStage(3, async () => {
-        const status = asRecord(await startRuntimePipeline());
-        const accepted = readBoolean(status.running, true);
-        if (!accepted) {
-          const reason = readString(status.last_error, "后端未确认主链运行。");
-          throw new Error(reason);
-        }
-        setMainlineLaunchAccepted(true);
-        setMainlineLaunchMessage("后端已确认主链运行，正在核对运行时消费数据。");
-      });
-      await runStage(4, async () => {
-        const state = await waitForRuntimeEvidence(
-          "激活鼠标算法",
-          (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
-          "runtime 尚未消费 DetectionBatch，目标选择、跟踪与 Atan 鼠标算法没有输入。"
-        );
-        const status = getRuntimeMainlineStatus(state);
-        setLaunchProgressDetail(`${status.readinessLabel}：${status.readinessDetail}`);
-      });
-      setLaunchStatus("success");
-      setLaunchCompletedStages(MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT.length);
-
-      setLaunchProgressDetail((detail) => detail || "主链启动完成，后端运行态已确认。");
-      // Capture selection may persist a newer configuration revision. Refresh
-      // after successful launch so subsequent editors start from that exact
-      // canonical revision instead of the pre-launch snapshot.
-      await onRefresh();
-      showLaunchToast();
-    } catch (err) {
-      const message = getErrorMessage(err);
-      if (message === MODEL_GUIDANCE_OPENED_ERROR) {
-        setLaunchStatus("idle");
-        setLaunchError("");
-        setLaunchProgressDetail("已转入模型管理，请完成模型切换后重新启动。");
-        setMainlineLaunchAccepted(false);
-        setMainlineLaunchMessage("");
-        return;
-      }
-      if (getApiErrorCode(err) === MODEL_UNAVAILABLE_ERROR_CODE) {
-        await ensurePublishedModelBeforeMainline({ force: true });
-        setLaunchStatus("idle");
-        setLaunchError("");
-        setLaunchProgressDetail("已转入模型管理，请完成模型切换后重新启动。");
-        setMainlineLaunchAccepted(false);
-        setMainlineLaunchMessage("");
-        return;
-      }
-      if (launchCancelledRef.current) {
-        setLaunchStatus("cancelled");
-        setLaunchError("");
-        setLaunchProgressDetail("启动已取消，已停止继续等待后端阶段反馈。");
-        return;
-      }
-      setLaunchStatus("failed");
-      setLaunchError(message);
-      setMainlineLaunchAccepted(false);
-      setMainlineLaunchMessage("");
-      setLocalError(`启动主链失败：${message}`);
-
-      reportError(err, { source: "mainline-launch", title: "启动主链失败" });
-      try {
-        const stoppedState = await stopRuntimePipeline();
-        onRuntimeStateChange(stoppedState);
-      } catch {
-        // Keep the original launch error visible; refresh below exposes stop failures if backend reports them.
-      }
-      await onRefresh();
-    } finally {
-      setBusy(null);
-    }
-  }, [
-    assertCaptureLaunchState,
-    buildCapturePayload,
-    ensurePublishedModelBeforeMainline,
-    launchStatus,
-    onRefresh,
-    onRuntimeStateChange,
-    showLaunchToast,
-    waitForRuntimeEvidence
-  ]);
-
-  const cancelMainlineLaunch = useCallback(async () => {
-    if (launchStatus !== "running") {
-      closeLaunchDialog();
-      return;
-    }
-    launchCancelledRef.current = true;
-    if (launchTimerRef.current !== null) {
-      window.clearTimeout(launchTimerRef.current);
-      launchTimerRef.current = null;
-    }
-    if (launchTimerResolveRef.current) {
-      launchTimerResolveRef.current();
-      launchTimerResolveRef.current = null;
-    }
-    setLaunchStatus("cancelled");
-    setLaunchError("");
-    setLaunchProgressDetail("正在请求后端立即停止输出并中止启动，不再等待普通生命周期锁。");
-    setMainlineLaunchAccepted(false);
-    setMainlineLaunchMessage("");
-    setBusy(null);
-    try {
-      await emergencyStopRuntimePipeline();
-      const stoppedState = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
-      onRuntimeStateChange(stoppedState);
-      setLaunchProgressDetail("后端已确认紧急停止；旧输出已失效，启动流程已取消。");
-      await onRefresh();
-    } catch (err) {
-      setLocalError(`取消启动失败：${getErrorMessage(err)}`);
-
-      reportError(err, { source: "mainline-cancel", title: "取消启动失败" });
-    }
-  }, [closeLaunchDialog, launchStatus, onRefresh, onRuntimeStateChange]);
+  }, [clearMainlineLaunchAccepted, runtimeMainlineSelected, onRefresh, onRuntimeStateChange]);
 
   const toggleCapture = useCallback(async () => {
     if (runtimeControlRequested) {
@@ -3862,21 +3414,6 @@ export function StudioConsoleView({
     }
   };
 
-  const launchStages = MAINLINE_LAUNCH_STAGES_CUSTOM_TENSORRT;
-  const launchProgress =
-    launchStatus === "success"
-      ? 100
-      : Math.round((launchCompletedStages / launchStages.length) * 100);
-  const launchSummary =
-    launchStatus === "success"
-      ? "主链启动完成"
-      : launchStatus === "failed"
-        ? "启动在当前步骤中断"
-        : launchStatus === "cancelled"
-          ? "启动流程已取消"
-          : launchStatus === "running"
-            ? `正在执行第 ${Math.min(launchStageIndex + 1, launchStages.length)} 项`
-            : "等待用户确认启动";
   const realtimeStatusText = runtimeDeliveryLabel(realtimeStatus);
   const realtimeStatusDescription = runtimeDeliveryDescription(realtimeStatus);
   const realtimeStatusClass = `console-live ${runtimeDeliveryTone(realtimeStatus)}`;
@@ -5829,7 +5366,7 @@ export function StudioConsoleView({
 
               <ol className="launch-stage-list">
                 {launchStages.map((stage, index) => {
-                  const stepState = resolveLaunchStepState(
+                  const stepState = resolveMainlineLaunchStepState(
                     index,
                     launchStatus,
                     launchStageIndex,
@@ -5886,7 +5423,7 @@ export function StudioConsoleView({
   );
 }
 
-function launchStepStateLabel(state: LaunchStepState): string {
+function launchStepStateLabel(state: MainlineLaunchStepState): string {
   switch (state) {
     case "running":
       return "执行中";
@@ -5899,7 +5436,7 @@ function launchStepStateLabel(state: LaunchStepState): string {
   }
 }
 
-function LaunchStepIndicator({ state }: { state: LaunchStepState }) {
+function LaunchStepIndicator({ state }: { state: MainlineLaunchStepState }) {
   return (
     <span className={`launch-step-indicator ${state}`}>
       <svg viewBox="0 0 24 24" focusable="false">
