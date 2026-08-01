@@ -313,6 +313,21 @@ struct VelocityEstimate {
     reference_dt_ms: f64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VelocityWindowIntent {
+    Mean,
+    Continuous,
+    AbruptStopOrReverse,
+    AlternatingPeek,
+    Stationary,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct VelocityWindowDecision {
+    target_velocity: f64,
+    intent: VelocityWindowIntent,
+}
+
 #[derive(Clone, Debug)]
 struct RobustVelocityEstimator {
     config: SingleTargetPredictionConfig,
@@ -415,10 +430,24 @@ impl RobustVelocityEstimator {
         } else {
             mean_velocity
         };
+        let window_decision = classify_velocity_window(
+            velocities,
+            mean_velocity,
+            self.initialized_velocity,
+            self.config.spread_base_px_ms,
+        );
         if self.initialized_velocity {
-            let smoothing_window_ms = (reference_dt_ms * self.config.smoothing_frames).max(1e-9);
-            let alpha = 1.0 - (-latest_dt_ms / smoothing_window_ms).exp();
-            self.filtered_velocity = previous_filtered * (1.0 - alpha) + mean_velocity * alpha;
+            self.filtered_velocity = match window_decision.intent {
+                VelocityWindowIntent::AbruptStopOrReverse
+                | VelocityWindowIntent::AlternatingPeek
+                | VelocityWindowIntent::Stationary => window_decision.target_velocity,
+                VelocityWindowIntent::Mean | VelocityWindowIntent::Continuous => {
+                    let smoothing_window_ms =
+                        (reference_dt_ms * self.config.smoothing_frames).max(1e-9);
+                    let alpha = 1.0 - (-latest_dt_ms / smoothing_window_ms).exp();
+                    previous_filtered * (1.0 - alpha) + window_decision.target_velocity * alpha
+                }
+            };
         } else {
             self.filtered_velocity = mean_velocity;
             self.initialized_velocity = true;
@@ -429,10 +458,13 @@ impl RobustVelocityEstimator {
         let spread_scale =
             self.config.spread_base_px_ms + self.config.spread_relative * mean_velocity.abs();
         let spread_quality = 1.0 / (1.0 + spread / spread_scale.max(1e-9));
-        let trend_delta = (mean_velocity - previous_filtered).abs();
+        let trend_delta = (window_decision.target_velocity - previous_filtered).abs();
         let trend_scale =
             self.config.change_base_px_ms + self.config.change_relative * previous_filtered.abs();
-        let trend_quality = 1.0 / (1.0 + trend_delta / trend_scale.max(1e-9));
+        let mut trend_quality = 1.0 / (1.0 + trend_delta / trend_scale.max(1e-9));
+        if window_decision.intent == VelocityWindowIntent::AbruptStopOrReverse {
+            trend_quality = trend_quality.max(0.65);
+        }
         // Adjacent slopes may claim motion when detector jitter alternates
         // around a stationary point. The net displacement over the same
         // bounded window must corroborate that direction before it can
@@ -441,18 +473,28 @@ impl RobustVelocityEstimator {
         let mean_speed = mean_velocity.abs();
         let window_speed = window_velocity.abs();
         let filtered_speed = self.filtered_velocity.abs();
-        let displacement_quality = if mean_speed <= f64::EPSILON
-            || window_speed <= f64::EPSILON
-            || filtered_speed <= f64::EPSILON
-            || mean_velocity.signum() != window_velocity.signum()
-            || mean_velocity.signum() != self.filtered_velocity.signum()
-        {
-            0.0
-        } else {
-            let window_agreement = mean_speed.min(window_speed) / mean_speed.max(window_speed);
-            let current_velocity_support = (mean_speed / filtered_speed).min(1.0);
-            window_agreement * current_velocity_support
-        };
+        let displacement_quality =
+            if window_decision.intent == VelocityWindowIntent::AbruptStopOrReverse {
+                0.80
+            } else if window_decision.intent == VelocityWindowIntent::Stationary {
+                0.0
+            } else if mean_speed <= f64::EPSILON
+                || window_speed <= f64::EPSILON
+                || filtered_speed <= f64::EPSILON
+                || mean_velocity.signum() != window_velocity.signum()
+                || mean_velocity.signum() != self.filtered_velocity.signum()
+            {
+                0.0
+            } else {
+                let window_agreement = mean_speed.min(window_speed) / mean_speed.max(window_speed);
+                let current_velocity_support = (mean_speed / filtered_speed).min(1.0);
+                let quality = window_agreement * current_velocity_support;
+                if window_decision.intent == VelocityWindowIntent::AlternatingPeek {
+                    quality.min(0.55)
+                } else {
+                    quality
+                }
+            };
         let detection_quality = detection_confidence.clamp(0.0, 1.0);
         let track_quality = track_confidence.clamp(0.0, 1.0);
         let motion_confidence = (history_quality
@@ -476,9 +518,73 @@ impl RobustVelocityEstimator {
     }
 }
 
-fn median_three(mut values: [f64; 3]) -> f64 {
-    values.sort_by(f64::total_cmp);
-    values[1]
+fn classify_velocity_window(
+    velocities: [f64; 3],
+    mean_velocity: f64,
+    warmed: bool,
+    base_deadband: f64,
+) -> VelocityWindowDecision {
+    if !warmed {
+        return VelocityWindowDecision {
+            target_velocity: mean_velocity,
+            intent: VelocityWindowIntent::Mean,
+        };
+    }
+    let deadband = (base_deadband.abs() * 0.25).max(1e-9);
+    let signs = velocities.map(|value| velocity_sign(value, deadband));
+    if signs == [0, 0, 0] {
+        return VelocityWindowDecision {
+            target_velocity: 0.0,
+            intent: VelocityWindowIntent::Stationary,
+        };
+    }
+    let latest = velocities[2];
+    if signs[0] != 0 && signs[0] == signs[1] && signs[2] != signs[1] {
+        return VelocityWindowDecision {
+            target_velocity: if signs[2] == 0 { 0.0 } else { latest },
+            intent: VelocityWindowIntent::AbruptStopOrReverse,
+        };
+    }
+    if signs[0] != 0 && signs[0] == signs[2] && signs[1] == -signs[0] {
+        return VelocityWindowDecision {
+            target_velocity: mean_velocity,
+            intent: VelocityWindowIntent::AlternatingPeek,
+        };
+    }
+    if signs[0] != 0 && signs[0] == signs[1] && signs[1] == signs[2] {
+        let latest_weight = (latest.abs() > mean_velocity.abs())
+            .then_some(0.5)
+            .unwrap_or(0.0);
+        return VelocityWindowDecision {
+            target_velocity: mean_velocity * (1.0 - latest_weight) + latest * latest_weight,
+            intent: VelocityWindowIntent::Continuous,
+        };
+    }
+    VelocityWindowDecision {
+        target_velocity: mean_velocity,
+        intent: VelocityWindowIntent::Mean,
+    }
+}
+
+fn velocity_sign(value: f64, deadband: f64) -> i8 {
+    if value > deadband {
+        1
+    } else if value < -deadband {
+        -1
+    } else {
+        0
+    }
+}
+
+fn median_three(values: [f64; 3]) -> f64 {
+    let [a, b, c] = values;
+    if (a <= b && b <= c) || (c <= b && b <= a) {
+        b
+    } else if (b <= a && a <= c) || (c <= a && a <= b) {
+        a
+    } else {
+        c
+    }
 }
 
 fn mean_three(values: [f64; 3]) -> f64 {
@@ -553,6 +659,47 @@ mod tests {
             assert!((prediction.x.velocity - expected_velocity).abs() < 1e-12);
             assert!((prediction.x.raw_offset - expected_velocity * 22.0).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn warmed_abrupt_reverse_uses_latest_segment_instead_of_stale_ema() {
+        let mut predictor = SingleTargetPredictor::new(config());
+        let mut prediction = Default::default();
+        for (index, position) in [100.0, 110.0, 120.0, 130.0, 140.0, 150.0, 145.0]
+            .into_iter()
+            .enumerate()
+        {
+            prediction = predictor.predict(observation(index as u64, position, 100.0));
+        }
+
+        assert_eq!(
+            prediction.x.velocity_samples,
+            [Some(1.0), Some(1.0), Some(-0.5)]
+        );
+        assert!((prediction.x.mean_velocity.expect("mean") - 0.5).abs() < 1e-12);
+        assert!((prediction.x.velocity + 0.5).abs() < 1e-12);
+        assert!(prediction.x.raw_offset < 0.0);
+        assert!(prediction.x.safe_offset < 0.0);
+    }
+
+    #[test]
+    fn warmed_peek_pattern_stays_near_three_segment_average() {
+        let mut predictor = SingleTargetPredictor::new(config());
+        let mut prediction = Default::default();
+        for (index, position) in [100.0, 110.0, 120.0, 130.0, 140.0, 130.0, 140.0]
+            .into_iter()
+            .enumerate()
+        {
+            prediction = predictor.predict(observation(index as u64, position, 100.0));
+        }
+
+        assert_eq!(
+            prediction.x.velocity_samples,
+            [Some(1.0), Some(-1.0), Some(1.0)]
+        );
+        assert!((prediction.x.mean_velocity.expect("mean") - (1.0 / 3.0)).abs() < 1e-12);
+        assert!((prediction.x.velocity - (1.0 / 3.0)).abs() < 1e-12);
+        assert!(prediction.x.motion_confidence < 0.40);
     }
 
     #[test]

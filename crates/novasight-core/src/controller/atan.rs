@@ -394,10 +394,57 @@ impl AxisArrivalState {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ProjectionModel {
+    source_error_scale_x: f64,
+    source_error_scale_y: f64,
+    counts_per_rad: f64,
+}
+
+impl ProjectionModel {
+    fn from_config(config: DualPhaseConfig) -> Option<Self> {
+        if config.source_width == 0
+            || config.roi_width == 0
+            || config.roi_height == 0
+            || config.observation_width == 0
+            || config.observation_height == 0
+            || !config.projection_fov_x_deg.is_finite()
+            || !(0.0..180.0).contains(&config.projection_fov_x_deg)
+            || !config.projection_counts_per_360.is_finite()
+            || config.projection_counts_per_360 <= 0.0
+            || !config.atan_scale_counts.is_finite()
+            || config.atan_scale_counts <= 0.0
+        {
+            return None;
+        }
+        let fov_x_rad = config.projection_fov_x_deg.to_radians();
+        let focal_px = (f64::from(config.source_width) * 0.5) / (fov_x_rad * 0.5).tan();
+        if !focal_px.is_finite() || focal_px <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            source_error_scale_x: f64::from(config.roi_width)
+                / f64::from(config.observation_width)
+                / focal_px,
+            source_error_scale_y: f64::from(config.roi_height)
+                / f64::from(config.observation_height)
+                / focal_px,
+            counts_per_rad: config.projection_counts_per_360 / std::f64::consts::TAU,
+        })
+    }
+
+    fn project(self, error_x: f64, error_y: f64) -> (f64, f64) {
+        let full_x = (error_x * self.source_error_scale_x).atan() * self.counts_per_rad;
+        let full_y = (error_y * self.source_error_scale_y).atan() * self.counts_per_rad;
+        (full_x, full_y)
+    }
+}
+
 /// reach into a stale decision.
 #[derive(Clone, Debug)]
 pub struct DualPhaseControl {
     config: DualPhaseConfig,
+    projection: Option<ProjectionModel>,
     limiter: DeviceCountLimiter,
     last_generation: Option<u64>,
     last_capture_ts_ns: Option<u64>,
@@ -414,6 +461,7 @@ impl DualPhaseControl {
     pub fn new(config: DualPhaseConfig) -> Self {
         Self {
             config,
+            projection: ProjectionModel::from_config(config),
             limiter: DeviceCountLimiter::new(),
             last_generation: None,
             last_capture_ts_ns: None,
@@ -429,6 +477,7 @@ impl DualPhaseControl {
 
     pub fn set_config(&mut self, config: DualPhaseConfig) {
         self.config = config;
+        self.projection = ProjectionModel::from_config(config);
         self.prediction.set_config(config.prediction_config());
         self.limiter.reset();
         self.arrival_x.reset();
@@ -584,11 +633,27 @@ impl DualPhaseControl {
         let arrival_enter_counts = self.config.arrival_radius_counts.max(HALF_DEVICE_COUNT);
         let arrival_exit_counts =
             (arrival_enter_counts * 1.5).max(arrival_enter_counts + HALF_DEVICE_COUNT);
-        let arrival_hold_x = feedback.pending_x
+        let feedback_hold_x = actuation_feedback_should_hold(
+            feedback.pending_x,
+            self.measured_error_history_valid,
+            self.previous_error_x,
+            error_x,
+            full_x,
+            arrival_enter_counts,
+        );
+        let feedback_hold_y = actuation_feedback_should_hold(
+            feedback.pending_y,
+            self.measured_error_history_valid,
+            self.previous_error_y,
+            error_y,
+            full_y,
+            arrival_enter_counts,
+        );
+        let arrival_hold_x = feedback_hold_x
             || self
                 .arrival_x
                 .hold(full_x, observation.capture_ts_ns, arrival_enter_counts);
-        let arrival_hold_y = feedback.pending_y
+        let arrival_hold_y = feedback_hold_y
             || self
                 .arrival_y
                 .hold(full_y, observation.capture_ts_ns, arrival_enter_counts);
@@ -619,7 +684,7 @@ impl DualPhaseControl {
             };
             let dx = limited.dx;
             let dy = limited.dy;
-            let reason = if dx == 0 && dy == 0 && (feedback.pending_x || feedback.pending_y) {
+            let reason = if dx == 0 && dy == 0 && (feedback_hold_x || feedback_hold_y) {
                 BlockReason::ActuationFeedbackPending
             } else if dx == 0 && dy == 0 && (arrival_hold_x || arrival_hold_y) {
                 BlockReason::AimSettled
@@ -719,32 +784,7 @@ impl DualPhaseControl {
         measured_distance_px: f64,
     ) -> Option<(ContinuousDemand, f64, f64)> {
         let config = self.config;
-        if config.source_width == 0
-            || config.roi_width == 0
-            || config.roi_height == 0
-            || config.observation_width == 0
-            || config.observation_height == 0
-            || !config.projection_fov_x_deg.is_finite()
-            || !(0.0..180.0).contains(&config.projection_fov_x_deg)
-            || !config.projection_counts_per_360.is_finite()
-            || config.projection_counts_per_360 <= 0.0
-            || !config.atan_scale_counts.is_finite()
-            || config.atan_scale_counts <= 0.0
-        {
-            return None;
-        }
-        let source_error_x =
-            error_x * f64::from(config.roi_width) / f64::from(config.observation_width);
-        let source_error_y =
-            error_y * f64::from(config.roi_height) / f64::from(config.observation_height);
-        let fov_x_rad = config.projection_fov_x_deg.to_radians();
-        let focal_px = (f64::from(config.source_width) * 0.5) / (fov_x_rad * 0.5).tan();
-        if !focal_px.is_finite() || focal_px <= 0.0 {
-            return None;
-        }
-        let counts_per_rad = config.projection_counts_per_360 / std::f64::consts::TAU;
-        let full_x = (source_error_x / focal_px).atan() * counts_per_rad;
-        let full_y = (source_error_y / focal_px).atan() * counts_per_rad;
+        let (full_x, full_y) = self.projection?.project(error_x, error_y);
         let response = BlendedAtanConfig {
             near_threshold_px: config.near_threshold_px,
             scale_counts: config.atan_scale_counts,
@@ -758,6 +798,29 @@ impl DualPhaseControl {
     }
 }
 
+fn actuation_feedback_should_hold(
+    pending: bool,
+    history_valid: bool,
+    previous_error: f64,
+    current_error: f64,
+    full_counts: f64,
+    arrival_enter_counts: f64,
+) -> bool {
+    if !pending {
+        return false;
+    }
+    if !history_valid || !previous_error.is_finite() || !current_error.is_finite() {
+        return true;
+    }
+    if full_counts.abs() <= arrival_enter_counts.max(HALF_DEVICE_COUNT) * 2.0 {
+        return true;
+    }
+    if crossed_center(previous_error, current_error) {
+        return true;
+    }
+    current_error.abs() <= previous_error.abs() + HALF_DEVICE_COUNT
+}
+
 fn crossed_center(previous: f64, current: f64) -> bool {
     previous.is_finite() && current.is_finite() && previous * current < 0.0
 }
@@ -765,7 +828,8 @@ fn crossed_center(previous: f64, current: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        AxisArrivalState, ControlMode, ControlObservation, DualPhaseConfig, DualPhaseControl,
+        ActuationFeedback, AxisArrivalState, BlockReason, ControlMode, ControlObservation,
+        DualPhaseConfig, DualPhaseControl,
     };
 
     #[test]
@@ -878,6 +942,93 @@ mod tests {
         assert_eq!(decision.motion_confidence, 0.0);
         assert_eq!(decision.predicted_offset_x, 0.0);
         assert_eq!(decision.filtered_error_x, 52.0);
+    }
+
+    #[test]
+    fn pending_feedback_holds_stationary_axis_to_avoid_duplicate_correction() {
+        let mut control = DualPhaseControl::new(DualPhaseConfig {
+            prediction_enabled: false,
+            ..DualPhaseConfig::default()
+        });
+        let first = ControlObservation {
+            generation: 1,
+            target_id: 7,
+            capture_ts_ns: 1_000_000_000,
+            control_now_ns: 1_008_000_000,
+            aim_x: 240.0,
+            aim_y: 160.0,
+            crosshair_x: 160.0,
+            crosshair_y: 160.0,
+            detection_confidence: 1.0,
+            track_confidence: 1.0,
+            target_valid: true,
+            trigger_active: true,
+        };
+        assert!(control.calculate(first).emit_allowed);
+
+        let second = ControlObservation {
+            generation: 2,
+            capture_ts_ns: 1_010_000_000,
+            control_now_ns: 1_018_000_000,
+            ..first
+        };
+        let decision = control.calculate_with_feedback(
+            second,
+            ActuationFeedback {
+                pending_x: true,
+                pending_y: false,
+            },
+        );
+
+        assert!(!decision.emit_allowed);
+        assert_eq!(decision.block_reason, BlockReason::ActuationFeedbackPending);
+        assert_eq!(decision.dx, 0);
+        assert!(decision.arrival_hold_x);
+        assert!(decision.actuation_pending_x);
+    }
+
+    #[test]
+    fn pending_feedback_does_not_freeze_axis_when_error_keeps_growing() {
+        let mut control = DualPhaseControl::new(DualPhaseConfig {
+            prediction_enabled: false,
+            ..DualPhaseConfig::default()
+        });
+        let first = ControlObservation {
+            generation: 1,
+            target_id: 7,
+            capture_ts_ns: 1_000_000_000,
+            control_now_ns: 1_008_000_000,
+            aim_x: 240.0,
+            aim_y: 160.0,
+            crosshair_x: 160.0,
+            crosshair_y: 160.0,
+            detection_confidence: 1.0,
+            track_confidence: 1.0,
+            target_valid: true,
+            trigger_active: true,
+        };
+        assert!(control.calculate(first).emit_allowed);
+
+        let second = ControlObservation {
+            generation: 2,
+            capture_ts_ns: 1_010_000_000,
+            control_now_ns: 1_018_000_000,
+            aim_x: 260.0,
+            ..first
+        };
+        let decision = control.calculate_with_feedback(
+            second,
+            ActuationFeedback {
+                pending_x: true,
+                pending_y: false,
+            },
+        );
+
+        assert!(decision.emit_allowed);
+        assert_eq!(decision.block_reason, BlockReason::None);
+        assert_ne!(decision.dx, 0);
+        assert!(!decision.arrival_hold_x);
+        assert!(decision.actuation_pending_x);
     }
 
     #[test]
