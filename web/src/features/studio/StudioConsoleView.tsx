@@ -76,6 +76,7 @@ import {
 import { AimTargetRange, type AimRole, type AimRoleRatios } from "./AimTargetRange";
 import { ControlTracePanel } from "./ControlTracePanel";
 import { LaunchReadinessPanel } from "./LaunchReadinessPanel";
+import { ProductConfigProfilePanel } from "./ProductConfigProfilePanel";
 import {
   InlineNumberControl,
   InlineTextControl,
@@ -102,6 +103,10 @@ import {
   type LaunchReadinessAction
 } from "./launchReadiness";
 import { buildControlTrace } from "./controlTrace";
+import {
+  buildProductConfigProfile,
+  type ProductConfigAction
+} from "./productConfigProfile";
 import "./studio-settings.css";
 
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
@@ -1856,6 +1861,82 @@ export function StudioConsoleView({
     roiInputWidth > 0 && roiInputHeight > 0 && modelInputWidth > 0 && modelInputHeight > 0
       ? (modelInputWidth * modelInputHeight) / (roiInputWidth * roiInputHeight)
       : null;
+  const productConfigProfile = useMemo(
+    () => buildProductConfigProfile({
+      runtimeRunning: runtimeMainlineRunning,
+      configRestartRequired,
+      desiredRevision: desiredConfigRevision,
+      effectiveRevision: effectiveConfigRevision,
+      captureConfigured: displayCaptureProfile !== null
+        && (configuredCaptureDevice.trim().length > 0 || (capture?.device ?? "").trim().length > 0),
+      captureDevice: configuredCaptureDevice || capture?.device || NO_SAMPLE,
+      captureProfile: displayCaptureProfile
+        ? `${displayCaptureProfile.pixel_format.toUpperCase()} ${displayCaptureProfile.width}x${displayCaptureProfile.height}@${displayCaptureProfile.fps}`
+        : NO_SAMPLE,
+      captureSource: displayCaptureProfileSource,
+      roiLabel: roiApplyLabel,
+      roiApplied: roiSettingsApplied,
+      modelPublished: activeModelPublished,
+      modelRuntimeLoaded: runtimeInference.loaded === true,
+      modelName: activeModelName,
+      artifactLabel: artifact ? `${artifact.kind} · ${artifact.status}` : "",
+      backendLabel: selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream / nvinfer" : selectedRuntimeBackend,
+      configuredBackendLabel: configuredInferenceBackend === "deepstream_nvinfer" ? "DeepStream / nvinfer" : configuredInferenceBackend,
+      modelInputLabel: modelInputWidth > 0 && modelInputHeight > 0
+        ? `${modelInputWidth}x${modelInputHeight}`
+        : displayedInputShape || NO_SAMPLE,
+      postprocessLabel: postprocessApplyLabel,
+      postprocessApplied: postprocessSettingsApplied,
+      controlModeLabel,
+      triggerModeLabel: triggerModeLabel(triggerMode),
+      predictionEnabled: dualPhasePredictionEnabled,
+      freshnessThresholdLabel: formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms"),
+      outputEnabled,
+      outputRuntimeConnected: kmnetRuntimeConnected,
+      kmnetAutoConnect,
+      kmnetRuntimeConnected,
+      kmnetRestartRequired,
+      kmnetConnectionLabel: kmnetRuntimeConnectionLabel,
+      kmnetHost,
+      kmnetPort: String(kmnetPort),
+      kmnetUuid
+    }),
+    [
+      activeModelName,
+      activeModelPublished,
+      artifact,
+      capture?.device,
+      configRestartRequired,
+      configuredCaptureDevice,
+      configuredInferenceBackend,
+      controlModeLabel,
+      desiredConfigRevision,
+      detectionFreshnessThresholdMs,
+      displayCaptureProfile,
+      displayCaptureProfileSource,
+      displayedInputShape,
+      dualPhasePredictionEnabled,
+      effectiveConfigRevision,
+      kmnetAutoConnect,
+      kmnetHost,
+      kmnetPort,
+      kmnetRestartRequired,
+      kmnetRuntimeConnected,
+      kmnetRuntimeConnectionLabel,
+      kmnetUuid,
+      modelInputHeight,
+      modelInputWidth,
+      outputEnabled,
+      postprocessApplyLabel,
+      postprocessSettingsApplied,
+      roiApplyLabel,
+      roiSettingsApplied,
+      runtimeInference.loaded,
+      runtimeMainlineRunning,
+      selectedRuntimeBackend,
+      triggerMode
+    ]
+  );
   const inputDensityWarning = inputDownscaleFactor !== null && inputDownscaleFactor > 1;
   const sampledDetectionGeneration = readNullableNumber(
     inferenceTrace.generation ?? runtimeInference.sampled_detection_generation
@@ -3835,6 +3916,26 @@ export function StudioConsoleView({
     }
     setLocalError("授权状态已在进入 Studio 前校验；如需更换授权，请返回授权入口。");
   }, [navigatePage, openMainlineLaunchDialog, openModelManager]);
+  const handleProductConfigAction = useCallback((action: ProductConfigAction) => {
+    if (action === "capture") {
+      navigatePage("capture");
+      return;
+    }
+    if (action === "models") {
+      navigatePage("infer");
+      openModelManager();
+      return;
+    }
+    if (action === "control") {
+      navigatePage("params");
+      return;
+    }
+    if (action === "kmnet") {
+      navigatePage("control-test");
+      return;
+    }
+    openConfigDialog("algorithm");
+  }, [navigatePage, openConfigDialog, openModelManager]);
 
   return (
     <section className="console-app">
@@ -4347,6 +4448,11 @@ export function StudioConsoleView({
               <Metric title="偏移输出配置" value={outputEnabled ? "允许" : "暂停"} small={outputEnabled ? "实际发送状态见控制页" : "算法仍继续计算"} />
               <Metric title="发送方式" value="最新覆盖" small="事件驱动单槽" />
             </div>
+            <ProductConfigProfilePanel
+              busy={busy !== null}
+              onAction={handleProductConfigAction}
+              profile={productConfigProfile}
+            />
             <div className={outputEnabled ? "console-card control-output-gate-card enabled" : "console-card control-output-gate-card paused"}>
               <div className="control-output-gate-identity">
                 <span className="control-output-gate-icon" aria-hidden="true">
