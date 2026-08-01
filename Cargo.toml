@@ -5,6 +5,7 @@ members = [
   "apps/novasightd",
   "apps/novasightctl",
   "crates/novasight-api",
+  "crates/novasight-config",
   "crates/novasight-core",
   "crates/novasight-deepstream-bridge",
   "crates/novasight-tensorrt",

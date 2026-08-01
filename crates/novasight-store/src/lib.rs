@@ -1,6 +1,8 @@
 #![deny(unsafe_code)]
 
-pub mod config;
+pub mod config {
+    pub use novasight_config::*;
+}
 pub mod license;
 pub mod model_catalog;
 pub mod model_manifest;

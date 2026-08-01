@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
-use novasight_store::config::YamlConfigRepository;
+use novasight_config::YamlConfigRepository;
 use serde::Deserialize;
 use serde_yaml::{Mapping, Number, Value};
 use tokio::process::{Child, Command};

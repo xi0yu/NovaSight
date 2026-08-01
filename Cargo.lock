@@ -1152,7 +1152,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "novasight-store",
+ "novasight-config",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1200,6 +1200,19 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "novasight-config"
+version = "0.1.0"
+dependencies = [
+ "exacl",
+ "libc",
+ "novasight-core",
+ "serde",
+ "serde_yaml",
+ "thiserror",
+ "xattr",
 ]
 
 [[package]]
@@ -1290,6 +1303,7 @@ dependencies = [
  "fs2",
  "jsonwebtoken",
  "libc",
+ "novasight-config",
  "novasight-core",
  "rand 0.8.7",
  "rsa",
