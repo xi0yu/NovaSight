@@ -74,6 +74,7 @@ import {
   type ActionConfirmationRequest
 } from "./ActionConfirmationDialog";
 import { AimTargetRange, type AimRole, type AimRoleRatios } from "./AimTargetRange";
+import { ControlTracePanel } from "./ControlTracePanel";
 import { LaunchReadinessPanel } from "./LaunchReadinessPanel";
 import {
   InlineNumberControl,
@@ -100,6 +101,7 @@ import {
   buildLaunchReadiness,
   type LaunchReadinessAction
 } from "./launchReadiness";
+import { buildControlTrace } from "./controlTrace";
 import "./studio-settings.css";
 
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
@@ -1678,6 +1680,7 @@ export function StudioConsoleView({
       ? Math.hypot(predictedErrorXPx, predictedErrorYPx)
       : null;
   const controlMeasurementDtS = readNullableNumber(controlPipeline.measurement_dt_s ?? mouseObservation.measurement_dt_s);
+  const controlMeasurementDtMs = controlMeasurementDtS === null ? null : controlMeasurementDtS * 1000;
   const controlFrameAgeMs = readNullableNumber(controlPipeline.frame_age_ms);
   const acceptedCommandCount = readNullableNumber(kmnetStatus.accepted_command_count);
   const hasAcceptedCommand = (acceptedCommandCount ?? 0) > 0;
@@ -1694,6 +1697,9 @@ export function StudioConsoleView({
         : !kmnetRuntimeConnected
           ? "主链设备通道未连接"
           : "命令已获准进入设备通道";
+  const runtimeOutputEnabled = readNullableBoolean(control.output_enabled);
+  const controlWillEmit = readNullableBoolean(control.will_emit);
+  const controlTriggerActive = readNullableBoolean(control.trigger_active);
   const deepstreamInputFrames = runtimeMainlineStatus.nvinferInputFrames;
   const deepstreamOutputBuffers = readNullableNumber(runtimeInference.output_buffers);
   const deepstreamMetadataExtractions = runtimeMainlineStatus.metadataExtractions;
@@ -1784,6 +1790,51 @@ export function StudioConsoleView({
     detectionDataAgeMs,
     detectionFreshnessThresholdMs
   );
+  const controlTrace = buildControlTrace({
+    runtimeRunning: runtimeMainlineRunning,
+    detectionBatchFps,
+    publishedBatches: runtimeMainlineStatus.publishedBatches,
+    consumedBatches: runtimeMainlineStatus.consumedBatches,
+    targetingBatches: runtimeMainlineStatus.targetingBatches,
+    detectionDataAgeMs,
+    freshnessThresholdMs: detectionFreshnessThresholdMs,
+    detectionCount,
+    rawCandidateCount,
+    eligibleCandidateCount,
+    selectedTargetCount,
+    targetPipelineStage,
+    targetPipelineCode,
+    targetPipelineMessage,
+    targetPipelineRejections,
+    hasTarget: controlHasTarget,
+    trackId: controlTrackId,
+    classLabel: activeRuntimeClassLabel,
+    targetScore: readNullableNumber(target.score),
+    observedAim: formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px"),
+    controlAim: formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px"),
+    controlCenter: formatPoint(controlCenterX, controlCenterY, STANDARD_DECIMAL_DIGITS, "px"),
+    controlError: formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px"),
+    errorDistancePx: predictedErrorDistancePx,
+    controlFrameAgeMs,
+    measurementDtMs: controlMeasurementDtMs,
+    predictionEnabled: dualPhasePredictionEnabled,
+    controllerActive: controlHasSample,
+    controllerMode: controlModeLabel,
+    movementStrategy: readString(controlPipeline.movement_strategy, ""),
+    fullError: formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2, "counts"),
+    floatDemand: formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2, "counts"),
+    integerCommand: formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts"),
+    residual: formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts"),
+    outputEnabled: runtimeOutputEnabled ?? outputEnabled,
+    willEmit: controlWillEmit,
+    triggerActive: controlTriggerActive,
+    noSendReason: controlNoSendReason,
+    kmnetRuntimeConnected,
+    kmnetConnectionLabel: kmnetRuntimeConnectionLabel,
+    acceptedCommandCount,
+    lastAcceptedCommand,
+    deviceLastError: kmnetLastError || kmnetLastDeviceError
+  });
   const captureReason = capture?.last_error || (
     capture?.running !== true
       ? "采集尚未启动"
@@ -4179,6 +4230,7 @@ export function StudioConsoleView({
             <Metric title="控制误差" value={formatOptionalNumber(predictedErrorDistancePx)} small="px" />
             <Metric title="最近设备接受" value={hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE} small="与当前样本独立" />
           </div>
+          <ControlTracePanel trace={controlTrace} />
           <div className="console-grid2 diagnostic-grid" data-layer="control">
             <div className="console-card">
               <SectionTitle title="目标选择" />
