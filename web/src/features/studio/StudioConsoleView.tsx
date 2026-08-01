@@ -27,6 +27,7 @@ import {
   getRuntimeConfig,
   learnCrosshair,
   HealthResponse,
+  LicenseStatus,
   ModelArtifact,
   ModelCatalogDirectory,
   ModelCatalogModel,
@@ -73,6 +74,7 @@ import {
   type ActionConfirmationRequest
 } from "./ActionConfirmationDialog";
 import { AimTargetRange, type AimRole, type AimRoleRatios } from "./AimTargetRange";
+import { LaunchReadinessPanel } from "./LaunchReadinessPanel";
 import {
   InlineNumberControl,
   InlineTextControl,
@@ -94,6 +96,10 @@ import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage
 import { StudioPageHeader } from "./StudioPageHeader";
 import { KvCard, Metric, SectionTitle } from "./StudioPresentation";
 import { trapDialogTabKey } from "./dialogFocus";
+import {
+  buildLaunchReadiness,
+  type LaunchReadinessAction
+} from "./launchReadiness";
 import "./studio-settings.css";
 
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
@@ -142,6 +148,7 @@ function ModelManagerLoadingDialog({ onClose }: { onClose: () => void }) {
 }
 
 type StudioConsoleViewProps = {
+  license: LicenseStatus | null;
   health: HealthResponse | null;
   runtime: RuntimeState | null;
   runtimeConfig: RuntimeConfig | null;
@@ -678,6 +685,7 @@ function changedRuntimeConfigSections(current: RuntimeConfig, candidate: Runtime
 }
 
 export function StudioConsoleView({
+  license,
   health,
   runtime,
   runtimeConfig,
@@ -3740,6 +3748,42 @@ export function StudioConsoleView({
       ? "已有样本 · 正在建立速率窗口"
       : "真实样本可用"
     : "等待首个运行样本";
+  const launchReadiness = useMemo(
+    () => buildLaunchReadiness({
+      license,
+      runtime,
+      runtimeConfig: config
+    }),
+    [config, license, runtime]
+  );
+  const handleLaunchReadinessAction = useCallback((action: LaunchReadinessAction) => {
+    if (action === "open-model-manager") {
+      navigatePage("infer");
+      openModelManager();
+      return;
+    }
+    if (action === "open-capture") {
+      navigatePage("capture");
+      return;
+    }
+    if (action === "start-mainline") {
+      openMainlineLaunchDialog();
+      return;
+    }
+    if (action === "open-control") {
+      navigatePage("control");
+      return;
+    }
+    if (action === "open-kmnet-test") {
+      navigatePage("control-test");
+      return;
+    }
+    if (action === "open-params") {
+      navigatePage("params");
+      return;
+    }
+    setLocalError("授权状态已在进入 Studio 前校验；如需更换授权，请返回授权入口。");
+  }, [navigatePage, openMainlineLaunchDialog, openModelManager]);
 
   return (
     <section className="console-app">
@@ -3852,6 +3896,12 @@ export function StudioConsoleView({
             {runtimeMainlineStatus.readinessLabel}：{runtimeMainlineStatus.readinessDetail}
           </div>
         ) : null}
+
+        <LaunchReadinessPanel
+          busy={busy !== null || launchStatus === "running"}
+          onAction={handleLaunchReadinessAction}
+          readiness={launchReadiness}
+        />
 
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">

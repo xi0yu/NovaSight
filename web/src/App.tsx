@@ -732,6 +732,7 @@ function StudioApp() {
     <>
       <Suspense fallback={<RouteLoadingShell />}>
         <StudioConsoleView
+          license={license}
           health={state.health}
           runtime={state.runtime}
           runtimeConfig={state.config}
