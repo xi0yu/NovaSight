@@ -1,4 +1,4 @@
-import type { RuntimeState } from "../../api";
+import type { RuntimeOutputTraceState, RuntimeState } from "../../api";
 
 export type RuntimeMainlineStatus = {
   running: boolean;
@@ -18,6 +18,7 @@ export type RuntimeMainlineStatus = {
   hasInferenceSignal: boolean;
   hasRuntimeConsumption: boolean;
   hasFreshDetectionData: boolean;
+  outputTrace: RuntimeOutputTraceState | null;
   progressSummary: string;
   readinessCode:
     | "stopped"
@@ -55,6 +56,23 @@ function readBoolean(value: unknown): boolean {
 
 function readOptionalNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readOutputTrace(value: unknown): RuntimeOutputTraceState | null {
+  const trace = asRecord(value);
+  const code = readString(trace.code);
+  const state = readString(trace.state);
+  const detail = readString(trace.detail);
+  const nextAction = readString(trace.next_action);
+  if (!code && !state && !detail && !nextAction) {
+    return null;
+  }
+  return {
+    code: code || "unknown",
+    state: state || "waiting",
+    detail,
+    next_action: nextAction
+  };
 }
 
 function firstNumber(...values: unknown[]): number | null {
@@ -148,6 +166,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
   const selectedExecutor = readString(executor.selected);
   const selectedDevice = asRecord(executors[selectedExecutor] ?? executors.kmnet);
   const visionControl = asRecord(asRecord(runtime?.vision).control);
+  const outputTrace = readOutputTrace(asRecord(runtime?.vision).output_trace);
   const controlDeviceDisconnected =
     running &&
     selectedExecutor !== "replay" &&
@@ -217,13 +236,18 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
   } else if (running && hasRuntimeConsumption && hasFreshDetectionData) {
     readinessCode = "ready";
     readinessLabel = "已就绪";
-    readinessDetail = "采集、推理和运行时消费链路正在产生新鲜的真实数据。";
+    readinessDetail =
+      outputTrace?.code === "ready" && outputTrace.detail
+        ? outputTrace.detail
+        : "采集、推理和运行时消费链路正在产生新鲜的真实数据。";
   } else if (running) {
     readinessCode = "starting";
     readinessLabel = "等待运行数据";
-    readinessDetail = positive(publishedBatches)
-      ? "已收到 DetectionBatch，正在等待新鲜度与运行时消费状态确认。"
-      : "推理链已启动，正在等待首个 DetectionBatch。";
+    readinessDetail =
+      outputTrace?.detail ||
+      (positive(publishedBatches)
+        ? "已收到 DetectionBatch，正在等待新鲜度与运行时消费状态确认。"
+        : "推理链已启动，正在等待首个 DetectionBatch。");
   }
 
   return {
@@ -244,6 +268,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     hasInferenceSignal,
     hasRuntimeConsumption,
     hasFreshDetectionData,
+    outputTrace,
     progressSummary,
     readinessCode,
     readinessLabel,

@@ -1840,7 +1840,8 @@ export function StudioConsoleView({
     kmnetConnectionLabel: kmnetRuntimeConnectionLabel,
     acceptedCommandCount,
     lastAcceptedCommand,
-    deviceLastError: kmnetLastError || kmnetLastDeviceError
+    deviceLastError: kmnetLastError || kmnetLastDeviceError,
+    outputTrace: runtimeMainlineStatus.outputTrace
   });
   const captureReason = capture?.last_error || (
     capture?.running !== true
@@ -2442,10 +2443,11 @@ export function StudioConsoleView({
       const status = getRuntimeMainlineStatus(state);
       lastSummary = status.progressSummary;
       setLaunchProgressDetail(
-        status.progressSummary ? `当前计数：${status.progressSummary}` : "等待主链输出启动证据。"
+        status.outputTrace?.detail ||
+          (status.progressSummary ? `当前计数：${status.progressSummary}` : "等待主链输出启动证据。")
       );
       if (status.failed) {
-        throw new Error(`${stageTitle}失败：${status.readinessDetail || missingMessage}`);
+        throw new Error(`${stageTitle}失败：${status.outputTrace?.detail || status.readinessDetail || missingMessage}`);
       }
       if (!status.running) {
         await waitForLaunchFeedback(intervalMs);
@@ -2453,7 +2455,8 @@ export function StudioConsoleView({
       }
       if (hasEvidence(state)) {
         setLaunchProgressDetail(
-          status.progressSummary ? `已收到启动证据：${status.progressSummary}` : "已收到启动证据。"
+          status.outputTrace?.detail ||
+            (status.progressSummary ? `已收到启动证据：${status.progressSummary}` : "已收到启动证据。")
         );
         return state;
       }

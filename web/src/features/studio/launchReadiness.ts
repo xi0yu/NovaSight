@@ -94,6 +94,62 @@ function formatBackend(value: string): string {
   return value === "deepstream_nvinfer" ? "DeepStream / nvinfer" : value || "未配置";
 }
 
+function traceAction(
+  status: RuntimeMainlineStatus,
+  runtime: RuntimeState | null
+): Pick<LaunchReadinessItem, "action" | "actionLabel"> | null {
+  const trace = status.outputTrace;
+  if (!trace) {
+    return null;
+  }
+  if (trace.next_action === "start_mainline") {
+    return { action: "start-mainline", actionLabel: "启动主链" };
+  }
+  if (trace.next_action === "check_model") {
+    return { action: "open-model-manager", actionLabel: "检查模型" };
+  }
+  if (trace.next_action === "check_capture_or_model") {
+    return runtime?.active_model
+      ? { action: "open-capture", actionLabel: "检查采集" }
+      : { action: "open-model-manager", actionLabel: "配置模型" };
+  }
+  if (trace.next_action === "check_latency") {
+    return { action: "open-capture", actionLabel: "检查采集" };
+  }
+  if (trace.next_action === "check_targeting" || trace.next_action === "inspect_control") {
+    return { action: "open-control", actionLabel: "查看控制" };
+  }
+  if (trace.next_action === "enable_output_gate") {
+    return { action: "open-params", actionLabel: "打开输出" };
+  }
+  if (trace.next_action === "activate_trigger") {
+    return { action: "open-control", actionLabel: "查看触发" };
+  }
+  if (trace.next_action === "connect_kmnet") {
+    return { action: "open-kmnet-test", actionLabel: "连接 kmNet" };
+  }
+  if (trace.next_action === "check_license_or_build") {
+    return { action: "open-license", actionLabel: "检查授权" };
+  }
+  if (trace.next_action === "inspect_runtime_ingress") {
+    return { action: "open-control", actionLabel: "查看运行链" };
+  }
+  return null;
+}
+
+function traceItemState(status: RuntimeMainlineStatus): LaunchReadinessState {
+  if (!status.outputTrace) {
+    return "idle";
+  }
+  if (status.outputTrace.state === "ready") {
+    return "ready";
+  }
+  if (status.outputTrace.state === "blocked") {
+    return "blocked";
+  }
+  return "action";
+}
+
 function formatOptionalInteger(value: number | null | undefined): string {
   return typeof value === "number" && Number.isFinite(value) ? String(Math.trunc(value)) : "—";
 }
@@ -220,6 +276,8 @@ function buildCaptureItem(
 
 function buildDeepStreamItem(runtime: RuntimeState | null, status: RuntimeMainlineStatus): LaunchReadinessItem {
   const backend = readString(runtime?.inference?.selected, "deepstream_nvinfer");
+  const trace = status.outputTrace;
+  const action = traceAction(status, runtime);
   if (status.failed && status.readinessCode !== "no_video") {
     return {
       id: "deepstream",
@@ -230,6 +288,27 @@ function buildDeepStreamItem(runtime: RuntimeState | null, status: RuntimeMainli
       blocking: true,
       action: status.readinessCode === "model_load_failed" ? "open-model-manager" : "open-capture",
       actionLabel: status.readinessCode === "model_load_failed" ? "修复模型" : "检查运行"
+    };
+  }
+  if (
+    status.running &&
+    trace &&
+    (
+      trace.code === "inference_not_running" ||
+      trace.code === "no_detection_batches" ||
+      trace.code === "runtime_not_consuming_batches" ||
+      trace.code === "stale_detection_batch"
+    )
+  ) {
+    return {
+      id: "deepstream",
+      label: "DeepStream 推理",
+      state: traceItemState(status),
+      detail: trace.detail || status.readinessDetail,
+      evidence: `${trace.code} · ${status.progressSummary}`,
+      blocking: true,
+      action: action?.action,
+      actionLabel: action?.actionLabel
     };
   }
   if (status.running && status.hasInferenceSignal) {
@@ -257,6 +336,31 @@ function buildDeepStreamItem(runtime: RuntimeState | null, status: RuntimeMainli
 }
 
 function buildControlItem(runtime: RuntimeState | null, status: RuntimeMainlineStatus): LaunchReadinessItem {
+  const trace = status.outputTrace;
+  const action = traceAction(status, runtime);
+  if (
+    status.running &&
+    trace &&
+    trace.code !== "ready" &&
+    ![
+      "runtime_stopped",
+      "inference_not_running",
+      "no_detection_batches",
+      "runtime_not_consuming_batches",
+      "stale_detection_batch"
+    ].includes(trace.code)
+  ) {
+    return {
+      id: "control",
+      label: "控制算法",
+      state: traceItemState(status),
+      detail: trace.detail || "控制链路尚未形成可输出闭环。",
+      evidence: `${trace.code} · ${status.progressSummary}`,
+      blocking: true,
+      action: action?.action ?? "open-control",
+      actionLabel: action?.actionLabel ?? "查看控制"
+    };
+  }
   if (status.running && status.hasRuntimeConsumption) {
     return {
       id: "control",
@@ -291,7 +395,11 @@ function buildControlItem(runtime: RuntimeState | null, status: RuntimeMainlineS
   };
 }
 
-function buildKmNetItem(runtime: RuntimeState | null, runtimeConfig: RuntimeConfig | null): LaunchReadinessItem {
+function buildKmNetItem(
+  runtime: RuntimeState | null,
+  runtimeConfig: RuntimeConfig | null,
+  status: RuntimeMainlineStatus
+): LaunchReadinessItem {
   const controlConfig = nestedRecord(runtimeConfig, "control");
   const hardwareConfig = nestedRecord(runtimeConfig, "hardware");
   const executor = runtime?.executor;
@@ -333,6 +441,18 @@ function buildKmNetItem(runtime: RuntimeState | null, runtimeConfig: RuntimeConf
       detail: "运行时设备通道已连接，可以接收新鲜控制命令。",
       evidence: `${host}:${port} · accepted=${kmnet.accepted_command_count}`,
       blocking: false
+    };
+  }
+  if (status.outputTrace?.code === "device_not_connected") {
+    return {
+      id: "kmnet",
+      label: "kmNet 输出",
+      state: "action",
+      detail: status.outputTrace.detail,
+      evidence: kmnet?.last_error || kmnet?.blocked_reason || `${host}:${port}`,
+      blocking: false,
+      action: "open-kmnet-test",
+      actionLabel: "配置 kmNet"
     };
   }
   return {
@@ -432,7 +552,9 @@ function buildProductConfig(
     {
       label: "控制",
       value: triggerMode === "hardware" ? "硬件触发" : "检测即控制",
-      detail: outputEnabled ? "允许输出" : "安全暂停"
+      detail: status.running && status.outputTrace?.detail
+        ? status.outputTrace.detail
+        : outputEnabled ? "允许输出" : "安全暂停"
     },
     {
       label: "kmNet",
@@ -454,7 +576,7 @@ export function buildLaunchReadiness({
     buildCaptureItem(runtime, runtimeConfig, status),
     buildDeepStreamItem(runtime, status),
     buildControlItem(runtime, status),
-    buildKmNetItem(runtime, runtimeConfig)
+    buildKmNetItem(runtime, runtimeConfig, status)
   ];
   const blockingItems = items.filter((item) => item.blocking);
   const readyCount = blockingItems.filter((item) => item.state === "ready").length;
@@ -472,13 +594,15 @@ export function buildLaunchReadiness({
   const title = state === "ready"
     ? status.running ? "主链已经具备生产运行证据" : "主链准备完成，等待启动"
     : state === "blocked"
-      ? "主链启动前有阻断项"
-      : "按顺序补齐主链准备项";
+      ? status.running ? "主链输出链路有阻断项" : "主链启动前有阻断项"
+      : status.running ? "按诊断处理下一步" : "按顺序补齐主链准备项";
   const detail = state === "ready"
     ? status.running
       ? status.readinessDetail
       : "模型、采集和运行配置已就绪；启动后继续核对 DeepStream 与控制消费计数。"
-    : "先处理第一条阻断或待配置项，再继续启动；输出设备独立于采集和推理验证。";
+    : status.running && status.outputTrace?.detail
+      ? status.outputTrace.detail
+      : "先处理第一条阻断或待配置项，再继续启动；输出设备独立于采集和推理验证。";
 
   return {
     state,

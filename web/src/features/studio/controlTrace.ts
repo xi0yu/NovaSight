@@ -1,3 +1,5 @@
+import type { RuntimeOutputTraceState } from "../../api";
+
 export type ControlTraceState = "ready" | "blocked" | "waiting" | "idle";
 
 export type ControlTraceStepId =
@@ -77,7 +79,60 @@ export type BuildControlTraceInput = {
   acceptedCommandCount: number | null;
   lastAcceptedCommand: string;
   deviceLastError: string;
+  outputTrace: RuntimeOutputTraceState | null;
 };
+
+const OUTPUT_TRACE_LABELS: Record<string, string> = {
+  runtime_stopped: "主链未运行",
+  inference_not_running: "推理未运行",
+  no_detection_batches: "等待 DetectionBatch",
+  runtime_not_consuming_batches: "Runtime 未消费",
+  stale_detection_batch: "检测已过期",
+  target_not_selected: "未选中目标",
+  control_not_calculated: "控制未计算",
+  hardware_output_disabled: "硬件输出不可用",
+  output_gate_closed: "输出门关闭",
+  trigger_inactive: "等待触发",
+  device_not_connected: "设备未连接",
+  control_blocked: "控制阻断",
+  ready: "输出链路已贯通"
+};
+
+const NEXT_ACTION_LABELS: Record<string, string> = {
+  start_mainline: "启动主链",
+  check_model: "检查模型",
+  check_capture_or_model: "检查采集或模型",
+  inspect_runtime_ingress: "查看 Runtime 输入",
+  check_latency: "检查延迟",
+  check_targeting: "检查目标选择",
+  inspect_control: "查看控制链",
+  check_license_or_build: "检查授权或构建",
+  enable_output_gate: "打开输出门",
+  activate_trigger: "激活触发条件",
+  connect_kmnet: "连接 kmNet",
+  monitor_output: "观察输出"
+};
+
+function outputTraceLabel(trace: RuntimeOutputTraceState): string {
+  return OUTPUT_TRACE_LABELS[trace.code] ?? trace.code;
+}
+
+function outputTraceNextAction(trace: RuntimeOutputTraceState): string {
+  return NEXT_ACTION_LABELS[trace.next_action] ?? (trace.next_action || "继续观察");
+}
+
+function outputTraceState(trace: RuntimeOutputTraceState): ControlTraceState {
+  if (trace.state === "ready") {
+    return "ready";
+  }
+  if (trace.state === "blocked") {
+    return "blocked";
+  }
+  if (trace.state === "idle") {
+    return "idle";
+  }
+  return "waiting";
+}
 
 function positive(value: number | null): boolean {
   return value !== null && value > 0;
@@ -300,21 +355,37 @@ export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSu
   const completed = steps.filter((step) => step.state === "ready").length;
   const hasBlocked = steps.some((step) => step.state === "blocked");
   const hasReadyController = steps.some((step) => step.id === "controller" && step.state === "ready");
-  const state: ControlTraceState = hasBlocked
+  const derivedState: ControlTraceState = hasBlocked
     ? "blocked"
     : completed === steps.length
       ? "ready"
       : hasReadyController
         ? "waiting"
         : input.runtimeRunning ? "waiting" : "idle";
+  const traceState = input.outputTrace ? outputTraceState(input.outputTrace) : null;
+  const state = traceState && traceState !== "ready" ? traceState : derivedState;
   const title = state === "ready"
     ? "控制链路已形成闭环"
     : state === "blocked"
-      ? "控制链路存在阻断"
+      ? input.outputTrace
+        ? outputTraceLabel(input.outputTrace)
+        : "控制链路存在阻断"
       : input.runtimeRunning
-        ? "控制链路正在等待实时证据"
+        ? input.outputTrace
+          ? outputTraceLabel(input.outputTrace)
+          : "控制链路正在等待实时证据"
         : "控制链路等待主链启动";
-  const detail = "按运行语义串起 DetectionBatch、目标选择、瞄准误差、Atan 输出、输出门和 kmNet 回执。";
+  const detail = input.outputTrace?.detail ||
+    "按运行语义串起 DetectionBatch、目标选择、瞄准误差、Atan 输出、输出门和 kmNet 回执。";
+  const traceFacts: ControlTraceFact[] = input.outputTrace
+    ? [
+        {
+          label: "输出诊断",
+          value: outputTraceLabel(input.outputTrace),
+          detail: outputTraceNextAction(input.outputTrace)
+        }
+      ]
+    : [];
 
   return {
     state,
@@ -324,6 +395,7 @@ export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSu
     total: steps.length,
     steps,
     facts: [
+      ...traceFacts,
       {
         label: "当前目标",
         value: input.trackId === null ? (input.hasTarget ? "已选择" : "无") : `track ${Math.trunc(input.trackId)}`,

@@ -484,6 +484,17 @@ export type RuntimeConfigSummary = {
   restart_required: boolean;
 };
 
+export type RuntimeOutputTraceState = {
+  code: string;
+  state: "ready" | "blocked" | "waiting" | "idle" | string;
+  detail: string;
+  next_action: string;
+};
+
+export type RuntimeVisionState = Record<string, unknown> & {
+  output_trace?: RuntimeOutputTraceState;
+};
+
 export type RuntimeState = {
   running: boolean;
   source: string;
@@ -495,7 +506,7 @@ export type RuntimeState = {
   inference: RuntimeInferenceState;
   config: RuntimeConfigSummary;
   pipeline: RuntimePipelineSummary;
-  vision: Record<string, unknown>;
+  vision: RuntimeVisionState;
   fatal_error: RuntimeErrorSummary | null;
 };
 
