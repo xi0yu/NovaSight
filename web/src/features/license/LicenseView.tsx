@@ -25,6 +25,15 @@ export function LicenseGate({
 }: Required<Pick<LicenseProps, "loading" | "onRefresh" | "onTemporaryRecovery" | "temporaryRecoveryLoading">> &
   Pick<LicenseProps, "license" | "issue" | "onLicenseChange">) {
   const serviceUnavailable = !loading && license === null && issue !== null;
+  const gateSubtitle = loading
+    ? "正在校验本机服务与授权状态"
+    : serviceUnavailable
+      ? "连接本机服务后进入 Jetson 实时视觉工作台"
+      : license?.valid
+        ? "个人授权已签收，进入 Jetson 实时视觉工作台"
+        : license?.temporary_access_supported
+          ? "签收正式授权或申请 Debug 临时权限后进入工作台"
+          : "签收正式授权后进入 Jetson 实时视觉工作台";
 
   return (
     <main className="app-shell license-shell">
@@ -35,7 +44,7 @@ export function LicenseGate({
           </span>
           <div>
             <h1>NovaSight</h1>
-            <p>{serviceUnavailable ? "连接本机服务后进入 Jetson 实时视觉工作台" : "申请临时授权后进入 Jetson 实时视觉工作台"}</p>
+            <p>{gateSubtitle}</p>
           </div>
           <ThemeToggle />
         </div>

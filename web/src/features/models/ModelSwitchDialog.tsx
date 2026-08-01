@@ -97,4 +97,3 @@ export function ModelSwitchDialog({
     </div>
   );
 }
-import type { RefObject } from "react";
