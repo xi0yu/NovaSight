@@ -712,6 +712,7 @@ export function StudioConsoleView({
   const classConfigDialogRef = useRef<HTMLElement | null>(null);
   const targetWeightsDialogRef = useRef<HTMLElement | null>(null);
   const errorCenterDialogRef = useRef<HTMLElement | null>(null);
+  const launchDialogRef = useRef<HTMLElement | null>(null);
   const dialogSavingRef = useRef(false);
 
   const setConfigDialogVisibility = useCallback((dialog: ConfigDialogId, open: boolean) => {
@@ -2102,6 +2103,25 @@ export function StudioConsoleView({
     setModelManagerDialogOpen,
     setSelectedModelCatalogPath
   });
+
+  useEffect(() => {
+    if (!launchDialogOpen) {
+      return undefined;
+    }
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = window.requestAnimationFrame(() => launchDialogRef.current?.focus());
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Tab") {
+        trapDialogTabKey(event, launchDialogRef.current);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("keydown", onKeyDown);
+      previousFocus?.focus();
+    };
+  }, [launchDialogOpen]);
 
   const mainlineLaunchPending =
     mainlineRuntimeSelected &&
@@ -5171,7 +5191,9 @@ export function StudioConsoleView({
             aria-labelledby="launch-dialog-title"
             aria-modal="true"
             className="launch-dialog"
+            ref={launchDialogRef}
             role="dialog"
+            tabIndex={-1}
           >
             <header className="launch-dialog-header">
               <div className="launch-dialog-title-wrap">
@@ -5257,7 +5279,7 @@ export function StudioConsoleView({
                 type="button"
               >
                 <NovaIcon name={launchStatus === "running" ? "activity-pulse" : launchStatus === "success" ? "dashboard" : "start"} size={16} />
-                {launchStatus === "running" ? "正在启动" : launchStatus === "success" ? "进入工作台" : launchStatus === "failed" || launchStatus === "cancelled" ? "重新启动" : "开始启动"}
+                {launchStatus === "running" ? "正在启动" : launchStatus === "success" ? "完成" : launchStatus === "failed" || launchStatus === "cancelled" ? "重新启动" : "开始启动"}
               </button>
             </footer>
           </section>
@@ -5265,7 +5287,7 @@ export function StudioConsoleView({
       ) : null}
 
       <div className={launchToastVisible ? "launch-toast show" : "launch-toast"} role="status">
-        主链启动请求已提交
+        主链启动完成，运行态已确认
       </div>
     </section>
   );
