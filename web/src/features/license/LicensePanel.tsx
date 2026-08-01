@@ -37,12 +37,19 @@ export function LicensePanel({
   const giftTraceCode = formatTraceFragment(traceSource);
   const fingerprintTraceCode = formatTraceFragment(license?.fingerprint);
   const licenseTraceCode = formatTraceFragment(license?.license_id);
+  const tokenTraceCode = formatTraceFragment(license?.token_id);
+  const keyTraceCode = formatTraceFragment(license?.key_id);
+  const validFrom = license?.valid
+    ? formatEpoch(license.not_before ?? license.created_at)
+    : "等待签发";
   const signedAt = license?.valid
     ? formatEpoch(license.activated_at ?? license.created_at)
     : "等待签收";
   const giftTitle = license?.valid
     ? "个人授权礼物已签收"
     : "等待签收个人授权礼物";
+  const backendMessage = license?.message?.trim();
+  const features = license?.features ?? [];
 
   const requestTemporary = useCallback(async () => {
     setFailure(null);
@@ -193,11 +200,29 @@ export function LicensePanel({
             <dd>{licenseTraceCode}</dd>
           </div>
           <div>
+            <dt>签发密钥</dt>
+            <dd>{keyTraceCode}</dd>
+          </div>
+          <div>
+            <dt>凭证片段</dt>
+            <dd>{tokenTraceCode}</dd>
+          </div>
+          <div>
+            <dt>生效时间</dt>
+            <dd>{validFrom}</dd>
+          </div>
+          <div>
             <dt>签收时间</dt>
             <dd>{signedAt}</dd>
           </div>
         </dl>
       </div>
+      {backendMessage ? (
+        <div className="license-provenance-note">
+          <strong>授权说明</strong>
+          <span>{backendMessage}</span>
+        </div>
+      ) : null}
       <div className="field-grid">
         <Field label="授权类型" value={license?.tier ? formatTier(license.tier) : "未授权"} />
         <Field label="凭证格式" value={formatCredentialFormat(license?.credential_format)} />
@@ -269,10 +294,12 @@ export function LicensePanel({
           {clearing ? "正在退出…" : clearArmed ? "确认退出授权" : "退出当前授权"}
         </button>
       ) : null}
-      <div className="license-features">
-        {(license?.features ?? []).map((feature) => (
-          <span key={feature}>{formatFeature(feature)}</span>
-        ))}
+      <div className={features.length > 0 ? "license-features" : "license-features empty"}>
+        {features.length > 0
+          ? features.map((feature) => (
+              <span key={feature}>{formatFeature(feature)}</span>
+            ))
+          : <span>等待授权功能范围</span>}
       </div>
     </div>
   );

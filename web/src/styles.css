@@ -1606,6 +1606,26 @@ tbody tr:hover {
   overflow-wrap: anywhere;
 }
 
+.license-provenance-note {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--brand-primary) 18%, var(--border-subtle));
+  border-radius: var(--radius-inner);
+  background: color-mix(in srgb, var(--bg-elevated) 82%, transparent);
+}
+
+.license-provenance-note strong {
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.license-provenance-note span {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
 .license-features span {
   border-radius: 999px;
   background: color-mix(in srgb, var(--primary) 16%, var(--surface-2));
@@ -1614,6 +1634,11 @@ tbody tr:hover {
   font-size: 0.78rem;
   font-weight: 700;
   box-shadow: 0 0 0 1px var(--border-subtle);
+}
+
+.license-features.empty span {
+  background: color-mix(in srgb, var(--surface-2) 78%, transparent);
+  color: var(--muted);
 }
 
 @media (max-width: 640px) {
