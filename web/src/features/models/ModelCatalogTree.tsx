@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 
 import type {
   ModelCatalogDirectory,
@@ -33,6 +33,8 @@ const SHELVES: Array<{
 
 const INITIAL_SHELF_ROWS = 100;
 
+type ShelfModelMap = Record<ModelRecommendation, ModelCatalogModel[]>;
+
 export const ModelCatalogTree = memo(function ModelCatalogTree({
   models,
   selectedPath,
@@ -49,17 +51,30 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
     unrated: INITIAL_SHELF_ROWS,
     not_recommended: INITIAL_SHELF_ROWS
   });
+  const shelfModels = useMemo(() => {
+    const grouped: ShelfModelMap = {
+      recommended: [],
+      unrated: [],
+      not_recommended: []
+    };
+    for (const model of models) {
+      grouped[model.recommendation].push(model);
+    }
+    for (const shelf of SHELVES) {
+      grouped[shelf.recommendation].sort((left, right) => {
+        const activeOrder = Number(right.artifact_id === activeArtifactId) - Number(left.artifact_id === activeArtifactId);
+        return activeOrder || left.name.localeCompare(right.name);
+      });
+    }
+    return grouped;
+  }, [activeArtifactId, models]);
+
   return (
     <div className="model-catalog model-vault-shelves" aria-label="按推荐状态整理的模型" role="list">
       {SHELVES.map((shelf) => {
-        const shelfModels = models
-          .filter((model) => model.recommendation === shelf.recommendation)
-          .sort((left, right) => {
-            const activeOrder = Number(right.artifact_id === activeArtifactId) - Number(left.artifact_id === activeArtifactId);
-            return activeOrder || left.name.localeCompare(right.name);
-          });
-        if (shelfModels.length === 0) return null;
-        const visibleModels = shelfModels.slice(0, visibleRows[shelf.recommendation]);
+        const modelsForShelf = shelfModels[shelf.recommendation];
+        if (modelsForShelf.length === 0) return null;
+        const visibleModels = modelsForShelf.slice(0, visibleRows[shelf.recommendation]);
         return (
           <section
             className={`model-vault-shelf ${shelf.recommendation}`}
@@ -72,7 +87,7 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
                 <strong>{shelf.label}</strong>
                 <small>{shelf.description}</small>
               </div>
-              <b>{shelfModels.length}</b>
+              <b>{modelsForShelf.length}</b>
             </header>
             <div className="model-catalog-level" role="group">
               {visibleModels.map((model) => (
@@ -84,7 +99,7 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
                   selectedPath={selectedPath}
                 />
               ))}
-              {visibleModels.length < shelfModels.length ? (
+              {visibleModels.length < modelsForShelf.length ? (
                 <button
                   className="console-button secondary model-vault-load-more"
                   onClick={() => setVisibleRows((current) => ({
@@ -93,7 +108,7 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
                   }))}
                   type="button"
                 >
-                  再显示 {Math.min(INITIAL_SHELF_ROWS, shelfModels.length - visibleModels.length)} 个
+                  再显示 {Math.min(INITIAL_SHELF_ROWS, modelsForShelf.length - visibleModels.length)} 个
                 </button>
               ) : null}
             </div>

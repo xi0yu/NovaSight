@@ -31,6 +31,12 @@ impl Drop for TestDirectory {
     }
 }
 
+fn sqlite_data_version(connection: &Connection) -> i64 {
+    connection
+        .query_row("PRAGMA data_version", [], |row| row.get(0))
+        .unwrap()
+}
+
 fn create_python_compatible_database(path: &std::path::Path) {
     let connection = Connection::open(path).unwrap();
     connection
@@ -134,11 +140,10 @@ fn catalog_engine_registration_is_reference_only_and_idempotent() {
 fn artifact_metadata_persists_recommendation_and_tags_in_the_catalog_view() {
     let directory = TestDirectory::new();
     let model_root = directory.0.join("models");
+    let database_path = directory.0.join("novasight.db");
     fs::create_dir_all(&model_root).unwrap();
     fs::write(model_root.join("detector.engine"), b"engine").unwrap();
-    let catalog =
-        SqliteModelCatalog::open_with_model_root(directory.0.join("novasight.db"), &model_root)
-            .unwrap();
+    let catalog = SqliteModelCatalog::open_with_model_root(&database_path, &model_root).unwrap();
     let artifact = catalog
         .register_catalog_engine("detector.engine")
         .unwrap()
@@ -165,6 +170,18 @@ fn artifact_metadata_persists_recommendation_and_tags_in_the_catalog_view() {
     assert_eq!(metadata.recommendation, ModelRecommendation::Recommended);
     assert_eq!(metadata.tags, ["高精度模型", "延迟大"]);
     assert_eq!(catalog.artifact_metadata(artifact.id).unwrap(), metadata);
+
+    let observer = Connection::open(&database_path).unwrap();
+    let version_before_noop = sqlite_data_version(&observer);
+    let repeated = catalog
+        .update_artifact_metadata(
+            artifact.id,
+            ModelRecommendation::Recommended,
+            vec!["高精度模型".to_owned(), "延迟大".to_owned()],
+        )
+        .unwrap();
+    assert_eq!(repeated, metadata);
+    assert_eq!(sqlite_data_version(&observer), version_before_noop);
 
     let refreshed = catalog.catalog(false).unwrap();
     let model = refreshed.root.children[0].model();

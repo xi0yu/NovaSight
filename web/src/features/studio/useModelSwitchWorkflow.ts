@@ -108,14 +108,18 @@ export function useModelSwitchWorkflow({
 
   const ensureCatalogModelRegistration = useCallback(async (model: ModelCatalogModel) => {
     if (typeof model.project_id === "number" && typeof model.artifact_id === "number") {
-      return { projectId: model.project_id, artifactId: model.artifact_id };
+      return { projectId: model.project_id, artifactId: model.artifact_id, created: false };
     }
     const registered = await registerCatalogModel(model.relative_path);
     setSelectedModelProjectId(registered.project.id);
     setSelectedModelVersionId(registered.version.id);
     setSelectedModelArtifactId(registered.artifact.id);
     setModelCatalogMessage(`已登记模型引用：${model.relative_path}；Engine 文件保持原位。`);
-    return { projectId: registered.project.id, artifactId: registered.artifact.id };
+    return {
+      artifactId: registered.artifact.id,
+      created: registered.created,
+      projectId: registered.project.id
+    };
   }, [
     setModelCatalogMessage,
     setSelectedModelArtifactId,
@@ -135,13 +139,15 @@ export function useModelSwitchWorkflow({
     setBusy("model.metadata");
     setLocalError(null);
     try {
-      const { artifactId } = await ensureCatalogModelRegistration(model);
-      await updateModelArtifactMetadata(artifactId, recommendation, tags);
+      const registration = await ensureCatalogModelRegistration(model);
+      await updateModelArtifactMetadata(registration.artifactId, recommendation, tags);
       const updatedCatalog = await getModelCatalog(false);
       applyModelCatalogResult(updatedCatalog);
       setModelCatalogMessage(`已保存 ${model.name} 的推荐状态与 ${tags.length} 个标签。`);
-      setModelDetailsRefreshKey((current) => current + 1);
-      await onRefresh();
+      if (registration.created) {
+        setModelDetailsRefreshKey((current) => current + 1);
+        await onRefresh();
+      }
     } catch (err) {
       setLocalError(`模型整理结果保存失败：${getErrorMessage(err)}`);
       reportError(err, { source: "model-metadata", title: "模型整理失败" });

@@ -18,6 +18,13 @@ import {
   modelStatusTone
 } from "./modelPresentation";
 
+const RECOMMENDATION_OPTIONS: Array<{ value: ModelRecommendation; label: string }> = [
+  { value: "recommended", label: "推荐" },
+  { value: "unrated", label: "待整理" },
+  { value: "not_recommended", label: "不推荐" }
+];
+const SUGGESTED_MODEL_TAGS = ["高精度模型", "低精度模型", "低延迟", "延迟大", "稳定", "实验模型"];
+
 export interface ModelSelectionPanelProps {
   root: ModelCatalogDirectory | null;
   loading: boolean;
@@ -77,13 +84,25 @@ export function ModelSelectionPanel({
     () => Array.from(new Set(models.flatMap((model) => model.tags))).sort((left, right) => left.localeCompare(right)),
     [models]
   );
+  const availableTagSet = useMemo(() => new Set(availableTags), [availableTags]);
+  const activeTagFilters = useMemo(() => Array.from(tagFilters), [tagFilters]);
   const filteredModels = useMemo(
     () => models.filter((model) =>
       (recommendationFilter === "all" || model.recommendation === recommendationFilter) &&
-      Array.from(tagFilters).every((tag) => model.tags.includes(tag))
+      activeTagFilters.every((tag) => model.tags.includes(tag))
     ),
-    [models, recommendationFilter, tagFilters]
+    [activeTagFilters, models, recommendationFilter]
   );
+
+  useEffect(() => {
+    setTagFilters((current) => {
+      if (current.size === 0) {
+        return current;
+      }
+      const next = new Set(Array.from(current).filter((tag) => availableTagSet.has(tag)));
+      return next.size === current.size ? current : next;
+    });
+  }, [availableTagSet]);
 
   useEffect(() => {
     setDraftRecommendation(selectedModel?.recommendation ?? "unrated");
@@ -120,13 +139,6 @@ export function ModelSelectionPanel({
     setDraftTags((current) => [...current, tag]);
     setNewTag("");
   };
-  const recommendationOptions: Array<{ value: ModelRecommendation; label: string }> = [
-    { value: "recommended", label: "推荐" },
-    { value: "unrated", label: "待整理" },
-    { value: "not_recommended", label: "不推荐" }
-  ];
-  const suggestedTags = ["高精度模型", "低精度模型", "低延迟", "延迟大", "稳定", "实验模型"];
-
   return (
     <div className="model-selection-panel">
       <header className="model-selection-toolbar">
@@ -287,7 +299,7 @@ export function ModelSelectionPanel({
               {metadataDirty ? <span>待保存</span> : null}
             </div>
             <div className="model-recommendation-control" role="group" aria-label="模型推荐状态">
-              {recommendationOptions.map((option) => (
+              {RECOMMENDATION_OPTIONS.map((option) => (
                 <button
                   aria-pressed={draftRecommendation === option.value}
                   className={draftRecommendation === option.value ? "active" : ""}
@@ -340,7 +352,7 @@ export function ModelSelectionPanel({
                 </button>
               </div>
               <div className="model-tag-suggestions" aria-label="常用标签">
-                {suggestedTags.filter((tag) => !draftTags.includes(tag)).map((tag) => (
+                {SUGGESTED_MODEL_TAGS.filter((tag) => !draftTags.includes(tag)).map((tag) => (
                   <button disabled={busy !== null || selectedModel === null} key={tag} onClick={() => addTag(tag)} type="button">
                     + {tag}
                   </button>
