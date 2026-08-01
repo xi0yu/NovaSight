@@ -617,7 +617,6 @@ export function useMainlineLaunch({
     openDialog,
     progress,
     progressDetail,
-    setDialogOpen,
     stageIndex,
     stages: MAINLINE_LAUNCH_STAGES,
     start,

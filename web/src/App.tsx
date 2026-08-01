@@ -20,7 +20,7 @@ import {
   statusWebSocketUrl,
 } from "./api";
 import { ToastHost } from "./components/ToastHost";
-import { reportError, reportInfo, reportSuccess } from "./lib/toast";
+import { reportError, reportInfo } from "./lib/toast";
 import {
   clearWebSocketFailure,
   reportWebSocketFailure,

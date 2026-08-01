@@ -326,14 +326,6 @@ function recordArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.map(asRecord) : [];
 }
 
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value
-        .map((item) => String(item).trim())
-        .filter((item) => item.length > 0)
-    : [];
-}
-
 function readNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -407,13 +399,6 @@ function triggerModeLabel(value: string): string {
     return "检测目标自动控制";
   }
   return "kmNet 硬件触发";
-}
-
-function clampPercent(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  return Math.min(100, Math.max(0, value));
 }
 
 const NO_SAMPLE = "—";
@@ -1030,7 +1015,6 @@ export function StudioConsoleView({
   const crosshairConfig = nestedRecord(config, "crosshair");
   const limitsConfig = nestedRecord(config, "limits");
   const inferenceConfig = nestedRecord(config, "inference");
-  const preprocessConfig = nestedRecord(config, "preprocess");
   const controlConfig = nestedRecord(config, "control");
   const rustPipelineConfig = nestedRecord(config, "pipeline");
   const rustControlPlane = Object.prototype.hasOwnProperty.call(
