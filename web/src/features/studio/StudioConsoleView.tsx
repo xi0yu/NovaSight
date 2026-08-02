@@ -4516,6 +4516,14 @@ export function StudioConsoleView({
             );
           })}
         </div>
+        <div className="algorithm-settings-global-switches" aria-label="控制算法总开关">
+          <ModuleSwitch
+            label="启用 X / Y 目标预测"
+            detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。"
+            enabled={dualPhasePredictionEnabled}
+            onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)}
+          />
+        </div>
         <div className="algorithm-settings-layout">
           <nav aria-label="控制算法调参分类" className="algorithm-settings-nav" role="tablist">
             {ALGORITHM_SETTINGS_SECTIONS.map((section) => {
@@ -4561,7 +4569,6 @@ export function StudioConsoleView({
                 <h3 id="algorithm-settings-prediction-title">唯一锁定目标的 X / Y 预测</h3>
                 <p>普通用户先选预设，再按需要微调提前量和平滑窗口。其余参数属于异常保护。</p>
               </header>
-              <ModuleSwitch label="启用 X / Y 目标预测" detail="X、Y 两轴使用同一套时间与可信度参数，只预测 Tracker 当前锁定的一个目标。" enabled={dualPhasePredictionEnabled} onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)} />
               <div className="advanced-settings-grid two-column">
                 {predictionCoreParameters
                   .filter((parameter) => parameter.key === "actuation_feedback_delay_ms")
