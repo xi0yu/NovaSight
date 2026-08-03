@@ -16,9 +16,9 @@ export function getErrorMessage(error: unknown): string {
     }
     if (code === "CONFIG_RESTART_REQUIRED") {
       if (error.message.includes("process-owned configuration sections")) {
-        return "新配置修改了由 novasightd 进程创建的服务、目录、准星或硬件连接资源；请重启后端一次再继续。";
+        return "新配置修改了由 novasightd 进程创建的服务、目录、准星或硬件连接资源；请重启 novasightd 一次再继续。";
       }
-      return "配置在本次启动准备期间又发生了变化；请重新点击启动，后端会装载最新保存值。";
+      return "配置在本次启动准备期间又发生了变化；请重新点击启动，NovaSight 会装载最新保存值。";
     }
     if (code === "HARDWARE_OUTPUT_DISABLED") {
       return "当前没有可用的硬件输出适配器，不能连接或控制物理 kmNet 设备。";
@@ -31,7 +31,7 @@ export function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
   }
-  return "无法连接 NovaSight 后端";
+  return "无法连接 NovaSight 服务";
 }
 
 export function formatTime(date: Date | null): string {

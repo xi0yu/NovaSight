@@ -31,7 +31,7 @@ function cardIconForTitle(title: string): NovaIconName {
   if (title.includes("采集")) return "capture";
   if (title.includes("推理")) return "inference";
   if (title.includes("系统")) return "system";
-  if (title.includes("诊断")) return "triangle-alert";
+  if (title.includes("诊断") || title.includes("排查")) return "triangle-alert";
   return "dashboard";
 }
 
@@ -49,19 +49,19 @@ function sectionIconForTitle(title: string): NovaIconName {
 }
 
 function sectionDescriptionForTitle(title: string): string {
-  if (title.includes("采集设备")) return "视频源、后端通路与 latest-frame 策略";
+  if (title.includes("采集设备")) return "视频源、画面通路与最新帧策略";
   if (title.includes("ROI")) return "裁剪区域决定推理、预览和控制坐标基准";
-  if (title.includes("模型设置")) return "绑定当前运行模型和 TensorRT 引擎";
+  if (title.includes("模型设置")) return "绑定当前运行模型和 Engine 文件";
   if (title.includes("推理输出")) return "查看识别结果、目标框和新鲜度";
-  if (title.includes("鼠标移动算法")) return "PD/PID、滤波、预测和输出限幅";
+  if (title.includes("鼠标移动算法")) return "预测、Atan 响应和输出限幅";
   if (title.includes("控制量反馈")) return "控制决策、调度器和执行器状态";
-  if (title.includes("kmNet")) return "硬件连接、触发键和移动诊断";
+  if (title.includes("kmNet")) return "硬件连接、触发键和单步移动测试";
   if (title.includes("性能占比")) return "采集、预处理、推理和后处理耗时";
   if (title.includes("延迟链路")) return "按阶段定位实时链路瓶颈";
   if (title.includes("采集统计")) return "最新帧采集吞吐与丢弃情况";
   if (title.includes("推理统计")) return "批次消费、新鲜度和阶段耗时";
   if (title.includes("系统状态")) return "硬件资源和服务状态摘要";
-  if (title.includes("采集诊断")) return "队列积压、帧间隔和采集建议";
+  if (title.includes("采集诊断") || title.includes("采集排查")) return "队列积压、帧间隔和采集建议";
   return "";
 }
 

@@ -95,7 +95,7 @@ export function ProductConfigProfilePanel({
     <section className={`control-trace-panel product-config-profile-panel ${tone} ${profile.state}`} aria-labelledby="product-config-profile-title">
       <header className="control-trace-header product-config-profile-header">
         <div>
-          <span className="class-config-eyebrow">CONFIG PROFILE</span>
+          <span className="class-config-eyebrow">配置摘要</span>
           <h2 id="product-config-profile-title">{profile.title}</h2>
           <p>{profile.detail}</p>
         </div>

@@ -206,7 +206,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     } else {
       readinessCode = "failed";
       readinessLabel = "启动失败";
-      readinessDetail = failureMessage || "后端未能完成主链启动，请查看异常信息中的处理建议。";
+      readinessDetail = failureMessage || "NovaSight 服务未能完成主链启动，请查看异常信息中的处理建议。";
     }
   } else if (pipelineState === "starting") {
     readinessCode = "starting";

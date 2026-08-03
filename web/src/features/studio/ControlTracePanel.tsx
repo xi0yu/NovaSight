@@ -62,7 +62,7 @@ export function ControlTracePanel({ trace }: { trace: ControlTraceSummary }) {
     <section className={`control-trace-panel ${trace.state}`} aria-labelledby="control-trace-title">
       <header className="control-trace-header">
         <div>
-          <span className="class-config-eyebrow">CONTROL TRACE</span>
+          <span className="class-config-eyebrow">实时控制链</span>
           <h2 id="control-trace-title">{trace.title}</h2>
           <p>{trace.detail}</p>
         </div>

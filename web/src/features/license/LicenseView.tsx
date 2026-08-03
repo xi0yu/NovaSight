@@ -54,7 +54,7 @@ export function LicenseGate({
               <NovaIcon name="backend-api" size={24} />
             </span>
             <div>
-              <h2>{issue?.title ?? "尚未连接到 NovaSight 后端"}</h2>
+              <h2>{issue?.title ?? "尚未连接到 NovaSight 服务"}</h2>
               <p>{issue?.description}</p>
               <div className="service-connection-guidance">
                 <strong>建议操作</strong>
@@ -81,7 +81,7 @@ export function LicenseGate({
               <NovaIcon name="activity-pulse" size={24} />
             </span>
             <div>
-              <h2>正在连接 NovaSight 后端</h2>
+              <h2>正在连接 NovaSight 服务</h2>
               <p>正在读取本机服务与授权状态，请稍候。</p>
             </div>
           </section>

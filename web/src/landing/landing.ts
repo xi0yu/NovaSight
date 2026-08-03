@@ -28,7 +28,7 @@ const ENTRIES: LauncherEntry[] = [
     href: "/?page=params"
   },
   {
-    title: "设备诊断",
+    title: "设备测试",
     detail: "kmNet 连接、按键和单步移动",
     href: "/?page=control-test"
   },
@@ -60,7 +60,7 @@ function renderHero(): string {
         <span class="eyebrow">NOVASIGHT STUDIO</span>
         <h1 id="launcher-title">实时视觉控制台</h1>
         <p>
-          打开 Studio 后按当前后端状态进入采集、推理、控制和参数配置。后端未连接时，Studio 会显示连接和授权恢复入口。
+          打开 Studio 后按当前 NovaSight 服务状态进入采集、推理、控制和参数配置。服务未连接时，Studio 会显示连接和授权恢复入口。
         </p>
       </div>
       <div class="launcher-actions">

@@ -43,7 +43,7 @@ export function LaunchReadinessPanel({
       <div className="launch-readiness-main">
         <header className="launch-readiness-header">
           <div>
-            <span className="class-config-eyebrow">MAINLINE COMMISSIONING</span>
+            <span className="class-config-eyebrow">启动准备</span>
             <h2 id="launch-readiness-title">{readiness.title}</h2>
             <p>{readiness.detail}</p>
           </div>

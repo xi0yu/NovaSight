@@ -62,7 +62,7 @@ export function LicensePanel({
         onLicenseChange(status);
         setFailure({
           title: "当前构建不支持临时权限",
-          message: "Release 后端只接受正式签名授权；请启动 Debug 构建的 novasightd 进行开发验证。"
+          message: "Release 服务只接受正式签名授权；请启动 Debug 构建的 novasightd 进行开发验证。"
         });
         return;
       }
@@ -72,12 +72,12 @@ export function LicensePanel({
           title: "临时授权未通过",
           message: status.valid
             ? "当前已有有效的正式授权，无需申请临时授权。"
-            : "当前后端未开放临时授权，请使用 Debug 测试版本，或改用正式授权凭证。"
+            : "当前服务未开放临时授权，请使用 Debug 测试版本，或改用正式授权凭证。"
         });
         return;
       }
       onLicenseChange(status);
-      setMessage("当前 Debug 后端进程已开放开发权限，可以进入 NovaSight 工作台。");
+      setMessage("当前 Debug 进程已开放开发权限，可以进入 NovaSight 工作台。");
     } catch (err) {
       const nextFailure = describeLicenseActionFailure(err, "temporary");
       setFailure(nextFailure);
@@ -179,10 +179,10 @@ export function LicensePanel({
       </div>
       <div className={license?.valid ? "license-status-card valid" : "license-status-card"}>
         <div className="license-status-copy">
-          <span>LICENSE STATUS</span>
+          <span>授权状态</span>
           <strong>{licenseStatusTitle}</strong>
           <p>
-            授权凭证由后端保存和校验；界面只展示追踪片段，不回显完整凭证。
+            授权凭证由 NovaSight 服务保存和校验；界面只展示追踪片段，不回显完整凭证。
           </p>
         </div>
         <dl className="license-status-trace">
@@ -236,7 +236,7 @@ export function LicensePanel({
         <Field
           label="期限"
           value={license?.tier === "temporary"
-            ? "当前后端进程"
+            ? "当前服务进程"
             : formatDuration(license?.duration_value, license?.duration_unit)}
         />
       </div>
@@ -244,7 +244,7 @@ export function LicensePanel({
         <div>
           <strong>测试临时授权</strong>
           <span>{temporarySupported
-            ? "由本机 Debug 构建直接批准，只在当前后端进程内有效；不访问外部授权服务，也不写入授权文件。"
+            ? "由本机 Debug 构建直接批准，只在当前服务进程内有效；不访问外部授权服务，也不写入授权文件。"
             : "当前是 Release 构建，不开放临时权限；正式使用需要签名授权凭证。"}</span>
         </div>
         <button
@@ -265,7 +265,7 @@ export function LicensePanel({
       <div className="signed-license-action">
         <div>
           <strong>正式授权</strong>
-          <span>优先使用 RS256 JWT，兼容旧版 NS1。界面不保存或回显凭证，后端会在受限权限文件中保留签名片段用于重启复核。</span>
+          <span>优先使用 RS256 JWT，兼容旧版 NS1。界面不保存或回显凭证，NovaSight 服务会在受限权限文件中保留签名片段用于重启复核。</span>
         </div>
         <div className="signed-license-controls">
           <label className="config-field">

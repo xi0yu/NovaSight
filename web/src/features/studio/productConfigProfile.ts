@@ -401,7 +401,7 @@ export function buildProductConfigProfile(input: BuildProductConfigProfileInput)
       detail: input.configRestartRequired ? "运行态仍在旧版本" : "保存值与运行态一致"
     },
     {
-      label: "推理后端",
+      label: "推理方式",
       value: input.backendLabel,
       detail: input.configuredBackendLabel === input.backendLabel ? "与配置一致" : `配置值 ${input.configuredBackendLabel}`
     },

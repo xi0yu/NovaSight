@@ -327,7 +327,7 @@ function buildDeepStreamItem(runtime: RuntimeState | null, status: RuntimeMainli
     state: runtime?.inference?.configured ? "idle" : "action",
     detail: runtime?.inference?.configured
       ? "模型推理配置已就绪，启动后会显示识别结果。"
-      : "推理后端尚未报告可用配置。",
+      : "推理服务尚未报告可用配置。",
     evidence: formatBackend(backend),
     blocking: true,
     action: "start-mainline",
@@ -426,7 +426,7 @@ function buildKmNetItem(
       id: "kmnet",
       label: "kmNet 输出",
       state: "action",
-      detail: "kmNet 新配置需要重启后端才会接管输出。",
+      detail: "kmNet 新配置需要重启 novasightd 才会接管输出。",
       evidence: kmnet?.blocked_reason || `${host}:${port}`,
       blocking: false,
       action: "open-kmnet-test",
@@ -595,7 +595,7 @@ export function buildLaunchReadiness({
     ? status.running ? "视觉控制正在运行" : "主链准备完成，等待启动"
     : state === "blocked"
       ? status.running ? "主链输出链路有阻断项" : "主链启动前有阻断项"
-      : status.running ? "主链等待诊断处理" : "主链等待启动准备";
+      : status.running ? "主链等待排查处理" : "主链等待启动准备";
   const detail = state === "ready"
     ? status.running
       ? status.readinessDetail

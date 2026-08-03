@@ -59,7 +59,7 @@ const navigationGroups: NavigationGroup[] = [
   },
   {
     id: "diagnostics",
-    label: "诊断工具",
+    label: "排查工具",
     items: [
       { id: "control-test", label: "控制测试", detail: "硬件输出实验", icon: "kmbox" },
       { id: "latency", label: "延迟分析", detail: "采集链路时序", icon: "latency" }
@@ -89,12 +89,12 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
     description: "查看当前配置，维护类别、控制算法和设备参数。"
   },
   "control-test": {
-    group: "诊断工具",
+    group: "排查工具",
     title: "控制测试",
     description: "脱离自动目标链路验证 kmNet 连接和受控移动输出。"
   },
   latency: {
-    group: "诊断工具",
+    group: "排查工具",
     title: "延迟分析",
     description: "定位采集到设备发送之间的阶段耗时和数据新鲜度问题。"
   }

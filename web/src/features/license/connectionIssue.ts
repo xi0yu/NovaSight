@@ -42,7 +42,7 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
     if (error.status === 408 || error.status === 504) {
       return {
         kind: "timeout",
-        title: "NovaSight 后端响应超时",
+        title: "NovaSight 服务响应超时",
         description: "本机服务没有在预期时间内返回授权状态，这不代表授权申请失败。",
         recovery: "请确认 Jetson 负载正常且 novasightd 仍在运行，然后重新连接。"
       };
@@ -50,17 +50,17 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
     if (error.status === 404 || error.status === 405) {
       return {
         kind: "incompatible",
-        title: "NovaSight 后端接口不可用",
-        description: "前端已连接到本机服务，但当前后端没有提供所需的授权接口。",
-        recovery: "请确认前端与 novasightd 来自同一版本，然后重新启动后端。"
+        title: "NovaSight 服务接口不可用",
+        description: "界面已连接到本机服务，但当前服务没有提供所需的授权接口。",
+        recovery: "请确认 Web UI 与 novasightd 来自同一版本，然后重新启动 novasightd。"
       };
     }
     if (error.status >= 500 && code === "") {
       return {
         kind: "service-error",
-        title: "NovaSight 后端连接仍在建立",
+        title: "NovaSight 服务连接仍在建立",
         description: "Web 前端在线，但代理这次没有收到 novasightd 的业务响应；这不是授权凭证错误。",
-        recovery: "后端刚启动或重启时会短暂出现；可重新连接，Debug 开发环境也可直接尝试进程内临时权限。"
+        recovery: "novasightd 刚启动或重启时会短暂出现；可重新连接，Debug 开发环境也可直接尝试进程内临时权限。"
       };
     }
     if (error.status >= 500) {
@@ -75,9 +75,9 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
 
   return {
     kind: "unreachable",
-    title: "尚未连接到 NovaSight 后端",
+    title: "尚未连接到 NovaSight 服务",
     description: "浏览器无法读取本机服务，因此现在还不能判断授权状态。",
-    recovery: "请先启动 novasightd，并确认本机后端地址可以访问，然后重新连接。"
+    recovery: "请先启动 novasightd，并确认本机服务地址可以访问，然后重新连接。"
   };
 }
 
@@ -94,7 +94,7 @@ export function describeLicenseActionFailure(
       if (action === "temporary") {
         return {
           title: "临时授权暂不可用",
-          message: "当前后端没有批准临时授权，请确认正在运行 Debug 测试版本后重试。"
+          message: "当前服务没有批准临时授权，请确认正在运行 Debug 测试版本后重试。"
         };
       }
       if (action === "activate") {

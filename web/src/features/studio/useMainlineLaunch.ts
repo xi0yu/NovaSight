@@ -74,7 +74,7 @@ export const MAINLINE_LAUNCH_STAGES: MainlineLaunchStage[] = [
   },
   {
     title: "启动视觉控制",
-    caption: "请求后端启动采集、画面识别与控制功能。"
+    caption: "请求 NovaSight 启动采集、画面识别与控制功能。"
   },
   {
     title: "激活鼠标算法",
@@ -293,7 +293,7 @@ export function useMainlineLaunch({
       (runtimeMainlineStatus.failed || runtimeFatalError)
     ) {
       clearAccepted();
-      setLocalError(`主链启动未确认：${runtimeMainlineStatus.readinessDetail || runtimeInferenceDetail || runtimeInferenceReason || "后端运行态未进入运行状态。"}`);
+      setLocalError(`主链启动未确认：${runtimeMainlineStatus.readinessDetail || runtimeInferenceDetail || runtimeInferenceReason || "NovaSight 服务未进入运行状态。"}`);
     }
   }, [
     accepted,
@@ -313,7 +313,7 @@ export function useMainlineLaunch({
       return true;
     }
     const openingMessage = options?.force === true
-      ? "后端报告当前模型不可用，已转入模型管理。"
+      ? "NovaSight 服务报告当前模型不可用，已转入模型管理。"
       : "启动前没有已发布 TensorRT Engine，已转入模型管理。";
     setLocalError(openingMessage);
     setModelCatalogMessage(openingMessage);
@@ -377,7 +377,7 @@ export function useMainlineLaunch({
     try {
       const runtimeStart = asRecord(await startRuntimePipeline());
       if (readBoolean(runtimeStart.failed) || !readBoolean(runtimeStart.running)) {
-        throw new Error(readString(runtimeStart.last_error, "后端未确认推理管线运行。"));
+        throw new Error(readString(runtimeStart.last_error, "NovaSight 服务未确认推理管线运行。"));
       }
       await onRefresh();
     } catch (err) {
@@ -441,7 +441,7 @@ export function useMainlineLaunch({
     setLocalError(null);
     setStatus("running");
     setError("");
-    setProgressDetail("正在提交启动请求，等待后端阶段反馈。");
+    setProgressDetail("正在提交启动请求，等待启动阶段反馈。");
     setStageIndex(0);
     setCompletedStages(0);
     const ensureNotCancelled = () => {
@@ -481,11 +481,11 @@ export function useMainlineLaunch({
         const runtimeStart = asRecord(await startRuntimePipeline());
         const accepted = readBoolean(runtimeStart.running, true);
         if (!accepted) {
-          const reason = readString(runtimeStart.last_error, "后端未确认主链运行。");
+          const reason = readString(runtimeStart.last_error, "NovaSight 服务未确认主链运行。");
           throw new Error(reason);
         }
         setAccepted(true);
-        setMessage("后端已确认主链运行，正在确认识别结果已进入控制链路。");
+        setMessage("NovaSight 已确认主链运行，正在确认识别结果已进入控制链路。");
       });
       await runStage(4, async () => {
         const state = await waitForRuntimeEvidence(
@@ -498,7 +498,7 @@ export function useMainlineLaunch({
       });
       setStatus("success");
       setCompletedStages(MAINLINE_LAUNCH_STAGES.length);
-      setProgressDetail((detail) => detail || "主链启动完成，后端运行态已确认。");
+      setProgressDetail((detail) => detail || "主链启动完成，运行状态已确认。");
       await onRefresh();
       showToast();
     } catch (err) {
@@ -521,7 +521,7 @@ export function useMainlineLaunch({
       if (cancelledRef.current) {
         setStatus("cancelled");
         setError("");
-        setProgressDetail("启动已取消，已停止继续等待后端阶段反馈。");
+        setProgressDetail("启动已取消，已停止继续等待启动阶段反馈。");
         return;
       }
       setStatus("failed");
@@ -561,14 +561,14 @@ export function useMainlineLaunch({
     clearTimer();
     setStatus("cancelled");
     setError("");
-    setProgressDetail("正在请求后端立即停止输出并中止启动，不再等待普通生命周期锁。");
+    setProgressDetail("正在请求立即停止输出并中止启动，不再等待普通生命周期锁。");
     clearAccepted();
     setBusy(null);
     try {
       await emergencyStopRuntimePipeline();
       const stoppedState = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
       onRuntimeStateChange(stoppedState);
-      setProgressDetail("后端已确认紧急停止；旧输出已失效，启动流程已取消。");
+      setProgressDetail("NovaSight 已确认紧急停止；旧输出已失效，启动流程已取消。");
       await onRefresh();
     } catch (err) {
       setLocalError(`取消启动失败：${getErrorMessage(err)}`);

@@ -23,7 +23,7 @@ export function CurrentModelSummary({
           <NovaIcon name="engine" size={24} strokeWidth={1.7} />
         </span>
         <div>
-          <span className="class-config-eyebrow">ACTIVE INFERENCE MODEL</span>
+          <span className="class-config-eyebrow">当前运行模型</span>
           <h3 title={modelName}>{modelName}</h3>
         </div>
         <StatusIndicator tone={loaded ? "good" : "idle"}>

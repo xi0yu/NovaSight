@@ -6,8 +6,8 @@ const MODEL_SWITCH_STAGES = [
   ["确认 Engine 文件", "仅按 .engine 后缀接受候选，目录浏览阶段不会加载模型。"],
   ["登记模型引用", "复用已有登记；未登记时只按路径和文件元数据创建轻量引用。"],
   ["验证模型输入输出", "读取真实输入、输出、尺寸与数据类型，非法 Engine 在此终止。"],
-  ["准备运行配置", "复用匹配配置；缺失或不匹配时自动生成运行配置。"],
-  ["切换推理运行态", "应用模型，并在主链运行时等待新的识别结果。"]
+  ["准备运行配置", "复用匹配配置；缺失或不匹配时自动生成。"],
+  ["切换当前模型", "应用模型，并在主链运行时等待新的识别结果。"]
 ] as const;
 
 export function ModelSwitchDialog({
@@ -48,7 +48,7 @@ export function ModelSwitchDialog({
       >
         <header className="model-switch-dialog-header">
           <div>
-            <span>MODEL ACTIVATION</span>
+            <span>模型切换</span>
             <h2 id="model-switch-dialog-title">验证并切换模型</h2>
             <p title={modelName}>{modelName}</p>
           </div>
@@ -83,7 +83,7 @@ export function ModelSwitchDialog({
           {error || detail}
         </div>
         <footer>
-          <small>模型验证、运行配置准备和运行态切换由后端自动完成。</small>
+          <small>NovaSight 会自动完成模型验证、运行配置准备和当前切换。</small>
           <button
             className="console-button primary"
             disabled={status === "running"}

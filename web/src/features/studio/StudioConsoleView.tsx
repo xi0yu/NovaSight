@@ -133,7 +133,7 @@ function ModelManagerLoadingDialog({ onClose }: { onClose: () => void }) {
               <NovaIcon name="models" size={22} />
             </span>
             <div>
-              <span className="class-config-eyebrow">MODEL MANAGER</span>
+              <span className="class-config-eyebrow">模型管理</span>
               <h2 id="model-manager-loading-title">模型管理与切换</h2>
               <p>正在读取模型管理界面，运行主链不受影响。</p>
             </div>
@@ -583,7 +583,7 @@ const CONFIG_SECTION_LABELS: Record<string, string> = {
   crosshair: "准星学习",
   limits: "安全限制",
   consumers: "数据消费",
-  server: "后端服务"
+  server: "NovaSight 服务"
 };
 
 function changedRuntimeConfigSections(current: RuntimeConfig, candidate: RuntimeConfig): string[] {
@@ -836,7 +836,7 @@ export function StudioConsoleView({
     setConfirmationRequest({
       eyebrow: "未保存修改",
       title: "放弃这次参数修改？",
-      description: "关闭或按 Esc 不再隐式保存。只有点击“保存并关闭”才会把草稿写入后端。",
+      description: "关闭或按 Esc 不再隐式保存。只有点击“保存并关闭”才会把草稿写入 NovaSight 服务。",
       details: [
         "放弃后，本次弹窗内的修改会恢复为打开前的配置。",
         "运行中的采集、推理和控制主链不会因此改变。"
@@ -2131,7 +2131,7 @@ export function StudioConsoleView({
             ? "识别结果已产出"
             : "等待识别结果"
       : mainlineLaunchPending
-        ? "等待后端反馈"
+        ? "等待启动反馈"
         : runtimeInferenceConfigured
           ? "待启动"
           : "未配置"
@@ -2602,7 +2602,7 @@ export function StudioConsoleView({
       eyebrow: "准星学习",
       title: "清除当前准星模板？",
       description: "清除后，控制基准会立即回退到 ROI 几何中心；以后需要重新采样并学习模板。",
-      details: ["采集、推理与目标跟踪不会停止。", "已学习的模板内容无法从后端恢复。"],
+      details: ["采集、推理与目标跟踪不会停止。", "已学习的模板内容无法从 NovaSight 服务恢复。"],
       confirmLabel: "确认清除模板",
       danger: true,
       onConfirm: performClearCrosshair
@@ -3037,7 +3037,7 @@ export function StudioConsoleView({
       );
       await onRefresh();
     } catch (err) {
-      setLocalError(`kmNet 诊断移动失败：${getErrorMessage(err)}`);
+      setLocalError(`kmNet 单步移动失败：${getErrorMessage(err)}`);
 
       reportError(err, { source: 'studio', title: '操作失败' });
       await onRefresh();
@@ -3072,11 +3072,11 @@ export function StudioConsoleView({
       eyebrow: canonicalChanged ? "配置已在后台更新" : "导入运行配置",
       title: canonicalChanged ? "请按最新配置重新确认" : `应用 ${fileName}？`,
       description: canonicalChanged
-        ? "你确认前，后端配置已被其他操作更新。NovaSight 没有覆盖新 revision，下面的差异已按最新配置重新计算。"
-        : "导入会在确认时重新读取后端 canonical revision，再以该事务基线替换整份运行配置。",
+        ? "你确认前，当前配置已被其他操作更新。NovaSight 没有覆盖新 revision，下面的差异已按最新配置重新计算。"
+        : "导入会在确认时重新读取当前配置版本，再以该事务基线替换整份运行配置。",
       details: [
         `将修改：${changedSections.join("、") || "没有差异"}`,
-        "保存成功后，后端会明确返回是否需要重启 novasightd。"
+        "保存成功后，NovaSight 会明确返回是否需要重启 novasightd。"
       ],
       confirmLabel: canonicalChanged ? "按最新配置导入" : "确认导入配置",
       danger: true,
@@ -3091,7 +3091,7 @@ export function StudioConsoleView({
               setConfigDraft(canonical);
               onRuntimeConfigChange(canonical);
               if (changedRuntimeConfigSections(canonical, imported).length === 0) {
-                reportSuccess("无需导入配置", "后端最新配置已经与导入文件一致。", "config-import");
+                reportSuccess("无需导入配置", "当前配置已经与导入文件一致。", "config-import");
                 return true;
               }
               requestConfigImportConfirmation(fileName, imported, canonical, true);
@@ -3107,7 +3107,7 @@ export function StudioConsoleView({
             onRuntimeConfigChange(applied);
             reportSuccess(
               "配置导入成功",
-              result.restart_required ? "配置已保存；重启 novasightd 后全部生效。" : "配置已经进入当前后端。",
+              result.restart_required ? "配置已保存；重启 novasightd 后全部生效。" : "配置已经进入当前运行状态。",
               "config-import"
             );
             return true;
@@ -3119,7 +3119,7 @@ export function StudioConsoleView({
               setConfigDraft(canonical);
               onRuntimeConfigChange(canonical);
               if (changedRuntimeConfigSections(canonical, imported).length === 0) {
-                reportSuccess("无需导入配置", "后端最新配置已经与导入文件一致。", "config-import");
+                reportSuccess("无需导入配置", "当前配置已经与导入文件一致。", "config-import");
                 return true;
               }
               requestConfigImportConfirmation(fileName, imported, canonical, true);
@@ -3156,7 +3156,7 @@ export function StudioConsoleView({
       }
       const current = cloneRuntimeConfig(runtimeConfigLatestRef.current);
       if (!current) {
-        throw new Error("尚未读取后端当前配置，不能安全导入。");
+        throw new Error("尚未读取当前配置，不能安全导入。");
       }
       const payload = normalizeRuntimeConfig(decoded as RuntimeConfig);
       const changedSections = changedRuntimeConfigSections(current, payload);
@@ -3227,12 +3227,12 @@ export function StudioConsoleView({
         ? "waiting"
         : "error";
   const backendStatusLabel = errors.health
-    ? "后端不可达"
+    ? "服务不可达"
     : health?.ok
-      ? "后端在线"
+      ? "服务在线"
       : health === null
-        ? "后端检查中"
-        : "后端异常";
+        ? "服务检查中"
+        : "服务异常";
   const telemetryWindowMs = readNullableNumber(statistics?.telemetry_window_ms);
   const runtimeMetricsStatus = statistics?.metrics_available === true
     ? telemetryWindowMs === null
@@ -3400,7 +3400,7 @@ export function StudioConsoleView({
 
         {mainlineLaunchPending ? (
           <div className="console-info">
-            {mainlineLaunchMessage || "主链启动请求已提交，正在等待后端状态确认。"}
+            {mainlineLaunchMessage || "主链启动请求已提交，正在等待运行状态确认。"}
           </div>
         ) : runtimeMainlineSelected && runtimeMainlineRunning && runtimeMainlineStatus.readinessCode !== "ready" ? (
           <div className="console-info" role="status">
@@ -3463,7 +3463,7 @@ export function StudioConsoleView({
                 </p>
                 <ParameterPresetControl
                   label="推理画面预览"
-                  detail="NVJPEG 预览分支最高帧率；远程观看时还可以在画面上选择省流档。"
+                  detail="远程预览最高帧率；远程观看时还可以在画面上选择省流档。"
                   options={[15, 30].map((fps) => ({
                     id: `preview-${fps}`,
                     label: `${fps}fps`,
@@ -3509,7 +3509,7 @@ export function StudioConsoleView({
           <details className="studio-diagnostic-details">
             <summary>
               <span>
-                <b>采集运行诊断</b>
+                <b>采集排查信息</b>
                 <small>采集原因、运行 ROI 与推理输入健康只在排障时查看。</small>
               </span>
               <i>2 组</i>
@@ -3535,7 +3535,7 @@ export function StudioConsoleView({
                   <span>推理输入 FPS</span><b>{formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
                   <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
                   <span>统计状态</span><b>{runtimeMetricsStatus}</b>
-                  <span>说明</span><b>当前后端未提供采集卡原始 FPS 与协商 Caps</b>
+                  <span>说明</span><b>当前服务未提供采集卡原始 FPS 与设备协商信息</b>
                 </div>
               </div>
             </div>
@@ -3597,9 +3597,9 @@ export function StudioConsoleView({
                   <span>运行装载</span><b>{runtimeInference.loaded === true ? "已装载" : "未装载"}</b>
                   <span>登记输入</span><b>{registeredInputShape || "-"}</b>
                   <span>运行输入</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : NO_SAMPLE}</b>
-                  <span>Artifact</span><b>{artifact ? `${artifact.kind} · ${artifact.status}` : NO_SAMPLE}</b>
+                  <span>模型文件</span><b>{artifact ? `${artifact.kind} · ${artifact.status}` : NO_SAMPLE}</b>
                   <span>部署版本</span><b>{version?.version || NO_SAMPLE}</b>
-                  <span>后端</span><b>{readString(runtime?.inference?.selected, "auto")}</b>
+                  <span>运行方式</span><b>{readString(runtime?.inference?.selected, "auto")}</b>
                   <span>类别数量</span><b>{String(version?.classes.length ?? 0)}</b>
                   <span className="wide">类别名</span><b className="wide">{version?.classes.length ? version.classes.join(", ") : NO_SAMPLE}</b>
                 </div>
@@ -3634,8 +3634,8 @@ export function StudioConsoleView({
           <details className="studio-diagnostic-details">
             <summary>
               <span>
-                <b>推理运行诊断</b>
-                <small>累计 Buffer、PTS 匹配、结果版本和后处理细节只用于排查。</small>
+                <b>推理排查信息</b>
+                <small>累计缓冲、时间戳匹配、结果版本和后处理细节只在排查时查看。</small>
               </span>
               <i>4 组</i>
             </summary>
@@ -3651,9 +3651,9 @@ export function StudioConsoleView({
                   <span>识别结果已发布</span><b>{formatOptionalInteger(deepstreamPublishedBatches)}</b>
                   <span>识别结果已读取</span><b>{formatOptionalInteger(runtimeMainlineStatus.consumedBatches)}</b>
                   <span>目标选择输入</span><b>{formatOptionalInteger(runtimeMainlineStatus.targetingBatches)}</b>
-                  <span>Buffer PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_buffer_pts_matches)}</b>
-                  <span>FrameMeta PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_frame_meta_pts_matches)}</b>
-                  <span>PTS 关联失败</span><b>{formatOptionalInteger(runtimeInference.timestamp_correlation_misses)}</b>
+                  <span>缓冲时间戳匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_buffer_pts_matches)}</b>
+                  <span>帧元数据时间戳匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_frame_meta_pts_matches)}</b>
+                  <span>时间戳关联失败</span><b>{formatOptionalInteger(runtimeInference.timestamp_correlation_misses)}</b>
                   <span>采样结果版本</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
                   <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
                 </div>
@@ -3663,7 +3663,7 @@ export function StudioConsoleView({
                 <p className="console-section-note">这里只展示当前运行状态能够确认的尺寸；类型、精度和布局未确认时不作推断。</p>
                 <div className="console-kv">
                   <span>模型名称</span><b>{activeModelName || NO_SAMPLE}</b>
-                  <span>推理后端</span><b>{selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream 推理" : selectedRuntimeBackend || NO_SAMPLE}</b>
+                  <span>推理方式</span><b>{selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream 推理" : selectedRuntimeBackend || NO_SAMPLE}</b>
                   <span>ROI 输入尺寸</span><b>{roiInputWidth > 0 && roiInputHeight > 0 ? `${roiInputWidth}x${roiInputHeight}` : NO_SAMPLE}</b>
                   <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
                   <span>运行 ROI</span><b>{runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
@@ -3711,7 +3711,7 @@ export function StudioConsoleView({
           <details className="studio-diagnostic-details">
             <summary>
               <span>
-                <b>控制运行诊断</b>
+                <b>控制排查信息</b>
                 <small>目标筛选、AimPoint、量化输出与设备回执只在排查控制问题时查看。</small>
               </span>
               <i>5 组</i>
@@ -3723,8 +3723,8 @@ export function StudioConsoleView({
                   <span>控制状态</span><b>{controlHasSample ? readString(control.global_state, "已计算") : "未执行"}</b>
                   <span>控制原因</span><b>{readString(control.reason, readString(control.selection_reason, "")) || NO_SAMPLE}</b>
                   <span>阻断阶段</span><b>{targetPipelineStage || NO_SAMPLE}</b>
-                  <span>诊断代码</span><b>{targetPipelineCode || NO_SAMPLE}</b>
-                  <span>诊断信息</span><b>{targetPipelineMessage || NO_SAMPLE}</b>
+                  <span>状态代码</span><b>{targetPipelineCode || NO_SAMPLE}</b>
+                  <span>状态信息</span><b>{targetPipelineMessage || NO_SAMPLE}</b>
                   <span>检测数量</span><b>{formatOptionalInteger(detectionCount)}</b>
                   <span>原始 / 合格 / 已选择</span><b>{`${formatOptionalInteger(rawCandidateCount)} / ${formatOptionalInteger(eligibleCandidateCount)} / ${formatOptionalInteger(selectedTargetCount)}`}</b>
                   <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
@@ -3805,7 +3805,7 @@ export function StudioConsoleView({
                 </div>
               </div>
               <div className="console-card">
-                <SectionTitle title="Latest Replace 与设备发送" />
+                <SectionTitle title="最新观测与设备发送" />
                 <p className="console-section-note">控制样本与设备回执分别展示；最近回执不冒充为当前观测的同步发送结果。</p>
                 <div className="console-kv">
                   <span>触发状态</span><b>{control.trigger_active === true ? "按下" : control.trigger_active === false ? "未按下" : NO_SAMPLE}</b>
@@ -3836,7 +3836,7 @@ export function StudioConsoleView({
                   <NovaIcon name={outputEnabled ? "device-send" : "pause-output"} size={21} strokeWidth={1.8} />
                 </span>
                 <div>
-                  <span className="class-config-eyebrow">GLOBAL OUTPUT GATE</span>
+                  <span className="class-config-eyebrow">输出总开关</span>
                   <h3>{outputEnabled ? "允许发送偏移控制量" : "偏移输出已暂停"}</h3>
                   <p>只控制最终鼠标位移是否交付；不会断开 KMNet，也不会停止采集、推理、目标选择和控制量计算。</p>
                 </div>
@@ -3911,7 +3911,7 @@ export function StudioConsoleView({
                 <p className="console-section-note">{CONTROL_ALGORITHM_DESCRIPTION}</p>
                 <SelectControl
                   label="触发方式"
-                  detail="硬件触发使用 daemon 缓存的 kmNet 按键状态；自动控制只要求存在合格目标。"
+                  detail="硬件触发使用 NovaSight 缓存的 kmNet 按键状态；自动控制只要求存在合格目标。"
                   value={triggerMode}
                   options={[
                     { value: "hardware", label: "kmNet 硬件按键触发" },
@@ -3942,7 +3942,7 @@ export function StudioConsoleView({
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("algorithm")} type="button">
                   <NovaIcon name="settings" size={15} />
-                  调整算法高级参数
+                  调整控制算法
                 </button>
               </div>
 
@@ -3953,7 +3953,7 @@ export function StudioConsoleView({
                 </p>
                 <ModuleSwitch
                   label="启用低频准星观测"
-                  detail="新增独立 NVMM 中心小图支路；修改后需要重启主链。"
+                  detail="新增独立中心采样支路；修改后需要重启主链。"
                   enabled={crosshairEnabled}
                   onToggle={(enabled) => updateConfigField("crosshair", "enabled", enabled)}
                 />
@@ -4016,7 +4016,7 @@ export function StudioConsoleView({
                   <p className="crosshair-inline-message">{crosshairMessage}</p>
                 ) : null}
                 <details className="crosshair-advanced-settings">
-                  <summary>采样高级设置</summary>
+                  <summary>采样参数</summary>
                   <div className="advanced-settings-grid">
                     <ParameterNumberControl
                       label="中心搜索区"
@@ -4122,7 +4122,7 @@ export function StudioConsoleView({
                       <i>·</i>
                       距离 {(normalizedSelectionDistanceWeight * 100).toFixed(0)}%
                     </strong>
-                    <small>类别偏好与准星距离由此处调整；候选可靠性由系统内部自动处理。</small>
+                    <small>类别偏好与准星距离由此处调整；候选准入由实时识别结果自动处理。</small>
                   </div>
                   <button className="console-button" disabled={busy !== null} onClick={() => openConfigDialog("target-weights")} type="button">
                     <NovaIcon name="settings" size={15} />
@@ -4136,13 +4136,13 @@ export function StudioConsoleView({
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("target-advanced")} type="button">
                   <NovaIcon name="settings" size={15} />
-                  目标切换高级设置
+                  目标切换参数
                 </button>
               </div>
 
               <div className="console-card">
                 <SectionTitle title="Tracker · 身份关联" />
-                <div className="console-kv compact-kv"><span>关联算法</span><b>Hungarian</b><span>输出状态</span><b>仅 ACTIVE</b></div>
+                <div className="console-kv compact-kv"><span>关联算法</span><b>Hungarian</b><span>输出状态</span><b>仅活跃轨迹</b></div>
                 <div className="advanced-settings-summary compact">
                   <div><span>匹配距离</span><b>{trackerMaxMatchDistance.toFixed(2)}</b></div>
                   <div><span>位置 / IoU / 尺度</span><b>{trackerPositionCostWeight.toFixed(2)} / {trackerIouCostWeight.toFixed(2)} / {trackerScaleCostWeight.toFixed(2)}</b></div>
@@ -4206,7 +4206,7 @@ export function StudioConsoleView({
               {kmnetRestartRequired || kmnetLastError || kmnetConnectionFailed || kmnetConnectionDegraded ? (
                 <div className={!kmnetRestartRequired && kmnetConnectionFailed ? "kmnet-connection-notice failed" : "kmnet-connection-notice warn"} role="status">
                   <div>
-                    <strong>{kmnetRestartRequired ? "kmNet 配置已保存，等待后端装载" : kmnetConnectionFailed ? "输出设备未连接" : kmnetConnectionDegraded ? "设备连接异常，正在自动恢复" : "最近一次输出失败"}</strong>
+                    <strong>{kmnetRestartRequired ? "kmNet 配置已保存，等待重新装载" : kmnetConnectionFailed ? "输出设备未连接" : kmnetConnectionDegraded ? "设备连接异常，正在自动恢复" : "最近一次输出失败"}</strong>
                     <span>{kmnetRestartRequired
                       ? `novasightd 当前使用 revision ${effectiveConfigRevision}，已保存 revision ${desiredConfigRevision}。重启进程后才会使用新的地址和 UUID。`
                       : kmnetLastError || (kmnetConnectionFailed ? "请检查地址、端口、UUID 和网络连通性。" : "视觉主链继续运行，物理偏移输出保持关闭。")}</span>
@@ -4269,7 +4269,7 @@ export function StudioConsoleView({
               </div>
               <TextControl
                 label="kmNet 地址"
-                detail="设备控制器的局域网 IP 或主机名；Rust 后端会在进程启动时装载硬件会话。"
+                detail="设备控制器的局域网 IP 或主机名；NovaSight 会在启动时装载硬件会话。"
                 value={kmnetHost}
                 applyMode="restart"
                 riskLevel="advanced"
@@ -4308,7 +4308,7 @@ export function StudioConsoleView({
                 onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))}
               />
               <ModuleSwitch
-                label={rustControlPlane ? "主链启动时连接设备" : "后端服务启动时自动连接"}
+                label={rustControlPlane ? "主链启动时连接设备" : "NovaSight 启动时自动连接"}
                 detail={rustControlPlane
                   ? "修改后需要重启 novasightd；连接失败时视觉主链继续运行，并由低频设备线程自动重连"
                   : "独立于主链启动；连接失败不会阻止采集、推理和鼠标算法运行"}
@@ -4319,26 +4319,26 @@ export function StudioConsoleView({
                 <span>命令调度</span>
               </div>
               <div className="console-kv compact-kv">
-                <span>执行层</span><b>Latest Replace Scheduler</b>
+                <span>调度方式</span><b>最新观测优先</b>
                 <span>行为</span><b>新观测覆盖未发送的旧命令</b>
                 <span>待发送容量</span><b>1 条完整命令</b>
-                <span>最终校验</span><b>Rust DeviceLane</b>
+                <span>最终校验</span><b>输出前校验</b>
               </div>
               <details className="kmnet-diagnostic-details">
                 <summary>
                   <span>
-                    <b>原始诊断</b>
-                    <small>累计计数与协议回执只用于排查，不作为当前移动结果展示。</small>
+                    <b>排查信息</b>
+                    <small>累计计数与设备回执只在排查时查看，不作为当前移动结果展示。</small>
                   </span>
                   <i>6 项</i>
                 </summary>
                 <div className="console-kv compact-kv">
                   <span>执行器</span><b>{readString(executorStatus.selected, NO_SAMPLE)}</b>
                   <span>设备接受状态</span><b>{acceptedCommandCount === null ? NO_SAMPLE : hasAcceptedCommand ? "已有协议回执" : "尚无回执"}</b>
-                  <span>接受累计</span><b>{formatOptionalInteger(kmnetStatus.accepted_command_count)}</b>
+                  <span>设备接受次数</span><b>{formatOptionalInteger(kmnetStatus.accepted_command_count)}</b>
                   <span>最近接受位移</span><b>{formatPoint(kmnetStatus.last_accepted_dx, kmnetStatus.last_accepted_dy, 0)}</b>
-                  <span>设备恢复累计</span><b>{formatOptionalInteger(kmnetStatus.device_recovery_count)}</b>
-                  <span>设备错误累计</span><b>{formatOptionalInteger(kmnetStatus.device_error_count)}</b>
+                  <span>设备恢复次数</span><b>{formatOptionalInteger(kmnetStatus.device_recovery_count)}</b>
+                  <span>设备错误次数</span><b>{formatOptionalInteger(kmnetStatus.device_error_count)}</b>
                 </div>
               </details>
               <div className="console-action-row">
@@ -4356,7 +4356,7 @@ export function StudioConsoleView({
                   <label>
                     <span>dx</span>
                     <InlineNumberControl
-                      ariaLabel="kmNet 诊断 dx"
+                      ariaLabel="kmNet 测试 dx"
                       disabled={kmnetDiagnosticDisabled}
                       value={kmnetTestDx}
                       onCommit={setKmnetTestDx}
@@ -4365,7 +4365,7 @@ export function StudioConsoleView({
                   <label>
                     <span>dy</span>
                     <InlineNumberControl
-                      ariaLabel="kmNet 诊断 dy"
+                      ariaLabel="kmNet 测试 dy"
                       disabled={kmnetDiagnosticDisabled}
                       value={kmnetTestDy}
                       onCommit={setKmnetTestDy}
@@ -4380,8 +4380,8 @@ export function StudioConsoleView({
                   <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, 10)}>↓</button>
                 </div>
                 <div className="kmnet-test-section">
-                  <h3>设备单步诊断</h3>
-                  <p>仅在主链停止时由后端单独发送一次受控移动，不会与实时输出竞争。</p>
+                  <h3>设备单步测试</h3>
+                  <p>仅在主链停止时单独发送一次受控移动，不会与实时输出竞争。</p>
                   <div className="console-action-row">
                     <button
                       className="console-button"
@@ -4394,7 +4394,7 @@ export function StudioConsoleView({
                   </div>
                 </div>
                 <div className="kmnet-test-result">
-                  <span>最近诊断移动</span>
+                  <span>最近测试移动</span>
                   <b>{formatPoint(kmnetStatus.last_diagnostic_dx, kmnetStatus.last_diagnostic_dy, 0)}</b>
                 </div>
                 {kmnetTestMessage ? <div className={`kmnet-test-message ${kmnetTestMessageTone}`}>{kmnetTestMessage}</div> : null}
@@ -4424,7 +4424,7 @@ export function StudioConsoleView({
                 ["sink → src 样本", formatOptionalInteger(statistics?.inference_latency_samples)],
                 ["控制新鲜度阈值", formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")]
               ]}
-              notice={<p className="latency-boundary-note">这些值来自 supervisor 低频统计窗口，不在采集推理热路径中为 UI 增加工作。</p>}
+              notice={<p className="latency-boundary-note">这些值来自低频统计窗口，不在采集推理热路径中为 UI 增加工作。</p>}
             />
             <KvCard
               title="测量边界"
@@ -4443,7 +4443,7 @@ export function StudioConsoleView({
       {wideThemeGallery ? <ThemeGallery /> : null}
 
       <AdvancedSettingsDialog
-        description="先按问题进入对应调参路径；常用响应参数与底层保护参数不再混在同一张表里。"
+        description="先按问题进入对应调参路径；响应、预测、稳定和标定分别调整，避免在同一张表里混改。"
         dirty={configDialogDirty}
         eyebrow="参数设置 / 控制算法"
         footerNote={`当前算法：${controlModeLabel}`}
@@ -4452,7 +4452,7 @@ export function StudioConsoleView({
         open={algorithmSettingsDialogOpen}
         saveError={dialogSaveError}
         saving={dialogSaving}
-        title={`${controlModeLabel} · 高级参数`}
+        title={`${controlModeLabel} · 控制参数`}
       >
         <div className="algorithm-settings-brief" aria-label="当前算法调参摘要">
           {algorithmTuningBrief.map((item) => {
@@ -4512,7 +4512,7 @@ export function StudioConsoleView({
           {algorithmSettingsSection === "response" ? (
             <section aria-labelledby="algorithm-settings-response-tab" className="algorithm-settings-panel" id="algorithm-settings-response" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
-                <span>CONTROL RESPONSE</span>
+                <span>响应</span>
                 <h3 id="algorithm-settings-response-title">响应算法</h3>
                 <p>先判断问题发生在远距离还是准星附近。近距离过冲优先降低 NEAR Kp；远距离跟随偏慢再提高 FAR Kp。</p>
               </header>
@@ -4526,7 +4526,7 @@ export function StudioConsoleView({
           {algorithmSettingsSection === "prediction" ? (
             <section aria-labelledby="algorithm-settings-prediction-tab" className="algorithm-settings-panel" id="algorithm-settings-prediction" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
-                <span>PREDICTION</span>
+                <span>目标预测</span>
                 <h3 id="algorithm-settings-prediction-title">唯一锁定目标的 X / Y 预测</h3>
                 <p>预测使用已选目标最近 4 个位置形成的 3 段速度；常用调节只看执行反馈延迟、提前量、平滑窗口和断流重置。</p>
               </header>
@@ -4564,7 +4564,7 @@ export function StudioConsoleView({
           {algorithmSettingsSection === "stability" ? (
             <section aria-labelledby="algorithm-settings-stability-tab" className="algorithm-settings-panel" id="algorithm-settings-stability" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
-                <span>CONVERGENCE & OUTPUT</span>
+                <span>稳定与输出</span>
                 <h3 id="algorithm-settings-stability-title">到位稳定与单次输出</h3>
                 <p>这些参数不改变目标位置。它们限制每次能走多远，并决定什么时候认为已经到位、什么时候等待画面反馈。</p>
               </header>
@@ -4578,7 +4578,7 @@ export function StudioConsoleView({
           {algorithmSettingsSection === "calibration" ? (
             <section aria-labelledby="algorithm-settings-calibration-tab" className="algorithm-settings-panel" id="algorithm-settings-calibration" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
-                <span>CALIBRATION & FRESHNESS</span>
+                <span>标定与时效</span>
                 <h3 id="algorithm-settings-calibration-title">坐标标定与观测时效</h3>
                 <p>这里不是响应增益。FOV 与每圈 counts 必须对应真实游戏和设备；错误标定会让所有 Atan 参数一起表现错误。</p>
               </header>
@@ -4601,7 +4601,7 @@ export function StudioConsoleView({
         open={targetAdvancedDialogOpen}
         saveError={dialogSaveError}
         saving={dialogSaving}
-        title="目标切换高级设置"
+        title="目标切换参数"
       >
         <div className="advanced-settings-grid two-column">
           {targetAdvancedParameters.map(renderTargetingNumberParameter)}
@@ -4612,13 +4612,13 @@ export function StudioConsoleView({
         description="这些参数直接进入 Rust Tracker 的跨帧身份关联；设置过松会误关联，过严会频繁断轨。"
         dirty={configDialogDirty}
         eyebrow="参数设置 / Tracker"
-        footerNote="关联算法固定为 Hungarian；仅输出 ACTIVE Track。"
+        footerNote="关联算法固定为 Hungarian；仅输出活跃轨迹。"
         onClose={() => void requestDismissConfigDialog("tracker")}
         onSave={() => void saveConfigDialog("tracker")}
         open={trackerSettingsDialogOpen}
         saveError={dialogSaveError}
         saving={dialogSaving}
-        title="Tracker 高级设置"
+        title="Tracker 参数"
       >
         <div className="advanced-settings-grid two-column">
           {trackerCoreParameters.map(renderTargetingNumberParameter)}
@@ -4630,8 +4630,8 @@ export function StudioConsoleView({
           </div>
         </details>
         <div className="advanced-settings-divider">
-          <span>固定内部策略</span>
-          <small>Hungarian 全局匹配、四维常速度状态、最大 16 条活跃轨迹及协方差安全上限由 Tracker 内部统一管理，不作为常用参数开放。</small>
+          <span>固定跟踪策略</span>
+          <small>Hungarian 全局匹配、四维常速度状态、最大 16 条活跃轨迹及协方差安全上限由跟踪器统一管理，不作为常用参数开放。</small>
         </div>
       </AdvancedSettingsDialog>
 
@@ -4714,7 +4714,7 @@ export function StudioConsoleView({
                     ? `保存失败 · ${dialogSaveError}`
                     : configDialogDirty
                       ? "有未保存修改 · 保存后才会同步到运行配置。"
-                      : "未修改 · 关闭不会请求后端。"}
+                      : "未修改 · 关闭不会请求服务。"}
               </span>
               <button
                 className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}
@@ -5029,7 +5029,7 @@ export function StudioConsoleView({
               <div>
                 <span>SYSTEM DIAGNOSTICS</span>
                 <h2 id="error-center-title">异常信息</h2>
-                <p>页面保持安静；网络、后端与操作错误统一收拢在这里。</p>
+                <p>页面保持安静；网络、服务与操作错误统一收拢在这里。</p>
               </div>
               <button aria-label="关闭异常信息" onClick={() => setErrorCenterOpen(false)} type="button">
                 <NovaIcon name="x-circle" size={18} />
@@ -5049,7 +5049,7 @@ export function StudioConsoleView({
                 <div className="error-center-empty">
                   <NovaIcon name="shield-check" size={28} />
                   <strong>当前没有异常</strong>
-                  <span>后端连接和最近操作均未报告错误。</span>
+                  <span>服务连接和最近操作均未报告错误。</span>
                 </div>
               )}
             </div>
@@ -5606,7 +5606,7 @@ function PreviewFrame({
           <div className="console-preview-gate" role="status">
             <span className="console-preview-gate-kicker">性能保护已启用</span>
             <strong>实时预览已暂停</strong>
-            <p>推理、跟踪与控制继续运行。开启画面会占用 NVJPEG 与内存带宽。</p>
+            <p>推理、跟踪与控制继续运行。开启画面会占用图像编码与内存带宽。</p>
             <button disabled={togglePending} onClick={() => onToggle(true)} type="button">
               {togglePending ? "正在开启…" : "开启实时预览"}
             </button>

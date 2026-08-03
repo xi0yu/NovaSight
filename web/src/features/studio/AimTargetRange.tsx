@@ -86,7 +86,7 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
     <section className="aim-target-panel" aria-labelledby="aim-target-panel-title">
       <div className="aim-target-panel-heading">
         <div>
-          <span className="class-config-eyebrow">AIM CALIBRATION RANGE</span>
+          <span className="class-config-eyebrow">瞄点标定</span>
           <h3 id="aim-target-panel-title">垂直瞄点靶场</h3>
         </div>
         <span className="aim-target-axis-lock">X 轴固定居中</span>

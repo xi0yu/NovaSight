@@ -116,7 +116,7 @@ export function ModelSelectionPanel({
   const selectedKind = selectedModel?.kind ?? selectedArtifact?.kind;
   const selectedIsActive = selectedArtifact?.id === activeArtifactId;
   const previewBackend = selectedKind === "engine"
-    ? "TensorRT / DeepStream"
+    ? "DeepStream 推理"
     : selectedKind === "onnx"
       ? "ONNX（当前主链不可用）"
       : selectedIsActive && runtimeBackend
@@ -263,7 +263,7 @@ export function ModelSelectionPanel({
               <dd>{previewInputShape}</dd>
             </div>
             <div>
-              <dt>运行后端</dt>
+              <dt>运行方式</dt>
               <dd>{previewBackend}</dd>
             </div>
             <div>

@@ -69,7 +69,7 @@ export function ModelManagerDialog({
               <NovaIcon name="models" size={22} strokeWidth={1.7} />
             </span>
             <div>
-              <span className="class-config-eyebrow">MODEL MANAGER</span>
+              <span className="class-config-eyebrow">模型管理</span>
               <h2 id="model-manager-dialog-title">模型管理与切换</h2>
               <p>按推荐状态与标签整理本机 Engine；确认切换后再验证模型输入输出。</p>
             </div>
