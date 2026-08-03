@@ -71,7 +71,7 @@ export function ModelManagerDialog({
             <div>
               <span className="class-config-eyebrow">MODEL MANAGER</span>
               <h2 id="model-manager-dialog-title">模型管理与切换</h2>
-              <p>按推荐状态与标签整理本机 Engine；确认切换后才读取 TensorRT 契约。</p>
+              <p>按推荐状态与标签整理本机 Engine；确认切换后再验证模型输入输出。</p>
             </div>
           </div>
           <div className="model-manager-active-pill">

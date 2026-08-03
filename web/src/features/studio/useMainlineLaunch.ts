@@ -62,7 +62,7 @@ const MODEL_UNAVAILABLE_ERROR_CODE = "model_unavailable";
 export const MAINLINE_LAUNCH_STAGES: MainlineLaunchStage[] = [
   {
     title: "检查模型配置",
-    caption: "没有已发布 TensorRT Engine 时转入模型管理，配置完成后再继续启动。"
+    caption: "没有已发布 Engine 时转入模型管理，配置完成后再继续启动。"
   },
   {
     title: "检查运行环境",
@@ -73,12 +73,12 @@ export const MAINLINE_LAUNCH_STAGES: MainlineLaunchStage[] = [
     caption: "按当前设备、格式、分辨率与帧率选择采集配置。"
   },
   {
-    title: "启动主链运行管线",
+    title: "启动视觉控制",
     caption: "请求后端启动采集、画面识别与控制功能。"
   },
   {
     title: "激活鼠标算法",
-    caption: "确认目标选择、跟踪与 Atan 鼠标算法已开始消费 DetectionBatch；输出设备不影响本步骤。"
+    caption: "确认目标选择、跟踪与 Atan 鼠标算法已开始读取识别结果；输出设备不影响本步骤。"
   }
 ];
 
@@ -411,7 +411,7 @@ export function useMainlineLaunch({
       lastSummary = runtimeStatus.progressSummary;
       setProgressDetail(
         runtimeStatus.outputTrace?.detail ||
-          (runtimeStatus.progressSummary ? `当前计数：${runtimeStatus.progressSummary}` : "等待主链输出启动证据。")
+          (runtimeStatus.progressSummary ? `当前计数：${runtimeStatus.progressSummary}` : "等待主链启动状态。")
       );
       if (runtimeStatus.failed) {
         throw new Error(`${stageTitle}失败：${runtimeStatus.outputTrace?.detail || runtimeStatus.readinessDetail || missingMessage}`);
@@ -423,7 +423,7 @@ export function useMainlineLaunch({
       if (hasEvidence(state)) {
         setProgressDetail(
           runtimeStatus.outputTrace?.detail ||
-            (runtimeStatus.progressSummary ? `已收到启动证据：${runtimeStatus.progressSummary}` : "已收到启动证据。")
+            (runtimeStatus.progressSummary ? `已收到启动状态：${runtimeStatus.progressSummary}` : "已收到启动状态。")
         );
         return state;
       }
@@ -485,13 +485,13 @@ export function useMainlineLaunch({
           throw new Error(reason);
         }
         setAccepted(true);
-        setMessage("后端已确认主链运行，正在核对运行时消费数据。");
+        setMessage("后端已确认主链运行，正在确认识别结果已进入控制链路。");
       });
       await runStage(4, async () => {
         const state = await waitForRuntimeEvidence(
           "激活鼠标算法",
           (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
-          "runtime 尚未消费 DetectionBatch，目标选择、跟踪与 Atan 鼠标算法没有输入。"
+          "控制链路尚未读取识别结果，目标选择、跟踪与 Atan 鼠标算法没有输入。"
         );
         const runtimeStatus = getRuntimeMainlineStatus(state);
         setProgressDetail(`${runtimeStatus.readinessLabel}：${runtimeStatus.readinessDetail}`);

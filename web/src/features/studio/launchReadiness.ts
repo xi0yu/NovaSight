@@ -91,7 +91,7 @@ function formatTier(tier: string): string {
 }
 
 function formatBackend(value: string): string {
-  return value === "deepstream_nvinfer" ? "DeepStream / nvinfer" : value || "未配置";
+  return value === "deepstream_nvinfer" ? "DeepStream 推理" : value || "未配置";
 }
 
 function traceAction(
@@ -195,7 +195,7 @@ function buildLicenseItem(license: LicenseStatus | null): LaunchReadinessItem {
     id: "license",
     label: "个人授权",
     state: "blocked",
-    detail: "尚未通过授权门禁，不能进入生产工作台。",
+    detail: "需要先激活授权，才能进入工作台。",
     evidence: license?.message || "等待授权",
     blocking: true,
     action: "open-license",
@@ -281,7 +281,7 @@ function buildDeepStreamItem(runtime: RuntimeState | null, status: RuntimeMainli
   if (status.failed && status.readinessCode !== "no_video") {
     return {
       id: "deepstream",
-      label: "DeepStream 推理",
+      label: "模型推理",
       state: "blocked",
       detail: status.readinessDetail,
       evidence: status.failureMessage || formatBackend(backend),
@@ -302,7 +302,7 @@ function buildDeepStreamItem(runtime: RuntimeState | null, status: RuntimeMainli
   ) {
     return {
       id: "deepstream",
-      label: "DeepStream 推理",
+      label: "模型推理",
       state: traceItemState(status),
       detail: trace.detail || status.readinessDetail,
       evidence: `${trace.code} · ${status.progressSummary}`,
@@ -314,19 +314,19 @@ function buildDeepStreamItem(runtime: RuntimeState | null, status: RuntimeMainli
   if (status.running && status.hasInferenceSignal) {
     return {
       id: "deepstream",
-      label: "DeepStream 推理",
+      label: "模型推理",
       state: "ready",
-      detail: "nvinfer 输入、元数据或 DetectionBatch 已产生真实计数。",
+      detail: "模型推理已经产生识别结果。",
       evidence: status.progressSummary,
       blocking: true
     };
   }
   return {
     id: "deepstream",
-    label: "DeepStream 推理",
+    label: "模型推理",
     state: runtime?.inference?.configured ? "idle" : "action",
     detail: runtime?.inference?.configured
-      ? "运行环境已配置，等待启动后产生推理证据。"
+      ? "模型推理配置已就绪，启动后会显示识别结果。"
       : "推理后端尚未报告可用配置。",
     evidence: formatBackend(backend),
     blocking: true,
@@ -366,7 +366,7 @@ function buildControlItem(runtime: RuntimeState | null, status: RuntimeMainlineS
       id: "control",
       label: "控制算法",
       state: "ready",
-      detail: "目标选择、跟踪或 Atan 控制已经消费 DetectionBatch。",
+      detail: "目标选择、跟踪或 Atan 控制已经收到识别结果。",
       evidence: `consumed=${formatOptionalInteger(status.consumedBatches)} · targeting=${formatOptionalInteger(status.targetingBatches)}`,
       blocking: true
     };
@@ -388,7 +388,7 @@ function buildControlItem(runtime: RuntimeState | null, status: RuntimeMainlineS
     label: "控制算法",
     state: runtime?.running ? "idle" : "action",
     detail: "启动主链后才会验证目标选择、预测与 Atan 输出。",
-    evidence: "等待 DetectionBatch 消费",
+    evidence: "等待识别结果",
     blocking: true,
     action: "start-mainline",
     actionLabel: "启动主链"
@@ -592,17 +592,17 @@ export function buildLaunchReadiness({
         ? "action"
         : "idle";
   const title = state === "ready"
-    ? status.running ? "主链已经具备生产运行证据" : "主链准备完成，等待启动"
+    ? status.running ? "视觉控制正在运行" : "主链准备完成，等待启动"
     : state === "blocked"
       ? status.running ? "主链输出链路有阻断项" : "主链启动前有阻断项"
       : status.running ? "主链等待诊断处理" : "主链等待启动准备";
   const detail = state === "ready"
     ? status.running
       ? status.readinessDetail
-      : "模型、采集和运行配置已就绪；启动后继续核对 DeepStream 与控制消费计数。"
+      : "模型、采集和控制配置已就绪；可以启动。"
     : status.running && status.outputTrace?.detail
       ? status.outputTrace.detail
-      : "先处理第一条阻断或待配置项，再继续启动；输出设备独立于采集和推理验证。";
+      : "先处理第一条阻断或待配置项，再继续启动。";
 
   return {
     state,

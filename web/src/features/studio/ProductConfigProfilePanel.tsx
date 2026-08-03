@@ -95,18 +95,18 @@ export function ProductConfigProfilePanel({
     <section className={`control-trace-panel product-config-profile-panel ${tone} ${profile.state}`} aria-labelledby="product-config-profile-title">
       <header className="control-trace-header product-config-profile-header">
         <div>
-          <span className="class-config-eyebrow">PRODUCT CONFIG PROFILE</span>
+          <span className="class-config-eyebrow">CONFIG PROFILE</span>
           <h2 id="product-config-profile-title">{profile.title}</h2>
           <p>{profile.detail}</p>
         </div>
-        <div className="control-trace-count product-config-profile-score" aria-label={`生产配置生效 ${profile.liveCount}/${profile.totalCount}`}>
+        <div className="control-trace-count product-config-profile-score" aria-label={`配置生效 ${profile.liveCount}/${profile.totalCount}`}>
           <strong>{profile.liveCount}</strong>
           <span>/ {profile.totalCount}</span>
-          <small>{profile.attentionCount > 0 ? `${profile.attentionCount} 项需处理` : "产品链路项"}</small>
+          <small>{profile.attentionCount > 0 ? `${profile.attentionCount} 项需处理` : "配置项"}</small>
         </div>
       </header>
 
-      <ol className="control-trace-steps product-config-profile-items" aria-label="产品化配置检查项">
+      <ol className="control-trace-steps product-config-profile-items" aria-label="配置检查项">
         {profile.items.map((item) => (
           <ProductConfigItemCard
             key={item.id}
@@ -117,7 +117,7 @@ export function ProductConfigProfilePanel({
         ))}
       </ol>
 
-      <div className="control-trace-facts product-config-profile-facts" aria-label="产品配置事实">
+      <div className="control-trace-facts product-config-profile-facts" aria-label="配置摘要">
         {profile.facts.map((fact) => (
           <div key={fact.label}>
             <span>{fact.label}</span>

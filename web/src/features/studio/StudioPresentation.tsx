@@ -52,7 +52,7 @@ function sectionDescriptionForTitle(title: string): string {
   if (title.includes("采集设备")) return "视频源、后端通路与 latest-frame 策略";
   if (title.includes("ROI")) return "裁剪区域决定推理、预览和控制坐标基准";
   if (title.includes("模型设置")) return "绑定当前运行模型和 TensorRT 引擎";
-  if (title.includes("推理输出")) return "查看 DetectionBatch、目标框和新鲜度";
+  if (title.includes("推理输出")) return "查看识别结果、目标框和新鲜度";
   if (title.includes("鼠标移动算法")) return "PD/PID、滤波、预测和输出限幅";
   if (title.includes("控制量反馈")) return "控制决策、调度器和执行器状态";
   if (title.includes("kmNet")) return "硬件连接、触发键和移动诊断";

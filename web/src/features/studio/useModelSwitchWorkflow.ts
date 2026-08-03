@@ -191,7 +191,7 @@ export function useModelSwitchWorkflow({
       const { projectId, artifactId } = await ensureCatalogModelRegistration(model);
       setCompletedStages(2);
       setStageIndex(2);
-      setProgressDetail("正在后端事务中验证 TensorRT 契约，并复用或生成运行 manifest。");
+      setProgressDetail("正在验证模型输入输出，并准备运行配置。");
       const response = await publishModel(
         projectId,
         artifactId,
@@ -202,12 +202,12 @@ export function useModelSwitchWorkflow({
       }
       const parserLabel = parserCompatibilityLabel(response.parser_contract?.compatibility);
       const switchSummary = response.report?.message ??
-        "Engine 契约读取完成，DeepStream 配置已自动生成并切换。";
+        "Engine 输入输出验证完成，运行配置已自动生成并切换。";
       const manifestSummary = response.preparation?.manifest_action === "generated"
-        ? "已自动生成运行 manifest"
+        ? "已自动生成运行配置"
         : response.preparation?.manifest_action === "reused"
-          ? "已复用匹配的运行 manifest"
-          : "运行 manifest 已准备";
+          ? "已复用匹配的运行配置"
+          : "运行配置已准备";
       setMessage(
         parserLabel
           ? `${switchSummary} · 已验证 ${parserLabel} · NovaSight 内置 parser`
@@ -260,7 +260,7 @@ export function useModelSwitchWorkflow({
       description: "当前主链正在运行。模型发布会停止现有管线、验证所选 Engine，并在成功后使用新模型重新启动。",
       details: [
         `所选模型：${candidatePath}`,
-        "切换期间 DetectionBatch 与物理输出会短暂停止；失败时后端会回滚原部署。"
+        "切换期间识别结果与物理输出会短暂停止；失败时后端会回滚原部署。"
       ],
       confirmLabel: "确认切换模型",
       danger: true,

@@ -149,7 +149,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "near_kp",
         label: "近距离响应强度（NEAR Kp）",
-        detail: "目标接近准星后的主要手感参数。过高会过冲和左右往返，过低会贴近后跟不上。",
+        detail: "目标接近准星后的主要响应参数。过高会过冲和左右往返，过低会贴近后跟不上。",
         value: values.dualPhaseNearKp,
         min: 0,
         max: 100,
@@ -399,7 +399,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "far_max_counts_per_update",
         label: "远距离单次上限",
-        detail: "远距离追赶时每轮最多输出多少；它独立于 KMNet 的 signed-16 协议上限。",
+        detail: "远距离追赶时每轮最多输出多少；它独立于 KMNet 的设备协议上限。",
         value: values.dualPhaseFarMaxCounts,
         min: 1,
         max: 32767,
@@ -465,7 +465,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "freshness_threshold_ms",
         label: "可用观测最大帧龄",
-        detail: "超过该帧龄的 DetectionBatch 不会进入控制器；它是安全时效门，不是固定推理时长。",
+        detail: "超过该帧龄的识别结果不会进入控制器；它是安全时效门，不是固定推理时长。",
         value: values.freshnessThresholdMs,
         min: 1,
         max: 1000,

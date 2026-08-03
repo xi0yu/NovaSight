@@ -76,7 +76,7 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
   infer: {
     group: "运行工作台",
     title: "模型推理",
-    description: "管理当前模型、推理预览和 DetectionBatch 工程化输出。"
+    description: "管理当前模型、推理预览和识别结果。"
   },
   control: {
     group: "运行工作台",
@@ -86,7 +86,7 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
   params: {
     group: "配置管理",
     title: "参数设置",
-    description: "查看常用配置摘要，通过独立管理界面维护类别、权重与高级算法参数。"
+    description: "查看当前配置，维护类别、控制算法和设备参数。"
   },
   "control-test": {
     group: "诊断工具",

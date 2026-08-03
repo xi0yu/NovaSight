@@ -147,11 +147,11 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     detectionDataAgeMs <= detectionFreshnessThresholdMs;
   const resolvedFailureMessage = failureMessage;
   const progressSummary = [
-    `nvinfer=${counterLabel(nvinferInputFrames)}`,
-    `metadata=${counterLabel(metadataExtractions)}`,
-    `published=${counterLabel(publishedBatches)}`,
-    `consumed=${counterLabel(consumedBatches)}`,
-    `targeting=${counterLabel(targetingBatches)}`
+    `推理输入=${counterLabel(nvinferInputFrames)}`,
+    `元数据=${counterLabel(metadataExtractions)}`,
+    `识别结果=${counterLabel(publishedBatches)}`,
+    `控制读取=${counterLabel(consumedBatches)}`,
+    `目标选择=${counterLabel(targetingBatches)}`
   ].join(" · ");
   const running = runtime?.running === true || pipeline.running === true || deepstream.running === true;
   const failed =
@@ -211,7 +211,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
   } else if (pipelineState === "starting") {
     readinessCode = "starting";
     readinessLabel = "正在启动";
-    readinessDetail = "正在加载采集、TensorRT 与 DetectionBatch 数据通路。";
+    readinessDetail = "正在加载采集、模型推理和控制链路。";
   } else if (running && !hasInferenceSignal) {
     readinessCode = "no_video";
     readinessLabel = "未检测到画面";
@@ -219,7 +219,7 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
   } else if (running && telemetryWindowMs !== null && nvinferInputFps === 0) {
     readinessCode = "no_video";
     readinessLabel = "画面输入已停止";
-    readinessDetail = "历史上收到过采集帧，但当前统计窗口内没有新的 nvinfer 输入。";
+    readinessDetail = "历史上收到过采集帧，但当前统计窗口内没有新的推理输入。";
   } else if (
     running &&
     detectionDataAgeMs !== null &&
@@ -246,8 +246,8 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     readinessDetail =
       outputTrace?.detail ||
       (positive(publishedBatches)
-        ? "已收到 DetectionBatch，正在等待新鲜度与运行时消费状态确认。"
-        : "推理链已启动，正在等待首个 DetectionBatch。");
+        ? "已收到识别结果，正在确认数据新鲜度。"
+        : "推理链已启动，正在等待首个识别结果。");
   }
 
   return {

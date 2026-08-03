@@ -85,8 +85,8 @@ export type BuildControlTraceInput = {
 const OUTPUT_TRACE_LABELS: Record<string, string> = {
   runtime_stopped: "主链未运行",
   inference_not_running: "推理未运行",
-  no_detection_batches: "等待 DetectionBatch",
-  runtime_not_consuming_batches: "Runtime 未消费",
+  no_detection_batches: "等待识别结果",
+  runtime_not_consuming_batches: "控制链路未读取",
   stale_detection_batch: "检测已过期",
   target_not_selected: "未选中目标",
   control_not_calculated: "控制未计算",
@@ -102,7 +102,7 @@ const NEXT_ACTION_LABELS: Record<string, string> = {
   start_mainline: "启动主链",
   check_model: "检查模型",
   check_capture_or_model: "检查采集或模型",
-  inspect_runtime_ingress: "查看 Runtime 输入",
+  inspect_runtime_ingress: "查看输入状态",
   check_latency: "检查延迟",
   check_targeting: "检查目标选择",
   inspect_control: "查看控制链",
@@ -168,7 +168,7 @@ function buildBatchStep(input: BuildControlTraceInput): ControlTraceStep {
   if (freshness === "stale" && input.runtimeRunning) {
     return {
       id: "batch",
-      label: "DetectionBatch",
+      label: "识别结果",
       state: "blocked",
       value: formatNumber(input.detectionDataAgeMs, 2, "ms"),
       detail: "最新结果超过控制新鲜度阈值，控制链会拒绝过期样本。",
@@ -178,19 +178,19 @@ function buildBatchStep(input: BuildControlTraceInput): ControlTraceStep {
   if (hasRuntimeInput) {
     return {
       id: "batch",
-      label: "DetectionBatch",
+      label: "识别结果",
       state: "ready",
       value: `${formatNumber(input.detectionBatchFps, 1)}/s`,
-      detail: freshness === "fresh" ? "运行时已消费新鲜检测批次。" : "运行时已消费检测批次，等待新鲜度窗口样本。",
+      detail: freshness === "fresh" ? "控制链路已读取新鲜识别结果。" : "控制链路已读取识别结果，等待新鲜样本。",
       evidence: `published=${formatInteger(input.publishedBatches)} · consumed=${formatInteger(input.consumedBatches)} · targeting=${formatInteger(input.targetingBatches)}`
     };
   }
   return {
     id: "batch",
-    label: "DetectionBatch",
+    label: "识别结果",
     state: input.runtimeRunning || hasPublished ? "waiting" : "idle",
     value: formatInteger(input.publishedBatches),
-    detail: input.runtimeRunning ? "等待 Runtime 消费 DetectionBatch。" : "主链未运行，暂未产生控制输入。",
+    detail: input.runtimeRunning ? "等待控制链路读取识别结果。" : "主链未运行，暂未产生控制输入。",
     evidence: `age=${formatNumber(input.detectionDataAgeMs, 2, "ms")} · threshold=${formatNumber(input.freshnessThresholdMs, 2, "ms")}`
   };
 }
@@ -203,7 +203,7 @@ function buildTargetStep(input: BuildControlTraceInput): ControlTraceStep {
       state: "ready",
       value: input.trackId === null ? "已选择" : `track ${Math.trunc(input.trackId)}`,
       detail: input.classLabel ? `${input.classLabel} 进入控制链。` : "已有目标进入控制链。",
-      evidence: `raw/eligible/selected=${formatInteger(input.rawCandidateCount)}/${formatInteger(input.eligibleCandidateCount)}/${formatInteger(input.selectedTargetCount)} · score=${formatNumber(input.targetScore, 3)}`
+      evidence: `候选/合格/选择=${formatInteger(input.rawCandidateCount)}/${formatInteger(input.eligibleCandidateCount)}/${formatInteger(input.selectedTargetCount)} · score=${formatNumber(input.targetScore, 3)}`
     };
   }
   const hasDiagnostics = input.targetPipelineStage || input.targetPipelineCode || input.targetPipelineMessage;
@@ -373,14 +373,14 @@ export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSu
       : input.runtimeRunning
         ? input.outputTrace
           ? outputTraceLabel(input.outputTrace)
-          : "控制链路正在等待实时证据"
+        : "控制链路正在等待实时状态"
         : "控制链路等待主链启动";
   const detail = input.outputTrace?.detail ||
-    "按运行语义串起 DetectionBatch、目标选择、瞄准误差、Atan 输出、输出门和 kmNet 回执。";
+    "按实时链路串起识别结果、目标选择、瞄准误差、Atan 输出、输出门和 kmNet 回执。";
   const traceFacts: ControlTraceFact[] = input.outputTrace
     ? [
         {
-          label: "输出诊断",
+          label: "输出状态",
           value: outputTraceLabel(input.outputTrace),
           detail: outputTraceNextAction(input.outputTrace)
         }

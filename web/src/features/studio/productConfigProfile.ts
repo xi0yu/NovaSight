@@ -94,7 +94,7 @@ function buildCaptureItem(input: BuildProductConfigProfileInput): ProductConfigI
       label: "采集规格",
       state: "missing",
       value: "未选择",
-      detail: "缺少明确采集设备或输入格式，主链启动只能依赖探测兜底。",
+      detail: "缺少明确采集设备或输入格式，启动时只能依赖自动探测。",
       evidence: input.captureDevice || "等待设备",
       action: "capture",
       actionLabel: "选择采集"
@@ -118,7 +118,7 @@ function buildCaptureItem(input: BuildProductConfigProfileInput): ProductConfigI
       label: "采集规格",
       state: "live",
       value: input.captureProfile,
-      detail: "采集规格与 ROI 已在主链运行态对齐。",
+      detail: "采集规格与 ROI 已在当前运行状态中生效。",
       evidence: `${input.captureDevice || "设备"} · ROI ${input.roiLabel}`
     };
   }
@@ -127,7 +127,7 @@ function buildCaptureItem(input: BuildProductConfigProfileInput): ProductConfigI
     label: "采集规格",
     state: "saved",
     value: input.captureProfile,
-    detail: "配置已保存，启动主链后会提交给生产采集链。",
+    detail: "配置已保存，启动主链后会用于采集。",
     evidence: `${input.captureSource} · ROI ${input.roiLabel}`,
     action: "capture",
     actionLabel: "调整采集"
@@ -153,7 +153,7 @@ function buildModelItem(input: BuildProductConfigProfileInput): ProductConfigIte
       label: "模型与推理",
       state: "restart",
       value: input.modelName,
-      detail: "模型或后处理参数已保存，运行态仍未装载新值。",
+      detail: "模型或后处理参数已保存，当前运行状态仍在使用旧值。",
       evidence: `${input.artifactLabel} · ${input.postprocessLabel}`,
       action: "models",
       actionLabel: "检查模型"
@@ -165,7 +165,7 @@ function buildModelItem(input: BuildProductConfigProfileInput): ProductConfigIte
       label: "模型与推理",
       state: "live",
       value: input.modelName,
-      detail: "运行态已加载模型，置信度与 NMS 参数一致。",
+      detail: "当前运行状态已加载模型，置信度与 NMS 参数一致。",
       evidence: `${input.backendLabel} · ${input.modelInputLabel}`
     };
   }
@@ -174,7 +174,7 @@ function buildModelItem(input: BuildProductConfigProfileInput): ProductConfigIte
     label: "模型与推理",
     state: "saved",
     value: input.modelName,
-    detail: "模型已发布；主链启动或重载后进入运行态。",
+    detail: "模型已发布；启动或重载后会进入当前运行状态。",
     evidence: `${input.artifactLabel} · ${input.configuredBackendLabel}`,
     action: "models",
     actionLabel: "模型管理"
@@ -188,7 +188,7 @@ function buildControlItem(input: BuildProductConfigProfileInput): ProductConfigI
       label: "控制策略",
       state: "restart",
       value: input.controlModeLabel,
-      detail: "控制参数已保存，主链需要重启后才能完全换到新版本。",
+      detail: "控制参数已保存，重启主链后才会完全生效。",
       evidence: `${input.triggerModeLabel} · ${input.predictionEnabled ? "预测开启" : "预测关闭"}`,
       action: "control",
       actionLabel: "检查控制"
@@ -200,7 +200,7 @@ function buildControlItem(input: BuildProductConfigProfileInput): ProductConfigI
       label: "控制策略",
       state: "live",
       value: input.controlModeLabel,
-      detail: "目标选择、预测与 Atan 控制参数处于当前有效版本。",
+      detail: "目标选择、预测与 Atan 控制参数正在生效。",
       evidence: `${input.triggerModeLabel} · 新鲜度 ${input.freshnessThresholdLabel}`
     };
   }
@@ -209,7 +209,7 @@ function buildControlItem(input: BuildProductConfigProfileInput): ProductConfigI
     label: "控制策略",
     state: "saved",
     value: input.controlModeLabel,
-    detail: "控制策略已保存，等待主链启动后消费 DetectionBatch。",
+    detail: "控制策略已保存，启动后会读取识别结果。",
     evidence: `${input.triggerModeLabel} · ${input.predictionEnabled ? "预测开启" : "预测关闭"}`,
     action: "control",
     actionLabel: "调整控制"
@@ -271,7 +271,7 @@ function buildKmnetItem(input: BuildProductConfigProfileInput): ProductConfigIte
       label: "kmNet 设备",
       state: "missing",
       value: "未配对",
-      detail: "缺少 host、port 或 uuid，无法建立生产硬件输出链。",
+      detail: "缺少 host、port 或 uuid，无法建立硬件输出连接。",
       evidence: `${input.kmnetHost || EMPTY}:${input.kmnetPort || EMPTY} · ${input.kmnetUuid || EMPTY}`,
       action: "kmnet",
       actionLabel: "配置设备"
@@ -307,7 +307,7 @@ function buildKmnetItem(input: BuildProductConfigProfileInput): ProductConfigIte
       label: "kmNet 设备",
       state: "live",
       value: "已连接",
-      detail: "主链设备通道已接入 kmNet。",
+      detail: "设备通道已接入 kmNet。",
       evidence: `${input.kmnetHost}:${input.kmnetPort}`
     };
   }
@@ -347,11 +347,11 @@ function buildReloadItem(input: BuildProductConfigProfileInput): ProductConfigIt
 }
 
 function profileTitle(state: ProductConfigState): string {
-  if (state === "missing") return "配置缺口需要先补齐";
+  if (state === "missing") return "配置缺口需要处理";
   if (state === "restart") return "配置已保存，等待运行态重载";
   if (state === "paused") return "配置可运行，但输出处于暂停";
-  if (state === "live") return "生产配置正在生效";
-  return "生产配置已保存";
+  if (state === "live") return "配置正在生效";
+  return "配置已保存";
 }
 
 function profileDetail(state: ProductConfigState, attentionCount: number): string {
@@ -369,7 +369,7 @@ function profileDetail(state: ProductConfigState, attentionCount: number): strin
   }
   return attentionCount > 0
     ? "配置已经落盘，部分项目需要启动主链后才能转为生效。"
-    : "这些配置会在下一次主链启动时作为产品默认链路使用。";
+    : "这些配置会在下一次主链启动时作为默认运行参数使用。";
 }
 
 function deriveProfileState(items: ProductConfigItem[]): ProductConfigState {

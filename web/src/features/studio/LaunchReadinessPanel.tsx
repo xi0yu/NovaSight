@@ -111,10 +111,10 @@ export function LaunchReadinessPanel({
         </ol>
       </div>
 
-      <aside className="launch-product-config" aria-label="产品化运行配置摘要">
+      <aside className="launch-product-config" aria-label="运行配置摘要">
         <div className="launch-product-config-heading">
           <NovaIcon name="settings" size={16} />
-          <strong>产品配置摘要</strong>
+          <strong>运行配置摘要</strong>
         </div>
         <dl>
           {readiness.productConfig.map((row) => (

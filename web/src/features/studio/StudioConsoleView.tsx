@@ -109,7 +109,7 @@ import "./studio-settings.css";
 
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
 const CONTROL_ALGORITHM_LABEL = "双阶段 Atan 控制";
-const CONTROL_ALGORITHM_DESCRIPTION = "唯一生产控制器：单目标预测、角度投影、连续双阶段 Atan 响应、限幅与量化。";
+const CONTROL_ALGORITHM_DESCRIPTION = "当前控制器：单目标预测、角度投影、连续双阶段 Atan 响应、限幅与量化。";
 type KmnetTestMessageTone = "success" | "warning";
 const loadModelManagerDialog = () => import("../models/ModelManagerDialog");
 const ModelManagerDialog = lazy(() =>
@@ -187,7 +187,7 @@ const ALGORITHM_SETTINGS_SECTIONS: Array<{
   {
     id: "response",
     label: "响应算法",
-    detail: "远近速度、过冲与 Atan 手感",
+    detail: "远近响应、过冲与 Atan 曲线",
     panelId: "algorithm-settings-response"
   },
   {
@@ -1600,7 +1600,7 @@ export function StudioConsoleView({
     capture?.running !== true
       ? "采集尚未启动"
       : nvinferInputFps !== null && nvinferInputFps > 0
-        ? "nvinfer 正在接收有效输入"
+        ? "推理正在接收有效输入"
         : (statistics?.nvinfer_input_counter ?? 0) > 0
           ? "已收到输入帧，正在建立速率窗口"
           : "采集已启动，等待第一帧"
@@ -1636,8 +1636,8 @@ export function StudioConsoleView({
       modelRuntimeLoaded: runtimeInference.loaded === true,
       modelName: activeModelName,
       artifactLabel: artifact ? `${artifact.kind} · ${artifact.status}` : "",
-      backendLabel: selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream / nvinfer" : selectedRuntimeBackend,
-      configuredBackendLabel: configuredInferenceBackend === "deepstream_nvinfer" ? "DeepStream / nvinfer" : configuredInferenceBackend,
+      backendLabel: selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream 推理" : selectedRuntimeBackend,
+      configuredBackendLabel: configuredInferenceBackend === "deepstream_nvinfer" ? "DeepStream 推理" : configuredInferenceBackend,
       modelInputLabel: modelInputWidth > 0 && modelInputHeight > 0
         ? `${modelInputWidth}x${modelInputHeight}`
         : displayedInputShape || NO_SAMPLE,
@@ -2126,10 +2126,10 @@ export function StudioConsoleView({
       ? "管线故障"
       : runtimeMainlineRunning
         ? runtimeMainlineStatus.hasRuntimeConsumption
-          ? "runtime 已消费"
+          ? "控制链路已读取"
           : runtimeMainlineStatus.hasInferenceSignal
-            ? "DetectionBatch 已产出"
-            : "等待 DetectionBatch"
+            ? "识别结果已产出"
+            : "等待识别结果"
       : mainlineLaunchPending
         ? "等待后端反馈"
         : runtimeInferenceConfigured
@@ -3033,7 +3033,7 @@ export function StudioConsoleView({
       setKmnetTestMessage(
         sent
           ? `已通过 ${apiName} 发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/1 步`
-          : `未发送 raw：${readString(result.message, "未知原因")} · ${stepsSent}/1 步`
+          : `未发送原始命令：${readString(result.message, "未知原因")} · ${stepsSent}/1 步`
       );
       await onRefresh();
     } catch (err) {
@@ -3419,7 +3419,7 @@ export function StudioConsoleView({
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="采集状态" value={captureStatusText} small={capture?.device || configuredCaptureDevice || "等待设备"} />
-            <Metric title="主链输入 FPS" value={formatOptionalNumber(nvinferInputFps)} small="nvinfer sink 有效输入" />
+            <Metric title="推理输入 FPS" value={formatOptionalNumber(nvinferInputFps)} small="有效输入" />
             <Metric title="配置输入 FPS" value={formatOptionalNumber(configuredCaptureFps, 0)} small="配置值 · 非实时测量" />
             <Metric title="ROI 应用" value={roiApplyLabel} small={runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : "等待运行 ROI"} />
           </div>
@@ -3510,7 +3510,7 @@ export function StudioConsoleView({
             <summary>
               <span>
                 <b>采集运行诊断</b>
-                <small>采集原因、运行 ROI 与 nvinfer 输入健康只在排障时查看。</small>
+                <small>采集原因、运行 ROI 与推理输入健康只在排障时查看。</small>
               </span>
               <i>2 组</i>
             </summary>
@@ -3530,9 +3530,9 @@ export function StudioConsoleView({
                 </div>
               </div>
               <div className="console-card">
-                <SectionTitle title="主链输入健康" />
+                <SectionTitle title="推理输入健康" />
                 <div className="console-kv">
-                  <span>nvinfer 输入 FPS</span><b>{formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
+                  <span>推理输入 FPS</span><b>{formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
                   <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
                   <span>统计状态</span><b>{runtimeMetricsStatus}</b>
                   <span>说明</span><b>当前后端未提供采集卡原始 FPS 与协商 Caps</b>
@@ -3544,8 +3544,8 @@ export function StudioConsoleView({
 
         <section className={activePage === "infer" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="nvinfer 实际完成" />
-            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="DetectionBatch 有效产出" />
+            <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="模型实际完成" />
+            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果有效产出" />
             <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
             <Metric title="最近检测" value={formatOptionalInteger(detectionCount)} small="最近遥测 · 最多 5Hz" />
           </div>
@@ -3591,7 +3591,7 @@ export function StudioConsoleView({
                 <span>应用状态</span><b>{postprocessApplyLabel}</b>
               </div>
               <details className="model-debug-details">
-                <summary>当前模型工程详情</summary>
+                <summary>当前模型详情</summary>
                 <div className="model-debug-grid">
                   <span>当前模型</span><b>{activeModelName}</b>
                   <span>运行装载</span><b>{runtimeInference.loaded === true ? "已装载" : "未装载"}</b>
@@ -3635,7 +3635,7 @@ export function StudioConsoleView({
             <summary>
               <span>
                 <b>推理运行诊断</b>
-                <small>累计 Buffer、PTS 匹配、generation 和后处理证据只用于排查。</small>
+                <small>累计 Buffer、PTS 匹配、结果版本和后处理细节只用于排查。</small>
               </span>
               <i>4 组</i>
             </summary>
@@ -3645,38 +3645,38 @@ export function StudioConsoleView({
                 <div className="console-kv">
                   <span>推理状态</span><b>{inferenceStatusText}</b>
                   <span>推理原因</span><b>{inferenceReason || NO_SAMPLE}</b>
-                  <span>nvinfer 输入帧</span><b>{formatOptionalInteger(deepstreamInputFrames)}</b>
-                  <span>nvinfer 输出 Buffer</span><b>{formatOptionalInteger(deepstreamOutputBuffers)}</b>
+                  <span>推理输入帧</span><b>{formatOptionalInteger(deepstreamInputFrames)}</b>
+                  <span>推理输出缓冲</span><b>{formatOptionalInteger(deepstreamOutputBuffers)}</b>
                   <span>元数据提取成功</span><b>{formatOptionalInteger(deepstreamMetadataExtractions)}</b>
-                  <span>DetectionBatch 已发布</span><b>{formatOptionalInteger(deepstreamPublishedBatches)}</b>
-                  <span>DetectionBatch 已消费</span><b>{formatOptionalInteger(runtimeMainlineStatus.consumedBatches)}</b>
+                  <span>识别结果已发布</span><b>{formatOptionalInteger(deepstreamPublishedBatches)}</b>
+                  <span>识别结果已读取</span><b>{formatOptionalInteger(runtimeMainlineStatus.consumedBatches)}</b>
                   <span>目标选择输入</span><b>{formatOptionalInteger(runtimeMainlineStatus.targetingBatches)}</b>
                   <span>Buffer PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_buffer_pts_matches)}</b>
                   <span>FrameMeta PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_frame_meta_pts_matches)}</b>
                   <span>PTS 关联失败</span><b>{formatOptionalInteger(runtimeInference.timestamp_correlation_misses)}</b>
-                  <span>采样 Detection generation</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
+                  <span>采样结果版本</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
                   <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
                 </div>
               </div>
               <div className="console-card">
                 <SectionTitle title="模型输入" />
-                <p className="console-section-note">这里只展示当前 Rust 运行态能够证明的尺寸；Tensor 类型、精度和布局未进入运行状态契约时不作推断。</p>
+                <p className="console-section-note">这里只展示当前运行状态能够确认的尺寸；类型、精度和布局未确认时不作推断。</p>
                 <div className="console-kv">
                   <span>模型名称</span><b>{activeModelName || NO_SAMPLE}</b>
-                  <span>推理后端</span><b>{selectedRuntimeBackend || NO_SAMPLE}</b>
+                  <span>推理后端</span><b>{selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream 推理" : selectedRuntimeBackend || NO_SAMPLE}</b>
                   <span>ROI 输入尺寸</span><b>{roiInputWidth > 0 && roiInputHeight > 0 ? `${roiInputWidth}x${roiInputHeight}` : NO_SAMPLE}</b>
                   <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
                   <span>运行 ROI</span><b>{runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
-                  <span>运行 generation</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
+                  <span>运行结果版本</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
                 </div>
               </div>
               <div className="console-card">
                 <SectionTitle title="推理引擎阶段" />
-                <p className="console-section-note">从数据进入 nvinfer 到输出离开：包含 DeepStream 输入预处理、TensorRT 执行和自定义 parser 解析；不包含目标跟踪与鼠标控制。</p>
+                <p className="console-section-note">从数据进入推理链到输出离开：包含输入预处理、模型推理和结果解析；不包含目标跟踪与鼠标控制。</p>
                 <div className="console-kv">
                   <span>sink → src 总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 2, "ms")}</b>
                   <span>有效计时样本</span><b>{formatOptionalInteger(statistics?.inference_latency_samples)}</b>
-                  <span>计时范围</span><b>预处理 + TensorRT + parser</b>
+                  <span>计时范围</span><b>预处理 + 推理 + 解析</b>
                   <span>说明</span><b>不包含目标选择、跟踪与控制计算</b>
                 </div>
               </div>
@@ -3688,9 +3688,9 @@ export function StudioConsoleView({
                   <span>最近检测数</span><b>{formatOptionalInteger(detectionCount)}</b>
                   <span>遥测列表截断</span><b>{formatOptionalInteger(vision.detection_items_truncated)}</b>
                   <span>最高检测置信度</span><b>{formatOptionalNumber(inferenceHighestConfidence, 3)}</b>
-                  <span>DetectionBatch 状态</span><b>{inferenceBatchState}</b>
-                  <span>DetectionBatch published</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchPublished ? "是" : "否"}</b>
-                  <span>DetectionBatch age</span><b>{formatOptionalNumber(detectionDataAgeMs, 2, "ms")}</b>
+                  <span>识别结果状态</span><b>{inferenceBatchState}</b>
+                  <span>识别结果已发布</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchPublished ? "是" : "否"}</b>
+                  <span>识别结果帧龄</span><b>{formatOptionalNumber(detectionDataAgeMs, 2, "ms")}</b>
                   <span>控制新鲜度阈值</span><b>{formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")}</b>
                 </div>
               </div>
@@ -3701,7 +3701,7 @@ export function StudioConsoleView({
         <section className={activePage === "control" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
             <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
-            <Metric title="目标选择输入率" value={formatOptionalNumber(targetingBatchFps)} small="DetectionBatch/s" />
+            <Metric title="目标选择输入率" value={formatOptionalNumber(targetingBatchFps)} small="识别结果/s" />
             <Metric title="控制观测帧龄" value={formatOptionalNumber(controlFrameAgeMs)} small="当前控制样本 · ms" />
             <Metric title="最近 Track" value={formatOptionalInteger(controlTrackId)} small={`${activeRuntimeClassLabel || "target"} · 最多 5Hz 遥测`} />
             <Metric title="控制误差" value={formatOptionalNumber(predictedErrorDistancePx)} small="px" />
@@ -3815,7 +3815,7 @@ export function StudioConsoleView({
                   <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
                   <span>发送语义</span><b>仅保留最新观测</b>
                   <span>最近设备已接受</span><b>{hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE}</b>
-                  <span>主链设备通道</span><b>{kmnetRuntimeConnectionLabel}</b>
+                  <span>设备通道</span><b>{kmnetRuntimeConnectionLabel}</b>
                 </div>
               </div>
             </div>
@@ -3852,7 +3852,7 @@ export function StudioConsoleView({
                     : !kmnetAutoConnect
                     ? "请先保存 kmNet 配置，并按提示重启 novasightd"
                     : !kmnetExecutorAvailable
-                      ? "当前控制面没有可用的生产硬件输出适配器"
+                      ? "当前没有可用的硬件输出适配器"
                       : !kmnetRuntimeConnected
                         ? "请先连接 kmNet，再打开偏移输出"
                         : "开启后只发送新的实时观测"}
@@ -3864,7 +3864,7 @@ export function StudioConsoleView({
             </div>
             <div className="console-card motion-control-mode-card static">
               <div className="motion-control-mode-copy">
-                <span className="class-config-eyebrow">生产算法隔离</span>
+                  <span className="class-config-eyebrow">控制算法</span>
                 <h3>双阶段 Atan 基础反馈</h3>
                 <p>{dualPhasePredictionEnabled ? "单目标 X / Y 预测先修正当前位置，随后进入投影、Atan、限幅和量化。" : "设备输出只由当前测量误差、投影、Atan、限幅和量化产生。"}</p>
               </div>
@@ -3906,7 +3906,7 @@ export function StudioConsoleView({
               <div className="console-card">
                 <SectionTitle title="控制模式" />
                 <div className="console-kv compact-kv" aria-label="控制模式">
-                  <span>生产控制器</span><b>{CONTROL_ALGORITHM_LABEL}</b>
+                  <span>当前控制器</span><b>{CONTROL_ALGORITHM_LABEL}</b>
                 </div>
                 <p className="console-section-note">{CONTROL_ALGORITHM_DESCRIPTION}</p>
                 <SelectControl
@@ -3934,7 +3934,7 @@ export function StudioConsoleView({
 
               <div className="console-card">
                 <SectionTitle title={`控制算法 · ${controlModeLabel}`} />
-                <p className="console-section-note">当前生产主链仅使用投影、增益、Atan 响应曲线和单次限幅。</p>
+                <p className="console-section-note">当前控制链路仅使用投影、增益、Atan 响应曲线和单次限幅。</p>
                 <div className="advanced-settings-summary">
                   <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
                   <div><span>FAR / NEAR Kp</span><b>{dualPhaseFarKp.toFixed(3)} / {dualPhaseNearKp.toFixed(3)}</b></div>
@@ -4163,7 +4163,7 @@ export function StudioConsoleView({
             <Metric title="执行器可用" value={kmnetRestartRequired ? "等待装载" : kmnetExecutorAvailable ? "可用" : "不可用"} small="kmNet" />
             <Metric title="按键数据" value={kmnetStatus.buttons_available === true ? "可用" : "不可用"} small="最近轮询" />
             <Metric title="自动连接" value={kmnetAutoConnect ? kmnetRestartRequired ? "重启后启用" : "已启用" : "已关闭"} small="startup" />
-            <Metric title="主链设备通道" value={kmnetRuntimeConnectionLabel} small={kmnetRuntimeConnected ? "runtime lane" : "等待设备"} />
+            <Metric title="设备通道" value={kmnetRuntimeConnectionLabel} small={kmnetRuntimeConnected ? "运行中" : "等待设备"} />
             <Metric title="命令门控" value={control.will_emit === true ? "允许" : control.will_emit === false ? "阻止" : NO_SAMPLE} small={controlNoSendReason || "当前控制样本"} />
           </div>
           <div className="console-grid2 control-test-grid">
@@ -4187,7 +4187,7 @@ export function StudioConsoleView({
                   <b>{control.will_emit === true ? "允许" : control.will_emit === false ? "阻止" : NO_SAMPLE}</b>
                 </div>
                 <div className={kmnetRuntimeConnected ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
-                  <span>主链设备通道</span>
+                  <span>设备通道</span>
                   <b>{kmnetRuntimeConnectionLabel}</b>
                 </div>
                 <div className="kmnet-status-tile">
@@ -4259,12 +4259,12 @@ export function StudioConsoleView({
                   {kmnetRestartRequired
                     ? "新配置尚未进入当前进程；请停止并重新运行 novasightd。"
                     : !kmnetExecutorAvailable
-                    ? "当前没有可用的生产硬件输出适配器；请检查 kmNet 配置和 Jetson 运行环境。"
+                    ? "当前没有可用的硬件输出适配器；请检查 kmNet 配置和 Jetson 运行环境。"
                     : runtime?.running
                       ? kmnetBlockedReason === "already_connected"
                         ? "设备已连接；断开只停止物理输出，采集、推理和目标计算保持运行。"
                         : "连接操作只影响 kmNet 会话，采集、推理和目标计算保持运行。"
-                      : "请先启动主链；Runtime Epoch 建立后才能控制 kmNet 会话。"}
+                      : "请先启动主链；运行通道建立后才能控制 kmNet 会话。"}
                 </span>
               </div>
               <TextControl
@@ -4335,7 +4335,7 @@ export function StudioConsoleView({
                 <div className="console-kv compact-kv">
                   <span>执行器</span><b>{readString(executorStatus.selected, NO_SAMPLE)}</b>
                   <span>设备接受状态</span><b>{acceptedCommandCount === null ? NO_SAMPLE : hasAcceptedCommand ? "已有协议回执" : "尚无回执"}</b>
-                  <span>主链接受累计</span><b>{formatOptionalInteger(kmnetStatus.accepted_command_count)}</b>
+                  <span>接受累计</span><b>{formatOptionalInteger(kmnetStatus.accepted_command_count)}</b>
                   <span>最近接受位移</span><b>{formatPoint(kmnetStatus.last_accepted_dx, kmnetStatus.last_accepted_dy, 0)}</b>
                   <span>设备恢复累计</span><b>{formatOptionalInteger(kmnetStatus.device_recovery_count)}</b>
                   <span>设备错误累计</span><b>{formatOptionalInteger(kmnetStatus.device_error_count)}</b>
@@ -4380,8 +4380,8 @@ export function StudioConsoleView({
                   <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, 10)}>↓</button>
                 </div>
                 <div className="kmnet-test-section">
-                  <h3>Supervisor 单步诊断</h3>
-                  <p>仅在主链停止时，由 Rust supervisor 串行调用 daemon-owned PointerDevice；不会与实时 DeviceLane 竞争。</p>
+                  <h3>设备单步诊断</h3>
+                  <p>仅在主链停止时由后端单独发送一次受控移动，不会与实时输出竞争。</p>
                   <div className="console-action-row">
                     <button
                       className="console-button"
@@ -4389,7 +4389,7 @@ export function StudioConsoleView({
                       onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy)}
                       type="button"
                     >
-                      发送单步 raw
+                      发送单步移动
                     </button>
                   </div>
                 </div>
@@ -4407,9 +4407,9 @@ export function StudioConsoleView({
 
         <section className={activePage === "latency" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
-            <Metric title="nvinfer sink → src" value={formatOptionalNumber(inferenceTotalMs)} small="预处理 + TensorRT + parser · ms" />
+            <Metric title="推理链耗时" value={formatOptionalNumber(inferenceTotalMs)} small="预处理 + 推理 + 解析 · ms" />
             <Metric title="结果帧龄" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
-            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="DetectionBatch/s" />
+            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果/s" />
             <Metric title="统计窗口" value={formatOptionalNumber(telemetryWindowMs, 0)} small="ms" />
           </div>
           <div className="console-grid2 latency-analysis-grid">
@@ -4417,9 +4417,9 @@ export function StudioConsoleView({
               title="当前真实测量"
               rows={[
                 ["统计状态", runtimeMetricsStatus],
-                ["nvinfer 输入 FPS", formatOptionalNumber(nvinferInputFps, 2, "FPS")],
-                ["nvinfer 输出 FPS", formatOptionalNumber(nvinferOutputFps, 2, "FPS")],
-                ["DetectionBatch FPS", formatOptionalNumber(detectionBatchFps, 2, "FPS")],
+                ["推理输入 FPS", formatOptionalNumber(nvinferInputFps, 2, "FPS")],
+                ["推理输出 FPS", formatOptionalNumber(nvinferOutputFps, 2, "FPS")],
+                ["识别结果 FPS", formatOptionalNumber(detectionBatchFps, 2, "FPS")],
                 ["目标选择输入 FPS", formatOptionalNumber(targetingBatchFps, 2, "FPS")],
                 ["sink → src 样本", formatOptionalInteger(statistics?.inference_latency_samples)],
                 ["控制新鲜度阈值", formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")]
@@ -4429,9 +4429,9 @@ export function StudioConsoleView({
             <KvCard
               title="测量边界"
               rows={[
-                ["nvinfer sink → src", "包含 DeepStream 预处理、TensorRT 与 parser"],
-                ["结果帧龄", "当前时刻 − 最新已发布 DetectionBatch 的采集时间"],
-                ["结果 FPS", "统计窗口内已发布 DetectionBatch 增量 / 实际秒数"],
+                ["推理链耗时", "包含预处理、模型推理与结果解析"],
+                ["结果帧龄", "当前时刻 − 最新识别结果的采集时间"],
+                ["结果 FPS", "统计窗口内已发布识别结果增量 / 实际秒数"],
                 ["未提供", "采集、解码、ROI、排队、控制计算的独立阶段耗时"]
               ]}
               notice={<p className="latency-boundary-note">未打点的阶段不展示 0、不估算，也不拼成所谓完整链路。</p>}
@@ -4443,7 +4443,7 @@ export function StudioConsoleView({
       {wideThemeGallery ? <ThemeGallery /> : null}
 
       <AdvancedSettingsDialog
-        description="先按问题进入对应调参路径；常用手感参数与底层保护参数不再混在同一张表里。"
+        description="先按问题进入对应调参路径；常用响应参数与底层保护参数不再混在同一张表里。"
         dirty={configDialogDirty}
         eyebrow="参数设置 / 控制算法"
         footerNote={`当前算法：${controlModeLabel}`}
@@ -4580,9 +4580,9 @@ export function StudioConsoleView({
               <header className="algorithm-settings-panel-header">
                 <span>CALIBRATION & FRESHNESS</span>
                 <h3 id="algorithm-settings-calibration-title">坐标标定与观测时效</h3>
-                <p>这里不是手感增益。FOV 与每圈 counts 必须对应真实游戏和设备；错误标定会让所有 Atan 参数一起表现错误。</p>
+                <p>这里不是响应增益。FOV 与每圈 counts 必须对应真实游戏和设备；错误标定会让所有 Atan 参数一起表现错误。</p>
               </header>
-              <div className="algorithm-settings-warning"><b>不要用标定参数修手感</b><span>整体移动比例不对才检查标定；只是远近速度不合适，请回到“响应算法”。</span></div>
+              <div className="algorithm-settings-warning"><b>不要用标定参数修响应</b><span>整体移动比例不对才检查标定；只是远近速度不合适，请回到“响应算法”。</span></div>
               <div className="advanced-settings-grid two-column">
                 {calibrationParameters.map(renderAlgorithmNumberParameter)}
               </div>
@@ -4631,7 +4631,7 @@ export function StudioConsoleView({
         </details>
         <div className="advanced-settings-divider">
           <span>固定内部策略</span>
-          <small>Hungarian 全局匹配、四维常速度状态、最大 16 条活跃轨迹及协方差安全上限由 Tracker 内部统一管理，不作为手感参数开放。</small>
+          <small>Hungarian 全局匹配、四维常速度状态、最大 16 条活跃轨迹及协方差安全上限由 Tracker 内部统一管理，不作为常用参数开放。</small>
         </div>
       </AdvancedSettingsDialog>
 
@@ -5149,7 +5149,7 @@ export function StudioConsoleView({
                 </div>
                 <div>
                   <h2 id="launch-dialog-title">启动视觉处理链路</h2>
-                  <p>所有步骤将按顺序执行；任一项失败都会中断后续流程。</p>
+                  <p>系统会自动完成启动检查；任一项失败都会中断后续流程。</p>
                 </div>
               </div>
               <button

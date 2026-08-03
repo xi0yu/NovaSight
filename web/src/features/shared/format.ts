@@ -21,7 +21,7 @@ export function getErrorMessage(error: unknown): string {
       return "配置在本次启动准备期间又发生了变化；请重新点击启动，后端会装载最新保存值。";
     }
     if (code === "HARDWARE_OUTPUT_DISABLED") {
-      return "当前控制面没有生产硬件输出适配器，不能连接或控制物理 kmNet 设备。";
+      return "当前没有可用的硬件输出适配器，不能连接或控制物理 kmNet 设备。";
     }
     if (code === "DEVICE_NOT_CONFIGURED" || code === "DEVICE_UNCOMMISSIONED" || code === "device_uncommissioned") {
       return "kmNet 尚未完成设备委任；请先保存有效的地址、端口和 UUID。";

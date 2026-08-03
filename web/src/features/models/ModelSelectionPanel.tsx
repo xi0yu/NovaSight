@@ -124,7 +124,7 @@ export function ModelSelectionPanel({
         : "按模型自动选择";
   const previewInputShape = selectedVersion?.input_shape ||
     (selectedIsActive ? runtimeInputShape : "") ||
-    "切换时读取真实契约";
+    "切换时验证输入输出";
   const switchLabel = busy === "model.switch"
     ? "正在验证并切换..."
     : "验证并切换到所选模型";
@@ -285,7 +285,7 @@ export function ModelSelectionPanel({
                   <option value="yolo11">YOLO v11 兼容</option>
                   <option value="novasight_generic">NovaSight 通用解析器（内置）</option>
                 </select>
-                <small>目录浏览不读取 TensorRT；确认切换后才验证真实 tensor 契约。</small>
+                <small>目录浏览不加载 Engine；确认切换后才验证真实输入输出。</small>
               </dd>
             </div>
           </dl>
@@ -294,7 +294,7 @@ export function ModelSelectionPanel({
             <div className="model-metadata-heading">
               <div>
                 <strong id="model-metadata-title">整理与标签</strong>
-                <small>仅更新模型目录元数据，不读取 Engine，也不会触碰运行中的推理主链。</small>
+                <small>仅更新模型目录元数据，不加载 Engine，也不会影响正在运行的推理。</small>
               </div>
               {metadataDirty ? <span>待保存</span> : null}
             </div>
@@ -385,7 +385,7 @@ export function ModelSelectionPanel({
 
       {selectedModel?.kind === "engine" ? (
         <p className="console-field-hint">
-          点击后会打开切换进度：验证 Engine I/O、复用或生成 manifest，再应用运行态。
+          点击后会打开切换进度：验证 Engine 输入输出、准备运行配置，再应用到当前运行状态。
         </p>
       ) : null}
 
