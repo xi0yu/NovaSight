@@ -1250,6 +1250,80 @@
   background: transparent;
 }
 
+.studio-diagnostic-details {
+  margin-top: var(--space-3);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-4);
+  background: var(--bg-subtle);
+}
+
+.studio-diagnostic-details > summary {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 9px 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.studio-diagnostic-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.studio-diagnostic-details > summary:hover {
+  background: color-mix(in srgb, var(--brand-primary) 5%, transparent);
+}
+
+.studio-diagnostic-details > summary:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.studio-diagnostic-details > summary span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.studio-diagnostic-details > summary b {
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.studio-diagnostic-details > summary small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.studio-diagnostic-details > summary i {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.studio-diagnostic-details[open] > summary {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.studio-diagnostic-details > .diagnostic-grid {
+  padding: var(--space-3);
+}
+
+.studio-diagnostic-details > .diagnostic-grid > .console-card {
+  margin-bottom: 0;
+}
+
 .kmnet-test-panel {
   display: grid;
   gap: 12px;

@@ -3735,12 +3735,6 @@ button:focus-visible {
   transition: background-color 9999s ease-out;
 }
 
-@media (min-width: 1380px) {
-  .params-summary-metrics {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 900px) {
   .motion-control-mode-card {
     grid-template-columns: 1fr;

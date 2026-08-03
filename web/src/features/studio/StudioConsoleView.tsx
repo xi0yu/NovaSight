@@ -3550,35 +3550,44 @@ export function StudioConsoleView({
                 <div className="console-kv compact-kv">
                   <span>源画面</span><b>{sourceWidth > 0 ? `${sourceWidth}x${sourceHeight}` : NO_SAMPLE}</b>
                   <span>配置 ROI</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}, ${rustControlPlane ? `${configuredRoiWidth}x${configuredRoiHeight}` : `${roiSize}x${roiSize}`}` : NO_SAMPLE}</b>
-                  <span>运行 ROI</span><b>{runtimeRoiAvailable ? `x=${runtimeRoiLeft}, y=${runtimeRoiTop}, ${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
-                  <span>应用状态</span><b>{roiApplyLabel}</b>
                 </div>
               </div>
           </div>
 
-          <div className="console-grid2 diagnostic-grid" data-layer="capture">
-            <div className="console-card">
-              <SectionTitle title="采集基础状态" />
-              <div className="console-kv">
-                <span>采集状态</span><b>{captureStatusText}</b>
-                <span>采集原因</span><b>{captureReason || NO_SAMPLE}</b>
-                <span>采集设备</span><b>{capture?.device || configuredCaptureDevice || NO_SAMPLE}</b>
-                <span>参数来源</span><b>{displayCaptureProfileSource}</b>
-                <span>配置输入格式</span><b>{displayCaptureProfile?.pixel_format || NO_SAMPLE}</b>
-                <span>配置输入分辨率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.width}x${displayCaptureProfile.height}` : NO_SAMPLE}</b>
-                <span>配置输入帧率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.fps.toFixed(STANDARD_DECIMAL_DIGITS)} FPS` : NO_SAMPLE}</b>
+          <details className="studio-diagnostic-details">
+            <summary>
+              <span>
+                <b>采集运行诊断</b>
+                <small>采集原因、运行 ROI 与 nvinfer 输入健康只在排障时查看。</small>
+              </span>
+              <i>2 组</i>
+            </summary>
+            <div className="console-grid2 diagnostic-grid" data-layer="capture">
+              <div className="console-card">
+                <SectionTitle title="采集基础状态" />
+                <div className="console-kv">
+                  <span>采集状态</span><b>{captureStatusText}</b>
+                  <span>采集原因</span><b>{captureReason || NO_SAMPLE}</b>
+                  <span>采集设备</span><b>{capture?.device || configuredCaptureDevice || NO_SAMPLE}</b>
+                  <span>参数来源</span><b>{displayCaptureProfileSource}</b>
+                  <span>配置输入格式</span><b>{displayCaptureProfile?.pixel_format || NO_SAMPLE}</b>
+                  <span>配置输入分辨率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.width}x${displayCaptureProfile.height}` : NO_SAMPLE}</b>
+                  <span>配置输入帧率</span><b>{displayCaptureProfile ? `${displayCaptureProfile.fps.toFixed(STANDARD_DECIMAL_DIGITS)} FPS` : NO_SAMPLE}</b>
+                  <span>运行 ROI</span><b>{runtimeRoiAvailable ? `x=${runtimeRoiLeft}, y=${runtimeRoiTop}, ${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
+                  <span>ROI 应用状态</span><b>{roiApplyLabel}</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="主链输入健康" />
+                <div className="console-kv">
+                  <span>nvinfer 输入 FPS</span><b>{formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
+                  <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
+                  <span>统计状态</span><b>{runtimeMetricsStatus}</b>
+                  <span>说明</span><b>当前后端未提供采集卡原始 FPS 与协商 Caps</b>
+                </div>
               </div>
             </div>
-            <div className="console-card">
-              <SectionTitle title="主链输入健康" />
-              <div className="console-kv">
-                <span>nvinfer 输入 FPS</span><b>{formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")}</b>
-                <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
-                <span>统计状态</span><b>{runtimeMetricsStatus}</b>
-                <span>说明</span><b>当前后端未提供采集卡原始 FPS 与协商 Caps</b>
-              </div>
-            </div>
-          </div>
+          </details>
         </section>
 
         <section className={activePage === "infer" ? "console-page active" : "console-page"}>
@@ -3638,9 +3647,6 @@ export function StudioConsoleView({
                   <span>运行输入</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : NO_SAMPLE}</b>
                   <span>Artifact</span><b>{artifact ? `${artifact.kind} · ${artifact.status}` : NO_SAMPLE}</b>
                   <span>部署版本</span><b>{version?.version || NO_SAMPLE}</b>
-                  <span>运行置信度</span><b>{formatOptionalNumber(runtimePostprocessConfidence, 2)}</b>
-                  <span>运行 NMS</span><b>{formatOptionalNumber(runtimePostprocessNms, 2)}</b>
-                  <span>运行 ROI</span><b>{runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
                   <span>后端</span><b>{readString(runtime?.inference?.selected, "auto")}</b>
                   <span>类别数量</span><b>{String(version?.classes.length ?? 0)}</b>
                   <span className="wide">类别名</span><b className="wide">{version?.classes.length ? version.classes.join(", ") : NO_SAMPLE}</b>
@@ -3673,62 +3679,71 @@ export function StudioConsoleView({
               ) : null}
             </div>
           </div>
-          <div className="console-grid2 diagnostic-grid" data-layer="inference">
-            <div className="console-card">
-              <SectionTitle title="推理调度" />
-              <div className="console-kv">
-                <span>推理状态</span><b>{inferenceStatusText}</b>
-                <span>推理原因</span><b>{inferenceReason || NO_SAMPLE}</b>
-                <span>nvinfer 输入帧</span><b>{formatOptionalInteger(deepstreamInputFrames)}</b>
-                <span>nvinfer 输出 Buffer</span><b>{formatOptionalInteger(deepstreamOutputBuffers)}</b>
-                <span>元数据提取成功</span><b>{formatOptionalInteger(deepstreamMetadataExtractions)}</b>
-                <span>DetectionBatch 已发布</span><b>{formatOptionalInteger(deepstreamPublishedBatches)}</b>
-                <span>DetectionBatch 已消费</span><b>{formatOptionalInteger(runtimeMainlineStatus.consumedBatches)}</b>
-                <span>目标选择输入</span><b>{formatOptionalInteger(runtimeMainlineStatus.targetingBatches)}</b>
-                <span>Buffer PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_buffer_pts_matches)}</b>
-                <span>FrameMeta PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_frame_meta_pts_matches)}</b>
-                <span>PTS 关联失败</span><b>{formatOptionalInteger(runtimeInference.timestamp_correlation_misses)}</b>
-                <span>采样 Detection generation</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
-                <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
+          <details className="studio-diagnostic-details">
+            <summary>
+              <span>
+                <b>推理运行诊断</b>
+                <small>累计 Buffer、PTS 匹配、generation 和后处理证据只用于排查。</small>
+              </span>
+              <i>4 组</i>
+            </summary>
+            <div className="console-grid2 diagnostic-grid" data-layer="inference">
+              <div className="console-card">
+                <SectionTitle title="推理调度" />
+                <div className="console-kv">
+                  <span>推理状态</span><b>{inferenceStatusText}</b>
+                  <span>推理原因</span><b>{inferenceReason || NO_SAMPLE}</b>
+                  <span>nvinfer 输入帧</span><b>{formatOptionalInteger(deepstreamInputFrames)}</b>
+                  <span>nvinfer 输出 Buffer</span><b>{formatOptionalInteger(deepstreamOutputBuffers)}</b>
+                  <span>元数据提取成功</span><b>{formatOptionalInteger(deepstreamMetadataExtractions)}</b>
+                  <span>DetectionBatch 已发布</span><b>{formatOptionalInteger(deepstreamPublishedBatches)}</b>
+                  <span>DetectionBatch 已消费</span><b>{formatOptionalInteger(runtimeMainlineStatus.consumedBatches)}</b>
+                  <span>目标选择输入</span><b>{formatOptionalInteger(runtimeMainlineStatus.targetingBatches)}</b>
+                  <span>Buffer PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_buffer_pts_matches)}</b>
+                  <span>FrameMeta PTS 匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_frame_meta_pts_matches)}</b>
+                  <span>PTS 关联失败</span><b>{formatOptionalInteger(runtimeInference.timestamp_correlation_misses)}</b>
+                  <span>采样 Detection generation</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
+                  <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="模型输入" />
+                <p className="console-section-note">这里只展示当前 Rust 运行态能够证明的尺寸；Tensor 类型、精度和布局未进入运行状态契约时不作推断。</p>
+                <div className="console-kv">
+                  <span>模型名称</span><b>{activeModelName || NO_SAMPLE}</b>
+                  <span>推理后端</span><b>{selectedRuntimeBackend || NO_SAMPLE}</b>
+                  <span>ROI 输入尺寸</span><b>{roiInputWidth > 0 && roiInputHeight > 0 ? `${roiInputWidth}x${roiInputHeight}` : NO_SAMPLE}</b>
+                  <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
+                  <span>运行 ROI</span><b>{runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
+                  <span>运行 generation</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="推理引擎阶段" />
+                <p className="console-section-note">从数据进入 nvinfer 到输出离开：包含 DeepStream 输入预处理、TensorRT 执行和自定义 parser 解析；不包含目标跟踪与鼠标控制。</p>
+                <div className="console-kv">
+                  <span>sink → src 总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 2, "ms")}</b>
+                  <span>有效计时样本</span><b>{formatOptionalInteger(statistics?.inference_latency_samples)}</b>
+                  <span>计时范围</span><b>预处理 + TensorRT + parser</b>
+                  <span>说明</span><b>不包含目标选择、跟踪与控制计算</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="输出与后处理" />
+                <div className="console-kv">
+                  <span>置信度阈值</span><b>{formatOptionalNumber(runtimePostprocessConfidence, 2)}</b>
+                  <span>NMS IoU 阈值</span><b>{formatOptionalNumber(runtimePostprocessNms, 2)}</b>
+                  <span>最近检测数</span><b>{formatOptionalInteger(detectionCount)}</b>
+                  <span>遥测列表截断</span><b>{formatOptionalInteger(vision.detection_items_truncated)}</b>
+                  <span>最高检测置信度</span><b>{formatOptionalNumber(inferenceHighestConfidence, 3)}</b>
+                  <span>DetectionBatch 状态</span><b>{inferenceBatchState}</b>
+                  <span>DetectionBatch published</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchPublished ? "是" : "否"}</b>
+                  <span>DetectionBatch age</span><b>{formatOptionalNumber(detectionDataAgeMs, 2, "ms")}</b>
+                  <span>控制新鲜度阈值</span><b>{formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")}</b>
+                </div>
               </div>
             </div>
-            <div className="console-card">
-              <SectionTitle title="模型输入" />
-              <p className="console-section-note">这里只展示当前 Rust 运行态能够证明的尺寸；Tensor 类型、精度和布局未进入运行状态契约时不作推断。</p>
-              <div className="console-kv">
-                <span>模型名称</span><b>{activeModelName || NO_SAMPLE}</b>
-                <span>推理后端</span><b>{selectedRuntimeBackend || NO_SAMPLE}</b>
-                <span>ROI 输入尺寸</span><b>{roiInputWidth > 0 && roiInputHeight > 0 ? `${roiInputWidth}x${roiInputHeight}` : NO_SAMPLE}</b>
-                <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
-                <span>运行 ROI</span><b>{runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
-                <span>运行 generation</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
-              </div>
-            </div>
-            <div className="console-card">
-              <SectionTitle title="推理引擎阶段" />
-              <p className="console-section-note">从数据进入 nvinfer 到输出离开：包含 DeepStream 输入预处理、TensorRT 执行和自定义 parser 解析；不包含目标跟踪与鼠标控制。</p>
-              <div className="console-kv">
-                <span>sink → src 总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 2, "ms")}</b>
-                <span>有效计时样本</span><b>{formatOptionalInteger(statistics?.inference_latency_samples)}</b>
-                <span>计时范围</span><b>预处理 + TensorRT + parser</b>
-                <span>说明</span><b>不包含目标选择、跟踪与控制计算</b>
-              </div>
-            </div>
-            <div className="console-card">
-              <SectionTitle title="输出与后处理" />
-              <div className="console-kv">
-                <span>置信度阈值</span><b>{formatOptionalNumber(runtimePostprocessConfidence, 2)}</b>
-                <span>NMS IoU 阈值</span><b>{formatOptionalNumber(runtimePostprocessNms, 2)}</b>
-                <span>最近检测数</span><b>{formatOptionalInteger(detectionCount)}</b>
-                <span>遥测列表截断</span><b>{formatOptionalInteger(vision.detection_items_truncated)}</b>
-                <span>最高检测置信度</span><b>{formatOptionalNumber(inferenceHighestConfidence, 3)}</b>
-                <span>DetectionBatch 状态</span><b>{inferenceBatchState}</b>
-                <span>DetectionBatch published</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchPublished ? "是" : "否"}</b>
-                <span>DetectionBatch age</span><b>{formatOptionalNumber(detectionDataAgeMs, 2, "ms")}</b>
-                <span>控制新鲜度阈值</span><b>{formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")}</b>
-              </div>
-            </div>
-          </div>
+          </details>
         </section>
 
         <section className={activePage === "control" ? "console-page active" : "console-page"}>
@@ -3741,122 +3756,123 @@ export function StudioConsoleView({
             <Metric title="最近设备接受" value={hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE} small="与当前样本独立" />
           </div>
           <ControlTracePanel trace={controlTrace} />
-          <div className="console-grid2 diagnostic-grid" data-layer="control">
-            <div className="console-card">
-              <SectionTitle title="目标选择" />
-              <div className="console-kv">
-                <span>控制状态</span><b>{controlHasSample ? readString(control.global_state, "已计算") : "未执行"}</b>
-                <span>控制原因</span><b>{readString(control.reason, readString(control.selection_reason, "")) || NO_SAMPLE}</b>
-                <span>阻断阶段</span><b>{targetPipelineStage || NO_SAMPLE}</b>
-                <span>诊断代码</span><b>{targetPipelineCode || NO_SAMPLE}</b>
-                <span>诊断信息</span><b>{targetPipelineMessage || NO_SAMPLE}</b>
-                <span>检测数量</span><b>{formatOptionalInteger(detectionCount)}</b>
-                <span>原始 / 合格 / 已选择</span><b>{`${formatOptionalInteger(rawCandidateCount)} / ${formatOptionalInteger(eligibleCandidateCount)} / ${formatOptionalInteger(selectedTargetCount)}`}</b>
-                <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
-                <span>生效类别过滤</span><b>{effectiveClassFilter === "all" ? "全部类别" : effectiveClassFilter === "none" ? "未选择任何类别" : `cls ${effectiveClassFilter}`}</b>
-                <span>被类别过滤的 cls</span><b>{rejectedBasicClassIds.length > 0 ? rejectedBasicClassIds.join(", ") : NO_SAMPLE}</b>
-                <span>基础过滤前 / 后</span><b>{`${formatOptionalInteger(basicCandidateFilter.raw_candidates)} / ${formatOptionalInteger(basicCandidateFilter.filtered_candidates)}`}</b>
-                <span>基础过滤拒绝</span><b>{formatOptionalInteger(basicCandidateFilter.rejected_candidates)}</b>
-                <span>候选目标数量</span><b>{formatOptionalInteger(controlCandidateCount)}</b>
-                <span>最终选择数量</span><b>{controlHasTarget ? "1" : controlHasSample ? "0" : NO_SAMPLE}</b>
-                <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
-                <span>目标类别</span><b>{activeRuntimeClassLabel || NO_SAMPLE}</b>
-                <span>目标置信度</span><b>{formatOptionalNumber(target.score, 3)}</b>
-                <span>Track 身份置信度</span><b>{formatOptionalNumber(target.identity_confidence, 3)}</b>
-                <span>目标选择状态</span><b>{readString(control.selector_state, "") || NO_SAMPLE}</b>
-                <span>目标选择原因</span><b>{readString(control.selection_reason, "") || NO_SAMPLE}</b>
-                <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target.x1, target.y1)} -> ${formatPoint(target.x2, target.y2)}` : NO_SAMPLE}</b>
-                <span>目标框中心</span><b>{formatPoint(target.box_cx ?? target.cx, target.box_cy ?? target.cy, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                <span>遥测说明</span><b>目标与框为最近采样快照，最多约 5Hz</b>
-              </div>
-              {targetPipelineCode === "BASIC_CANDIDATE_REJECTED" && targetPipelineRejections.includes("class_filter") && detectedClassFilterValue ? (
-                <div className="control-filter-recovery">
-                  <button
-                    className="console-button primary"
-                    disabled={busy !== null}
-                    onClick={() => void updateDetectionClassFilter(detectedClassFilterValue)}
-                    type="button"
-                  >
-                    允许当前检测类别
-                  </button>
-                  <small>
-                    {rustControlPlane
-                      ? "保留已有选择，并加入本帧检测到的 cls；保存后进入当前目标选择配置。"
-                      : "保留已有选择，并加入本帧检测到的 cls；保存后立即热更新。"}
-                  </small>
+          <details className="studio-diagnostic-details">
+            <summary>
+              <span>
+                <b>控制运行诊断</b>
+                <small>目标筛选、AimPoint、量化输出与设备回执只在排查控制问题时查看。</small>
+              </span>
+              <i>5 组</i>
+            </summary>
+            <div className="console-grid2 diagnostic-grid" data-layer="control">
+              <div className="console-card">
+                <SectionTitle title="目标选择" />
+                <div className="console-kv">
+                  <span>控制状态</span><b>{controlHasSample ? readString(control.global_state, "已计算") : "未执行"}</b>
+                  <span>控制原因</span><b>{readString(control.reason, readString(control.selection_reason, "")) || NO_SAMPLE}</b>
+                  <span>阻断阶段</span><b>{targetPipelineStage || NO_SAMPLE}</b>
+                  <span>诊断代码</span><b>{targetPipelineCode || NO_SAMPLE}</b>
+                  <span>诊断信息</span><b>{targetPipelineMessage || NO_SAMPLE}</b>
+                  <span>检测数量</span><b>{formatOptionalInteger(detectionCount)}</b>
+                  <span>原始 / 合格 / 已选择</span><b>{`${formatOptionalInteger(rawCandidateCount)} / ${formatOptionalInteger(eligibleCandidateCount)} / ${formatOptionalInteger(selectedTargetCount)}`}</b>
+                  <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
+                  <span>生效类别过滤</span><b>{effectiveClassFilter === "all" ? "全部类别" : effectiveClassFilter === "none" ? "未选择任何类别" : `cls ${effectiveClassFilter}`}</b>
+                  <span>被类别过滤的 cls</span><b>{rejectedBasicClassIds.length > 0 ? rejectedBasicClassIds.join(", ") : NO_SAMPLE}</b>
+                  <span>基础过滤前 / 后</span><b>{`${formatOptionalInteger(basicCandidateFilter.raw_candidates)} / ${formatOptionalInteger(basicCandidateFilter.filtered_candidates)}`}</b>
+                  <span>基础过滤拒绝</span><b>{formatOptionalInteger(basicCandidateFilter.rejected_candidates)}</b>
+                  <span>候选目标数量</span><b>{formatOptionalInteger(controlCandidateCount)}</b>
+                  <span>最终选择数量</span><b>{controlHasTarget ? "1" : controlHasSample ? "0" : NO_SAMPLE}</b>
+                  <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
+                  <span>目标类别</span><b>{activeRuntimeClassLabel || NO_SAMPLE}</b>
+                  <span>目标置信度</span><b>{formatOptionalNumber(target.score, 3)}</b>
+                  <span>Track 身份置信度</span><b>{formatOptionalNumber(target.identity_confidence, 3)}</b>
+                  <span>目标选择状态</span><b>{readString(control.selector_state, "") || NO_SAMPLE}</b>
+                  <span>目标选择原因</span><b>{readString(control.selection_reason, "") || NO_SAMPLE}</b>
+                  <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target.x1, target.y1)} -> ${formatPoint(target.x2, target.y2)}` : NO_SAMPLE}</b>
+                  <span>目标框中心</span><b>{formatPoint(target.box_cx ?? target.cx, target.box_cy ?? target.cy, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                  <span>遥测说明</span><b>目标与框为最近采样快照，最多约 5Hz</b>
                 </div>
-              ) : null}
-            </div>
-            <div className="console-card">
-              <SectionTitle title="瞄准点" />
-              <div className="console-kv">
-                <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                <span>目标类别</span><b>{activeRuntimeClassLabel || NO_SAMPLE}</b>
-                <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                <span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b>
+                {targetPipelineCode === "BASIC_CANDIDATE_REJECTED" && targetPipelineRejections.includes("class_filter") && detectedClassFilterValue ? (
+                  <div className="control-filter-recovery">
+                    <button
+                      className="console-button primary"
+                      disabled={busy !== null}
+                      onClick={() => void updateDetectionClassFilter(detectedClassFilterValue)}
+                      type="button"
+                    >
+                      允许当前检测类别
+                    </button>
+                    <small>
+                      {rustControlPlane
+                        ? "保留已有选择，并加入本帧检测到的 cls；保存后进入当前目标选择配置。"
+                        : "保留已有选择，并加入本帧检测到的 cls；保存后立即热更新。"}
+                    </small>
+                  </div>
+                ) : null}
+              </div>
+              <div className="console-card">
+                <SectionTitle title="瞄准点" />
+                <div className="console-kv">
+                  <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                  <span>目标类别</span><b>{activeRuntimeClassLabel || NO_SAMPLE}</b>
+                  <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                  <span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="观测与控制误差" />
+                <div className="console-kv">
+                  <span>屏幕中心</span><b>{formatPoint(controlCenterX, controlCenterY, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                  <span>observed error px</span><b>{formatPoint(controlPipeline.observed_error_x_px, controlPipeline.observed_error_y_px, 2, "px")}</b>
+                  <span>control error px</span><b>{formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px")}</b>
+                  <span>误差距离</span><b>{formatOptionalNumber(predictedErrorDistancePx, 2, "px")}</b>
+                  <span>控制 dt</span><b>{controlMeasurementDtS === null ? NO_SAMPLE : `${(controlMeasurementDtS * 1000).toFixed(3)} ms`}</b>
+                  <span>控制观测帧龄</span><b>{formatOptionalNumber(controlFrameAgeMs, 2, "ms")}</b>
+                  <span>预测执行延迟</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_actuation_delay_ms, 2, "ms") : "已关闭"}</b>
+                  <span>预测实际时域</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_horizon_ms, 2, "ms") : "已关闭"}</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="控制器输出" />
+                <div className="console-kv">
+                  <span>控制模式</span><b>{controlModeLabel}</b>
+                  <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
+                  <span>FAR / NEAR</span><b>{readString(controlPipeline.mode, "") || NO_SAMPLE}</b>
+                  <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
+                  <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
+                  <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
+                  <span>量化余量</span><b>{formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts")}</b>
+                  <span>到位区（进入 / 退出）</span><b>{formatPoint(controlPipeline.arrival_enter_counts, controlPipeline.arrival_exit_counts, 2, "counts")}</b>
+                  <span>每轴到位</span><b>{formatAxisSettlement(controlPipeline.arrival_settled_x, controlPipeline.arrival_settled_y)}</b>
+                  <span>视觉反馈门控</span><b>{formatFeedbackGate(controlPipeline.actuation_pending_x, controlPipeline.actuation_pending_y)}</b>
+                  <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
+                  <span>叠加间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_y_counts, 0)} counts`}</b>
+                  <span>已等待 / 剩余</span><b>{`${formatOptionalNumber(controlPipeline.recoil_elapsed_since_output_ms, 2)} / ${formatOptionalNumber(controlPipeline.recoil_remaining_ms, 2)} ms`}</b>
+                  <span>本轮请求 / 已发送</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 0)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 0)} counts`}</b>
+                  <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="Latest Replace 与设备发送" />
+                <p className="console-section-note">控制样本与设备回执分别展示；最近回执不冒充为当前观测的同步发送结果。</p>
+                <div className="console-kv">
+                  <span>触发状态</span><b>{control.trigger_active === true ? "按下" : control.trigger_active === false ? "未按下" : NO_SAMPLE}</b>
+                  <span>是否允许发包</span><b>{control.will_emit === true ? "是" : control.will_emit === false ? "否" : NO_SAMPLE}</b>
+                  <span>运行输出门</span><b>{control.output_enabled === true ? "已打开" : control.output_enabled === false ? "已关闭" : NO_SAMPLE}</b>
+                  <span>不发包原因</span><b>{controlNoSendReason || NO_SAMPLE}</b>
+                  <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
+                  <span>发送语义</span><b>仅保留最新观测</b>
+                  <span>最近设备已接受</span><b>{hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE}</b>
+                  <span>主链设备通道</span><b>{kmnetRuntimeConnectionLabel}</b>
+                </div>
               </div>
             </div>
-            <div className="console-card">
-              <SectionTitle title="观测与控制误差" />
-              <div className="console-kv">
-                <span>屏幕中心</span><b>{formatPoint(controlCenterX, controlCenterY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                <span>observed error px</span><b>{formatPoint(controlPipeline.observed_error_x_px, controlPipeline.observed_error_y_px, 2, "px")}</b>
-                <span>control error px</span><b>{formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px")}</b>
-                <span>误差距离</span><b>{formatOptionalNumber(predictedErrorDistancePx, 2, "px")}</b>
-                <span>控制 dt</span><b>{controlMeasurementDtS === null ? NO_SAMPLE : `${(controlMeasurementDtS * 1000).toFixed(3)} ms`}</b>
-                <span>控制观测帧龄</span><b>{formatOptionalNumber(controlFrameAgeMs, 2, "ms")}</b>
-                <span>预测执行延迟</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_actuation_delay_ms, 2, "ms") : "已关闭"}</b>
-                <span>预测实际时域</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_horizon_ms, 2, "ms") : "已关闭"}</b>
-              </div>
-            </div>
-            <div className="console-card">
-              <SectionTitle title="控制器输出" />
-              <div className="console-kv">
-                <span>控制模式</span><b>{controlModeLabel}</b>
-                <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
-                <span>FAR / NEAR</span><b>{readString(controlPipeline.mode, "") || NO_SAMPLE}</b>
-                <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
-                <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
-                <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
-                <span>量化余量</span><b>{formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts")}</b>
-                <span>到位区（进入 / 退出）</span><b>{formatPoint(controlPipeline.arrival_enter_counts, controlPipeline.arrival_exit_counts, 2, "counts")}</b>
-                <span>每轴到位</span><b>{formatAxisSettlement(controlPipeline.arrival_settled_x, controlPipeline.arrival_settled_y)}</b>
-                <span>视觉反馈门控</span><b>{formatFeedbackGate(controlPipeline.actuation_pending_x, controlPipeline.actuation_pending_y)}</b>
-                <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
-                <span>叠加间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_y_counts, 0)} counts`}</b>
-                <span>已等待 / 剩余</span><b>{`${formatOptionalNumber(controlPipeline.recoil_elapsed_since_output_ms, 2)} / ${formatOptionalNumber(controlPipeline.recoil_remaining_ms, 2)} ms`}</b>
-                <span>本轮请求 / 已发送</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 0)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 0)} counts`}</b>
-                <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
-              </div>
-            </div>
-            <div className="console-card">
-              <SectionTitle title="Latest Replace 与设备发送" />
-              <p className="console-section-note">控制样本与设备回执分别展示；最近回执不冒充为当前观测的同步发送结果。</p>
-              <div className="console-kv">
-                <span>触发状态</span><b>{control.trigger_active === true ? "按下" : control.trigger_active === false ? "未按下" : NO_SAMPLE}</b>
-                <span>是否允许发包</span><b>{control.will_emit === true ? "是" : control.will_emit === false ? "否" : NO_SAMPLE}</b>
-                <span>运行输出门</span><b>{control.output_enabled === true ? "已打开" : control.output_enabled === false ? "已关闭" : NO_SAMPLE}</b>
-                <span>不发包原因</span><b>{controlNoSendReason || NO_SAMPLE}</b>
-                <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
-                <span>发送语义</span><b>仅保留最新观测</b>
-                <span>最近设备已接受</span><b>{hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE}</b>
-                <span>主链设备通道</span><b>{kmnetRuntimeConnectionLabel}</b>
-              </div>
-            </div>
-          </div>
+          </details>
         </section>
 
         <section className={activePage === "params" || activePage === "control-test" ? "console-page active" : "console-page"}>
           {activePage === "params" ? (
           <>
-            <div className="console-metrics params-summary-metrics">
-              <Metric title="控制模式" value={controlModeLabel} small="单选策略" />
-              <Metric title="触发方式" value={triggerModeLabel(triggerMode)} small="trigger" />
-              <Metric title="类型瞄点 Y" value={`${Math.round(aimRoleRatios.head * 100)} / ${Math.round(aimRoleRatios.body * 100)} / ${Math.round(aimRoleRatios.other * 100)}`} small="头部 / 身体 / 其他 %" />
-              <Metric title="位置预测" value={dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"} small={dualPhasePredictionEnabled ? "单目标真实帧间速度" : "当前观测 Atan 反馈"} />
-              <Metric title="偏移输出配置" value={outputEnabled ? "允许" : "暂停"} small={outputEnabled ? "实际发送状态见控制页" : "算法仍继续计算"} />
-              <Metric title="发送方式" value="最新覆盖" small="事件驱动单槽" />
-            </div>
             <ProductConfigProfilePanel
               busy={busy !== null}
               onAction={handleProductConfigAction}
@@ -3961,13 +3977,6 @@ export function StudioConsoleView({
                     <i className="body" style={{ top: `${aimRoleRatios.body * 100}%` }} />
                     <i className="other" style={{ top: `${aimRoleRatios.other * 100}%` }} />
                   </div>
-                </div>
-                <div className="console-kv compact-kv">
-                  <span>输出交付</span><b>Latest Replace</b>
-                  <span>每个推理结果</span><b>覆盖尚未发送的旧命令</b>
-                  <span>待发送容量</span><b>1 条完整命令</b>
-                  <span>设备发送校验</span><b>Rust DeviceLane</b>
-                  <span>到位判断</span><b>角度投影后的 counts 迟滞区</b>
                 </div>
               </div>
 
