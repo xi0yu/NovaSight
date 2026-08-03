@@ -12,8 +12,8 @@ use novasight_core::{
     RuntimeEpoch,
 };
 use novasight_pipeline::{
-    CrosshairConfig, CrosshairError, CrosshairHub, PipelineConfig, PipelineRuntime, PipelineStatus,
-    TriggerMode,
+    CrosshairConfig, CrosshairError, CrosshairHub, PipelineConfig, PipelineLiveConfig,
+    PipelineRuntime, PipelineStatus, TriggerMode,
 };
 
 #[derive(Debug)]
@@ -246,6 +246,85 @@ fn smooth_detection_motion_keeps_one_identity_through_control_and_device_output(
             .0,
         1
     );
+
+    runtime.shutdown().expect("workers join");
+}
+
+#[test]
+fn live_prediction_config_update_reaches_running_control_worker() {
+    let epoch = RuntimeEpoch(73);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let daemon_clock: Arc<dyn Clock> = clock.clone();
+    let pointer: Arc<dyn novasight_core::PointerDevice> =
+        Arc::new(RecordingPointerDevice::default());
+    let mut config = PipelineConfig {
+        epoch,
+        ..PipelineConfig::default()
+    };
+    config.control.prediction_enabled = true;
+    config.control.prediction_lead_frames = 0.0;
+    let (mut runtime, ingress) =
+        PipelineRuntime::start(config.clone(), daemon_clock, pointer).expect("pipeline starts");
+    ingress.close_output_gate();
+    ingress.set_trigger_active(true);
+
+    for (generation, x) in [(1, 340.0), (2, 350.0), (3, 360.0), (4, 370.0)] {
+        let captured_at_ns = 1_000_000_000 + (generation - 1) * 50_000_000;
+        clock.0.store(captured_at_ns + 8_000_000, Ordering::Release);
+        ingress
+            .submit(
+                DetectionBatch::new(
+                    FrameStamp::new(epoch, generation, captured_at_ns),
+                    640,
+                    640,
+                    vec![Detection::new(generation, 0, x, 300.0, 40.0, 40.0, 0.95).unwrap()],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while runtime.metrics().dual_phase.generation < generation && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(runtime.metrics().dual_phase.generation, generation);
+    }
+
+    let before = runtime.metrics().dual_phase;
+    assert_eq!(before.history_position_count, 4);
+    assert_eq!(before.prediction_lead_frames, 0.0);
+    assert!((before.prediction_horizon_ms - 12.0).abs() < 1e-6);
+
+    let mut live = PipelineLiveConfig::from(&config);
+    live.control.prediction_lead_frames = 2.0;
+    ingress.set_live_config(live).expect("live config updates");
+
+    let generation = 5;
+    let captured_at_ns = 1_000_000_000 + (generation - 1) * 50_000_000;
+    clock.0.store(captured_at_ns + 8_000_000, Ordering::Release);
+    ingress
+        .submit(
+            DetectionBatch::new(
+                FrameStamp::new(epoch, generation, captured_at_ns),
+                640,
+                640,
+                vec![Detection::new(generation, 0, 380.0, 300.0, 40.0, 40.0, 0.95).unwrap()],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while runtime.metrics().dual_phase.generation < generation && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    let after = runtime.metrics().dual_phase;
+    assert_eq!(after.generation, generation);
+    assert_eq!(after.prediction_lead_frames, 2.0);
+    assert!(
+        after.prediction_horizon_ms > before.prediction_horizon_ms + 90.0,
+        "running control worker must use the new prediction lead without restarting"
+    );
+    assert_eq!(runtime.metrics().status, PipelineStatus::Running);
 
     runtime.shutdown().expect("workers join");
 }

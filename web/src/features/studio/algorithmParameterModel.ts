@@ -156,7 +156,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         recommendedMin: 0.001,
         recommendedMax: 0.999,
         step: 0.001,
-        applyMode: "save"
+        applyMode: "live"
       },
       {
         key: "far_kp",
@@ -168,7 +168,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         recommendedMin: 0.001,
         recommendedMax: 0.999,
         step: 0.001,
-        applyMode: "save"
+        applyMode: "live"
       },
       {
         key: "near_threshold_px",
@@ -181,7 +181,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         recommendedMax: 1000,
         step: 0.1,
         unit: "px",
-        applyMode: "save"
+        applyMode: "live"
       },
       {
         key: "atan_scale_counts",
@@ -194,7 +194,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         recommendedMax: 10000,
         step: 0.1,
         unit: "counts",
-        applyMode: "save"
+        applyMode: "live"
       }
     ],
     predictionCoreParameters: [
@@ -209,7 +209,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         recommendedMax: 100,
         step: 0.5,
         unit: "ms",
-        applyMode: "save"
+        applyMode: "live"
       },
       {
         key: "prediction_lead_frames",
@@ -222,7 +222,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         recommendedMax: 3,
         step: 0.1,
         unit: "帧",
-        applyMode: "save"
+        applyMode: "live"
       },
       {
         key: "velocity_smoothing_frames",
@@ -235,7 +235,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         recommendedMax: 12,
         step: 0.1,
         unit: "帧",
-        applyMode: "save"
+        applyMode: "live"
       },
       {
         key: "velocity_history_reset_gap_ms",
@@ -248,7 +248,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         recommendedMax: 250,
         step: 0.1,
         unit: "ms",
-        applyMode: "save"
+        applyMode: "live"
       }
     ],
     predictionConfidenceParameters: [

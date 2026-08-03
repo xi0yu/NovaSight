@@ -337,6 +337,41 @@ async fn pipeline_config_update_refreshes_live_control_without_restarting_pipeli
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
     assert_eq!(runtime.snapshot().pipeline.epoch.unwrap().0, 1);
 
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"section":"pipeline","key":"prediction_lead_frames","value":2.5}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let update: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(update["restart_required"], false);
+    assert_eq!(update["applied"], true);
+    assert!(
+        update["message"]
+            .as_str()
+            .unwrap()
+            .contains("live control path")
+    );
+    assert_eq!(
+        config
+            .blocking_effective_snapshot()
+            .pipeline
+            .prediction_lead_frames,
+        2.5
+    );
+    assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
+    assert_eq!(runtime.snapshot().pipeline.epoch.unwrap().0, 1);
+
     shutdown(supervisor, &runtime).await;
 }
 

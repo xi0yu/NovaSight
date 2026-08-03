@@ -2564,7 +2564,7 @@ export function StudioConsoleView({
       step={parameter.step}
       unit={parameter.unit}
       kind={parameter.kind}
-      applyMode={parameter.applyMode}
+      applyMode={parameter.applyMode ?? "live"}
       riskLevel={parameter.riskLevel}
       onCommit={(value) => updateDualPhaseField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
     />
@@ -2608,7 +2608,7 @@ export function StudioConsoleView({
       step={parameter.step}
       unit={parameter.unit}
       kind={parameter.kind}
-      applyMode={parameter.applyMode}
+      applyMode={parameter.applyMode ?? "live"}
       riskLevel={parameter.riskLevel}
       onCommit={(value) => updatePipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
     />
@@ -3945,7 +3945,7 @@ export function StudioConsoleView({
               </div>
               <ModuleSwitch
                 label="启用 X / Y 目标预测"
-                detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。保存后进入实时控制配置。"
+                detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。修改后即时进入实时控制配置。"
                 enabled={dualPhasePredictionEnabled}
                 onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)}
               />
