@@ -1177,7 +1177,8 @@
   line-height: 1.35;
 }
 
-.kmnet-diagnostic-details {
+.kmnet-diagnostic-details,
+.studio-diagnostic-details {
   margin-top: var(--space-3);
   overflow: hidden;
   border: 1px solid var(--border-subtle);
@@ -1185,7 +1186,8 @@
   background: var(--bg-subtle);
 }
 
-.kmnet-diagnostic-details > summary {
+.kmnet-diagnostic-details > summary,
+.studio-diagnostic-details > summary {
   min-height: 46px;
   display: flex;
   align-items: center;
@@ -1197,103 +1199,36 @@
   list-style: none;
 }
 
-.kmnet-diagnostic-details > summary::-webkit-details-marker {
-  display: none;
-}
-
-.kmnet-diagnostic-details > summary:hover {
-  background: color-mix(in srgb, var(--brand-primary) 5%, transparent);
-}
-
-.kmnet-diagnostic-details > summary:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: -2px;
-}
-
-.kmnet-diagnostic-details > summary span {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.kmnet-diagnostic-details > summary b {
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.kmnet-diagnostic-details > summary small {
-  color: var(--text-tertiary);
-  font-size: 10px;
-  line-height: 1.45;
-  text-wrap: pretty;
-}
-
-.kmnet-diagnostic-details > summary i {
-  flex: 0 0 auto;
-  padding: 3px 7px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-surface);
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-style: normal;
-}
-
-.kmnet-diagnostic-details[open] > summary {
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.kmnet-diagnostic-details > .console-kv {
-  margin: 0;
-  padding: var(--space-3);
-  border: 0;
-  background: transparent;
-}
-
-.studio-diagnostic-details {
-  margin-top: var(--space-3);
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-4);
-  background: var(--bg-subtle);
-}
-
-.studio-diagnostic-details > summary {
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: 9px 12px;
-  color: var(--text-primary);
-  cursor: pointer;
-  list-style: none;
-}
-
+.kmnet-diagnostic-details > summary::-webkit-details-marker,
 .studio-diagnostic-details > summary::-webkit-details-marker {
   display: none;
 }
 
+.kmnet-diagnostic-details > summary:hover,
 .studio-diagnostic-details > summary:hover {
   background: color-mix(in srgb, var(--brand-primary) 5%, transparent);
 }
 
+.kmnet-diagnostic-details > summary:focus-visible,
 .studio-diagnostic-details > summary:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: -2px;
 }
 
+.kmnet-diagnostic-details > summary span,
 .studio-diagnostic-details > summary span {
   min-width: 0;
   display: grid;
   gap: 2px;
 }
 
+.kmnet-diagnostic-details > summary b,
 .studio-diagnostic-details > summary b {
   font-size: 12px;
   font-weight: 750;
 }
 
+.kmnet-diagnostic-details > summary small,
 .studio-diagnostic-details > summary small {
   color: var(--text-tertiary);
   font-size: 10px;
@@ -1301,6 +1236,7 @@
   text-wrap: pretty;
 }
 
+.kmnet-diagnostic-details > summary i,
 .studio-diagnostic-details > summary i {
   flex: 0 0 auto;
   padding: 3px 7px;
@@ -1312,8 +1248,20 @@
   font-style: normal;
 }
 
+.kmnet-diagnostic-details[open] > summary,
 .studio-diagnostic-details[open] > summary {
   border-bottom: 1px solid var(--border-subtle);
+}
+
+.kmnet-diagnostic-details > .console-kv {
+  margin: 0;
+  padding: var(--space-3);
+  border: 0;
+  background: transparent;
+}
+
+.studio-diagnostic-details > summary {
+  min-height: 48px;
 }
 
 .studio-diagnostic-details > .diagnostic-grid {
