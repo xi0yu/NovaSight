@@ -78,7 +78,6 @@ import {
   TextControl
 } from "./StudioControls";
 import {
-  PREDICTION_PRESETS,
   buildAlgorithmParameterGroups,
   buildTargetingParameterGroups,
   type AlgorithmNumberParameter,
@@ -344,10 +343,6 @@ function finiteNumber(value: unknown): number | null {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-function numbersClose(left: number, right: number, tolerance = 0.000_001): boolean {
-  return Math.abs(left - right) <= tolerance;
 }
 
 function readString(value: unknown, fallback = ""): string {
@@ -2428,35 +2423,6 @@ export function StudioConsoleView({
     [updateConfigField]
   );
 
-  const updateDualPhaseFields = useCallback(
-    async (fields: Partial<Record<DualPhasePipelineField, RuntimeConfigValue>>) => {
-      const entries = Object.entries(fields).filter((entry): entry is [DualPhasePipelineField, RuntimeConfigValue] => entry[1] !== undefined);
-      if (entries.length === 0) {
-        return;
-      }
-      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
-      const next = base ? normalizeRuntimeConfig(base) : null;
-      if (!next) {
-        return;
-      }
-      const pipeline = {
-        ...asRecord(next.pipeline)
-      };
-      for (const [key, value] of entries) {
-        pipeline[key] = value;
-      }
-      next.pipeline = pipeline as RuntimeConfig[string];
-      if (activeConfigDialogRef.current !== null) {
-        stageConfigDialogDraft(next);
-        return;
-      }
-      for (const [key, value] of entries) {
-        await updateConfigField("pipeline", key, value);
-      }
-    },
-    [runtimeConfig, stageConfigDialogDraft, updateConfigField]
-  );
-
   const {
     responseParameters,
     predictionCoreParameters,
@@ -2492,22 +2458,6 @@ export function StudioConsoleView({
     freshnessThresholdMs
   });
 
-  const predictionValuesByField: Partial<Record<DualPhasePipelineField, number>> = {
-    prediction_lead_frames: dualPhasePredictionLeadFrames,
-    velocity_smoothing_frames: dualPhasePredictionSmoothingFrames,
-    velocity_history_reset_gap_ms: dualPhasePredictionHistoryResetGapMs
-  };
-  const predictionPresetOptions = PREDICTION_PRESETS.map((preset) => ({
-    id: preset.id,
-    label: preset.label,
-    detail: preset.detail,
-    active: Object.entries(preset.values).every(([key, value]) => {
-      const current = predictionValuesByField[key as DualPhasePipelineField];
-      return typeof current === "number" && numbersClose(current, value, 0.001);
-    }),
-    onSelect: () => updateDualPhaseFields(preset.values)
-  }));
-  const activePredictionPreset = predictionPresetOptions.find((option) => option.active);
   const algorithmTuningBrief: Array<{
     id: AlgorithmSettingsSection;
     label: string;
@@ -2525,7 +2475,7 @@ export function StudioConsoleView({
     {
       id: "prediction",
       label: "预测",
-      value: dualPhasePredictionEnabled ? activePredictionPreset?.label ?? "自定义" : "关闭",
+      value: dualPhasePredictionEnabled ? "三段速度" : "关闭",
       detail: dualPhasePredictionEnabled
         ? `提前 ${formatNumber(dualPhasePredictionLeadFrames, 1)} 帧 · 平滑 ${formatNumber(dualPhasePredictionSmoothingFrames, 1)} 帧`
         : "当前观测直接进入控制器",
@@ -3458,11 +3408,13 @@ export function StudioConsoleView({
           </div>
         ) : null}
 
-        <LaunchReadinessPanel
-          busy={busy !== null || launchStatus === "running"}
-          onAction={handleLaunchReadinessAction}
-          readiness={launchReadiness}
-        />
+        {activePage === "capture" ? (
+          <LaunchReadinessPanel
+            busy={busy !== null || launchStatus === "running"}
+            onAction={handleLaunchReadinessAction}
+            readiness={launchReadiness}
+          />
+        ) : null}
 
         <section className={activePage === "capture" ? "console-page active" : "console-page"}>
           <div className="console-metrics">
@@ -4576,7 +4528,7 @@ export function StudioConsoleView({
               <header className="algorithm-settings-panel-header">
                 <span>PREDICTION</span>
                 <h3 id="algorithm-settings-prediction-title">唯一锁定目标的 X / Y 预测</h3>
-                <p>普通用户先选预设，再按需要微调提前量和平滑窗口。其余参数属于异常保护。</p>
+                <p>预测使用已选目标最近 4 个位置形成的 3 段速度；常用调节只看执行反馈延迟、提前量、平滑窗口和断流重置。</p>
               </header>
               <div className="advanced-settings-grid two-column">
                 {predictionCoreParameters
@@ -4585,11 +4537,6 @@ export function StudioConsoleView({
               </div>
               {dualPhasePredictionEnabled ? (
                 <>
-                  <ParameterPresetControl
-                    label="预测手感预设"
-                    detail="只调整提前量、速度平滑和历史重置窗口；高级保护参数保持不变。"
-                    options={predictionPresetOptions}
-                  />
                   <div className="advanced-settings-grid two-column">
                     {predictionCoreParameters
                       .filter((parameter) => parameter.key !== "actuation_feedback_delay_ms")

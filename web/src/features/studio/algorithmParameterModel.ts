@@ -79,13 +79,6 @@ export type TargetingPipelineField =
   | "target_class_aim_y_ratios"
   | "candidate_max_aspect_ratio";
 
-export type PredictionPreset = {
-  id: string;
-  label: string;
-  detail: string;
-  values: Partial<Record<DualPhasePipelineField, number>>;
-};
-
 export type AlgorithmParameterValues = {
   dualPhaseNearKp: number;
   dualPhaseFarKp: number;
@@ -149,49 +142,6 @@ export type TargetingParameterGroups = {
   trackerCoreParameters: TargetingNumberParameter[];
   trackerKalmanParameters: TargetingNumberParameter[];
 };
-
-export const PREDICTION_PRESETS: PredictionPreset[] = [
-  {
-    id: "stable",
-    label: "稳定",
-    detail: "少提前，更多平滑",
-    values: {
-      prediction_lead_frames: 0.6,
-      velocity_smoothing_frames: 5,
-      velocity_history_reset_gap_ms: 80
-    }
-  },
-  {
-    id: "balanced",
-    label: "均衡",
-    detail: "使用默认跟随手感",
-    values: {
-      prediction_lead_frames: 1,
-      velocity_smoothing_frames: 3,
-      velocity_history_reset_gap_ms: 80
-    }
-  },
-  {
-    id: "fast",
-    label: "高速目标",
-    detail: "更快跟随连续位移",
-    values: {
-      prediction_lead_frames: 1.6,
-      velocity_smoothing_frames: 2,
-      velocity_history_reset_gap_ms: 120
-    }
-  },
-  {
-    id: "peek",
-    label: "急停 / peek",
-    detail: "降低旧速度惯性",
-    values: {
-      prediction_lead_frames: 0.8,
-      velocity_smoothing_frames: 1.5,
-      velocity_history_reset_gap_ms: 45
-    }
-  }
-];
 
 export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues): AlgorithmParameterGroups {
   return {
@@ -264,7 +214,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "prediction_lead_frames",
         label: "预测提前量",
-        detail: "在补偿当前观测帧龄后，再沿目标速度额外预测多少帧。跟不上移动目标时小幅增加；明显超前时降低。",
+        detail: "在观测帧龄和执行反馈延迟之外，沿三段速度估计额外提前多少帧。跟不上快速目标时小幅增加；急停或左右晃动过冲时降低。",
         value: values.dualPhasePredictionLeadFrames,
         min: 0,
         max: 10,
@@ -276,8 +226,8 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       },
       {
         key: "velocity_smoothing_frames",
-        label: "速度平滑窗口",
-        detail: "增大可降低预测点抖动，但会让速度变化响应更慢。",
+        label: "三段速度平滑窗口",
+        detail: "连续同向移动时平滑 3 段速度估计。增大更稳但急停、反向和 peek 响应更慢。",
         value: values.dualPhasePredictionSmoothingFrames,
         min: 0.000001,
         max: 120,
@@ -290,7 +240,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "velocity_history_reset_gap_ms",
         label: "断流历史重置",
-        detail: "相邻有效画面超过该时间后丢弃旧速度，避免断流后继续沿旧方向预测。",
+        detail: "相邻有效画面超过该时间后清空 4 点 / 3 段速度历史，避免断流后继续沿旧方向预测。",
         value: values.dualPhasePredictionHistoryResetGapMs,
         min: 0.000001,
         max: 10000,
@@ -305,7 +255,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "velocity_spread_base_px_ms",
         label: "速度离散基础容差",
-        detail: "多段速度样本离散程度超过基础值加相对值后，预测可信度会降低。",
+        detail: "3 段速度离散程度超过基础值加相对值后，预测可信度会降低。",
         value: values.velocitySpreadBasePxMs,
         min: 0.000001,
         max: 10000,

@@ -595,7 +595,7 @@ export function buildLaunchReadiness({
     ? status.running ? "主链已经具备生产运行证据" : "主链准备完成，等待启动"
     : state === "blocked"
       ? status.running ? "主链输出链路有阻断项" : "主链启动前有阻断项"
-      : status.running ? "按诊断处理下一步" : "按顺序补齐主链准备项";
+      : status.running ? "主链等待诊断处理" : "主链等待启动准备";
   const detail = state === "ready"
     ? status.running
       ? status.readinessDetail
