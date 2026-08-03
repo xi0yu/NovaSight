@@ -841,7 +841,7 @@ tbody tr:hover {
   color: var(--text-primary);
   font-size: 1rem;
   font-weight: 780;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1032,7 +1032,7 @@ tbody tr:hover {
   margin: 2px 0;
   color: var(--text-primary);
   font-size: 1.12rem;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
 }
 
 .model-manager-dialog-title p {
@@ -1492,63 +1492,33 @@ tbody tr:hover {
   line-height: 1.5;
 }
 
-.license-gift-card {
+.license-status-card {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(240px, 0.82fr);
   gap: 16px;
   overflow: hidden;
   padding: 18px;
-  border: 1px solid color-mix(in srgb, var(--brand-primary) 28%, var(--border-subtle));
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-inner);
-  background:
-    radial-gradient(circle at 92% 0%, color-mix(in srgb, var(--brand-primary) 18%, transparent), transparent 36%),
-    linear-gradient(135deg, color-mix(in srgb, var(--brand-soft) 82%, var(--bg-elevated)), var(--bg-elevated));
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, #ffffff 34%, transparent),
-    0 16px 34px color-mix(in srgb, var(--theme-glow) 28%, transparent);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-card);
 }
 
-.license-gift-card.valid {
-  border-color: color-mix(in srgb, var(--green) 28%, var(--brand-primary));
+.license-status-card.valid {
+  border-color: color-mix(in srgb, var(--green) 28%, var(--border-subtle));
 }
 
-.license-gift-card::after {
-  content: "";
-  position: absolute;
-  top: 15px;
-  right: 16px;
-  width: 48px;
-  height: 48px;
-  border: 1px dashed color-mix(in srgb, var(--brand-primary) 36%, transparent);
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--brand-primary) 10%, #ffffff);
-  opacity: 0.74;
-  pointer-events: none;
-}
-
-.license-gift-ribbon {
-  position: absolute;
-  inset: 0 auto 0 20px;
-  width: 18px;
-  pointer-events: none;
-  background:
-    linear-gradient(90deg, transparent 41%, rgba(255, 255, 255, 0.78) 42% 58%, transparent 59%),
-    linear-gradient(180deg, var(--brand-primary), color-mix(in srgb, var(--brand-primary) 68%, var(--signal-attention)));
-  opacity: 0.88;
-}
-
-.license-gift-copy {
+.license-status-copy {
   position: relative;
   z-index: 1;
   min-width: 0;
   display: grid;
   align-content: start;
   gap: 7px;
-  padding-left: 28px;
 }
 
-.license-gift-copy > span {
+.license-status-copy > span {
   color: var(--brand-primary);
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -1556,13 +1526,13 @@ tbody tr:hover {
   letter-spacing: 0;
 }
 
-.license-gift-copy strong {
+.license-status-copy strong {
   color: var(--text-primary);
   font-size: 1.1rem;
   line-height: 1.25;
 }
 
-.license-gift-copy p {
+.license-status-copy p {
   max-width: 520px;
   margin: 0;
   color: var(--text-secondary);
@@ -1570,7 +1540,7 @@ tbody tr:hover {
   line-height: 1.55;
 }
 
-.license-gift-trace {
+.license-status-trace {
   position: relative;
   z-index: 1;
   min-width: 0;
@@ -1580,7 +1550,7 @@ tbody tr:hover {
   margin: 0;
 }
 
-.license-gift-trace > div {
+.license-status-trace > div {
   min-width: 0;
   display: grid;
   gap: 4px;
@@ -1590,13 +1560,13 @@ tbody tr:hover {
   background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
 }
 
-.license-gift-trace dt {
+.license-status-trace dt {
   color: var(--text-tertiary);
   font-size: 0.72rem;
   font-weight: 730;
 }
 
-.license-gift-trace dd {
+.license-status-trace dd {
   min-width: 0;
   margin: 0;
   color: var(--text-primary);
@@ -1642,11 +1612,11 @@ tbody tr:hover {
 }
 
 @media (max-width: 640px) {
-  .license-gift-card {
+  .license-status-card {
     grid-template-columns: 1fr;
   }
 
-  .license-gift-trace {
+  .license-status-trace {
     grid-template-columns: 1fr;
   }
 
@@ -2675,7 +2645,7 @@ tbody tr:hover {
   margin: 3px 0;
   color: var(--text-primary);
   font-size: 0.96rem;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .control-output-gate-identity p {
@@ -3103,7 +3073,7 @@ tbody tr:hover {
   color: var(--text-primary);
   font-size: var(--text-section-title);
   font-weight: 720;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .launch-dialog p {

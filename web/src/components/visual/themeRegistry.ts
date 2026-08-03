@@ -21,7 +21,7 @@ export const THEME_STORAGE_KEY = "novasight.theme";
 export const DEFAULT_THEME: ThemeMode = "momo";
 
 export const THEME_OPTIONS: ThemeOption[] = [
-  { id: "momo", label: "桃粉礼物", character: "Momo · 成年向导", palette: "礼物粉 · 莓红 · 奶白" },
+  { id: "momo", label: "桃粉工作台", character: "Momo · 成年向导", palette: "桃粉 · 莓红 · 奶白" },
   { id: "elysia", label: "樱晶庭院", character: "Sakura · 视觉档案", palette: "樱花白 · 粉金" },
   { id: "rem", label: "苍雪校准", character: "Azure · 稳定档案", palette: "冰蓝 · 瓷白" },
   { id: "lusha", label: "鎏金王庭", character: "Gilded · 典藏档案", palette: "暖褐 · 象牙白 · 金" },
@@ -30,11 +30,11 @@ export const THEME_OPTIONS: ThemeOption[] = [
 
 const THEME_STORY_DETAILS: Record<ThemeMode, Omit<ThemeStory, "id" | "index">> = {
   momo: {
-    work: "NOVA GIFT",
+    work: "NOVA ROSE",
     character: "Momo",
-    title: "桃粉礼物",
-    line: "个人授权被包装成一份可追溯的生日礼物；每一步启动都有下一步。",
-    tags: ["成年向导", "礼物贴纸", "粉色工作台"]
+    title: "桃粉工作台",
+    line: "个人授权以清晰状态卡呈现；每一步启动都有下一步。",
+    tags: ["成年向导", "授权状态", "粉色工作台"]
   },
   elysia: {
     work: "NOVA SAKURA",
@@ -55,7 +55,7 @@ const THEME_STORY_DETAILS: Record<ThemeMode, Omit<ThemeStory, "id" | "index">> =
     character: "Gilded",
     title: "鎏金王庭",
     line: "金色只出现在收藏和档案层，运行控件保持克制。",
-    tags: ["典藏档案", "暖金边界", "礼装感"]
+    tags: ["典藏档案", "暖金边界", "典藏感"]
   },
   tayama: {
     work: "NOVA CRIMSON",

@@ -186,7 +186,7 @@ function buildLicenseItem(license: LicenseStatus | null): LaunchReadinessItem {
       id: "license",
       label: "个人授权",
       state: "ready",
-      detail: `${formatTier(license.tier)} 已签收，授权可追溯。`,
+      detail: `${formatTier(license.tier)} 已激活，授权可追溯。`,
       evidence: `追踪码 ${trace}`,
       blocking: true
     };

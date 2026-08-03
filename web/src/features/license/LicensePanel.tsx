@@ -34,7 +34,7 @@ export function LicensePanel({
   const currentTime = new Date().toLocaleString("zh-CN", { hour12: false });
   const temporarySupported = license?.temporary_access_supported === true;
   const traceSource = license?.token_id || license?.license_id || license?.fingerprint || "";
-  const giftTraceCode = formatTraceFragment(traceSource);
+  const statusTraceCode = formatTraceFragment(traceSource);
   const fingerprintTraceCode = formatTraceFragment(license?.fingerprint);
   const licenseTraceCode = formatTraceFragment(license?.license_id);
   const tokenTraceCode = formatTraceFragment(license?.token_id);
@@ -42,12 +42,12 @@ export function LicensePanel({
   const validFrom = license?.valid
     ? formatEpoch(license.not_before ?? license.created_at)
     : "等待签发";
-  const signedAt = license?.valid
+  const activatedAt = license?.valid
     ? formatEpoch(license.activated_at ?? license.created_at)
-    : "等待签收";
-  const giftTitle = license?.valid
-    ? "个人授权礼物已签收"
-    : "等待签收个人授权礼物";
+    : "等待激活";
+  const licenseStatusTitle = license?.valid
+    ? "授权已激活"
+    : "等待授权激活";
   const backendMessage = license?.message?.trim();
   const features = license?.features ?? [];
 
@@ -177,19 +177,18 @@ export function LicensePanel({
           {license?.valid ? "授权有效" : "尚未授权"}
         </StatusIndicator>
       </div>
-      <div className={license?.valid ? "license-gift-card valid" : "license-gift-card"}>
-        <span className="license-gift-ribbon" aria-hidden="true" />
-        <div className="license-gift-copy">
-          <span>PERSONAL GIFT LICENSE</span>
-          <strong>{giftTitle}</strong>
+      <div className={license?.valid ? "license-status-card valid" : "license-status-card"}>
+        <div className="license-status-copy">
+          <span>LICENSE STATUS</span>
+          <strong>{licenseStatusTitle}</strong>
           <p>
-            每份授权都作为单一可追踪签收对象管理；界面只展示追踪片段，不回显完整凭证。
+            授权凭证由后端保存和校验；界面只展示追踪片段，不回显完整凭证。
           </p>
         </div>
-        <dl className="license-gift-trace">
+        <dl className="license-status-trace">
           <div>
-            <dt>礼物追踪码</dt>
-            <dd>{giftTraceCode}</dd>
+            <dt>状态追踪码</dt>
+            <dd>{statusTraceCode}</dd>
           </div>
           <div>
             <dt>设备指纹</dt>
@@ -212,8 +211,8 @@ export function LicensePanel({
             <dd>{validFrom}</dd>
           </div>
           <div>
-            <dt>签收时间</dt>
-            <dd>{signedAt}</dd>
+            <dt>激活时间</dt>
+            <dd>{activatedAt}</dd>
           </div>
         </dl>
       </div>

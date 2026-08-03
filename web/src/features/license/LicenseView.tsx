@@ -30,10 +30,10 @@ export function LicenseGate({
     : serviceUnavailable
       ? "连接本机服务后进入 Jetson 实时视觉工作台"
       : license?.valid
-        ? "个人授权已签收，进入 Jetson 实时视觉工作台"
+        ? "授权已激活，进入 Jetson 实时视觉工作台"
         : license?.temporary_access_supported
-          ? "签收正式授权或申请 Debug 临时权限后进入工作台"
-          : "签收正式授权后进入 Jetson 实时视觉工作台";
+          ? "激活正式授权或申请 Debug 临时权限后进入工作台"
+          : "激活正式授权后进入 Jetson 实时视觉工作台";
 
   return (
     <main className="app-shell license-shell">

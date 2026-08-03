@@ -134,7 +134,7 @@ function ModelManagerLoadingDialog({ onClose }: { onClose: () => void }) {
               <NovaIcon name="models" size={22} />
             </span>
             <div>
-              <span className="class-config-eyebrow">MODEL VAULT</span>
+              <span className="class-config-eyebrow">MODEL MANAGER</span>
               <h2 id="model-manager-loading-title">模型管理与切换</h2>
               <p>正在读取模型管理界面，运行主链不受影响。</p>
             </div>
