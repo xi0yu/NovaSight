@@ -5076,10 +5076,7 @@ body::after {
   padding: 20px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-4);
-  background:
-    radial-gradient(circle at 12% 0%, rgba(24, 166, 184, 0.12), transparent 34%),
-    radial-gradient(circle at 88% 12%, rgba(85, 111, 246, 0.12), transparent 34%),
-    var(--bg-elevated);
+  background: var(--bg-elevated);
   box-shadow: var(--shadow-card);
 }
 
@@ -5201,6 +5198,19 @@ body::after {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .visual-hero,
+  .visual-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .visual-status-grid,
+  .visual-empty-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .console-metric {
