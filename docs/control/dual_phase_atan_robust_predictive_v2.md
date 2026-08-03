@@ -60,8 +60,9 @@ radial-error threshold centers a cubic Smoothstep transition whose half-width
 is 25% of that threshold. This removes the parameter jump without adding a
 second gain stage or another tuning field. Both regions share one Atan scale;
 only Kp and the per-update output limit differ. Neither is a movement deadzone.
-Prediction caps are still scheduled from the measured error, so a predicted
-offset cannot recursively enlarge its own safety envelope.
+Prediction caps start from the measured error and can expand only toward the
+configured absolute cap when the motion state is stable enough. A predicted
+offset cannot recursively enlarge its own safety envelope beyond that budget.
 
 ## State And Integer Output
 
@@ -102,6 +103,16 @@ residual.
 - `prediction_lead_frames=0` still compensates measured frame age; it adds no
   extra capture interval. The module switch is the only way to disable
   prediction.
+- Positive `prediction_lead_frames` is an input to the internal adaptive
+  horizon. The first complete three-segment window preserves the configured
+  lead, stable continuous motion can receive a bounded half-frame bonus, and
+  stop/reverse/peek states reduce extra lead before velocity is projected.
+- Acceleration is only a weak correction on stable continuous motion. It is
+  bounded to a small fraction of the velocity projection and is not applied to
+  stationary, stop/reverse, peek, or first-window mean states.
+- Prediction confidence is used as a motion-state gate. Stable continuous and
+  stable mean windows can keep full projection strength, while low-confidence
+  and peek patterns remain attenuated before the cap.
 - Runtime telemetry separates measured aim, predicted aim, prediction horizon,
   tracking command, recoil contribution and final device receipt.
 

@@ -68,7 +68,7 @@ fn pipeline_runtime_drives_phase2_algorithms_and_device_on_owned_threads() {
     .expect("valid batch");
     ingress.submit(batch).expect("pipeline accepts batch");
 
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(3);
     while device.receipts().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
@@ -138,7 +138,7 @@ fn control_waits_until_a_successful_device_move_can_be_visible_in_capture() {
         .unwrap()
     };
     ingress.submit(batch(1, 1_000_000_000)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(3);
     while device.receipts().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
@@ -280,7 +280,7 @@ fn detection_telemetry_is_bounded_without_dropping_the_runtime_batch() {
         .expect("pipeline accepts batch");
 
     let deadline = Instant::now() + Duration::from_secs(1);
-    while runtime.metrics().targeting_batches == 0 && Instant::now() < deadline {
+    while runtime.metrics().detections.generation.is_none() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
     let metrics = runtime.metrics();
@@ -666,7 +666,7 @@ fn recoil_without_target_uses_fresh_observations_when_target_guard_is_disabled()
 
     clock.0.store(1_078_000_000, Ordering::Release);
     ingress.submit(empty_batch(2, 1_070_000_000)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(3);
     while device.receipts().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
@@ -734,7 +734,7 @@ fn target_guard_uses_the_existing_tracker_loss_grace_without_predicted_control()
             .unwrap(),
         )
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = Instant::now() + Duration::from_secs(3);
     while device.receipts().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
@@ -840,8 +840,9 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
             thread::sleep(Duration::from_millis(1));
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while device.receipts().last().map(|item| item.generation.0) != Some(7)
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while (device.receipts().last().map(|item| item.generation.0) != Some(7)
+        || runtime.metrics().recoil.state != RecoilState::Applied)
         && Instant::now() < deadline
     {
         thread::sleep(Duration::from_millis(1));

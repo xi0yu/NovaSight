@@ -17,7 +17,10 @@ pub mod units;
 
 pub use assessment::{
     AlgorithmScore, AlgorithmScoreConfig, AlgorithmTraceSample, CountResponseLagEstimate,
-    CountResponseLagScore, CountResponseModel, estimate_count_response_lag, score_algorithm_trace,
+    CountResponseLagScore, CountResponseModel, PredictionTruthConfig, PredictionTruthHorizonScore,
+    PredictionTruthMotionClass, PredictionTruthMotionClassScore, PredictionTruthProjection,
+    PredictionTruthReport, PredictionTruthSample, estimate_count_response_lag,
+    score_algorithm_trace, score_prediction_truth,
 };
 pub use capture::{
     CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError,

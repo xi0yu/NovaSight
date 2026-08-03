@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex, TryLockError,
     atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence},
@@ -15,7 +16,9 @@ use novasight_core::controller::{
 };
 use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore, TrackState};
 use novasight_core::{
-    Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, PointerDevice, RuntimeEpoch,
+    Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, PointerDevice,
+    PredictionTruthConfig, PredictionTruthReport, PredictionTruthSample, RuntimeEpoch,
+    score_prediction_truth,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -33,6 +36,7 @@ const STATUS_STANDBY: u8 = 5;
 const MAX_TELEMETRY_DETECTIONS: usize = 64;
 const DETECTION_TELEMETRY_MIN_INTERVAL_NS: u64 = 200_000_000;
 const CONTROL_TELEMETRY_MIN_INTERVAL_NS: u64 = 50_000_000;
+const PREDICTION_TRUTH_SAMPLE_CAPACITY: usize = 240;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PipelineStatus {
@@ -171,6 +175,8 @@ pub struct PipelineMetrics {
     pub detections: DetectionTelemetry,
     pub target_selection: TargetSelection,
     pub dual_phase: DualPhaseDecision,
+    #[serde(default)]
+    pub prediction_truth: PredictionTruthReport,
     pub recoil: RecoilDecision,
 }
 
@@ -240,6 +246,7 @@ struct AtomicMetrics {
     vision: Mutex<VisionTelemetry>,
     last_device_receipt: AtomicDeviceReceipt,
     dual_phase: Mutex<DualPhaseDecision>,
+    prediction_truth: Mutex<VecDeque<PredictionTruthSample>>,
     recoil: Mutex<RecoilDecision>,
 }
 
@@ -391,6 +398,7 @@ impl SharedState {
                     ..TargetSelection::default()
                 },
             }),
+            prediction_truth: Mutex::new(VecDeque::with_capacity(PREDICTION_TRUTH_SAMPLE_CAPACITY)),
             ..AtomicMetrics::default()
         };
         Self {
@@ -452,6 +460,24 @@ impl SharedState {
             Ok(mut telemetry) => *telemetry = value,
             Err(TryLockError::WouldBlock) => {}
             Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
+        }
+    }
+
+    fn record_prediction_truth(&self, value: DualPhaseDecision) {
+        let sample = PredictionTruthSample::from_control_decision(&value);
+        match self.metrics.prediction_truth.try_lock() {
+            Ok(mut samples) => {
+                if samples.len() == PREDICTION_TRUTH_SAMPLE_CAPACITY {
+                    samples.pop_front();
+                }
+                samples.push_back(sample);
+            }
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Poisoned(poisoned)) => {
+                let mut samples = poisoned.into_inner();
+                samples.clear();
+                samples.push_back(sample);
+            }
         }
     }
 
@@ -535,6 +561,11 @@ impl SharedState {
     fn clear_control_telemetry(&self) {
         self.record_dual_phase(DualPhaseDecision::default());
         self.record_recoil(RecoilDecision::default());
+        self.metrics
+            .prediction_truth
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
     }
 
     fn fault(&self, message: impl Into<String>) {
@@ -1578,6 +1609,7 @@ fn spawn_control_worker(
                         ),
                     };
                     let decision = control.calculate_with_feedback(observation, feedback);
+                    shared.record_prediction_truth(decision);
                     if control_now_ns >= next_telemetry_at_ns {
                         shared.record_dual_phase(decision);
                         next_telemetry_at_ns =
@@ -1857,6 +1889,15 @@ fn snapshot_metrics(
         (vision.detections.clone(), vision.target_selection.clone())
     };
     let last_device_receipt = shared.metrics.last_device_receipt.snapshot();
+    let prediction_truth = {
+        let samples = shared
+            .metrics
+            .prediction_truth
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let samples = samples.iter().copied().collect::<Vec<_>>();
+        score_prediction_truth(&samples, PredictionTruthConfig::default())
+    };
     PipelineMetrics {
         status: shared.status(),
         received_batches: shared.metrics.received_batches.load(Ordering::Relaxed),
@@ -1897,6 +1938,7 @@ fn snapshot_metrics(
             .dual_phase
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        prediction_truth,
         recoil: *shared
             .metrics
             .recoil

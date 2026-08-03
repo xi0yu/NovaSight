@@ -6,7 +6,29 @@
 
 use std::collections::VecDeque;
 
+use serde::{Deserialize, Serialize};
+
 const VELOCITY_POSITION_COUNT: usize = 4;
+const CONTINUOUS_LEAD_BONUS_FRAMES: f64 = 0.5;
+const PEEK_LEAD_FRAMES: f64 = 0.25;
+const ACCELERATION_CORRECTION_GAIN: f64 = 0.20;
+const ACCELERATION_CORRECTION_MAX_RATIO: f64 = 0.30;
+const PREDICTION_FULL_STRENGTH_CONFIDENCE: f64 = 0.55;
+const PREDICTION_STABLE_MEAN_CONFIDENCE: f64 = 0.35;
+const PREDICTION_REACTIVE_CONFIDENCE: f64 = 0.25;
+const PREDICTION_PEEK_MAX_STRENGTH: f64 = 0.35;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PredictionMotionState {
+    Mean,
+    Continuous,
+    AbruptStopOrReverse,
+    AlternatingPeek,
+    Stationary,
+    #[default]
+    Unavailable,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SingleTargetPredictionConfig {
@@ -85,6 +107,9 @@ pub struct FocusTargetObservation {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AxisPrediction {
     pub velocity: f64,
+    pub motion_state: PredictionMotionState,
+    pub trend_consistency: f64,
+    pub acceleration_px_ms2: f64,
     pub motion_confidence: f64,
     pub velocity_samples: [Option<f64>; 3],
     pub mean_velocity: Option<f64>,
@@ -154,11 +179,11 @@ impl SingleTargetPredictor {
         }
         SingleTargetPrediction {
             x: AxisPrediction {
-                allowed_cap: self.allowed_cap(measured_error_x, far_weight),
+                allowed_cap: self.allowed_cap(measured_error_x, far_weight, None, 0.0),
                 ..AxisPrediction::default()
             },
             y: AxisPrediction {
-                allowed_cap: self.allowed_cap(measured_error_y, far_weight),
+                allowed_cap: self.allowed_cap(measured_error_y, far_weight, None, 0.0),
                 ..AxisPrediction::default()
             },
             history_position_count: self.velocity_x.history_position_count(),
@@ -242,18 +267,31 @@ impl SingleTargetPredictor {
         } else {
             0.0
         };
+        let effective_lead_frames = self.effective_lead_frames(estimate, confidence);
         let horizon_ms = if allowed {
             observation_age_ms
                 + self.config.actuation_delay_ms
-                + estimate.reference_dt_ms.max(0.0) * self.config.lead_frames
+                + estimate.reference_dt_ms.max(0.0) * effective_lead_frames
         } else {
             0.0
         };
-        let raw_offset = estimate.filtered_velocity * horizon_ms;
-        let allowed_cap = self.allowed_cap(measured_error, far_weight);
-        let weighted_offset = raw_offset * confidence;
+        let velocity_offset = estimate.filtered_velocity * horizon_ms;
+        let acceleration_offset =
+            self.acceleration_correction_offset(estimate, horizon_ms, velocity_offset, confidence);
+        let raw_offset = velocity_offset + acceleration_offset;
+        let prediction_strength = prediction_strength(
+            estimate.motion_state,
+            estimate.trend_consistency,
+            confidence,
+        );
+        let weighted_offset = raw_offset * prediction_strength;
+        let allowed_cap =
+            self.allowed_cap(measured_error, far_weight, Some(estimate), weighted_offset);
         AxisPrediction {
             velocity: estimate.filtered_velocity,
+            motion_state: estimate.motion_state,
+            trend_consistency: estimate.trend_consistency,
+            acceleration_px_ms2: estimate.acceleration_px_ms2,
             motion_confidence: estimate.motion_confidence,
             velocity_samples: estimate.raw_velocities.map(Some),
             mean_velocity: Some(estimate.mean_velocity),
@@ -270,7 +308,13 @@ impl SingleTargetPredictor {
         }
     }
 
-    fn allowed_cap(&self, measured_error_x: f64, far_weight: f64) -> f64 {
+    fn allowed_cap(
+        &self,
+        measured_error_x: f64,
+        far_weight: f64,
+        estimate: Option<VelocityEstimate>,
+        weighted_offset: f64,
+    ) -> f64 {
         let far_weight = far_weight.clamp(0.0, 1.0);
         let absolute_cap = lerp(
             self.config.near_absolute_cap_px,
@@ -287,8 +331,138 @@ impl SingleTargetPredictor {
             self.config.far_relative_cap,
             far_weight,
         );
-        absolute_cap.min(base_cap + relative_cap * measured_error_x.abs())
+        let scheduled_cap = absolute_cap.min(base_cap + relative_cap * measured_error_x.abs());
+        motion_expanded_cap(scheduled_cap, absolute_cap, estimate, weighted_offset)
     }
+
+    fn effective_lead_frames(&self, estimate: VelocityEstimate, confidence: f64) -> f64 {
+        let configured_lead = self.config.lead_frames.max(0.0);
+        if configured_lead <= f64::EPSILON {
+            return 0.0;
+        }
+        match estimate.motion_state {
+            PredictionMotionState::Unavailable
+            | PredictionMotionState::Stationary
+            | PredictionMotionState::AbruptStopOrReverse => 0.0,
+            PredictionMotionState::AlternatingPeek => {
+                PEEK_LEAD_FRAMES.min(configured_lead) * confidence.clamp(0.0, 1.0)
+            }
+            PredictionMotionState::Mean => configured_lead,
+            PredictionMotionState::Continuous => {
+                let speed = estimate.filtered_velocity.abs();
+                let speed_reference = (self.config.spread_base_px_ms * 4.0).max(1e-9);
+                let speed_factor = speed / (speed + speed_reference);
+                let quality = estimate.trend_consistency.min(confidence).clamp(0.0, 1.0);
+                configured_lead + CONTINUOUS_LEAD_BONUS_FRAMES * speed_factor * quality
+            }
+        }
+    }
+
+    fn acceleration_correction_offset(
+        &self,
+        estimate: VelocityEstimate,
+        horizon_ms: f64,
+        velocity_offset: f64,
+        confidence: f64,
+    ) -> f64 {
+        if estimate.motion_state != PredictionMotionState::Continuous
+            || !estimate.acceleration_px_ms2.is_finite()
+            || !horizon_ms.is_finite()
+            || horizon_ms <= 0.0
+            || !velocity_offset.is_finite()
+            || velocity_offset.abs() <= f64::EPSILON
+        {
+            return 0.0;
+        }
+        let quality = estimate.trend_consistency.min(confidence).clamp(0.0, 1.0);
+        if quality <= f64::EPSILON {
+            return 0.0;
+        }
+        let correction = 0.5
+            * estimate.acceleration_px_ms2
+            * horizon_ms
+            * horizon_ms
+            * ACCELERATION_CORRECTION_GAIN
+            * quality;
+        if !correction.is_finite() {
+            return 0.0;
+        }
+        let limit = velocity_offset.abs() * ACCELERATION_CORRECTION_MAX_RATIO;
+        correction.clamp(-limit, limit)
+    }
+}
+
+fn prediction_strength(
+    motion_state: PredictionMotionState,
+    trend_consistency: f64,
+    confidence: f64,
+) -> f64 {
+    let confidence = confidence.clamp(0.0, 1.0);
+    if confidence <= f64::EPSILON {
+        return 0.0;
+    }
+    let trend_consistency = trend_consistency.clamp(0.0, 1.0);
+    let (open_at, max_strength) = match motion_state {
+        PredictionMotionState::Unavailable | PredictionMotionState::Stationary => {
+            return 0.0;
+        }
+        PredictionMotionState::Continuous => {
+            let threshold = PREDICTION_FULL_STRENGTH_CONFIDENCE - 0.15 * trend_consistency;
+            (threshold.max(PREDICTION_STABLE_MEAN_CONFIDENCE), 1.0)
+        }
+        PredictionMotionState::Mean => {
+            let threshold = if trend_consistency >= 0.70 {
+                PREDICTION_STABLE_MEAN_CONFIDENCE
+            } else {
+                PREDICTION_FULL_STRENGTH_CONFIDENCE
+            };
+            (threshold, 1.0)
+        }
+        PredictionMotionState::AbruptStopOrReverse => (PREDICTION_REACTIVE_CONFIDENCE, 0.80),
+        PredictionMotionState::AlternatingPeek => (
+            PREDICTION_FULL_STRENGTH_CONFIDENCE,
+            PREDICTION_PEEK_MAX_STRENGTH,
+        ),
+    };
+    if confidence >= open_at {
+        return max_strength;
+    }
+    let ratio = (confidence / open_at.max(1e-9)).clamp(0.0, 1.0);
+    max_strength * ratio * ratio
+}
+
+fn motion_expanded_cap(
+    scheduled_cap: f64,
+    absolute_cap: f64,
+    estimate: Option<VelocityEstimate>,
+    weighted_offset: f64,
+) -> f64 {
+    let scheduled_cap = scheduled_cap.max(0.0);
+    let absolute_cap = absolute_cap.max(0.0);
+    if !weighted_offset.is_finite() || weighted_offset.abs() <= f64::EPSILON {
+        return scheduled_cap;
+    }
+    let Some(estimate) = estimate else {
+        return scheduled_cap;
+    };
+    let confidence = estimate.motion_confidence.clamp(0.0, 1.0);
+    let trend = estimate.trend_consistency.clamp(0.0, 1.0);
+    let weighted_abs = weighted_offset.abs();
+    let motion_cap = match estimate.motion_state {
+        PredictionMotionState::Continuous if confidence >= 0.40 && trend >= 0.70 => weighted_abs,
+        PredictionMotionState::Mean
+            if confidence >= PREDICTION_STABLE_MEAN_CONFIDENCE && trend >= 0.70 =>
+        {
+            weighted_abs * 0.85
+        }
+        PredictionMotionState::AbruptStopOrReverse
+            if confidence >= PREDICTION_REACTIVE_CONFIDENCE =>
+        {
+            weighted_abs * 0.80
+        }
+        _ => return scheduled_cap,
+    };
+    scheduled_cap.max(motion_cap.min(absolute_cap))
 }
 
 fn lerp(start: f64, end: f64, weight: f64) -> f64 {
@@ -307,25 +481,19 @@ struct VelocityEstimate {
     mean_velocity: f64,
     median_velocity: f64,
     filtered_velocity: f64,
+    motion_state: PredictionMotionState,
+    trend_consistency: f64,
+    acceleration_px_ms2: f64,
     spread: f64,
     motion_confidence: f64,
     measurement_dt_ms: f64,
     reference_dt_ms: f64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum VelocityWindowIntent {
-    Mean,
-    Continuous,
-    AbruptStopOrReverse,
-    AlternatingPeek,
-    Stationary,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VelocityWindowDecision {
     target_velocity: f64,
-    intent: VelocityWindowIntent,
+    intent: PredictionMotionState,
 }
 
 #[derive(Clone, Debug)]
@@ -438,10 +606,11 @@ impl RobustVelocityEstimator {
         );
         if self.initialized_velocity {
             self.filtered_velocity = match window_decision.intent {
-                VelocityWindowIntent::AbruptStopOrReverse
-                | VelocityWindowIntent::AlternatingPeek
-                | VelocityWindowIntent::Stationary => window_decision.target_velocity,
-                VelocityWindowIntent::Mean | VelocityWindowIntent::Continuous => {
+                PredictionMotionState::AbruptStopOrReverse
+                | PredictionMotionState::AlternatingPeek
+                | PredictionMotionState::Stationary
+                | PredictionMotionState::Unavailable => window_decision.target_velocity,
+                PredictionMotionState::Mean | PredictionMotionState::Continuous => {
                     let smoothing_window_ms =
                         (reference_dt_ms * self.config.smoothing_frames).max(1e-9);
                     let alpha = 1.0 - (-latest_dt_ms / smoothing_window_ms).exp();
@@ -453,6 +622,13 @@ impl RobustVelocityEstimator {
             self.initialized_velocity = true;
         }
         self.complete_window_updates += 1;
+        let acceleration_px_ms2 = mean_acceleration(velocities, intervals_ms);
+        let trend_consistency = velocity_trend_consistency(
+            velocities,
+            mean_velocity,
+            self.config.spread_base_px_ms,
+            window_decision.intent,
+        );
 
         let history_quality = (self.complete_window_updates as f64 / 2.0).min(1.0);
         let spread_scale =
@@ -462,7 +638,7 @@ impl RobustVelocityEstimator {
         let trend_scale =
             self.config.change_base_px_ms + self.config.change_relative * previous_filtered.abs();
         let mut trend_quality = 1.0 / (1.0 + trend_delta / trend_scale.max(1e-9));
-        if window_decision.intent == VelocityWindowIntent::AbruptStopOrReverse {
+        if window_decision.intent == PredictionMotionState::AbruptStopOrReverse {
             trend_quality = trend_quality.max(0.65);
         }
         // Adjacent slopes may claim motion when detector jitter alternates
@@ -474,9 +650,9 @@ impl RobustVelocityEstimator {
         let window_speed = window_velocity.abs();
         let filtered_speed = self.filtered_velocity.abs();
         let displacement_quality =
-            if window_decision.intent == VelocityWindowIntent::AbruptStopOrReverse {
+            if window_decision.intent == PredictionMotionState::AbruptStopOrReverse {
                 0.80
-            } else if window_decision.intent == VelocityWindowIntent::Stationary {
+            } else if window_decision.intent == PredictionMotionState::Stationary {
                 0.0
             } else if mean_speed <= f64::EPSILON
                 || window_speed <= f64::EPSILON
@@ -489,7 +665,7 @@ impl RobustVelocityEstimator {
                 let window_agreement = mean_speed.min(window_speed) / mean_speed.max(window_speed);
                 let current_velocity_support = (mean_speed / filtered_speed).min(1.0);
                 let quality = window_agreement * current_velocity_support;
-                if window_decision.intent == VelocityWindowIntent::AlternatingPeek {
+                if window_decision.intent == PredictionMotionState::AlternatingPeek {
                     quality.min(0.55)
                 } else {
                     quality
@@ -510,6 +686,9 @@ impl RobustVelocityEstimator {
             mean_velocity,
             median_velocity,
             filtered_velocity: self.filtered_velocity,
+            motion_state: window_decision.intent,
+            trend_consistency,
+            acceleration_px_ms2,
             spread,
             motion_confidence,
             measurement_dt_ms: latest_dt_ms,
@@ -527,7 +706,7 @@ fn classify_velocity_window(
     if !warmed {
         return VelocityWindowDecision {
             target_velocity: mean_velocity,
-            intent: VelocityWindowIntent::Mean,
+            intent: PredictionMotionState::Mean,
         };
     }
     let deadband = (base_deadband.abs() * 0.25).max(1e-9);
@@ -535,20 +714,20 @@ fn classify_velocity_window(
     if signs == [0, 0, 0] {
         return VelocityWindowDecision {
             target_velocity: 0.0,
-            intent: VelocityWindowIntent::Stationary,
+            intent: PredictionMotionState::Stationary,
         };
     }
     let latest = velocities[2];
     if signs[0] != 0 && signs[0] == signs[1] && signs[2] != signs[1] {
         return VelocityWindowDecision {
             target_velocity: if signs[2] == 0 { 0.0 } else { latest },
-            intent: VelocityWindowIntent::AbruptStopOrReverse,
+            intent: PredictionMotionState::AbruptStopOrReverse,
         };
     }
     if signs[0] != 0 && signs[0] == signs[2] && signs[1] == -signs[0] {
         return VelocityWindowDecision {
             target_velocity: mean_velocity,
-            intent: VelocityWindowIntent::AlternatingPeek,
+            intent: PredictionMotionState::AlternatingPeek,
         };
     }
     if signs[0] != 0 && signs[0] == signs[1] && signs[1] == signs[2] {
@@ -557,13 +736,52 @@ fn classify_velocity_window(
             .unwrap_or(0.0);
         return VelocityWindowDecision {
             target_velocity: mean_velocity * (1.0 - latest_weight) + latest * latest_weight,
-            intent: VelocityWindowIntent::Continuous,
+            intent: PredictionMotionState::Continuous,
         };
     }
     VelocityWindowDecision {
         target_velocity: mean_velocity,
-        intent: VelocityWindowIntent::Mean,
+        intent: PredictionMotionState::Mean,
     }
+}
+
+fn mean_acceleration(velocities: [f64; 3], intervals_ms: [f64; 3]) -> f64 {
+    let dt_1 = ((intervals_ms[0] + intervals_ms[1]) * 0.5).max(1e-9);
+    let dt_2 = ((intervals_ms[1] + intervals_ms[2]) * 0.5).max(1e-9);
+    let acceleration_1 = (velocities[1] - velocities[0]) / dt_1;
+    let acceleration_2 = (velocities[2] - velocities[1]) / dt_2;
+    (acceleration_1 + acceleration_2) * 0.5
+}
+
+fn velocity_trend_consistency(
+    velocities: [f64; 3],
+    mean_velocity: f64,
+    base_deadband: f64,
+    intent: PredictionMotionState,
+) -> f64 {
+    if matches!(
+        intent,
+        PredictionMotionState::AbruptStopOrReverse
+            | PredictionMotionState::AlternatingPeek
+            | PredictionMotionState::Unavailable
+    ) {
+        return 0.0;
+    }
+    let deadband = (base_deadband.abs() * 0.25).max(1e-9);
+    let signs = velocities.map(|value| velocity_sign(value, deadband));
+    if signs == [0, 0, 0] {
+        return 1.0;
+    }
+    if signs[0] == 0 || signs[0] != signs[1] || signs[1] != signs[2] {
+        return 0.0;
+    }
+    let max_speed = velocities
+        .map(f64::abs)
+        .into_iter()
+        .fold(0.0, f64::max)
+        .max(deadband);
+    let spread = mean_three(velocities.map(|value| (value - mean_velocity).abs()));
+    (1.0 / (1.0 + spread / max_speed)).clamp(0.0, 1.0)
 }
 
 fn velocity_sign(value: f64, deadband: f64) -> i8 {
@@ -593,7 +811,10 @@ fn mean_three(values: [f64; 3]) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{FocusTargetObservation, SingleTargetPredictionConfig, SingleTargetPredictor};
+    use super::{
+        FocusTargetObservation, PredictionMotionState, SingleTargetPredictionConfig,
+        SingleTargetPredictor,
+    };
 
     fn config() -> SingleTargetPredictionConfig {
         SingleTargetPredictionConfig {
@@ -658,6 +879,7 @@ mod tests {
             assert!((prediction.x.mean_velocity.expect("mean") - expected_velocity).abs() < 1e-12);
             assert!((prediction.x.velocity - expected_velocity).abs() < 1e-12);
             assert!((prediction.x.raw_offset - expected_velocity * 22.0).abs() < 1e-12);
+            assert_eq!(prediction.x.motion_state, PredictionMotionState::Mean);
         }
     }
 
@@ -678,8 +900,97 @@ mod tests {
         );
         assert!((prediction.x.mean_velocity.expect("mean") - 0.5).abs() < 1e-12);
         assert!((prediction.x.velocity + 0.5).abs() < 1e-12);
+        assert_eq!(
+            prediction.x.motion_state,
+            PredictionMotionState::AbruptStopOrReverse
+        );
+        assert_eq!(prediction.x.trend_consistency, 0.0);
+        assert!((prediction.x.acceleration_px_ms2 + 0.075).abs() < 1e-12);
+        assert!((prediction.x.horizon_ms - 12.0).abs() < 1e-12);
+        assert!((prediction.x.raw_offset + 6.0).abs() < 1e-12);
         assert!(prediction.x.raw_offset < 0.0);
         assert!(prediction.x.safe_offset < 0.0);
+    }
+
+    #[test]
+    fn stable_fast_motion_gets_a_small_adaptive_horizon_extension() {
+        let mut predictor = SingleTargetPredictor::new(config());
+        let mut prediction = Default::default();
+        for (index, position) in [100.0, 110.0, 120.0, 130.0, 140.0].into_iter().enumerate() {
+            prediction = predictor.predict(observation(index as u64, position, 100.0));
+        }
+
+        assert_eq!(prediction.x.motion_state, PredictionMotionState::Continuous);
+        assert!(prediction.x.trend_consistency > 0.99);
+        assert!(prediction.x.motion_confidence > 0.99);
+        assert!(
+            prediction.x.horizon_ms > 22.0,
+            "stable continuous motion should get more than the fixed one-frame horizon"
+        );
+        assert!(
+            prediction.x.horizon_ms < 28.0,
+            "adaptive horizon extension should remain bounded"
+        );
+        assert!(
+            (prediction.x.raw_offset - prediction.x.velocity * prediction.x.horizon_ms).abs()
+                < 1e-12
+        );
+        assert!((prediction.x.weighted_offset - prediction.x.raw_offset).abs() < 1e-12);
+        assert!(prediction.x.raw_offset > 22.0);
+    }
+
+    #[test]
+    fn stable_first_window_uses_three_segment_average_without_confidence_half_cut() {
+        let prediction = prediction_for_x_segments([10.0, 15.0, 15.0]);
+
+        assert_eq!(prediction.x.motion_state, PredictionMotionState::Mean);
+        assert!(prediction.x.trend_consistency > 0.70);
+        assert!(
+            prediction.x.motion_confidence < 0.60,
+            "the first complete window is still warming history confidence"
+        );
+        assert!((prediction.x.weighted_offset - prediction.x.raw_offset).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stable_motion_cap_can_use_absolute_budget_when_measured_error_is_small() {
+        let mut predictor = SingleTargetPredictor::new(config());
+        let mut prediction = Default::default();
+        for (index, position) in [100.0, 110.0, 120.0, 130.0, 140.0].into_iter().enumerate() {
+            let mut sample = observation(index as u64, position, 100.0);
+            sample.measured_error_x = 0.0;
+            prediction = predictor.predict(sample);
+        }
+
+        assert_eq!(prediction.x.motion_state, PredictionMotionState::Continuous);
+        assert!(prediction.x.weighted_offset > prediction.x.allowed_cap);
+        assert!((prediction.x.allowed_cap - config().far_absolute_cap_px).abs() < 1e-12);
+        assert!((prediction.x.safe_offset - prediction.x.allowed_cap).abs() < 1e-12);
+    }
+
+    #[test]
+    fn stable_acceleration_adds_only_a_small_continuous_motion_correction() {
+        let mut predictor = SingleTargetPredictor::new(config());
+        let mut prediction = Default::default();
+        for (index, position) in [100.0, 110.0, 120.0, 130.0, 142.0, 156.0, 172.0]
+            .into_iter()
+            .enumerate()
+        {
+            prediction = predictor.predict(observation(index as u64, position, 100.0));
+        }
+
+        assert_eq!(prediction.x.motion_state, PredictionMotionState::Continuous);
+        assert!(prediction.x.acceleration_px_ms2 > 0.0);
+        let velocity_offset = prediction.x.velocity * prediction.x.horizon_ms;
+        let correction = prediction.x.raw_offset - velocity_offset;
+        assert!(
+            correction > 0.0,
+            "stable acceleration should nudge prediction ahead of velocity-only projection"
+        );
+        assert!(
+            correction <= velocity_offset.abs() * 0.301,
+            "acceleration correction must remain subordinate to the three-segment velocity projection"
+        );
     }
 
     #[test]
@@ -699,7 +1010,24 @@ mod tests {
         );
         assert!((prediction.x.mean_velocity.expect("mean") - (1.0 / 3.0)).abs() < 1e-12);
         assert!((prediction.x.velocity - (1.0 / 3.0)).abs() < 1e-12);
+        assert_eq!(
+            prediction.x.motion_state,
+            PredictionMotionState::AlternatingPeek
+        );
+        assert_eq!(prediction.x.trend_consistency, 0.0);
         assert!(prediction.x.motion_confidence < 0.40);
+        assert!(
+            prediction.x.horizon_ms < 22.0,
+            "peek motion should not keep the full fixed lead horizon"
+        );
+        assert!(
+            (prediction.x.raw_offset - prediction.x.velocity * prediction.x.horizon_ms).abs()
+                < 1e-12
+        );
+        assert!(
+            prediction.x.weighted_offset.abs() < prediction.x.raw_offset.abs() * 0.40,
+            "peek prediction should keep a small gated contribution"
+        );
     }
 
     #[test]

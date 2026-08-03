@@ -422,6 +422,60 @@ function formatOptionalInteger(value: unknown): string {
   return number === null || number < 0 ? NO_SAMPLE : Math.trunc(number).toString();
 }
 
+function formatMotionState(value: unknown): string {
+  switch (readString(value, "")) {
+    case "mean":
+      return "三段均值";
+    case "continuous":
+      return "连续运动";
+    case "abrupt_stop_or_reverse":
+      return "急停 / 反向";
+    case "alternating_peek":
+      return "左右 Peek";
+    case "stationary":
+      return "静止";
+    case "unavailable":
+      return "不可用";
+    default:
+      return NO_SAMPLE;
+  }
+}
+
+function predictionTruthHorizons(value: unknown): Record<string, unknown>[] {
+  const horizons = asRecord(value).horizons;
+  if (!Array.isArray(horizons)) {
+    return [];
+  }
+  return horizons
+    .map((item) => asRecord(item))
+    .filter((item) => (readNullableNumber(item.sample_pairs) ?? 0) > 0);
+}
+
+function formatPredictionTruthWindow(value: unknown): string {
+  const report = asRecord(value);
+  const total = readNullableNumber(report.total_samples);
+  const valid = readNullableNumber(report.valid_position_samples);
+  if (total === null || total <= 0 || valid === null) {
+    return NO_SAMPLE;
+  }
+  return `${Math.trunc(valid)} / ${Math.trunc(total)} 样本`;
+}
+
+function formatPredictionTruthMetric(value: unknown, key: string): string {
+  const formatted = predictionTruthHorizons(value)
+    .slice(0, 6)
+    .map((horizon) => {
+      const horizonMs = readNullableNumber(horizon.horizon_ms);
+      const metric = readNullableNumber(horizon[key]);
+      if (horizonMs === null || metric === null) {
+        return null;
+      }
+      return `${horizonMs.toFixed(0)}ms ${metric.toFixed(2)}px`;
+    })
+    .filter((item): item is string => item !== null);
+  return formatted.length === 0 ? NO_SAMPLE : formatted.join(" / ");
+}
+
 function readNullableBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
@@ -3775,13 +3829,34 @@ export function StudioConsoleView({
                 <SectionTitle title="观测与控制误差" />
                 <div className="console-kv">
                   <span>屏幕中心</span><b>{formatPoint(controlCenterX, controlCenterY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                  <span>observed error px</span><b>{formatPoint(controlPipeline.observed_error_x_px, controlPipeline.observed_error_y_px, 2, "px")}</b>
-                  <span>control error px</span><b>{formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px")}</b>
+                  <span>观测误差</span><b>{formatPoint(controlPipeline.observed_error_x_px, controlPipeline.observed_error_y_px, 2, "px")}</b>
+                  <span>控制误差</span><b>{formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px")}</b>
                   <span>误差距离</span><b>{formatOptionalNumber(predictedErrorDistancePx, 2, "px")}</b>
                   <span>控制 dt</span><b>{controlMeasurementDtS === null ? NO_SAMPLE : `${(controlMeasurementDtS * 1000).toFixed(3)} ms`}</b>
                   <span>控制观测帧龄</span><b>{formatOptionalNumber(controlFrameAgeMs, 2, "ms")}</b>
                   <span>预测执行延迟</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_actuation_delay_ms, 2, "ms") : "已关闭"}</b>
                   <span>预测实际时域</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_horizon_ms, 2, "ms") : "已关闭"}</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="预测衰减链" />
+                <p className="console-section-note">只展示本次控制样本的预测如何从原始速度进入最终控制误差，不改变控制行为。</p>
+                <div className="console-kv">
+                  <span>运动状态 X / Y</span><b>{`${formatMotionState(controlPipeline.motion_state)} / ${formatMotionState(controlPipeline.motion_state_y)}`}</b>
+                  <span>三段速度 X</span><b>{`${formatOptionalNumber(controlPipeline.velocity_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_3, 3)} px/ms`}</b>
+                  <span>三段速度 Y</span><b>{`${formatOptionalNumber(controlPipeline.velocity_y_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_3, 3)} px/ms`}</b>
+                  <span>均值速度</span><b>{formatPoint(controlPipeline.mean_velocity, controlPipeline.mean_velocity_y, 3, "px/ms")}</b>
+                  <span>过滤速度</span><b>{formatPoint(controlPipeline.filtered_velocity, controlPipeline.filtered_velocity_y, 3, "px/ms")}</b>
+                  <span>加速度估计</span><b>{formatPoint(controlPipeline.acceleration_px_ms2, controlPipeline.acceleration_y_px_ms2, 4, "px/ms2")}</b>
+                  <span>趋势一致性</span><b>{`${formatPercent(controlPipeline.trend_consistency, 0)} / ${formatPercent(controlPipeline.trend_consistency_y, 0)}`}</b>
+                  <span>运动可信度</span><b>{`${formatPercent(controlPipeline.motion_confidence, 0)} / ${formatPercent(controlPipeline.motion_confidence_y, 0)}`}</b>
+                  <span>原始预测</span><b>{formatPoint(controlPipeline.prediction_raw_offset_x, controlPipeline.prediction_raw_offset_y, 2, "px")}</b>
+                  <span>门控后预测</span><b>{formatPoint(controlPipeline.prediction_weighted_offset_x, controlPipeline.prediction_weighted_offset_y, 2, "px")}</b>
+                  <span>预测上限</span><b>{formatPoint(controlPipeline.prediction_allowed_cap_x, controlPipeline.prediction_allowed_cap_y, 2, "px")}</b>
+                  <span>截断后预测</span><b>{formatPoint(controlPipeline.prediction_safe_offset_x, controlPipeline.prediction_safe_offset_y, 2, "px")}</b>
+                  <span>真实性窗口</span><b>{formatPredictionTruthWindow(controlPipeline.prediction_truth)}</b>
+                  <span>预测 MAE</span><b>{formatPredictionTruthMetric(controlPipeline.prediction_truth, "mae_px")}</b>
+                  <span>预测 P95</span><b>{formatPredictionTruthMetric(controlPipeline.prediction_truth, "p95_error_px")}</b>
                 </div>
               </div>
               <div className="console-card">

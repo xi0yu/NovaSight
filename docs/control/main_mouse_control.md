@@ -46,7 +46,8 @@ different target point from the controller.
 ```text
 e_meas = current measured aim - crosshair
 v = average(last three aim-position segments)
-prediction = clamp(v * horizon * confidence, dynamic_near_far_cap)
+horizon = frame_age + actuation_delay + adaptive_motion_lead
+prediction = clamp((v * horizon + weak_acceleration_correction) * confidence_gate, motion_aware_cap)
 e_ctrl = e_meas + prediction
 
 source_error = e_ctrl * roi_size / observation_size

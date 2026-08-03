@@ -20,7 +20,8 @@ use serde::{Deserialize, Serialize};
 use super::response_curve::{BlendedAtanConfig, ContinuousDemand, far_weight};
 use crate::limiter::{DeviceCountLimiter, DeviceCountLimits};
 use crate::prediction::{
-    FocusTargetObservation, SingleTargetPredictionConfig, SingleTargetPredictor,
+    FocusTargetObservation, PredictionMotionState, SingleTargetPredictionConfig,
+    SingleTargetPredictor,
 };
 
 /// Integer mouse output cannot represent a correction smaller than one count.
@@ -209,6 +210,12 @@ pub struct ControlDecision {
     pub mode: ControlMode,
     pub velocity_x: f64,
     pub velocity_y: f64,
+    pub motion_state: PredictionMotionState,
+    pub motion_state_y: PredictionMotionState,
+    pub trend_consistency: f64,
+    pub trend_consistency_y: f64,
+    pub acceleration_px_ms2: f64,
+    pub acceleration_y_px_ms2: f64,
     pub predicted_offset_x: f64,
     pub predicted_offset_y: f64,
     pub motion_confidence: f64,
@@ -280,6 +287,12 @@ impl ControlDecision {
             mode: ControlMode::Far,
             velocity_x: 0.0,
             velocity_y: 0.0,
+            motion_state: PredictionMotionState::Unavailable,
+            motion_state_y: PredictionMotionState::Unavailable,
+            trend_consistency: 0.0,
+            trend_consistency_y: 0.0,
+            acceleration_px_ms2: 0.0,
+            acceleration_y_px_ms2: 0.0,
             predicted_offset_x: 0.0,
             predicted_offset_y: 0.0,
             motion_confidence: 0.0,
@@ -730,6 +743,12 @@ impl DualPhaseControl {
             mode,
             velocity_x: prediction.x.velocity,
             velocity_y: prediction.y.velocity,
+            motion_state: prediction.x.motion_state,
+            motion_state_y: prediction.y.motion_state,
+            trend_consistency: prediction.x.trend_consistency,
+            trend_consistency_y: prediction.y.trend_consistency,
+            acceleration_px_ms2: prediction.x.acceleration_px_ms2,
+            acceleration_y_px_ms2: prediction.y.acceleration_px_ms2,
             predicted_offset_x,
             predicted_offset_y,
             motion_confidence: prediction.x.motion_confidence,
@@ -831,6 +850,7 @@ mod tests {
         ActuationFeedback, AxisArrivalState, BlockReason, ControlMode, ControlObservation,
         DualPhaseConfig, DualPhaseControl,
     };
+    use crate::prediction::PredictionMotionState;
 
     #[test]
     fn arrival_state_uses_hysteresis_but_never_traps_a_real_departure() {
@@ -897,13 +917,16 @@ mod tests {
         assert!((decision.mean_velocity.expect("mean") - 0.4).abs() < 1e-12);
         assert!((decision.median_velocity.expect("median") - 0.4).abs() < 1e-12);
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
+        assert_eq!(decision.motion_state, PredictionMotionState::Mean);
+        assert!(decision.trend_consistency > 0.99);
+        assert_eq!(decision.acceleration_px_ms2, 0.0);
         assert!((decision.reference_dt_ms - 10.0).abs() < 1e-12);
         assert!((decision.prediction_horizon_ms - 32.0).abs() < 1e-12);
         assert!((decision.prediction_raw_offset_x - 12.8).abs() < 1e-12);
-        assert!((decision.prediction_allowed_cap_x - 2.6).abs() < 1e-12);
+        assert!((decision.prediction_allowed_cap_x - 3.0).abs() < 1e-12);
         assert!(decision.prediction_allowed);
-        assert!((decision.predicted_offset_x - 2.6).abs() < 1e-12);
-        assert!((decision.filtered_error_x - 54.6).abs() < 1e-12);
+        assert!((decision.predicted_offset_x - 3.0).abs() < 1e-12);
+        assert!((decision.filtered_error_x - 55.0).abs() < 1e-12);
         assert!((decision.velocity_y - 0.2).abs() < 1e-12);
         assert!(decision.prediction_allowed_y);
         assert!(decision.predicted_offset_y > 0.0);
@@ -939,6 +962,7 @@ mod tests {
         }
         let decision = decision.expect("last decision");
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
+        assert_eq!(decision.motion_state, PredictionMotionState::Mean);
         assert_eq!(decision.motion_confidence, 0.0);
         assert_eq!(decision.predicted_offset_x, 0.0);
         assert_eq!(decision.filtered_error_x, 52.0);

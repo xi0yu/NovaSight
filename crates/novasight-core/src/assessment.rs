@@ -7,6 +7,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::controller::ControlDecision;
+use crate::prediction::PredictionMotionState;
+
+const PREDICTION_TRUTH_ACCELERATION_CORRECTION_GAIN: f64 = 0.20;
+const PREDICTION_TRUTH_ACCELERATION_CORRECTION_MAX_RATIO: f64 = 0.30;
+const PREDICTION_TRUTH_FULL_STRENGTH_CONFIDENCE: f64 = 0.55;
+const PREDICTION_TRUTH_STABLE_MEAN_CONFIDENCE: f64 = 0.35;
+const PREDICTION_TRUTH_REACTIVE_CONFIDENCE: f64 = 0.25;
+const PREDICTION_TRUTH_PEEK_MAX_STRENGTH: f64 = 0.35;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AlgorithmScoreConfig {
@@ -122,6 +130,194 @@ pub struct AlgorithmScore {
     pub sign_flips_x: usize,
     pub sign_flips_y: usize,
     pub mean_frame_age_ms: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PredictionTruthProjection {
+    Raw,
+    ConfidenceWeighted,
+    #[default]
+    Capped,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PredictionTruthConfig {
+    pub horizons_ms: Vec<f64>,
+    pub projection: PredictionTruthProjection,
+    pub static_speed_px_ms: f64,
+    pub acceleration_deadband_px_ms2: f64,
+    pub jitter_trend_threshold: f64,
+}
+
+impl Default for PredictionTruthConfig {
+    fn default() -> Self {
+        Self {
+            horizons_ms: vec![5.0, 10.0, 15.0, 20.0, 25.0, 30.0],
+            projection: PredictionTruthProjection::Capped,
+            static_speed_px_ms: 0.02,
+            acceleration_deadband_px_ms2: 0.005,
+            jitter_trend_threshold: 0.25,
+        }
+    }
+}
+
+impl PredictionTruthConfig {
+    fn valid_horizons(&self) -> Vec<f64> {
+        let mut horizons = self
+            .horizons_ms
+            .iter()
+            .copied()
+            .filter(|horizon| horizon.is_finite() && *horizon > 0.0)
+            .collect::<Vec<_>>();
+        horizons.sort_by(f64::total_cmp);
+        horizons.dedup_by(|left, right| (*left - *right).abs() < 1e-9);
+        horizons
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PredictionTruthSample {
+    pub generation: u64,
+    pub capture_ts_ns: u64,
+    pub target_id: Option<u64>,
+    pub target_valid: bool,
+    pub aim_x_px: f64,
+    pub aim_y_px: f64,
+    pub velocity_x_px_ms: f64,
+    pub velocity_y_px_ms: f64,
+    pub motion_state_x: PredictionMotionState,
+    pub motion_state_y: PredictionMotionState,
+    pub trend_consistency_x: f64,
+    pub trend_consistency_y: f64,
+    pub acceleration_x_px_ms2: f64,
+    pub acceleration_y_px_ms2: f64,
+    pub motion_confidence_x: f64,
+    pub motion_confidence_y: f64,
+    pub prediction_cap_x_px: f64,
+    pub prediction_cap_y_px: f64,
+    pub prediction_allowed_x: bool,
+    pub prediction_allowed_y: bool,
+}
+
+impl PredictionTruthSample {
+    pub fn from_control_decision(decision: &ControlDecision) -> Self {
+        let target_id =
+            (decision.sample_available && decision.target_id != 0).then_some(decision.target_id);
+        Self {
+            generation: decision.generation,
+            capture_ts_ns: decision.capture_ts_ns,
+            target_id,
+            target_valid: target_id.is_some(),
+            aim_x_px: decision.aim_x,
+            aim_y_px: decision.aim_y,
+            velocity_x_px_ms: decision.velocity_x,
+            velocity_y_px_ms: decision.velocity_y,
+            motion_state_x: decision.motion_state,
+            motion_state_y: decision.motion_state_y,
+            trend_consistency_x: decision.trend_consistency,
+            trend_consistency_y: decision.trend_consistency_y,
+            acceleration_x_px_ms2: decision.acceleration_px_ms2,
+            acceleration_y_px_ms2: decision.acceleration_y_px_ms2,
+            motion_confidence_x: decision.motion_confidence,
+            motion_confidence_y: decision.motion_confidence_y,
+            prediction_cap_x_px: decision.prediction_allowed_cap_x,
+            prediction_cap_y_px: decision.prediction_allowed_cap_y,
+            prediction_allowed_x: decision.prediction_allowed,
+            prediction_allowed_y: decision.prediction_allowed_y,
+        }
+    }
+
+    fn position_is_usable(self) -> bool {
+        self.target_valid
+            && self.target_id.is_some()
+            && self.capture_ts_ns != 0
+            && self.aim_x_px.is_finite()
+            && self.aim_y_px.is_finite()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PredictionTruthMotionClass {
+    Static,
+    Continuous,
+    Accelerating,
+    Decelerating,
+    Stop,
+    Reverse,
+    Peek,
+    Jitter,
+    #[default]
+    Unknown,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PredictionTruthHorizonScore {
+    pub horizon_ms: f64,
+    pub sample_pairs: usize,
+    pub mae_px: f64,
+    pub rmse_px: f64,
+    pub bias_x_px: f64,
+    pub bias_y_px: f64,
+    pub p90_error_px: f64,
+    pub p95_error_px: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PredictionTruthMotionClassScore {
+    pub motion_class: PredictionTruthMotionClass,
+    pub horizons: Vec<PredictionTruthHorizonScore>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PredictionTruthReport {
+    pub total_samples: usize,
+    pub valid_position_samples: usize,
+    pub projection: PredictionTruthProjection,
+    pub horizons: Vec<PredictionTruthHorizonScore>,
+    pub motion_classes: Vec<PredictionTruthMotionClassScore>,
+}
+
+pub fn score_prediction_truth(
+    samples: &[PredictionTruthSample],
+    config: PredictionTruthConfig,
+) -> PredictionTruthReport {
+    let horizons = config.valid_horizons();
+    let valid_position_samples = samples
+        .iter()
+        .filter(|sample| sample.position_is_usable())
+        .count();
+    let horizon_scores = horizons
+        .iter()
+        .copied()
+        .map(|horizon_ms| score_prediction_horizon(samples, &config, horizon_ms, None))
+        .collect::<Vec<_>>();
+    let motion_classes = prediction_truth_motion_class_order()
+        .into_iter()
+        .filter_map(|motion_class| {
+            let class_horizons = horizons
+                .iter()
+                .copied()
+                .map(|horizon_ms| {
+                    score_prediction_horizon(samples, &config, horizon_ms, Some(motion_class))
+                })
+                .filter(|score| score.sample_pairs > 0)
+                .collect::<Vec<_>>();
+            (!class_horizons.is_empty()).then_some(PredictionTruthMotionClassScore {
+                motion_class,
+                horizons: class_horizons,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    PredictionTruthReport {
+        total_samples: samples.len(),
+        valid_position_samples,
+        projection: config.projection,
+        horizons: horizon_scores,
+        motion_classes,
+    }
 }
 
 pub fn score_algorithm_trace(
@@ -266,6 +462,392 @@ fn score_count_response_lag(
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PredictionTruthResidual {
+    error_x_px: f64,
+    error_y_px: f64,
+    error_radius_px: f64,
+}
+
+fn score_prediction_horizon(
+    samples: &[PredictionTruthSample],
+    config: &PredictionTruthConfig,
+    horizon_ms: f64,
+    motion_class: Option<PredictionTruthMotionClass>,
+) -> PredictionTruthHorizonScore {
+    let mut residuals = Vec::new();
+    for (index, sample) in samples.iter().copied().enumerate() {
+        if motion_class
+            .is_some_and(|class| classify_prediction_truth_motion(sample, config) != class)
+        {
+            continue;
+        }
+        let Some(future_position) = future_prediction_truth_position(samples, index, horizon_ms)
+        else {
+            continue;
+        };
+        let Some((offset_x, offset_y)) = prediction_truth_offset(sample, horizon_ms, config) else {
+            continue;
+        };
+        let predicted_x = sample.aim_x_px + offset_x;
+        let predicted_y = sample.aim_y_px + offset_y;
+        let error_x = predicted_x - future_position.0;
+        let error_y = predicted_y - future_position.1;
+        if !error_x.is_finite() || !error_y.is_finite() {
+            continue;
+        }
+        residuals.push(PredictionTruthResidual {
+            error_x_px: error_x,
+            error_y_px: error_y,
+            error_radius_px: error_x.hypot(error_y),
+        });
+    }
+    summarize_prediction_residuals(horizon_ms, &residuals)
+}
+
+fn summarize_prediction_residuals(
+    horizon_ms: f64,
+    residuals: &[PredictionTruthResidual],
+) -> PredictionTruthHorizonScore {
+    if residuals.is_empty() {
+        return PredictionTruthHorizonScore {
+            horizon_ms,
+            ..PredictionTruthHorizonScore::default()
+        };
+    }
+    let sample_pairs = residuals.len();
+    let mae_px = residuals
+        .iter()
+        .map(|residual| residual.error_radius_px)
+        .sum::<f64>()
+        / sample_pairs as f64;
+    let rmse_px = (residuals
+        .iter()
+        .map(|residual| {
+            residual
+                .error_radius_px
+                .mul_add(residual.error_radius_px, 0.0)
+        })
+        .sum::<f64>()
+        / sample_pairs as f64)
+        .sqrt();
+    let bias_x_px = residuals
+        .iter()
+        .map(|residual| residual.error_x_px)
+        .sum::<f64>()
+        / sample_pairs as f64;
+    let bias_y_px = residuals
+        .iter()
+        .map(|residual| residual.error_y_px)
+        .sum::<f64>()
+        / sample_pairs as f64;
+    let mut sorted_errors = residuals
+        .iter()
+        .map(|residual| residual.error_radius_px)
+        .collect::<Vec<_>>();
+    sorted_errors.sort_by(f64::total_cmp);
+
+    PredictionTruthHorizonScore {
+        horizon_ms,
+        sample_pairs,
+        mae_px,
+        rmse_px,
+        bias_x_px,
+        bias_y_px,
+        p90_error_px: percentile_from_sorted(&sorted_errors, 0.90),
+        p95_error_px: percentile_from_sorted(&sorted_errors, 0.95),
+    }
+}
+
+fn prediction_truth_offset(
+    sample: PredictionTruthSample,
+    horizon_ms: f64,
+    config: &PredictionTruthConfig,
+) -> Option<(f64, f64)> {
+    let offset_x = prediction_truth_axis_offset(
+        sample.velocity_x_px_ms,
+        sample.motion_state_x,
+        sample.trend_consistency_x,
+        sample.acceleration_x_px_ms2,
+        sample.motion_confidence_x,
+        sample.prediction_cap_x_px,
+        sample.prediction_allowed_x,
+        horizon_ms,
+        config.projection,
+    )?;
+    let offset_y = prediction_truth_axis_offset(
+        sample.velocity_y_px_ms,
+        sample.motion_state_y,
+        sample.trend_consistency_y,
+        sample.acceleration_y_px_ms2,
+        sample.motion_confidence_y,
+        sample.prediction_cap_y_px,
+        sample.prediction_allowed_y,
+        horizon_ms,
+        config.projection,
+    )?;
+    Some((offset_x, offset_y))
+}
+
+fn prediction_truth_axis_offset(
+    velocity_px_ms: f64,
+    motion_state: PredictionMotionState,
+    trend_consistency: f64,
+    acceleration_px_ms2: f64,
+    confidence: f64,
+    cap_px: f64,
+    allowed: bool,
+    horizon_ms: f64,
+    projection: PredictionTruthProjection,
+) -> Option<f64> {
+    if !allowed || !velocity_px_ms.is_finite() || !horizon_ms.is_finite() || horizon_ms <= 0.0 {
+        return None;
+    }
+    let velocity_offset = velocity_px_ms * horizon_ms;
+    let raw = velocity_offset
+        + prediction_truth_acceleration_correction(
+            motion_state,
+            trend_consistency,
+            acceleration_px_ms2,
+            confidence,
+            horizon_ms,
+            velocity_offset,
+        );
+    if !raw.is_finite() {
+        return None;
+    }
+    let strength = prediction_truth_strength(motion_state, trend_consistency, confidence);
+    let weighted = raw * strength;
+    match projection {
+        PredictionTruthProjection::Raw => Some(raw),
+        PredictionTruthProjection::ConfidenceWeighted => weighted.is_finite().then_some(weighted),
+        PredictionTruthProjection::Capped => {
+            if !weighted.is_finite() || !cap_px.is_finite() || cap_px < 0.0 {
+                return None;
+            }
+            Some(weighted.clamp(-cap_px, cap_px))
+        }
+    }
+}
+
+fn prediction_truth_strength(
+    motion_state: PredictionMotionState,
+    trend_consistency: f64,
+    confidence: f64,
+) -> f64 {
+    let confidence = confidence.clamp(0.0, 1.0);
+    if confidence <= f64::EPSILON {
+        return 0.0;
+    }
+    let trend_consistency = trend_consistency.clamp(0.0, 1.0);
+    let (open_at, max_strength) = match motion_state {
+        PredictionMotionState::Unavailable | PredictionMotionState::Stationary => {
+            return 0.0;
+        }
+        PredictionMotionState::Continuous => {
+            let threshold = PREDICTION_TRUTH_FULL_STRENGTH_CONFIDENCE - 0.15 * trend_consistency;
+            (threshold.max(PREDICTION_TRUTH_STABLE_MEAN_CONFIDENCE), 1.0)
+        }
+        PredictionMotionState::Mean => {
+            let threshold = if trend_consistency >= 0.70 {
+                PREDICTION_TRUTH_STABLE_MEAN_CONFIDENCE
+            } else {
+                PREDICTION_TRUTH_FULL_STRENGTH_CONFIDENCE
+            };
+            (threshold, 1.0)
+        }
+        PredictionMotionState::AbruptStopOrReverse => (PREDICTION_TRUTH_REACTIVE_CONFIDENCE, 0.80),
+        PredictionMotionState::AlternatingPeek => (
+            PREDICTION_TRUTH_FULL_STRENGTH_CONFIDENCE,
+            PREDICTION_TRUTH_PEEK_MAX_STRENGTH,
+        ),
+    };
+    if confidence >= open_at {
+        return max_strength;
+    }
+    let ratio = (confidence / open_at.max(1e-9)).clamp(0.0, 1.0);
+    max_strength * ratio * ratio
+}
+
+fn prediction_truth_acceleration_correction(
+    motion_state: PredictionMotionState,
+    trend_consistency: f64,
+    acceleration_px_ms2: f64,
+    confidence: f64,
+    horizon_ms: f64,
+    velocity_offset: f64,
+) -> f64 {
+    if motion_state != PredictionMotionState::Continuous
+        || !trend_consistency.is_finite()
+        || !acceleration_px_ms2.is_finite()
+        || !horizon_ms.is_finite()
+        || horizon_ms <= 0.0
+        || !velocity_offset.is_finite()
+        || velocity_offset.abs() <= f64::EPSILON
+    {
+        return 0.0;
+    }
+    let quality = trend_consistency.min(confidence).clamp(0.0, 1.0);
+    if quality <= f64::EPSILON {
+        return 0.0;
+    }
+    let correction = 0.5
+        * acceleration_px_ms2
+        * horizon_ms
+        * horizon_ms
+        * PREDICTION_TRUTH_ACCELERATION_CORRECTION_GAIN
+        * quality;
+    if !correction.is_finite() {
+        return 0.0;
+    }
+    let limit = velocity_offset.abs() * PREDICTION_TRUTH_ACCELERATION_CORRECTION_MAX_RATIO;
+    correction.clamp(-limit, limit)
+}
+
+fn future_prediction_truth_position(
+    samples: &[PredictionTruthSample],
+    index: usize,
+    horizon_ms: f64,
+) -> Option<(f64, f64)> {
+    let sample = samples.get(index).copied()?;
+    if !sample.position_is_usable() || !horizon_ms.is_finite() || horizon_ms <= 0.0 {
+        return None;
+    }
+    let target_id = sample.target_id?;
+    let future_ts_ns = sample
+        .capture_ts_ns
+        .checked_add((horizon_ms * 1_000_000.0).round() as u64)?;
+    let mut left = sample;
+    for right in samples.iter().copied().skip(index + 1) {
+        if !right.position_is_usable() {
+            continue;
+        }
+        if right.target_id != Some(target_id) {
+            return None;
+        }
+        if right.capture_ts_ns <= left.capture_ts_ns {
+            continue;
+        }
+        if right.capture_ts_ns >= future_ts_ns {
+            return Some(interpolate_prediction_truth_position(
+                left,
+                right,
+                future_ts_ns,
+            ));
+        }
+        left = right;
+    }
+    None
+}
+
+fn interpolate_prediction_truth_position(
+    left: PredictionTruthSample,
+    right: PredictionTruthSample,
+    target_ts_ns: u64,
+) -> (f64, f64) {
+    if target_ts_ns <= left.capture_ts_ns {
+        return (left.aim_x_px, left.aim_y_px);
+    }
+    if target_ts_ns >= right.capture_ts_ns {
+        return (right.aim_x_px, right.aim_y_px);
+    }
+    let span = (right.capture_ts_ns - left.capture_ts_ns) as f64;
+    let weight = (target_ts_ns - left.capture_ts_ns) as f64 / span;
+    (
+        left.aim_x_px + (right.aim_x_px - left.aim_x_px) * weight,
+        left.aim_y_px + (right.aim_y_px - left.aim_y_px) * weight,
+    )
+}
+
+fn classify_prediction_truth_motion(
+    sample: PredictionTruthSample,
+    config: &PredictionTruthConfig,
+) -> PredictionTruthMotionClass {
+    let velocity_x = sample.velocity_x_px_ms;
+    let velocity_y = sample.velocity_y_px_ms;
+    let acceleration_x = sample.acceleration_x_px_ms2;
+    let acceleration_y = sample.acceleration_y_px_ms2;
+    if !velocity_x.is_finite()
+        || !velocity_y.is_finite()
+        || !acceleration_x.is_finite()
+        || !acceleration_y.is_finite()
+    {
+        return PredictionTruthMotionClass::Unknown;
+    }
+    let speed = velocity_x.hypot(velocity_y);
+    if matches!(
+        (sample.motion_state_x, sample.motion_state_y),
+        (
+            PredictionMotionState::Stationary,
+            PredictionMotionState::Stationary
+        )
+    ) || speed <= config.static_speed_px_ms.max(0.0)
+    {
+        return PredictionTruthMotionClass::Static;
+    }
+    if matches!(
+        sample.motion_state_x,
+        PredictionMotionState::AlternatingPeek
+    ) || matches!(
+        sample.motion_state_y,
+        PredictionMotionState::AlternatingPeek
+    ) {
+        return PredictionTruthMotionClass::Peek;
+    }
+    if matches!(
+        sample.motion_state_x,
+        PredictionMotionState::AbruptStopOrReverse
+    ) || matches!(
+        sample.motion_state_y,
+        PredictionMotionState::AbruptStopOrReverse
+    ) {
+        if speed <= (config.static_speed_px_ms * 3.0).max(config.static_speed_px_ms) {
+            return PredictionTruthMotionClass::Stop;
+        }
+        return PredictionTruthMotionClass::Reverse;
+    }
+    let trend = sample
+        .trend_consistency_x
+        .min(sample.trend_consistency_y)
+        .clamp(0.0, 1.0);
+    if trend < config.jitter_trend_threshold.clamp(0.0, 1.0) {
+        return PredictionTruthMotionClass::Jitter;
+    }
+    let acceleration_along_velocity =
+        velocity_x.mul_add(acceleration_x, velocity_y * acceleration_y) / speed.max(1e-9);
+    let acceleration_deadband = config.acceleration_deadband_px_ms2.max(0.0);
+    if acceleration_along_velocity > acceleration_deadband {
+        PredictionTruthMotionClass::Accelerating
+    } else if acceleration_along_velocity < -acceleration_deadband {
+        PredictionTruthMotionClass::Decelerating
+    } else {
+        PredictionTruthMotionClass::Continuous
+    }
+}
+
+fn prediction_truth_motion_class_order() -> [PredictionTruthMotionClass; 9] {
+    [
+        PredictionTruthMotionClass::Static,
+        PredictionTruthMotionClass::Continuous,
+        PredictionTruthMotionClass::Accelerating,
+        PredictionTruthMotionClass::Decelerating,
+        PredictionTruthMotionClass::Stop,
+        PredictionTruthMotionClass::Reverse,
+        PredictionTruthMotionClass::Peek,
+        PredictionTruthMotionClass::Jitter,
+        PredictionTruthMotionClass::Unknown,
+    ]
+}
+
+fn percentile_from_sorted(sorted_values: &[f64], percentile: f64) -> f64 {
+    if sorted_values.is_empty() {
+        return 0.0;
+    }
+    let percentile = percentile.clamp(0.0, 1.0);
+    let index = ((sorted_values.len() - 1) as f64 * percentile).ceil() as usize;
+    sorted_values[index.min(sorted_values.len() - 1)]
+}
+
 fn samples_finite(sample: AlgorithmTraceSample) -> bool {
     sample.observed_error_x_px.is_finite()
         && sample.observed_error_y_px.is_finite()
@@ -368,9 +950,11 @@ fn finite_sign(value: f64) -> i8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AlgorithmScoreConfig, AlgorithmTraceSample, CountResponseModel,
-        estimate_count_response_lag, score_algorithm_trace,
+        AlgorithmScoreConfig, AlgorithmTraceSample, CountResponseModel, PredictionTruthConfig,
+        PredictionTruthMotionClass, PredictionTruthProjection, PredictionTruthSample,
+        estimate_count_response_lag, score_algorithm_trace, score_prediction_truth,
     };
+    use crate::prediction::PredictionMotionState;
 
     #[test]
     fn score_reports_convergence_and_tail_error() {
@@ -456,6 +1040,170 @@ mod tests {
         assert!(estimate.best.rms_residual_px < 1e-12);
     }
 
+    #[test]
+    fn prediction_truth_scores_multiple_horizons_against_future_position() {
+        let samples = (0..7)
+            .map(|index| {
+                prediction_truth_sample(
+                    index + 1,
+                    100.0 + index as f64 * 10.0,
+                    80.0,
+                    1.0,
+                    0.0,
+                    PredictionMotionState::Continuous,
+                    PredictionMotionState::Stationary,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let report = score_prediction_truth(
+            &samples,
+            PredictionTruthConfig {
+                horizons_ms: vec![20.0, 10.0, 10.0],
+                projection: PredictionTruthProjection::Capped,
+                ..PredictionTruthConfig::default()
+            },
+        );
+
+        assert_eq!(report.total_samples, 7);
+        assert_eq!(report.valid_position_samples, 7);
+        assert_eq!(report.horizons.len(), 2);
+        assert_eq!(report.horizons[0].horizon_ms, 10.0);
+        assert_eq!(report.horizons[0].sample_pairs, 6);
+        assert!(report.horizons[0].mae_px < 1e-12);
+        assert_eq!(report.horizons[1].horizon_ms, 20.0);
+        assert_eq!(report.horizons[1].sample_pairs, 5);
+        assert!(report.horizons[1].rmse_px < 1e-12);
+        assert!(
+            report
+                .motion_classes
+                .iter()
+                .any(|score| score.motion_class == PredictionTruthMotionClass::Continuous)
+        );
+    }
+
+    #[test]
+    fn prediction_truth_projection_separates_raw_strength_gate_and_cap_error() {
+        let mut samples = (0..5)
+            .map(|index| {
+                prediction_truth_sample(
+                    index + 1,
+                    100.0 + index as f64 * 10.0,
+                    80.0,
+                    1.0,
+                    0.0,
+                    PredictionMotionState::Continuous,
+                    PredictionMotionState::Stationary,
+                )
+            })
+            .collect::<Vec<_>>();
+        for sample in &mut samples {
+            sample.motion_confidence_x = 0.2;
+            sample.prediction_cap_x_px = 2.0;
+        }
+        let base = PredictionTruthConfig {
+            horizons_ms: vec![10.0],
+            ..PredictionTruthConfig::default()
+        };
+
+        let raw = score_prediction_truth(
+            &samples,
+            PredictionTruthConfig {
+                projection: PredictionTruthProjection::Raw,
+                ..base.clone()
+            },
+        );
+        let confidence_weighted = score_prediction_truth(
+            &samples,
+            PredictionTruthConfig {
+                projection: PredictionTruthProjection::ConfidenceWeighted,
+                ..base.clone()
+            },
+        );
+        let capped = score_prediction_truth(
+            &samples,
+            PredictionTruthConfig {
+                projection: PredictionTruthProjection::Capped,
+                ..base
+            },
+        );
+
+        assert!(raw.horizons[0].mae_px < 1e-12);
+        assert!((confidence_weighted.horizons[0].mae_px - 7.5).abs() < 1e-12);
+        assert!((confidence_weighted.horizons[0].bias_x_px + 7.5).abs() < 1e-12);
+        assert!((capped.horizons[0].mae_px - 8.0).abs() < 1e-12);
+        assert!((capped.horizons[0].bias_x_px + 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn prediction_truth_raw_projection_mirrors_weak_acceleration_correction() {
+        let mut continuous = (0..5)
+            .map(|index| {
+                prediction_truth_sample(
+                    index + 1,
+                    100.0 + index as f64 * 11.0,
+                    80.0,
+                    1.0,
+                    0.0,
+                    PredictionMotionState::Continuous,
+                    PredictionMotionState::Stationary,
+                )
+            })
+            .collect::<Vec<_>>();
+        for sample in &mut continuous {
+            sample.acceleration_x_px_ms2 = 0.1;
+        }
+        let mut peek = continuous.clone();
+        for sample in &mut peek {
+            sample.motion_state_x = PredictionMotionState::AlternatingPeek;
+        }
+
+        let config = PredictionTruthConfig {
+            horizons_ms: vec![10.0],
+            projection: PredictionTruthProjection::Raw,
+            ..PredictionTruthConfig::default()
+        };
+        let continuous_report = score_prediction_truth(&continuous, config.clone());
+        let peek_report = score_prediction_truth(&peek, config);
+
+        assert!(continuous_report.horizons[0].mae_px < 1e-12);
+        assert!((peek_report.horizons[0].mae_px - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn prediction_truth_groups_peek_motion_separately() {
+        let samples = (0..4)
+            .map(|index| {
+                prediction_truth_sample(
+                    index + 1,
+                    100.0 + index as f64 * 4.0,
+                    80.0,
+                    0.4,
+                    0.0,
+                    PredictionMotionState::AlternatingPeek,
+                    PredictionMotionState::Stationary,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let report = score_prediction_truth(
+            &samples,
+            PredictionTruthConfig {
+                horizons_ms: vec![10.0],
+                projection: PredictionTruthProjection::Raw,
+                ..PredictionTruthConfig::default()
+            },
+        );
+
+        let peek = report
+            .motion_classes
+            .iter()
+            .find(|score| score.motion_class == PredictionTruthMotionClass::Peek)
+            .expect("peek bucket");
+        assert_eq!(peek.horizons[0].sample_pairs, 3);
+        assert!(peek.horizons[0].mae_px < 1e-12);
+    }
+
     fn sample(
         generation: u64,
         error_x: f64,
@@ -475,6 +1223,39 @@ mod tests {
             emitted_counts_y: 0,
             emit_allowed,
             frame_age_ms: 8.0,
+        }
+    }
+
+    fn prediction_truth_sample(
+        generation: u64,
+        aim_x_px: f64,
+        aim_y_px: f64,
+        velocity_x_px_ms: f64,
+        velocity_y_px_ms: f64,
+        motion_state_x: PredictionMotionState,
+        motion_state_y: PredictionMotionState,
+    ) -> PredictionTruthSample {
+        PredictionTruthSample {
+            generation,
+            capture_ts_ns: 1_000_000_000 + (generation - 1) * 10_000_000,
+            target_id: Some(1),
+            target_valid: true,
+            aim_x_px,
+            aim_y_px,
+            velocity_x_px_ms,
+            velocity_y_px_ms,
+            motion_state_x,
+            motion_state_y,
+            trend_consistency_x: 1.0,
+            trend_consistency_y: 1.0,
+            acceleration_x_px_ms2: 0.0,
+            acceleration_y_px_ms2: 0.0,
+            motion_confidence_x: 1.0,
+            motion_confidence_y: 1.0,
+            prediction_cap_x_px: 1_000.0,
+            prediction_cap_y_px: 1_000.0,
+            prediction_allowed_x: true,
+            prediction_allowed_y: true,
         }
     }
 }

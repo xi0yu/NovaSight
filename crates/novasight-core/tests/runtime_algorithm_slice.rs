@@ -14,8 +14,9 @@ use novasight_core::perception::types::Detection;
 use novasight_core::tracking::{TargetingConfig, TargetingCore};
 use novasight_core::units::Nanoseconds;
 use novasight_core::{
-    AlgorithmScoreConfig, AlgorithmTraceSample, CountResponseModel, estimate_count_response_lag,
-    score_algorithm_trace,
+    AlgorithmScoreConfig, AlgorithmTraceSample, CountResponseModel, PredictionTruthConfig,
+    PredictionTruthProjection, PredictionTruthSample, estimate_count_response_lag,
+    score_algorithm_trace, score_prediction_truth,
 };
 use serde_json::Value;
 
@@ -185,6 +186,7 @@ fn closed_loop_algorithm_score_tracks_visual_convergence() {
     let mut true_error_x = 100.0;
     let mut delayed_errors = [true_error_x; 3];
     let mut trace = Vec::new();
+    let mut prediction_truth_trace = Vec::new();
 
     for generation in 1..=80_u64 {
         let observed_error_x = delayed_errors[0];
@@ -219,11 +221,28 @@ fn closed_loop_algorithm_score_tracks_visual_convergence() {
         true_error_x -= f64::from(decision.dx) * observation_px_per_count;
         delayed_errors[2] = true_error_x;
         trace.push(AlgorithmTraceSample::from_control_decision(&decision));
+        prediction_truth_trace.push(PredictionTruthSample::from_control_decision(&decision));
     }
 
     let score = score_algorithm_trace(&trace, AlgorithmScoreConfig::default());
+    let prediction_truth = score_prediction_truth(
+        &prediction_truth_trace,
+        PredictionTruthConfig {
+            horizons_ms: vec![8.333333, 16.666666],
+            projection: PredictionTruthProjection::Capped,
+            ..PredictionTruthConfig::default()
+        },
+    );
 
     assert_eq!(score.total_samples, 80);
+    assert_eq!(prediction_truth.total_samples, 80);
+    assert!(
+        prediction_truth
+            .horizons
+            .iter()
+            .all(|score| score.sample_pairs > 0 && score.mae_px.is_finite()),
+        "prediction truth report should score real control decisions; report={prediction_truth:?}"
+    );
     assert_eq!(score.target_switches, 0);
     assert!(score.emitted_commands > 0);
     assert!(

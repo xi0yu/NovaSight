@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
+use novasight_core::PredictionTruthReport;
 use novasight_core::controller::recoil::{RecoilBlockReason, RecoilState};
 use novasight_core::controller::{BlockReason, ControlMode};
+use novasight_core::prediction::PredictionMotionState;
 use novasight_core::tracking::{LockReason, TargetSelection};
 use novasight_runtime::{
     AppConfig, CrosshairSnapshot, DetectionTelemetryItem, PipelineState, PreviewSnapshot,
@@ -452,6 +454,7 @@ pub(crate) struct MouseObservationState {
 pub(crate) struct ControlPipelineState {
     pub control_mode: &'static str,
     pub movement_strategy: &'static str,
+    pub prediction_truth: PredictionTruthReport,
     pub mode: Option<&'static str>,
     pub frame_age_ms: Option<f64>,
     pub history_position_count: Option<usize>,
@@ -461,6 +464,9 @@ pub(crate) struct ControlPipelineState {
     pub mean_velocity: Option<f64>,
     pub median_velocity: Option<f64>,
     pub filtered_velocity: Option<f64>,
+    pub motion_state: Option<PredictionMotionState>,
+    pub trend_consistency: Option<f64>,
+    pub acceleration_px_ms2: Option<f64>,
     pub velocity_spread: Option<f64>,
     pub motion_confidence: Option<f64>,
     pub measurement_dt_s: Option<f64>,
@@ -479,6 +485,9 @@ pub(crate) struct ControlPipelineState {
     pub mean_velocity_y: Option<f64>,
     pub median_velocity_y: Option<f64>,
     pub filtered_velocity_y: Option<f64>,
+    pub motion_state_y: Option<PredictionMotionState>,
+    pub trend_consistency_y: Option<f64>,
+    pub acceleration_y_px_ms2: Option<f64>,
     pub velocity_spread_y: Option<f64>,
     pub motion_confidence_y: Option<f64>,
     pub measurement_dt_y_s: Option<f64>,
@@ -1043,6 +1052,7 @@ impl CompatibilityRuntimeState {
                     pipeline: ControlPipelineState {
                         control_mode: "dual_phase_atan_robust_predictive_v2",
                         movement_strategy: "latest_replace",
+                        prediction_truth: snapshot.pipeline_metrics.prediction_truth.clone(),
                         mode: control_sample.then_some(control_mode_label(dual_phase.mode)),
                         frame_age_ms: control_sample.then_some(dual_phase.frame_age_ms),
                         history_position_count: control_sample
@@ -1053,6 +1063,10 @@ impl CompatibilityRuntimeState {
                         mean_velocity: dual_phase.mean_velocity,
                         median_velocity: dual_phase.median_velocity,
                         filtered_velocity: control_sample.then_some(dual_phase.velocity_x),
+                        motion_state: control_sample.then_some(dual_phase.motion_state),
+                        trend_consistency: control_sample.then_some(dual_phase.trend_consistency),
+                        acceleration_px_ms2: control_sample
+                            .then_some(dual_phase.acceleration_px_ms2),
                         velocity_spread: dual_phase.velocity_spread,
                         motion_confidence: control_sample.then_some(dual_phase.motion_confidence),
                         measurement_dt_s: dual_phase.measurement_dt_ms.map(|value| value / 1_000.0),
@@ -1078,6 +1092,11 @@ impl CompatibilityRuntimeState {
                         mean_velocity_y: dual_phase.mean_velocity_y,
                         median_velocity_y: dual_phase.median_velocity_y,
                         filtered_velocity_y: control_sample.then_some(dual_phase.velocity_y),
+                        motion_state_y: control_sample.then_some(dual_phase.motion_state_y),
+                        trend_consistency_y: control_sample
+                            .then_some(dual_phase.trend_consistency_y),
+                        acceleration_y_px_ms2: control_sample
+                            .then_some(dual_phase.acceleration_y_px_ms2),
                         velocity_spread_y: dual_phase.velocity_spread_y,
                         motion_confidence_y: control_sample
                             .then_some(dual_phase.motion_confidence_y),
@@ -1460,10 +1479,13 @@ fn serialized_label(value: &impl Serialize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use novasight_core::Generation;
     use novasight_core::controller::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
     use novasight_core::controller::{BlockReason, ControlDecision, ControlMode};
+    use novasight_core::prediction::PredictionMotionState;
     use novasight_core::tracking::{LockReason, TargetSelection, TrackId};
+    use novasight_core::{
+        Generation, PredictionTruthHorizonScore, PredictionTruthProjection, PredictionTruthReport,
+    };
     use novasight_pipeline::DetectionTelemetryItem;
     use novasight_runtime::{
         AppConfig, PipelineState, RuntimeErrorSummary, RuntimeSnapshot, SubsystemState,
@@ -1526,6 +1548,9 @@ mod tests {
             mean_velocity: Some(0.25),
             median_velocity: Some(0.25),
             velocity_spread: Some(0.05),
+            motion_state: PredictionMotionState::Continuous,
+            trend_consistency: 0.92,
+            acceleration_px_ms2: 0.01,
             measurement_dt_ms: Some(8.0),
             reference_dt_ms: 8.1,
             prediction_lead_frames: 1.0,
@@ -1539,6 +1564,9 @@ mod tests {
             mean_velocity_y: Some(-0.10),
             median_velocity_y: Some(-0.10),
             velocity_spread_y: Some(0.02),
+            motion_state_y: PredictionMotionState::AbruptStopOrReverse,
+            trend_consistency_y: 0.25,
+            acceleration_y_px_ms2: -0.005,
             measurement_dt_ms_y: Some(8.0),
             reference_dt_ms_y: 8.1,
             prediction_raw_offset_y: -0.8,
@@ -1576,6 +1604,22 @@ mod tests {
             block_reason: RecoilBlockReason::None,
         };
         snapshot.pipeline_metrics.targeting_batches = 1;
+        snapshot.pipeline_metrics.prediction_truth = PredictionTruthReport {
+            total_samples: 12,
+            valid_position_samples: 10,
+            projection: PredictionTruthProjection::Capped,
+            horizons: vec![PredictionTruthHorizonScore {
+                horizon_ms: 10.0,
+                sample_pairs: 8,
+                mae_px: 1.25,
+                rmse_px: 1.5,
+                bias_x_px: -0.4,
+                bias_y_px: 0.1,
+                p90_error_px: 2.0,
+                p95_error_px: 2.4,
+            }],
+            motion_classes: Vec::new(),
+        };
         snapshot.pipeline.state = PipelineState::Running;
         snapshot.subsystems.inference.state = SubsystemState::Running;
         snapshot.perception_metrics.published_batches = 1;
@@ -1654,11 +1698,25 @@ mod tests {
             "dual_phase_atan_robust_predictive_v2"
         );
         assert_eq!(pipeline["mode"], "NEAR");
+        assert_eq!(pipeline["prediction_truth"]["total_samples"], 12);
+        assert_eq!(pipeline["prediction_truth"]["valid_position_samples"], 10);
+        assert_eq!(pipeline["prediction_truth"]["projection"], "capped");
+        assert_eq!(
+            pipeline["prediction_truth"]["horizons"][0]["horizon_ms"],
+            10.0
+        );
+        assert_eq!(pipeline["prediction_truth"]["horizons"][0]["mae_px"], 1.25);
         assert_eq!(pipeline["velocity_2"], 0.3);
         assert_eq!(pipeline["mean_velocity"], 0.25);
+        assert_eq!(pipeline["motion_state"], "continuous");
+        assert_eq!(pipeline["trend_consistency"], 0.92);
+        assert_eq!(pipeline["acceleration_px_ms2"], 0.01);
         assert_eq!(pipeline["prediction_safe_offset_x"], 1.6);
         assert_eq!(pipeline["mean_velocity_y"], -0.10);
         assert_eq!(pipeline["filtered_velocity_y"], -0.10);
+        assert_eq!(pipeline["motion_state_y"], "abrupt_stop_or_reverse");
+        assert_eq!(pipeline["trend_consistency_y"], 0.25);
+        assert_eq!(pipeline["acceleration_y_px_ms2"], -0.005);
         assert_eq!(pipeline["prediction_safe_offset_y"], -0.6);
         assert_eq!(pipeline["prediction_allowed_y"], true);
         assert_eq!(pipeline["integer_command_x"], 12);
