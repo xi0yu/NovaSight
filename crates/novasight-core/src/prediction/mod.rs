@@ -276,10 +276,16 @@ impl SingleTargetPredictor {
             0.0
         };
         let velocity_offset = estimate.filtered_velocity * horizon_ms;
-        let acceleration_offset =
-            self.acceleration_correction_offset(estimate, horizon_ms, velocity_offset, confidence);
+        let acceleration_offset = weak_acceleration_correction(
+            estimate.motion_state,
+            estimate.trend_consistency,
+            estimate.acceleration_px_ms2,
+            confidence,
+            horizon_ms,
+            velocity_offset,
+        );
         let raw_offset = velocity_offset + acceleration_offset;
-        let prediction_strength = prediction_strength(
+        let prediction_strength = prediction_gate_strength(
             estimate.motion_state,
             estimate.trend_consistency,
             confidence,
@@ -357,42 +363,9 @@ impl SingleTargetPredictor {
             }
         }
     }
-
-    fn acceleration_correction_offset(
-        &self,
-        estimate: VelocityEstimate,
-        horizon_ms: f64,
-        velocity_offset: f64,
-        confidence: f64,
-    ) -> f64 {
-        if estimate.motion_state != PredictionMotionState::Continuous
-            || !estimate.acceleration_px_ms2.is_finite()
-            || !horizon_ms.is_finite()
-            || horizon_ms <= 0.0
-            || !velocity_offset.is_finite()
-            || velocity_offset.abs() <= f64::EPSILON
-        {
-            return 0.0;
-        }
-        let quality = estimate.trend_consistency.min(confidence).clamp(0.0, 1.0);
-        if quality <= f64::EPSILON {
-            return 0.0;
-        }
-        let correction = 0.5
-            * estimate.acceleration_px_ms2
-            * horizon_ms
-            * horizon_ms
-            * ACCELERATION_CORRECTION_GAIN
-            * quality;
-        if !correction.is_finite() {
-            return 0.0;
-        }
-        let limit = velocity_offset.abs() * ACCELERATION_CORRECTION_MAX_RATIO;
-        correction.clamp(-limit, limit)
-    }
 }
 
-fn prediction_strength(
+pub(crate) fn prediction_gate_strength(
     motion_state: PredictionMotionState,
     trend_consistency: f64,
     confidence: f64,
@@ -429,6 +402,41 @@ fn prediction_strength(
     }
     let ratio = (confidence / open_at.max(1e-9)).clamp(0.0, 1.0);
     max_strength * ratio * ratio
+}
+
+pub(crate) fn weak_acceleration_correction(
+    motion_state: PredictionMotionState,
+    trend_consistency: f64,
+    acceleration_px_ms2: f64,
+    confidence: f64,
+    horizon_ms: f64,
+    velocity_offset: f64,
+) -> f64 {
+    if motion_state != PredictionMotionState::Continuous
+        || !trend_consistency.is_finite()
+        || !acceleration_px_ms2.is_finite()
+        || !horizon_ms.is_finite()
+        || horizon_ms <= 0.0
+        || !velocity_offset.is_finite()
+        || velocity_offset.abs() <= f64::EPSILON
+    {
+        return 0.0;
+    }
+    let quality = trend_consistency.min(confidence).clamp(0.0, 1.0);
+    if quality <= f64::EPSILON {
+        return 0.0;
+    }
+    let correction = 0.5
+        * acceleration_px_ms2
+        * horizon_ms
+        * horizon_ms
+        * ACCELERATION_CORRECTION_GAIN
+        * quality;
+    if !correction.is_finite() {
+        return 0.0;
+    }
+    let limit = velocity_offset.abs() * ACCELERATION_CORRECTION_MAX_RATIO;
+    correction.clamp(-limit, limit)
 }
 
 fn motion_expanded_cap(

@@ -7,14 +7,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::controller::ControlDecision;
-use crate::prediction::PredictionMotionState;
-
-const PREDICTION_TRUTH_ACCELERATION_CORRECTION_GAIN: f64 = 0.20;
-const PREDICTION_TRUTH_ACCELERATION_CORRECTION_MAX_RATIO: f64 = 0.30;
-const PREDICTION_TRUTH_FULL_STRENGTH_CONFIDENCE: f64 = 0.55;
-const PREDICTION_TRUTH_STABLE_MEAN_CONFIDENCE: f64 = 0.35;
-const PREDICTION_TRUTH_REACTIVE_CONFIDENCE: f64 = 0.25;
-const PREDICTION_TRUTH_PEEK_MAX_STRENGTH: f64 = 0.35;
+use crate::prediction::{
+    PredictionMotionState, prediction_gate_strength, weak_acceleration_correction,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AlgorithmScoreConfig {
@@ -605,7 +600,7 @@ fn prediction_truth_axis_offset(
     }
     let velocity_offset = velocity_px_ms * horizon_ms;
     let raw = velocity_offset
-        + prediction_truth_acceleration_correction(
+        + weak_acceleration_correction(
             motion_state,
             trend_consistency,
             acceleration_px_ms2,
@@ -616,7 +611,7 @@ fn prediction_truth_axis_offset(
     if !raw.is_finite() {
         return None;
     }
-    let strength = prediction_truth_strength(motion_state, trend_consistency, confidence);
+    let strength = prediction_gate_strength(motion_state, trend_consistency, confidence);
     let weighted = raw * strength;
     match projection {
         PredictionTruthProjection::Raw => Some(raw),
@@ -628,80 +623,6 @@ fn prediction_truth_axis_offset(
             Some(weighted.clamp(-cap_px, cap_px))
         }
     }
-}
-
-fn prediction_truth_strength(
-    motion_state: PredictionMotionState,
-    trend_consistency: f64,
-    confidence: f64,
-) -> f64 {
-    let confidence = confidence.clamp(0.0, 1.0);
-    if confidence <= f64::EPSILON {
-        return 0.0;
-    }
-    let trend_consistency = trend_consistency.clamp(0.0, 1.0);
-    let (open_at, max_strength) = match motion_state {
-        PredictionMotionState::Unavailable | PredictionMotionState::Stationary => {
-            return 0.0;
-        }
-        PredictionMotionState::Continuous => {
-            let threshold = PREDICTION_TRUTH_FULL_STRENGTH_CONFIDENCE - 0.15 * trend_consistency;
-            (threshold.max(PREDICTION_TRUTH_STABLE_MEAN_CONFIDENCE), 1.0)
-        }
-        PredictionMotionState::Mean => {
-            let threshold = if trend_consistency >= 0.70 {
-                PREDICTION_TRUTH_STABLE_MEAN_CONFIDENCE
-            } else {
-                PREDICTION_TRUTH_FULL_STRENGTH_CONFIDENCE
-            };
-            (threshold, 1.0)
-        }
-        PredictionMotionState::AbruptStopOrReverse => (PREDICTION_TRUTH_REACTIVE_CONFIDENCE, 0.80),
-        PredictionMotionState::AlternatingPeek => (
-            PREDICTION_TRUTH_FULL_STRENGTH_CONFIDENCE,
-            PREDICTION_TRUTH_PEEK_MAX_STRENGTH,
-        ),
-    };
-    if confidence >= open_at {
-        return max_strength;
-    }
-    let ratio = (confidence / open_at.max(1e-9)).clamp(0.0, 1.0);
-    max_strength * ratio * ratio
-}
-
-fn prediction_truth_acceleration_correction(
-    motion_state: PredictionMotionState,
-    trend_consistency: f64,
-    acceleration_px_ms2: f64,
-    confidence: f64,
-    horizon_ms: f64,
-    velocity_offset: f64,
-) -> f64 {
-    if motion_state != PredictionMotionState::Continuous
-        || !trend_consistency.is_finite()
-        || !acceleration_px_ms2.is_finite()
-        || !horizon_ms.is_finite()
-        || horizon_ms <= 0.0
-        || !velocity_offset.is_finite()
-        || velocity_offset.abs() <= f64::EPSILON
-    {
-        return 0.0;
-    }
-    let quality = trend_consistency.min(confidence).clamp(0.0, 1.0);
-    if quality <= f64::EPSILON {
-        return 0.0;
-    }
-    let correction = 0.5
-        * acceleration_px_ms2
-        * horizon_ms
-        * horizon_ms
-        * PREDICTION_TRUTH_ACCELERATION_CORRECTION_GAIN
-        * quality;
-    if !correction.is_finite() {
-        return 0.0;
-    }
-    let limit = velocity_offset.abs() * PREDICTION_TRUTH_ACCELERATION_CORRECTION_MAX_RATIO;
-    correction.clamp(-limit, limit)
 }
 
 fn future_prediction_truth_position(
