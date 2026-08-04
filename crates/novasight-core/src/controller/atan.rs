@@ -84,8 +84,6 @@ pub struct DualPhaseConfig {
     pub velocity_history_reset_gap_ms: f64,
     pub velocity_spread_base_px_ms: f64,
     pub velocity_spread_relative: f64,
-    pub velocity_change_base_px_ms: f64,
-    pub velocity_change_relative: f64,
     pub prediction_enabled: bool,
     /// Unified command-to-visible-response delay shared with the runtime's
     /// actuation feedback gate.
@@ -125,8 +123,6 @@ impl Default for DualPhaseConfig {
             velocity_history_reset_gap_ms: 80.0,
             velocity_spread_base_px_ms: 0.12,
             velocity_spread_relative: 0.50,
-            velocity_change_base_px_ms: 0.20,
-            velocity_change_relative: 0.75,
             prediction_enabled: true,
             prediction_actuation_delay_ms: 4.0,
             prediction_lead_ms: 16.0,
@@ -153,8 +149,6 @@ impl DualPhaseConfig {
             history_reset_gap_ms: self.velocity_history_reset_gap_ms,
             spread_base_px_ms: self.velocity_spread_base_px_ms,
             spread_relative: self.velocity_spread_relative,
-            change_base_px_ms: self.velocity_change_base_px_ms,
-            change_relative: self.velocity_change_relative,
             actuation_delay_ms: self.prediction_actuation_delay_ms,
             lead_ms: self.prediction_lead_ms,
             far_absolute_cap_px: self.prediction_far_absolute_cap_px,
@@ -899,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn confidence_weighted_prediction_respects_far_cap() {
+    fn confidence_weighted_vector_prediction_respects_far_cap() {
         let config = DualPhaseConfig {
             prediction_enabled: true,
             prediction_lead_ms: 2.0,
@@ -938,16 +932,27 @@ mod tests {
         assert!((decision.mean_velocity.expect("mean") - 0.4).abs() < 1e-12);
         assert!((decision.median_velocity.expect("median") - 0.4).abs() < 1e-12);
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
-        assert_eq!(decision.motion_state, PredictionMotionState::Mean);
+        assert_eq!(decision.motion_state, PredictionMotionState::Continuous);
         assert!(decision.trend_consistency > 0.99);
         assert_eq!(decision.acceleration_px_ms2, 0.0);
         assert!((decision.reference_dt_ms - 10.0).abs() < 1e-12);
         assert!((decision.prediction_horizon_ms - 14.0).abs() < 1e-12);
         assert!((decision.prediction_raw_offset_x - 5.6).abs() < 1e-12);
-        assert!((decision.prediction_allowed_cap_x - 3.0).abs() < 1e-12);
+        assert!((decision.prediction_weighted_offset_x - 2.8).abs() < 1e-12);
+        assert_eq!(
+            decision.prediction_allowed_cap_x,
+            decision.prediction_allowed_cap_y
+        );
+        assert!(decision.prediction_allowed_cap_x <= 3.0);
         assert!(decision.prediction_allowed);
-        assert!((decision.predicted_offset_x - 3.0).abs() < 1e-12);
-        assert!((decision.filtered_error_x - 55.0).abs() < 1e-12);
+        assert!(
+            decision
+                .predicted_offset_x
+                .hypot(decision.predicted_offset_y)
+                <= decision.prediction_allowed_cap_x + 1e-12
+        );
+        assert!((decision.predicted_offset_x / decision.predicted_offset_y - 2.0).abs() < 1e-12);
+        assert!((decision.filtered_error_x - (52.0 + decision.predicted_offset_x)).abs() < 1e-12);
         assert!((decision.velocity_y - 0.2).abs() < 1e-12);
         assert!(decision.prediction_allowed_y);
         assert!(decision.predicted_offset_y > 0.0);
@@ -983,7 +988,7 @@ mod tests {
         }
         let decision = decision.expect("last decision");
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
-        assert_eq!(decision.motion_state, PredictionMotionState::Mean);
+        assert_eq!(decision.motion_state, PredictionMotionState::Continuous);
         assert_eq!(decision.motion_confidence, 0.0);
         assert_eq!(decision.predicted_offset_x, 0.0);
         assert_eq!(decision.filtered_error_x, 52.0);

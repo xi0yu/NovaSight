@@ -43,8 +43,6 @@ export type DualPhasePipelineField =
   | "velocity_history_reset_gap_ms"
   | "velocity_spread_base_px_ms"
   | "velocity_spread_relative"
-  | "velocity_change_base_px_ms"
-  | "velocity_change_relative"
   | "prediction_lead_ms"
   | "prediction_far_absolute_cap_px"
   | "prediction_far_base_cap_px"
@@ -98,8 +96,6 @@ export type AlgorithmParameterValues = {
   dualPhasePredictionHistoryResetGapMs: number;
   velocitySpreadBasePxMs: number;
   velocitySpreadRelative: number;
-  velocityChangeBasePxMs: number;
-  velocityChangeRelative: number;
   dualPhasePredictionFarCapPx: number;
   dualPhasePredictionFarBaseCapPx: number;
   dualPhasePredictionFarRelativeCap: number;
@@ -280,31 +276,6 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         label: "速度离散相对容差",
         detail: "按当前速度幅度放宽离散容差，避免高速目标被固定阈值误判。",
         value: values.velocitySpreadRelative,
-        min: 0,
-        max: 100,
-        recommendedMin: 0,
-        recommendedMax: 3,
-        step: 0.01,
-        riskLevel: "advanced"
-      },
-      {
-        key: "velocity_change_base_px_ms",
-        label: "速度变化基础容差",
-        detail: "限制相邻预测速度的突变；超过阈值时降低预测可信度。",
-        value: values.velocityChangeBasePxMs,
-        min: 0.000001,
-        max: 10000,
-        recommendedMin: 0.01,
-        recommendedMax: 2,
-        step: 0.01,
-        unit: "px/ms",
-        riskLevel: "advanced"
-      },
-      {
-        key: "velocity_change_relative",
-        label: "速度变化相对容差",
-        detail: "按已有速度幅度放宽变化阈值，适应高速但连续的运动。",
-        value: values.velocityChangeRelative,
         min: 0,
         max: 100,
         recommendedMin: 0,

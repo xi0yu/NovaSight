@@ -1257,8 +1257,6 @@ export function StudioConsoleView({
   const dualPhasePredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
   const velocitySpreadBasePxMs = readNumber(rustPipelineConfig.velocity_spread_base_px_ms, 0.12);
   const velocitySpreadRelative = readNumber(rustPipelineConfig.velocity_spread_relative, 0.50);
-  const velocityChangeBasePxMs = readNumber(rustPipelineConfig.velocity_change_base_px_ms, 0.20);
-  const velocityChangeRelative = readNumber(rustPipelineConfig.velocity_change_relative, 0.75);
   const dualPhasePredictionLeadMs = readNumber(rustPipelineConfig.prediction_lead_ms, 16);
   const dualPhasePredictionFarCapPx = readNumber(rustPipelineConfig.prediction_far_absolute_cap_px, 10);
   const dualPhasePredictionFarBaseCapPx = readNumber(rustPipelineConfig.prediction_far_base_cap_px, 1.25);
@@ -2512,8 +2510,6 @@ export function StudioConsoleView({
     dualPhasePredictionHistoryResetGapMs,
     velocitySpreadBasePxMs,
     velocitySpreadRelative,
-    velocityChangeBasePxMs,
-    velocityChangeRelative,
     dualPhasePredictionFarCapPx,
     dualPhasePredictionFarBaseCapPx,
     dualPhasePredictionFarRelativeCap,

@@ -477,10 +477,6 @@ pub struct PipelineRuntimeConfig {
     pub velocity_spread_base_px_ms: f64,
     #[serde(default = "default_velocity_spread_relative")]
     pub velocity_spread_relative: f64,
-    #[serde(default = "default_velocity_change_base_px_ms")]
-    pub velocity_change_base_px_ms: f64,
-    #[serde(default = "default_velocity_change_relative")]
-    pub velocity_change_relative: f64,
     #[serde(default = "default_prediction_enabled")]
     pub prediction_enabled: bool,
     #[serde(default = "default_prediction_lead_ms")]
@@ -580,8 +576,6 @@ impl Default for PipelineRuntimeConfig {
             velocity_history_reset_gap_ms: default_velocity_history_reset_gap_ms(),
             velocity_spread_base_px_ms: default_velocity_spread_base_px_ms(),
             velocity_spread_relative: default_velocity_spread_relative(),
-            velocity_change_base_px_ms: default_velocity_change_base_px_ms(),
-            velocity_change_relative: default_velocity_change_relative(),
             prediction_enabled: default_prediction_enabled(),
             prediction_lead_ms: default_prediction_lead_ms(),
             prediction_far_absolute_cap_px: default_prediction_far_absolute_cap_px(),
@@ -737,18 +731,6 @@ impl PipelineRuntimeConfig {
         validate_finite_range(
             "pipeline.velocity_spread_relative",
             self.velocity_spread_relative,
-            0.0,
-            100.0,
-        )?;
-        validate_finite_range(
-            "pipeline.velocity_change_base_px_ms",
-            self.velocity_change_base_px_ms,
-            0.000_001,
-            10_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.velocity_change_relative",
-            self.velocity_change_relative,
             0.0,
             100.0,
         )?;
@@ -1141,14 +1123,6 @@ const fn default_velocity_spread_base_px_ms() -> f64 {
 
 const fn default_velocity_spread_relative() -> f64 {
     0.50
-}
-
-const fn default_velocity_change_base_px_ms() -> f64 {
-    0.20
-}
-
-const fn default_velocity_change_relative() -> f64 {
-    0.75
 }
 
 const fn default_prediction_enabled() -> bool {

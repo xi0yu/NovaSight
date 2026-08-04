@@ -280,20 +280,6 @@ impl ConfigSchemaResponse {
                             None,
                         ),
                         float(
-                            "pipeline.velocity_change_base_px_ms",
-                            "速度变化基础容差",
-                            0.000_001,
-                            10_000.0,
-                            Some("px/ms"),
-                        ),
-                        float(
-                            "pipeline.velocity_change_relative",
-                            "速度变化相对容差",
-                            0.0,
-                            100.0,
-                            None,
-                        ),
-                        float(
                             "pipeline.prediction_lead_ms",
                             "目标速度预测额外提前量",
                             0.0,

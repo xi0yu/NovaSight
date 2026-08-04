@@ -78,8 +78,6 @@ pub fn compose_pipeline_config(
             velocity_history_reset_gap_ms: adapters.pipeline.velocity_history_reset_gap_ms,
             velocity_spread_base_px_ms: adapters.pipeline.velocity_spread_base_px_ms,
             velocity_spread_relative: adapters.pipeline.velocity_spread_relative,
-            velocity_change_base_px_ms: adapters.pipeline.velocity_change_base_px_ms,
-            velocity_change_relative: adapters.pipeline.velocity_change_relative,
             prediction_enabled: adapters.pipeline.prediction_enabled,
             prediction_actuation_delay_ms: adapters.pipeline.actuation_feedback_delay_ms,
             prediction_lead_ms: adapters.pipeline.prediction_lead_ms,
