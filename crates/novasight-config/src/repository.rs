@@ -424,6 +424,7 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
             source,
         })?;
     normalize_root_alias(path, &mut document, "device", "hardware")?;
+    migrate_retired_pipeline_aliases(&mut document);
     let mut config: AppConfig =
         serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Parse {
             path: path.to_owned(),
@@ -450,6 +451,7 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     config.pipeline.extra.remove("max_command_age_ms");
     config.pipeline.extra.remove("output_interval_ms");
     config.pipeline.extra.remove("atan_scale_counts");
+    config.pipeline.extra.remove("velocity_change_base_px_ms");
     let mut removed_retired_recoil = false;
     for field in [
         "base_rate_counts_s",
@@ -532,6 +534,7 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         &[
             "projection_invert_y",
             "atan_scale_counts",
+            "velocity_change_base_px_ms",
             "target_selection_class_weight",
             "target_selection_distance_weight",
             "target_sticky_bias",
@@ -623,6 +626,37 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
                 .or_insert_with(|| Value::Number(config.control.recoil.y_counts.into()));
         }
     }
+}
+
+fn migrate_retired_pipeline_aliases(document: &mut Value) {
+    migrate_pipeline_numeric_alias(
+        document,
+        "velocity_change_base_px_ms",
+        "velocity_spread_base_px_ms",
+    );
+}
+
+fn migrate_pipeline_numeric_alias(document: &mut Value, retired_key: &str, current_key: &str) {
+    let Value::Mapping(root) = document else {
+        return;
+    };
+    let Some(Value::Mapping(pipeline)) = root.get_mut(Value::String("pipeline".to_owned())) else {
+        return;
+    };
+    let Some(retired_value) = pipeline.remove(Value::String(retired_key.to_owned())) else {
+        return;
+    };
+    let current_key = Value::String(current_key.to_owned());
+    if pipeline.contains_key(&current_key) {
+        return;
+    }
+    let Some(value) = retired_value.as_f64().filter(|value| value.is_finite()) else {
+        return;
+    };
+    pipeline.insert(
+        current_key,
+        serde_yaml::to_value(value).expect("finite pipeline alias migration value"),
+    );
 }
 
 fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRuntimeConfig) {
@@ -1101,6 +1135,7 @@ fn replace_document(
         mapping.remove(Value::String("revision".to_owned()));
         mapping.remove(Value::String("schema_version".to_owned()));
     }
+    migrate_retired_pipeline_aliases(&mut replacement);
     merge_value(&mut document, replacement);
     let root =
         document
@@ -1118,6 +1153,7 @@ fn replace_document(
             path: path.to_owned(),
             source,
         })?;
+    migrate_config(&mut document, &mut persisted);
     mark_production_fields(&document, &mut persisted);
     persisted
         .validate_configured_adapters()

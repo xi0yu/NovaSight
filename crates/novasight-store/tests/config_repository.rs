@@ -84,3 +84,57 @@ pipeline:
     assert_eq!(persisted["pipeline"]["prediction_cap_px"], 10.0);
     assert!(persisted["pipeline"]["atan_scale_counts"].is_null());
 }
+
+#[test]
+fn retired_velocity_change_field_migrates_on_load_and_save() {
+    let directory = TempDirectory::new();
+    let path = directory.join("retired-velocity-change.yaml");
+    fs::write(
+        &path,
+        r#"schema_version: 12
+revision: 0
+limits:
+  stream_fps: 40
+pipeline:
+  prediction_enabled: true
+  velocity_change_base_px_ms: 0.42
+"#,
+    )
+    .unwrap();
+
+    let config = YamlConfigRepository::load(&path).unwrap();
+
+    assert_eq!(config.pipeline.velocity_spread_base_px_ms, 0.42);
+    assert!(config.pipeline.extra.is_empty());
+
+    YamlConfigRepository::new(&path)
+        .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
+        .unwrap();
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(persisted["pipeline"]["velocity_spread_base_px_ms"], 0.42);
+    assert!(persisted["pipeline"]["velocity_change_base_px_ms"].is_null());
+}
+
+#[test]
+fn retired_velocity_change_field_migrates_on_replacement() {
+    let directory = TempDirectory::new();
+    let path = directory.join("replace-retired-velocity-change.yaml");
+    YamlConfigRepository::initialize_default(&path).unwrap();
+    let replacement: Value = serde_yaml::from_str(
+        r#"revision: 0
+pipeline:
+  velocity_change_base_px_ms: 0.37
+"#,
+    )
+    .unwrap();
+
+    let config = YamlConfigRepository::new(&path)
+        .replace_document(replacement, 0)
+        .unwrap();
+
+    assert_eq!(config.pipeline.velocity_spread_base_px_ms, 0.37);
+    assert!(config.pipeline.extra.is_empty());
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(persisted["pipeline"]["velocity_spread_base_px_ms"], 0.37);
+    assert!(persisted["pipeline"]["velocity_change_base_px_ms"].is_null());
+}
