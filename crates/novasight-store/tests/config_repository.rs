@@ -84,6 +84,12 @@ fn initializes_the_single_local_runtime_config() {
     assert_eq!(adapters.device.uuid, "12345678");
     assert_eq!(adapters.device.send_timeout_ms, 25);
     assert_eq!(adapters.pipeline.freshness_threshold_ms, 55.0);
+    assert_eq!(adapters.pipeline.tracker_kalman_max_predict_dt_ms, 35.0);
+    assert_eq!(
+        adapters.pipeline.tracker_kalman_max_predict_missing_ms,
+        80.0
+    );
+    assert_eq!(adapters.pipeline.tracker_kalman_max_predict_steps, 5);
     assert_eq!(config.control.recoil.interval_ms, 16);
     assert_eq!(config.control.recoil.y_counts, 1);
     assert_eq!(config.paths.database, Path::new("data/novasight.db"));

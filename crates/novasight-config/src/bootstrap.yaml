@@ -57,6 +57,9 @@ pipeline:
   tracker_scale_cost_weight: 0.15
   tracker_max_size_ratio: 2.5
   tracker_max_association_dt_ms: 150.0
+  tracker_kalman_max_predict_dt_ms: 35.0
+  tracker_kalman_max_predict_missing_ms: 80.0
+  tracker_kalman_max_predict_steps: 5
   target_class_priority: "0,1"
   target_class_filter: all
   # 0.35 类别偏好 + 0.65 准星距离；所有类别排名按 1, 0.5, 0.25... 生效。

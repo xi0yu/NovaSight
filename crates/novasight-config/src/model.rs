@@ -521,6 +521,12 @@ pub struct PipelineRuntimeConfig {
     pub tracker_kalman_measurement_noise_x: f64,
     #[serde(default = "default_tracker_kalman_measurement_noise_y")]
     pub tracker_kalman_measurement_noise_y: f64,
+    #[serde(default = "default_tracker_kalman_max_predict_dt_ms")]
+    pub tracker_kalman_max_predict_dt_ms: f64,
+    #[serde(default = "default_tracker_kalman_max_predict_missing_ms")]
+    pub tracker_kalman_max_predict_missing_ms: f64,
+    #[serde(default = "default_tracker_kalman_max_predict_steps")]
+    pub tracker_kalman_max_predict_steps: u32,
     #[serde(default = "default_tracker_kalman_nis_threshold")]
     pub tracker_kalman_nis_threshold: f64,
     #[serde(default = "default_tracker_kalman_nis_hard_reject")]
@@ -592,6 +598,9 @@ impl Default for PipelineRuntimeConfig {
             tracker_kalman_acceleration_noise: default_tracker_kalman_acceleration_noise(),
             tracker_kalman_measurement_noise_x: default_tracker_kalman_measurement_noise_x(),
             tracker_kalman_measurement_noise_y: default_tracker_kalman_measurement_noise_y(),
+            tracker_kalman_max_predict_dt_ms: default_tracker_kalman_max_predict_dt_ms(),
+            tracker_kalman_max_predict_missing_ms: default_tracker_kalman_max_predict_missing_ms(),
+            tracker_kalman_max_predict_steps: default_tracker_kalman_max_predict_steps(),
             tracker_kalman_nis_threshold: default_tracker_kalman_nis_threshold(),
             tracker_kalman_nis_hard_reject: default_tracker_kalman_nis_hard_reject(),
             target_class_priority: default_target_class_priority(),
@@ -824,6 +833,24 @@ impl PipelineRuntimeConfig {
             0.000_001,
             100_000.0,
         )?;
+        validate_finite_range(
+            "pipeline.tracker_kalman_max_predict_dt_ms",
+            self.tracker_kalman_max_predict_dt_ms,
+            1.0,
+            1_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.tracker_kalman_max_predict_missing_ms",
+            self.tracker_kalman_max_predict_missing_ms,
+            1.0,
+            10_000.0,
+        )?;
+        if self.tracker_kalman_max_predict_steps > 120 {
+            return Err(ConfigValidationError::new(
+                "pipeline.tracker_kalman_max_predict_steps",
+                "must be within 0..=120 steps",
+            ));
+        }
         validate_finite_range(
             "pipeline.tracker_kalman_nis_threshold",
             self.tracker_kalman_nis_threshold,
@@ -1148,6 +1175,18 @@ fn default_tracker_kalman_measurement_noise_x() -> f64 {
 
 fn default_tracker_kalman_measurement_noise_y() -> f64 {
     KalmanConfig::default().measurement_noise_y
+}
+
+fn default_tracker_kalman_max_predict_dt_ms() -> f64 {
+    KalmanConfig::default().max_predict_dt_ms
+}
+
+fn default_tracker_kalman_max_predict_missing_ms() -> f64 {
+    KalmanConfig::default().max_predict_missing_ms
+}
+
+fn default_tracker_kalman_max_predict_steps() -> u32 {
+    KalmanConfig::default().max_predict_steps
 }
 
 fn default_tracker_kalman_nis_threshold() -> f64 {
@@ -1871,6 +1910,18 @@ mod tests {
         };
         let error = config.validate().expect_err("zero association weights");
         assert_eq!(error.field, "pipeline.tracker_position_cost_weight");
+    }
+
+    #[test]
+    fn tracker_kalman_prediction_steps_are_bounded() {
+        let config = PipelineRuntimeConfig {
+            tracker_kalman_max_predict_steps: 121,
+            ..PipelineRuntimeConfig::default()
+        };
+        let error = config
+            .validate()
+            .expect_err("unbounded kalman prediction steps");
+        assert_eq!(error.field, "pipeline.tracker_kalman_max_predict_steps");
     }
 
     #[test]

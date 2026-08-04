@@ -421,6 +421,27 @@ impl ConfigSchemaResponse {
                             Some("px2"),
                         ),
                         float(
+                            "pipeline.tracker_kalman_max_predict_dt_ms",
+                            "卡尔曼单步预测上限",
+                            1.0,
+                            1_000.0,
+                            Some("ms"),
+                        ),
+                        float(
+                            "pipeline.tracker_kalman_max_predict_missing_ms",
+                            "卡尔曼丢失预测窗口",
+                            1.0,
+                            10_000.0,
+                            Some("ms"),
+                        ),
+                        integer(
+                            "pipeline.tracker_kalman_max_predict_steps",
+                            "卡尔曼连续预测步数",
+                            0.0,
+                            120.0,
+                            Some("step"),
+                        ),
+                        float(
                             "pipeline.tracker_kalman_nis_threshold",
                             "卡尔曼可信 NIS 阈值",
                             0.000_001,

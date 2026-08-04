@@ -1103,6 +1103,23 @@ inference:
         serde_json::json!(["deepstream_nvinfer"])
     );
     assert_eq!(backend["restart_required"], true);
+    let pipeline = schema["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|section| section["id"] == "pipeline")
+        .unwrap();
+    let pipeline_fields = pipeline["fields"].as_array().unwrap();
+    for path in [
+        "pipeline.tracker_kalman_max_predict_dt_ms",
+        "pipeline.tracker_kalman_max_predict_missing_ms",
+        "pipeline.tracker_kalman_max_predict_steps",
+    ] {
+        assert!(
+            pipeline_fields.iter().any(|field| field["path"] == path),
+            "missing schema field {path}"
+        );
+    }
 
     shutdown(supervisor, &runtime).await;
 }

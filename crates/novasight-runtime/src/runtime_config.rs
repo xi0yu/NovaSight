@@ -36,6 +36,9 @@ pub fn compose_pipeline_config(
                 acceleration_noise: adapters.pipeline.tracker_kalman_acceleration_noise,
                 measurement_noise_x: adapters.pipeline.tracker_kalman_measurement_noise_x,
                 measurement_noise_y: adapters.pipeline.tracker_kalman_measurement_noise_y,
+                max_predict_dt_ms: adapters.pipeline.tracker_kalman_max_predict_dt_ms,
+                max_predict_missing_ms: adapters.pipeline.tracker_kalman_max_predict_missing_ms,
+                max_predict_steps: adapters.pipeline.tracker_kalman_max_predict_steps,
                 nis_threshold: adapters.pipeline.tracker_kalman_nis_threshold,
                 nis_hard_reject: adapters.pipeline.tracker_kalman_nis_hard_reject,
                 ..KalmanConfig::default()

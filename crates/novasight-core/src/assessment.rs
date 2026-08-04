@@ -560,31 +560,36 @@ fn prediction_truth_offset(
     config: &PredictionTruthConfig,
 ) -> Option<(f64, f64)> {
     let offset_x = prediction_truth_axis_offset(
-        sample.velocity_x_px_ms,
-        sample.motion_state_x,
-        sample.trend_consistency_x,
-        sample.acceleration_x_px_ms2,
-        sample.motion_confidence_x,
-        sample.prediction_cap_x_px,
-        sample.prediction_allowed_x,
+        PredictionTruthAxisSample {
+            velocity_px_ms: sample.velocity_x_px_ms,
+            motion_state: sample.motion_state_x,
+            trend_consistency: sample.trend_consistency_x,
+            acceleration_px_ms2: sample.acceleration_x_px_ms2,
+            confidence: sample.motion_confidence_x,
+            cap_px: sample.prediction_cap_x_px,
+            allowed: sample.prediction_allowed_x,
+        },
         horizon_ms,
         config.projection,
     )?;
     let offset_y = prediction_truth_axis_offset(
-        sample.velocity_y_px_ms,
-        sample.motion_state_y,
-        sample.trend_consistency_y,
-        sample.acceleration_y_px_ms2,
-        sample.motion_confidence_y,
-        sample.prediction_cap_y_px,
-        sample.prediction_allowed_y,
+        PredictionTruthAxisSample {
+            velocity_px_ms: sample.velocity_y_px_ms,
+            motion_state: sample.motion_state_y,
+            trend_consistency: sample.trend_consistency_y,
+            acceleration_px_ms2: sample.acceleration_y_px_ms2,
+            confidence: sample.motion_confidence_y,
+            cap_px: sample.prediction_cap_y_px,
+            allowed: sample.prediction_allowed_y,
+        },
         horizon_ms,
         config.projection,
     )?;
     Some((offset_x, offset_y))
 }
 
-fn prediction_truth_axis_offset(
+#[derive(Clone, Copy, Debug)]
+struct PredictionTruthAxisSample {
     velocity_px_ms: f64,
     motion_state: PredictionMotionState,
     trend_consistency: f64,
@@ -592,35 +597,47 @@ fn prediction_truth_axis_offset(
     confidence: f64,
     cap_px: f64,
     allowed: bool,
+}
+
+fn prediction_truth_axis_offset(
+    sample: PredictionTruthAxisSample,
     horizon_ms: f64,
     projection: PredictionTruthProjection,
 ) -> Option<f64> {
-    if !allowed || !velocity_px_ms.is_finite() || !horizon_ms.is_finite() || horizon_ms <= 0.0 {
+    if !sample.allowed
+        || !sample.velocity_px_ms.is_finite()
+        || !horizon_ms.is_finite()
+        || horizon_ms <= 0.0
+    {
         return None;
     }
-    let velocity_offset = velocity_px_ms * horizon_ms;
+    let velocity_offset = sample.velocity_px_ms * horizon_ms;
     let raw = velocity_offset
         + weak_acceleration_correction(
-            motion_state,
-            trend_consistency,
-            acceleration_px_ms2,
-            confidence,
+            sample.motion_state,
+            sample.trend_consistency,
+            sample.acceleration_px_ms2,
+            sample.confidence,
             horizon_ms,
             velocity_offset,
         );
     if !raw.is_finite() {
         return None;
     }
-    let strength = prediction_gate_strength(motion_state, trend_consistency, confidence);
+    let strength = prediction_gate_strength(
+        sample.motion_state,
+        sample.trend_consistency,
+        sample.confidence,
+    );
     let weighted = raw * strength;
     match projection {
         PredictionTruthProjection::Raw => Some(raw),
         PredictionTruthProjection::ConfidenceWeighted => weighted.is_finite().then_some(weighted),
         PredictionTruthProjection::Capped => {
-            if !weighted.is_finite() || !cap_px.is_finite() || cap_px < 0.0 {
+            if !weighted.is_finite() || !sample.cap_px.is_finite() || sample.cap_px < 0.0 {
                 return None;
             }
-            Some(weighted.clamp(-cap_px, cap_px))
+            Some(weighted.clamp(-sample.cap_px, sample.cap_px))
         }
     }
 }

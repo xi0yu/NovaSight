@@ -80,10 +80,12 @@ import {
 import {
   buildAlgorithmParameterGroups,
   buildTargetingParameterGroups,
+  type AlgorithmSettingsSection,
   type AlgorithmNumberParameter,
   type DualPhasePipelineField,
   type TargetingNumberParameter,
-  type TargetingPipelineField
+  type TargetingPipelineField,
+  velocitySmoothingFramesToResponseWeight
 } from "./algorithmParameterModel";
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
 import { StudioPageHeader } from "./StudioPageHeader";
@@ -176,8 +178,6 @@ type CapabilityChoice = {
 };
 
 type ConfigDialogId = "class-config" | "target-weights" | "algorithm" | "target-advanced" | "tracker";
-type AlgorithmSettingsSection = "response" | "prediction" | "stability" | "calibration";
-
 const ALGORITHM_SETTINGS_SECTIONS: Array<{
   id: AlgorithmSettingsSection;
   label: string;
@@ -1263,6 +1263,9 @@ export function StudioConsoleView({
   const trackerKalmanAccelerationNoise = readNumber(rustPipelineConfig.tracker_kalman_acceleration_noise, 1200);
   const trackerKalmanMeasurementNoiseX = readNumber(rustPipelineConfig.tracker_kalman_measurement_noise_x, 16);
   const trackerKalmanMeasurementNoiseY = readNumber(rustPipelineConfig.tracker_kalman_measurement_noise_y, 16);
+  const trackerKalmanMaxPredictDtMs = readNumber(rustPipelineConfig.tracker_kalman_max_predict_dt_ms, 35);
+  const trackerKalmanMaxPredictMissingMs = readNumber(rustPipelineConfig.tracker_kalman_max_predict_missing_ms, 80);
+  const trackerKalmanMaxPredictSteps = readNumber(rustPipelineConfig.tracker_kalman_max_predict_steps, 5);
   const trackerKalmanNisThreshold = readNumber(rustPipelineConfig.tracker_kalman_nis_threshold, 9.21);
   const trackerKalmanNisHardReject = readNumber(rustPipelineConfig.tracker_kalman_nis_hard_reject, 16);
   const recoilConfig = (controlConfig.recoil ?? {}) as Record<string, unknown>;
@@ -2531,7 +2534,7 @@ export function StudioConsoleView({
       label: "预测",
       value: dualPhasePredictionEnabled ? "三段速度" : "关闭",
       detail: dualPhasePredictionEnabled
-        ? `提前 ${formatNumber(dualPhasePredictionLeadFrames, 1)} 帧 · 平滑 ${formatNumber(dualPhasePredictionSmoothingFrames, 1)} 帧`
+        ? `提前 ${formatNumber(dualPhasePredictionLeadFrames, 1)} 帧 · 平滑系数 ${formatNumber(velocitySmoothingFramesToResponseWeight(dualPhasePredictionSmoothingFrames), 2)}`
         : "当前观测直接进入控制器",
       icon: "target"
     },
@@ -2591,6 +2594,9 @@ export function StudioConsoleView({
     trackerKalmanAccelerationNoise,
     trackerKalmanMeasurementNoiseX,
     trackerKalmanMeasurementNoiseY,
+    trackerKalmanMaxPredictDtMs,
+    trackerKalmanMaxPredictMissingMs,
+    trackerKalmanMaxPredictSteps,
     trackerKalmanNisThreshold,
     trackerKalmanNisHardReject
   });

@@ -24,6 +24,7 @@ export type StudioNumberParameter<Field extends string> = {
 
 export type AlgorithmNumberParameter = StudioNumberParameter<DualPhasePipelineField>;
 export type TargetingNumberParameter = StudioNumberParameter<TargetingPipelineField>;
+export type AlgorithmSettingsSection = "response" | "prediction" | "stability" | "calibration";
 
 export type DualPhasePipelineField =
   | "freshness_threshold_ms"
@@ -67,6 +68,9 @@ export type TargetingPipelineField =
   | "tracker_kalman_acceleration_noise"
   | "tracker_kalman_measurement_noise_x"
   | "tracker_kalman_measurement_noise_y"
+  | "tracker_kalman_max_predict_dt_ms"
+  | "tracker_kalman_max_predict_missing_ms"
+  | "tracker_kalman_max_predict_steps"
   | "tracker_kalman_nis_threshold"
   | "tracker_kalman_nis_hard_reject"
   | "target_class_priority"
@@ -133,6 +137,9 @@ export type TargetingParameterValues = {
   trackerKalmanAccelerationNoise: number;
   trackerKalmanMeasurementNoiseX: number;
   trackerKalmanMeasurementNoiseY: number;
+  trackerKalmanMaxPredictDtMs: number;
+  trackerKalmanMaxPredictMissingMs: number;
+  trackerKalmanMaxPredictSteps: number;
   trackerKalmanNisThreshold: number;
   trackerKalmanNisHardReject: number;
 };
@@ -142,6 +149,22 @@ export type TargetingParameterGroups = {
   trackerCoreParameters: TargetingNumberParameter[];
   trackerKalmanParameters: TargetingNumberParameter[];
 };
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+export function velocitySmoothingFramesToResponseWeight(frames: number): number {
+  if (!Number.isFinite(frames) || frames <= 0) {
+    return 0.01;
+  }
+  return clampNumber(1 - Math.exp(-1 / frames), 0.01, 0.95);
+}
+
+export function responseWeightToVelocitySmoothingFrames(weight: number): number {
+  const clamped = clampNumber(weight, 0.01, 0.95);
+  return -1 / Math.log(1 - clamped);
+}
 
 export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues): AlgorithmParameterGroups {
   return {
@@ -226,16 +249,16 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       },
       {
         key: "velocity_smoothing_frames",
-        label: "三段速度平滑窗口",
-        detail: "连续同向移动时平滑 3 段速度估计。增大更稳但急停、反向和 peek 响应更慢。",
-        value: values.dualPhasePredictionSmoothingFrames,
-        min: 0.000001,
-        max: 120,
-        recommendedMin: 0.1,
-        recommendedMax: 12,
-        step: 0.1,
-        unit: "帧",
-        applyMode: "live"
+        label: "速度平滑系数",
+        detail: "当前三段速度进入预测的权重。越大越贴近当前移动，越小越稳定；内部按帧间隔换算成不随 FPS 漂移的平滑窗口。",
+        value: velocitySmoothingFramesToResponseWeight(values.dualPhasePredictionSmoothingFrames),
+        min: 0.01,
+        max: 0.95,
+        recommendedMin: 0.20,
+        recommendedMax: 0.70,
+        step: 0.01,
+        applyMode: "live",
+        transform: responseWeightToVelocitySmoothingFrames
       },
       {
         key: "velocity_history_reset_gap_ms",
@@ -679,6 +702,51 @@ export function buildTargetingParameterGroups(values: TargetingParameterValues):
         step: 0.5,
         unit: "px²",
         riskLevel: "advanced"
+      },
+      {
+        key: "tracker_kalman_max_predict_dt_ms",
+        label: "单步预测上限",
+        detail: "相邻两次关联预测最多按多少毫秒推进；限制异常长帧间隔把卡尔曼轨迹外推过远。",
+        value: values.trackerKalmanMaxPredictDtMs,
+        min: 1,
+        max: 1000,
+        recommendedMin: 5,
+        recommendedMax: 80,
+        step: 1,
+        unit: "ms",
+        kind: "stepper",
+        riskLevel: "advanced",
+        transform: Math.round
+      },
+      {
+        key: "tracker_kalman_max_predict_missing_ms",
+        label: "丢失预测窗口",
+        detail: "目标短暂漏检时，卡尔曼状态最多保留多久用于身份关联；它不直接输出鼠标提前量。",
+        value: values.trackerKalmanMaxPredictMissingMs,
+        min: 1,
+        max: 10000,
+        recommendedMin: 10,
+        recommendedMax: 250,
+        step: 1,
+        unit: "ms",
+        kind: "stepper",
+        riskLevel: "advanced",
+        transform: Math.round
+      },
+      {
+        key: "tracker_kalman_max_predict_steps",
+        label: "连续预测步数",
+        detail: "没有新观测时最多允许连续外推多少次。调高更能跨短暂漏检，过高会增加误关联风险。",
+        value: values.trackerKalmanMaxPredictSteps,
+        min: 0,
+        max: 120,
+        recommendedMin: 0,
+        recommendedMax: 12,
+        step: 1,
+        unit: "步",
+        kind: "stepper",
+        riskLevel: "advanced",
+        transform: Math.round
       },
       {
         key: "tracker_kalman_nis_threshold",

@@ -660,9 +660,8 @@ impl RobustVelocityEstimator {
         let displacement_quality =
             if window_decision.intent == PredictionMotionState::AbruptStopOrReverse {
                 0.80
-            } else if window_decision.intent == PredictionMotionState::Stationary {
-                0.0
-            } else if mean_speed <= f64::EPSILON
+            } else if window_decision.intent == PredictionMotionState::Stationary
+                || mean_speed <= f64::EPSILON
                 || window_speed <= f64::EPSILON
                 || filtered_speed <= f64::EPSILON
                 || mean_velocity.signum() != window_velocity.signum()
@@ -739,9 +738,11 @@ fn classify_velocity_window(
         };
     }
     if signs[0] != 0 && signs[0] == signs[1] && signs[1] == signs[2] {
-        let latest_weight = (latest.abs() > mean_velocity.abs())
-            .then_some(0.5)
-            .unwrap_or(0.0);
+        let latest_weight = if latest.abs() > mean_velocity.abs() {
+            0.5
+        } else {
+            0.0
+        };
         return VelocityWindowDecision {
             target_velocity: mean_velocity * (1.0 - latest_weight) + latest * latest_weight,
             intent: PredictionMotionState::Continuous,
