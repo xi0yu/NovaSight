@@ -7,9 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::controller::ControlDecision;
-use crate::prediction::{
-    PredictionMotionState, prediction_gate_strength, weak_acceleration_correction,
-};
+use crate::prediction::{PredictionMotionState, prediction_gate_strength};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AlgorithmScoreConfig {
@@ -564,7 +562,6 @@ fn prediction_truth_offset(
             velocity_px_ms: sample.velocity_x_px_ms,
             motion_state: sample.motion_state_x,
             trend_consistency: sample.trend_consistency_x,
-            acceleration_px_ms2: sample.acceleration_x_px_ms2,
             confidence: sample.motion_confidence_x,
             cap_px: sample.prediction_cap_x_px,
             allowed: sample.prediction_allowed_x,
@@ -577,7 +574,6 @@ fn prediction_truth_offset(
             velocity_px_ms: sample.velocity_y_px_ms,
             motion_state: sample.motion_state_y,
             trend_consistency: sample.trend_consistency_y,
-            acceleration_px_ms2: sample.acceleration_y_px_ms2,
             confidence: sample.motion_confidence_y,
             cap_px: sample.prediction_cap_y_px,
             allowed: sample.prediction_allowed_y,
@@ -593,7 +589,6 @@ struct PredictionTruthAxisSample {
     velocity_px_ms: f64,
     motion_state: PredictionMotionState,
     trend_consistency: f64,
-    acceleration_px_ms2: f64,
     confidence: f64,
     cap_px: f64,
     allowed: bool,
@@ -611,16 +606,7 @@ fn prediction_truth_axis_offset(
     {
         return None;
     }
-    let velocity_offset = sample.velocity_px_ms * horizon_ms;
-    let raw = velocity_offset
-        + weak_acceleration_correction(
-            sample.motion_state,
-            sample.trend_consistency,
-            sample.acceleration_px_ms2,
-            sample.confidence,
-            horizon_ms,
-            velocity_offset,
-        );
+    let raw = sample.velocity_px_ms * horizon_ms;
     if !raw.is_finite() {
         return None;
     }
@@ -1074,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    fn prediction_truth_raw_projection_mirrors_weak_acceleration_correction() {
+    fn prediction_truth_raw_projection_uses_velocity_time_lead_only() {
         let mut continuous = (0..5)
             .map(|index| {
                 prediction_truth_sample(
@@ -1104,7 +1090,7 @@ mod tests {
         let continuous_report = score_prediction_truth(&continuous, config.clone());
         let peek_report = score_prediction_truth(&peek, config);
 
-        assert!(continuous_report.horizons[0].mae_px < 1e-12);
+        assert!((continuous_report.horizons[0].mae_px - 1.0).abs() < 1e-12);
         assert!((peek_report.horizons[0].mae_px - 1.0).abs() < 1e-12);
     }
 

@@ -6,6 +6,10 @@ Status: `dual_phase_atan_robust_predictive_v2` remains the serialized mainline
 ID for compatibility. Its production behavior is single-target prediction plus
 dual-phase Atan control.
 
+For the current end-to-end production flow, start with
+[`core_algorithm_flow.md`](core_algorithm_flow.md). This file keeps the detailed
+mouse-control parameter contract.
+
 ## Mainline Route
 
 ```text
@@ -16,7 +20,7 @@ latest DetectionBatch
 -> frozen crosshair/geometry reference
 -> current measured ROI error
 -> bounded four-point / three-segment velocity prediction
--> FAR / NEAR transition weight
+-> continuous response transition weight
 -> source/FOV/counts projection
 -> continuously blended counts-domain Atan response
 -> device-count limiter and truncating quantizer
@@ -45,19 +49,19 @@ different target point from the controller.
 
 ```text
 e_meas = current measured aim - crosshair
-v = average(last three aim-position segments)
-horizon = frame_age + actuation_delay + adaptive_motion_lead
-prediction = clamp((v * horizon + weak_acceleration_correction) * confidence_gate, motion_aware_cap)
+v = robust_velocity(last three aim-position segments)
+horizon = frame_age + actuation_delay + prediction_lead_ms
+prediction = clamp((v * horizon) * confidence_gate, motion_aware_cap)
 e_ctrl = e_meas + prediction
 
 source_error = e_ctrl * roi_size / observation_size
 theta = atan(source_error / focal_length)
 full_counts = theta * counts_per_360 / (2*pi)
 
-w_far = smoothstep(distance, 0.75 * near_threshold, 1.25 * near_threshold)
-kp = (1 - w_far) * near_kp + w_far * far_kp
-u = kp * atan_scale * atan(full_counts / atan_scale)
-limit = (1 - w_far) * near_limit + w_far * far_limit
+w = response_progress(distance, near_threshold, curve_width, curve_shape)
+response_gain = response_scale * lerp(gain_floor, gain_ceiling, w)
+u = response_gain * atan_scale * atan(full_counts / atan_scale)
+limit = lerp(near_limit, far_limit, w)
 u = clamp(u, -limit, limit)
 ```
 
@@ -87,21 +91,24 @@ range. It does not merge pending counts or split one command into a trajectory.
 ## Production Configuration
 
 ```yaml
-schema_version: 9
+schema_version: 11
 pipeline:
   near_threshold_px: 12.0
   atan_scale_counts: 256.0
-  far_kp: 0.30
+  p_response_scale: 0.30
+  p_response_gain_floor: 0.6666666666666666
+  p_response_gain_ceiling: 1.0
+  p_response_curve_width_ratio: 0.25
+  p_response_curve_shape: 1.0
   far_max_counts_per_update: 127.0
-  near_kp: 0.20
   near_max_counts_per_update: 72.0
   prediction_enabled: true
-  prediction_lead_frames: 1.0
+  prediction_lead_ms: 16.0
   prediction_far_absolute_cap_px: 10.0
   prediction_near_absolute_cap_px: 3.0
 ```
 
-The Rust root schema is version 9 and uses `pipeline.prediction_enabled: true`.
+The Rust root schema is version 11 and uses `pipeline.prediction_enabled: true`.
 Older generated response profiles are migrated to the responsive baseline;
 custom response profiles are left intact.
 

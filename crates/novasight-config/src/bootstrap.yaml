@@ -1,6 +1,6 @@
 # NovaSight's single runtime configuration. Relative paths resolve from the
 # directory in which novasightd is started.
-schema_version: 10
+schema_version: 11
 revision: 0
 server:
   # Remote access belongs behind an authenticated TLS proxy.
@@ -36,14 +36,13 @@ pipeline:
   near_max_counts_per_update: 72.0
   # FOV 投影后的每轴到位半径。进入 3 counts 后清空残差，退出阈值自动扩大以抑制抖动。
   arrival_radius_counts: 3.0
-  velocity_smoothing_frames: 3.0
   velocity_history_reset_gap_ms: 80.0
   velocity_spread_base_px_ms: 0.12
   velocity_spread_relative: 0.50
   velocity_change_base_px_ms: 0.20
   velocity_change_relative: 0.75
   prediction_enabled: true
-  prediction_lead_frames: 1.0
+  prediction_lead_ms: 16.0
   prediction_far_absolute_cap_px: 10.0
   prediction_far_base_cap_px: 1.25
   prediction_far_relative_cap: 0.30

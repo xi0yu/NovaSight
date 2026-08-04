@@ -81,7 +81,6 @@ pub struct DualPhaseConfig {
     pub near_max_counts_per_update: f64,
     /// Half-size of the per-axis arrival box in projected device counts.
     pub arrival_radius_counts: f64,
-    pub velocity_smoothing_frames: f64,
     pub velocity_history_reset_gap_ms: f64,
     pub velocity_spread_base_px_ms: f64,
     pub velocity_spread_relative: f64,
@@ -91,7 +90,7 @@ pub struct DualPhaseConfig {
     /// Unified command-to-visible-response delay shared with the runtime's
     /// actuation feedback gate.
     pub prediction_actuation_delay_ms: f64,
-    pub prediction_lead_frames: f64,
+    pub prediction_lead_ms: f64,
     pub prediction_far_absolute_cap_px: f64,
     pub prediction_far_base_cap_px: f64,
     pub prediction_far_relative_cap: f64,
@@ -123,7 +122,6 @@ impl Default for DualPhaseConfig {
             far_max_counts_per_update: 127.0,
             near_max_counts_per_update: 72.0,
             arrival_radius_counts: 3.0,
-            velocity_smoothing_frames: 3.0,
             velocity_history_reset_gap_ms: 80.0,
             velocity_spread_base_px_ms: 0.12,
             velocity_spread_relative: 0.50,
@@ -131,7 +129,7 @@ impl Default for DualPhaseConfig {
             velocity_change_relative: 0.75,
             prediction_enabled: true,
             prediction_actuation_delay_ms: 4.0,
-            prediction_lead_frames: 1.0,
+            prediction_lead_ms: 16.0,
             prediction_far_absolute_cap_px: 10.0,
             prediction_far_base_cap_px: 1.25,
             prediction_far_relative_cap: 0.30,
@@ -152,14 +150,13 @@ impl DualPhaseConfig {
     fn prediction_config(self) -> SingleTargetPredictionConfig {
         SingleTargetPredictionConfig {
             enabled: self.prediction_enabled,
-            smoothing_frames: self.velocity_smoothing_frames,
             history_reset_gap_ms: self.velocity_history_reset_gap_ms,
             spread_base_px_ms: self.velocity_spread_base_px_ms,
             spread_relative: self.velocity_spread_relative,
             change_base_px_ms: self.velocity_change_base_px_ms,
             change_relative: self.velocity_change_relative,
             actuation_delay_ms: self.prediction_actuation_delay_ms,
-            lead_frames: self.prediction_lead_frames,
+            lead_ms: self.prediction_lead_ms,
             far_absolute_cap_px: self.prediction_far_absolute_cap_px,
             far_base_cap_px: self.prediction_far_base_cap_px,
             far_relative_cap: self.prediction_far_relative_cap,
@@ -233,7 +230,7 @@ pub struct ControlDecision {
     pub measurement_dt_ms: Option<f64>,
     pub reference_dt_ms: f64,
     pub prediction_actuation_delay_ms: f64,
-    pub prediction_lead_frames: f64,
+    pub prediction_lead_ms: f64,
     pub prediction_horizon_ms: f64,
     pub prediction_raw_offset_x: f64,
     pub prediction_weighted_offset_x: f64,
@@ -310,7 +307,7 @@ impl ControlDecision {
             measurement_dt_ms: None,
             reference_dt_ms: 0.0,
             prediction_actuation_delay_ms: 0.0,
-            prediction_lead_frames: 0.0,
+            prediction_lead_ms: 0.0,
             prediction_horizon_ms: 0.0,
             prediction_raw_offset_x: 0.0,
             prediction_weighted_offset_x: 0.0,
@@ -781,7 +778,7 @@ impl DualPhaseControl {
             measurement_dt_ms: prediction.x.measurement_dt_ms,
             reference_dt_ms: prediction.x.reference_dt_ms,
             prediction_actuation_delay_ms: prediction.actuation_delay_ms,
-            prediction_lead_frames: prediction.lead_frames,
+            prediction_lead_ms: prediction.lead_ms,
             prediction_horizon_ms: prediction.x.horizon_ms,
             prediction_raw_offset_x: prediction.x.raw_offset,
             prediction_weighted_offset_x: prediction.x.weighted_offset,
@@ -905,7 +902,7 @@ mod tests {
     fn confidence_weighted_prediction_respects_far_cap() {
         let config = DualPhaseConfig {
             prediction_enabled: true,
-            prediction_lead_frames: 2.0,
+            prediction_lead_ms: 2.0,
             prediction_far_absolute_cap_px: 3.0,
             prediction_far_base_cap_px: 0.0,
             prediction_far_relative_cap: 0.05,
@@ -945,8 +942,8 @@ mod tests {
         assert!(decision.trend_consistency > 0.99);
         assert_eq!(decision.acceleration_px_ms2, 0.0);
         assert!((decision.reference_dt_ms - 10.0).abs() < 1e-12);
-        assert!((decision.prediction_horizon_ms - 32.0).abs() < 1e-12);
-        assert!((decision.prediction_raw_offset_x - 12.8).abs() < 1e-12);
+        assert!((decision.prediction_horizon_ms - 14.0).abs() < 1e-12);
+        assert!((decision.prediction_raw_offset_x - 5.6).abs() < 1e-12);
         assert!((decision.prediction_allowed_cap_x - 3.0).abs() < 1e-12);
         assert!(decision.prediction_allowed);
         assert!((decision.predicted_offset_x - 3.0).abs() < 1e-12);
@@ -1083,7 +1080,7 @@ mod tests {
     fn response_region_follows_the_predicted_control_point() {
         let mut control = DualPhaseControl::new(DualPhaseConfig {
             prediction_enabled: true,
-            prediction_lead_frames: 1.0,
+            prediction_lead_ms: 1.0,
             ..DualPhaseConfig::default()
         });
         let mut decision = None;

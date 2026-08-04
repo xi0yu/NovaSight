@@ -199,7 +199,7 @@ function buildTargetStep(input: BuildControlTraceInput): ControlTraceStep {
   if (input.hasTarget) {
     return {
       id: "target",
-      label: "目标选择",
+      label: "选择主要目标",
       state: "ready",
       value: input.trackId === null ? "已选择" : `track ${Math.trunc(input.trackId)}`,
       detail: input.classLabel ? `${input.classLabel} 进入控制链。` : "已有目标进入控制链。",
@@ -209,7 +209,7 @@ function buildTargetStep(input: BuildControlTraceInput): ControlTraceStep {
   const hasDiagnostics = input.targetPipelineStage || input.targetPipelineCode || input.targetPipelineMessage;
   return {
     id: "target",
-    label: "目标选择",
+    label: "选择主要目标",
     state: hasDiagnostics ? "blocked" : positive(input.targetingBatches) ? "waiting" : "idle",
     value: formatInteger(input.selectedTargetCount),
     detail: input.targetPipelineMessage || "尚未选出可控目标。",
@@ -222,7 +222,7 @@ function buildAimStep(input: BuildControlTraceInput): ControlTraceStep {
   if (stale) {
     return {
       id: "aim",
-      label: "瞄准误差",
+      label: "目标速度预测",
       state: "blocked",
       value: formatNumber(input.controlFrameAgeMs, 2, "ms"),
       detail: "当前控制观测过期，不能用于物理输出。",
@@ -232,19 +232,19 @@ function buildAimStep(input: BuildControlTraceInput): ControlTraceStep {
   if (input.hasTarget && present(input.controlAim) && present(input.controlError)) {
     return {
       id: "aim",
-      label: "瞄准误差",
+      label: "目标速度预测",
       state: "ready",
       value: formatNumber(input.errorDistancePx, 2, "px"),
-      detail: input.predictionEnabled ? "预测瞄点已进入误差计算。" : "当前观测直接进入误差计算。",
+      detail: input.predictionEnabled ? "aim 点速度预测已进入控制误差。" : "当前观测直接进入控制误差。",
       evidence: `center=${input.controlCenter} · observed=${input.observedAim} · control=${input.controlAim}`
     };
   }
   return {
     id: "aim",
-    label: "瞄准误差",
+    label: "目标速度预测",
     state: input.hasTarget ? "waiting" : "idle",
     value: "—",
-    detail: input.hasTarget ? "等待控制瞄点与画面中心。" : "没有目标时不计算瞄准误差。",
+    detail: input.hasTarget ? "等待控制瞄点与画面中心。" : "没有目标时不计算控制误差。",
     evidence: `frame_age=${formatNumber(input.controlFrameAgeMs, 2, "ms")} · dt=${formatNumber(input.measurementDtMs, 3, "ms")}`
   };
 }
@@ -253,7 +253,7 @@ function buildControllerStep(input: BuildControlTraceInput): ControlTraceStep {
   if (input.controllerActive) {
     return {
       id: "controller",
-      label: "控制器",
+      label: "连续非线性控制",
       state: "ready",
       value: present(input.integerCommand) ? input.integerCommand : "已计算",
       detail: `${input.controllerMode}${input.movementStrategy ? ` · ${input.movementStrategy}` : ""}`,
@@ -262,10 +262,10 @@ function buildControllerStep(input: BuildControlTraceInput): ControlTraceStep {
   }
   return {
     id: "controller",
-    label: "控制器",
+    label: "连续非线性控制",
     state: input.hasTarget ? "waiting" : "idle",
     value: "—",
-    detail: input.hasTarget ? "等待目标样本进入 Atan 控制器。" : "没有目标时控制器保持空闲。",
+    detail: input.hasTarget ? "等待目标样本进入连续 Atan 控制器。" : "没有目标时控制器保持空闲。",
     evidence: input.noSendReason || "waiting"
   };
 }
@@ -274,27 +274,27 @@ function buildGateStep(input: BuildControlTraceInput): ControlTraceStep {
   if (!input.outputEnabled) {
     return {
       id: "gate",
-      label: "输出门",
+      label: "输出限幅",
       state: "idle",
       value: "暂停",
-      detail: "物理输出门关闭；算法继续计算，但不会发送鼠标偏移。",
+      detail: "物理输出关闭；算法继续计算，但不会发送鼠标偏移。",
       evidence: input.noSendReason || "output_enabled=false"
     };
   }
   if (input.willEmit === true) {
     return {
       id: "gate",
-      label: "输出门",
+      label: "输出限幅",
       state: "ready",
       value: "准入",
-      detail: "当前控制命令已获准进入设备通道。",
+      detail: "当前控制命令已通过限幅与输出门，准备进入设备通道。",
       evidence: input.triggerActive === null ? "trigger=未知" : input.triggerActive ? "trigger=按下" : "trigger=未按下"
     };
   }
   const waitingForTrigger = input.noSendReason.includes("触发") || input.triggerActive === false;
   return {
     id: "gate",
-    label: "输出门",
+    label: "输出限幅",
     state: waitingForTrigger || !input.hasTarget ? "waiting" : "blocked",
     value: "未发送",
     detail: input.noSendReason || "控制门控未通过。",
@@ -306,7 +306,7 @@ function buildDeviceStep(input: BuildControlTraceInput): ControlTraceStep {
   if (!input.outputEnabled) {
     return {
       id: "device",
-      label: "kmNet 回执",
+      label: "命令输出",
       state: "idle",
       value: "暂停",
       detail: "输出门关闭时不要求设备回执。",
@@ -316,7 +316,7 @@ function buildDeviceStep(input: BuildControlTraceInput): ControlTraceStep {
   if (input.kmnetRuntimeConnected && positive(input.acceptedCommandCount)) {
     return {
       id: "device",
-      label: "kmNet 回执",
+      label: "命令输出",
       state: "ready",
       value: input.lastAcceptedCommand,
       detail: "运行时设备通道已接受过控制命令。",
@@ -326,7 +326,7 @@ function buildDeviceStep(input: BuildControlTraceInput): ControlTraceStep {
   if (input.kmnetRuntimeConnected) {
     return {
       id: "device",
-      label: "kmNet 回执",
+      label: "命令输出",
       state: "waiting",
       value: "已连接",
       detail: "设备通道已连接，等待第一条被接受的控制命令。",
@@ -335,7 +335,7 @@ function buildDeviceStep(input: BuildControlTraceInput): ControlTraceStep {
   }
   return {
     id: "device",
-    label: "kmNet 回执",
+    label: "命令输出",
     state: input.willEmit === true ? "blocked" : "waiting",
     value: "未连接",
     detail: input.willEmit === true ? "控制命令已准入，但运行时设备通道未连接。" : "等待输出门准入和 kmNet 运行时连接。",
@@ -376,7 +376,7 @@ export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSu
         : "控制链路正在等待实时状态"
         : "控制链路等待主链启动";
   const detail = input.outputTrace?.detail ||
-    "按实时链路串起识别结果、目标选择、瞄准误差、Atan 输出、输出门和 kmNet 回执。";
+    "按实时链路串起识别结果、选择主要目标、目标速度预测、连续非线性控制、输出限幅和命令输出。";
   const traceFacts: ControlTraceFact[] = input.outputTrace
     ? [
         {

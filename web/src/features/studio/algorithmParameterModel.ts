@@ -40,13 +40,12 @@ export type DualPhasePipelineField =
   | "far_max_counts_per_update"
   | "near_max_counts_per_update"
   | "prediction_enabled"
-  | "velocity_smoothing_frames"
   | "velocity_history_reset_gap_ms"
   | "velocity_spread_base_px_ms"
   | "velocity_spread_relative"
   | "velocity_change_base_px_ms"
   | "velocity_change_relative"
-  | "prediction_lead_frames"
+  | "prediction_lead_ms"
   | "prediction_far_absolute_cap_px"
   | "prediction_far_base_cap_px"
   | "prediction_far_relative_cap"
@@ -95,8 +94,7 @@ export type AlgorithmParameterValues = {
   dualPhaseNearThreshold: number;
   dualPhaseAtanScale: number;
   actuationFeedbackDelayMs: number;
-  dualPhasePredictionLeadFrames: number;
-  dualPhasePredictionSmoothingFrames: number;
+  dualPhasePredictionLeadMs: number;
   dualPhasePredictionHistoryResetGapMs: number;
   velocitySpreadBasePxMs: number;
   velocitySpreadRelative: number;
@@ -155,22 +153,6 @@ export type TargetingParameterGroups = {
   trackerCoreParameters: TargetingNumberParameter[];
   trackerKalmanParameters: TargetingNumberParameter[];
 };
-
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-export function velocitySmoothingFramesToResponseWeight(frames: number): number {
-  if (!Number.isFinite(frames) || frames <= 0) {
-    return 0.01;
-  }
-  return clampNumber(1 - Math.exp(-1 / frames), 0.01, 0.95);
-}
-
-export function responseWeightToVelocitySmoothingFrames(weight: number): number {
-  const clamped = clampNumber(weight, 0.01, 0.95);
-  return -1 / Math.log(1 - clamped);
-}
 
 export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues): AlgorithmParameterGroups {
   return {
@@ -253,30 +235,17 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         applyMode: "live"
       },
       {
-        key: "prediction_lead_frames",
+        key: "prediction_lead_ms",
         label: "预测提前量",
-        detail: "在观测帧龄和执行反馈延迟之外，沿三段速度估计额外提前多少帧。跟不上快速目标时小幅增加；急停或左右晃动过冲时降低。",
-        value: values.dualPhasePredictionLeadFrames,
+        detail: "在观测帧龄和执行反馈延迟之外，沿 aim 点速度额外提前的时间。跟不上移动目标时小幅增加；急停或过度预判时降低。",
+        value: values.dualPhasePredictionLeadMs,
         min: 0,
-        max: 10,
+        max: 1000,
         recommendedMin: 0,
-        recommendedMax: 3,
-        step: 0.1,
-        unit: "帧",
+        recommendedMax: 80,
+        step: 0.5,
+        unit: "ms",
         applyMode: "live"
-      },
-      {
-        key: "velocity_smoothing_frames",
-        label: "速度平滑系数",
-        detail: "当前三段速度进入预测的权重。越大越贴近当前移动，越小越稳定；内部按帧间隔换算成不随 FPS 漂移的平滑窗口。",
-        value: velocitySmoothingFramesToResponseWeight(values.dualPhasePredictionSmoothingFrames),
-        min: 0.01,
-        max: 0.95,
-        recommendedMin: 0.20,
-        recommendedMax: 0.70,
-        step: 0.01,
-        applyMode: "live",
-        transform: responseWeightToVelocitySmoothingFrames
       },
       {
         key: "velocity_history_reset_gap_ms",
@@ -321,7 +290,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "velocity_change_base_px_ms",
         label: "速度变化基础容差",
-        detail: "限制相邻平滑速度的突变；超过阈值时降低预测可信度。",
+        detail: "限制相邻预测速度的突变；超过阈值时降低预测可信度。",
         value: values.velocityChangeBasePxMs,
         min: 0.000001,
         max: 10000,

@@ -463,7 +463,7 @@ pub(crate) struct ControlPipelineState {
     pub velocity_3: Option<f64>,
     pub mean_velocity: Option<f64>,
     pub median_velocity: Option<f64>,
-    pub filtered_velocity: Option<f64>,
+    pub prediction_velocity: Option<f64>,
     pub motion_state: Option<PredictionMotionState>,
     pub trend_consistency: Option<f64>,
     pub acceleration_px_ms2: Option<f64>,
@@ -472,7 +472,7 @@ pub(crate) struct ControlPipelineState {
     pub measurement_dt_s: Option<f64>,
     pub reference_dt_ms: Option<f64>,
     pub prediction_actuation_delay_ms: Option<f64>,
-    pub prediction_lead_frames: Option<f64>,
+    pub prediction_lead_ms: Option<f64>,
     pub prediction_horizon_ms: Option<f64>,
     pub prediction_raw_offset_x: Option<f64>,
     pub prediction_weighted_offset_x: Option<f64>,
@@ -484,7 +484,7 @@ pub(crate) struct ControlPipelineState {
     pub velocity_y_3: Option<f64>,
     pub mean_velocity_y: Option<f64>,
     pub median_velocity_y: Option<f64>,
-    pub filtered_velocity_y: Option<f64>,
+    pub prediction_velocity_y: Option<f64>,
     pub motion_state_y: Option<PredictionMotionState>,
     pub trend_consistency_y: Option<f64>,
     pub acceleration_y_px_ms2: Option<f64>,
@@ -1062,7 +1062,7 @@ impl CompatibilityRuntimeState {
                         velocity_3: dual_phase.velocity_samples[2],
                         mean_velocity: dual_phase.mean_velocity,
                         median_velocity: dual_phase.median_velocity,
-                        filtered_velocity: control_sample.then_some(dual_phase.velocity_x),
+                        prediction_velocity: control_sample.then_some(dual_phase.velocity_x),
                         motion_state: control_sample.then_some(dual_phase.motion_state),
                         trend_consistency: control_sample.then_some(dual_phase.trend_consistency),
                         acceleration_px_ms2: control_sample
@@ -1073,8 +1073,7 @@ impl CompatibilityRuntimeState {
                         reference_dt_ms: control_sample.then_some(dual_phase.reference_dt_ms),
                         prediction_actuation_delay_ms: control_sample
                             .then_some(dual_phase.prediction_actuation_delay_ms),
-                        prediction_lead_frames: control_sample
-                            .then_some(dual_phase.prediction_lead_frames),
+                        prediction_lead_ms: control_sample.then_some(dual_phase.prediction_lead_ms),
                         prediction_horizon_ms: control_sample
                             .then_some(dual_phase.prediction_horizon_ms),
                         prediction_raw_offset_x: control_sample
@@ -1091,7 +1090,7 @@ impl CompatibilityRuntimeState {
                         velocity_y_3: dual_phase.velocity_samples_y[2],
                         mean_velocity_y: dual_phase.mean_velocity_y,
                         median_velocity_y: dual_phase.median_velocity_y,
-                        filtered_velocity_y: control_sample.then_some(dual_phase.velocity_y),
+                        prediction_velocity_y: control_sample.then_some(dual_phase.velocity_y),
                         motion_state_y: control_sample.then_some(dual_phase.motion_state_y),
                         trend_consistency_y: control_sample
                             .then_some(dual_phase.trend_consistency_y),
@@ -1553,7 +1552,7 @@ mod tests {
             acceleration_px_ms2: 0.01,
             measurement_dt_ms: Some(8.0),
             reference_dt_ms: 8.1,
-            prediction_lead_frames: 1.0,
+            prediction_lead_ms: 1.0,
             prediction_raw_offset_x: 2.0,
             prediction_weighted_offset_x: 1.6,
             prediction_allowed_cap_x: 3.0,
@@ -1713,7 +1712,7 @@ mod tests {
         assert_eq!(pipeline["acceleration_px_ms2"], 0.01);
         assert_eq!(pipeline["prediction_safe_offset_x"], 1.6);
         assert_eq!(pipeline["mean_velocity_y"], -0.10);
-        assert_eq!(pipeline["filtered_velocity_y"], -0.10);
+        assert_eq!(pipeline["prediction_velocity_y"], -0.10);
         assert_eq!(pipeline["motion_state_y"], "abrupt_stop_or_reverse");
         assert_eq!(pipeline["trend_consistency_y"], 0.25);
         assert_eq!(pipeline["acceleration_y_px_ms2"], -0.005);

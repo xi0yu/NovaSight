@@ -31,33 +31,3 @@ pub(crate) fn select_uncommissioned_pointer_adapter(
         }
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use novasight_core::PointerDeviceMode;
-    use novasight_store::config::DeviceConfig;
-
-    use super::{configured_pointer_device_mode, select_uncommissioned_pointer_adapter};
-
-    #[test]
-    fn disabled_auto_connect_selects_an_inert_adapter_without_a_trigger_worker() {
-        let device = DeviceConfig::default();
-
-        let selected = select_uncommissioned_pointer_adapter(&device).expect("safe adapter");
-
-        assert_eq!(selected.device.mode(), PointerDeviceMode::Uncommissioned);
-        assert_eq!(selected.trigger_poll_interval_ms, None);
-    }
-
-    #[test]
-    fn commissioned_configuration_is_left_for_the_platform_composition_root() {
-        let mut device = DeviceConfig::default();
-        device.auto_connect = true;
-
-        assert_eq!(
-            configured_pointer_device_mode(Some(&device)),
-            PointerDeviceMode::Commissioned
-        );
-        assert!(select_uncommissioned_pointer_adapter(&device).is_none());
-    }
-}

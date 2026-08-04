@@ -200,7 +200,7 @@ function buildControlItem(input: BuildProductConfigProfileInput): ProductConfigI
       label: "控制策略",
       state: "live",
       value: input.controlModeLabel,
-      detail: "目标选择、预测与 Atan 控制参数正在生效。",
+      detail: "目标选择、目标速度预测、连续非线性控制与输出限幅正在生效。",
       evidence: `${input.triggerModeLabel} · 新鲜度 ${input.freshnessThresholdLabel}`
     };
   }

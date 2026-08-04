@@ -53,7 +53,7 @@ function sectionDescriptionForTitle(title: string): string {
   if (title.includes("ROI")) return "裁剪区域决定推理、预览和控制坐标基准";
   if (title.includes("模型设置")) return "绑定当前运行模型和 Engine 文件";
   if (title.includes("推理输出")) return "查看识别结果、目标框和新鲜度";
-  if (title.includes("鼠标移动算法")) return "预测、Atan 响应和输出限幅";
+  if (title.includes("鼠标移动算法")) return "目标选择、速度预测、控制、限幅和输出";
   if (title.includes("控制量反馈")) return "控制决策、调度器和执行器状态";
   if (title.includes("kmNet")) return "硬件连接、触发键和单步移动测试";
   if (title.includes("性能占比")) return "采集、预处理、推理和后处理耗时";

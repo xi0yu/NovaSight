@@ -84,8 +84,7 @@ import {
   type AlgorithmNumberParameter,
   type DualPhasePipelineField,
   type TargetingNumberParameter,
-  type TargetingPipelineField,
-  velocitySmoothingFramesToResponseWeight
+  type TargetingPipelineField
 } from "./algorithmParameterModel";
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
 import { StudioPageHeader } from "./StudioPageHeader";
@@ -111,7 +110,7 @@ import "./studio-settings.css";
 
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
 const CONTROL_ALGORITHM_LABEL = "连续 Atan 控制";
-const CONTROL_ALGORITHM_DESCRIPTION = "当前控制器：单目标预测、角度投影、连续 Atan 响应、限幅与量化。";
+const CONTROL_ALGORITHM_DESCRIPTION = "当前链路：选择主要目标、目标速度预测、连续非线性控制、输出限幅、命令输出。";
 type KmnetTestMessageTone = "success" | "warning";
 const loadModelManagerDialog = () => import("../models/ModelManagerDialog");
 const ModelManagerDialog = lazy(() =>
@@ -186,25 +185,25 @@ const ALGORITHM_SETTINGS_SECTIONS: Array<{
 }> = [
   {
     id: "response",
-    label: "响应算法",
-    detail: "远近响应、过冲与 Atan 曲线",
+    label: "连续非线性控制",
+    detail: "响应力度、过渡曲线与 Atan 压缩",
     panelId: "algorithm-settings-response"
   },
   {
     id: "prediction",
-    label: "目标预测",
-    detail: "移动目标跟随、提前量与可信度",
+    label: "目标速度预测",
+    detail: "aim 点速度、提前量与可信度",
     panelId: "algorithm-settings-prediction"
   },
   {
     id: "stability",
-    label: "到位与输出",
-    detail: "临近抖动、单次限幅与反馈等待",
+    label: "输出限幅",
+    detail: "单次 counts 上限、到位与反馈等待",
     panelId: "algorithm-settings-stability"
   },
   {
     id: "calibration",
-    label: "标定与时效",
+    label: "控制标定",
     detail: "FOV、设备 counts 与过期画面",
     panelId: "algorithm-settings-calibration"
   }
@@ -1255,13 +1254,12 @@ export function StudioConsoleView({
   const dualPhaseNearMaxCounts = readNumber(rustPipelineConfig.near_max_counts_per_update, 72);
   const dualPhaseArrivalRadiusCounts = readNumber(rustPipelineConfig.arrival_radius_counts, 3);
   const dualPhasePredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, true);
-  const dualPhasePredictionSmoothingFrames = readNumber(rustPipelineConfig.velocity_smoothing_frames, 3);
   const dualPhasePredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
   const velocitySpreadBasePxMs = readNumber(rustPipelineConfig.velocity_spread_base_px_ms, 0.12);
   const velocitySpreadRelative = readNumber(rustPipelineConfig.velocity_spread_relative, 0.50);
   const velocityChangeBasePxMs = readNumber(rustPipelineConfig.velocity_change_base_px_ms, 0.20);
   const velocityChangeRelative = readNumber(rustPipelineConfig.velocity_change_relative, 0.75);
-  const dualPhasePredictionLeadFrames = readNumber(rustPipelineConfig.prediction_lead_frames, 1);
+  const dualPhasePredictionLeadMs = readNumber(rustPipelineConfig.prediction_lead_ms, 16);
   const dualPhasePredictionFarCapPx = readNumber(rustPipelineConfig.prediction_far_absolute_cap_px, 10);
   const dualPhasePredictionFarBaseCapPx = readNumber(rustPipelineConfig.prediction_far_base_cap_px, 1.25);
   const dualPhasePredictionFarRelativeCap = readNumber(rustPipelineConfig.prediction_far_relative_cap, 0.30);
@@ -2510,8 +2508,7 @@ export function StudioConsoleView({
     dualPhaseNearThreshold,
     dualPhaseAtanScale,
     actuationFeedbackDelayMs,
-    dualPhasePredictionLeadFrames,
-    dualPhasePredictionSmoothingFrames,
+    dualPhasePredictionLeadMs,
     dualPhasePredictionHistoryResetGapMs,
     velocitySpreadBasePxMs,
     velocitySpreadRelative,
@@ -2551,7 +2548,7 @@ export function StudioConsoleView({
       label: "预测",
       value: dualPhasePredictionEnabled ? "三段速度" : "关闭",
       detail: dualPhasePredictionEnabled
-        ? `提前 ${formatNumber(dualPhasePredictionLeadFrames, 1)} 帧 · 平滑系数 ${formatNumber(velocitySmoothingFramesToResponseWeight(dualPhasePredictionSmoothingFrames), 2)}`
+        ? `提前 ${formatNumber(dualPhasePredictionLeadMs, 1)} ms · 断流 ${formatNumber(dualPhasePredictionHistoryResetGapMs, 0)} ms`
         : "当前观测直接进入控制器",
       icon: "target"
     },
@@ -3795,7 +3792,7 @@ export function StudioConsoleView({
             </summary>
             <div className="console-grid2 diagnostic-grid" data-layer="control">
               <div className="console-card">
-                <SectionTitle title="目标选择" />
+                <SectionTitle title="选择主要目标" />
                 <div className="console-kv">
                   <span>控制状态</span><b>{controlHasSample ? readString(control.global_state, "已计算") : "未执行"}</b>
                   <span>控制原因</span><b>{readString(control.reason, readString(control.selection_reason, "")) || NO_SAMPLE}</b>
@@ -3840,16 +3837,16 @@ export function StudioConsoleView({
                 ) : null}
               </div>
               <div className="console-card">
-                <SectionTitle title="瞄准点" />
+                <SectionTitle title="目标瞄点" />
                 <div className="console-kv">
                   <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                   <span>目标类别</span><b>{activeRuntimeClassLabel || NO_SAMPLE}</b>
                   <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                  <span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b>
+                  <span>目标速度预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b>
                 </div>
               </div>
               <div className="console-card">
-                <SectionTitle title="观测与控制误差" />
+                <SectionTitle title="连续非线性控制" />
                 <div className="console-kv">
                   <span>屏幕中心</span><b>{formatPoint(controlCenterX, controlCenterY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                   <span>观测误差</span><b>{formatPoint(controlPipeline.observed_error_x_px, controlPipeline.observed_error_y_px, 2, "px")}</b>
@@ -3862,14 +3859,14 @@ export function StudioConsoleView({
                 </div>
               </div>
               <div className="console-card">
-                <SectionTitle title="预测衰减链" />
-                <p className="console-section-note">只展示本次控制样本的预测如何从原始速度进入最终控制误差，不改变控制行为。</p>
+                <SectionTitle title="目标速度预测" />
+                <p className="console-section-note">只展示本次控制样本的 aim 点速度如何进入提前瞄点，不改变控制行为。</p>
                 <div className="console-kv">
                   <span>运动状态 X / Y</span><b>{`${formatMotionState(controlPipeline.motion_state)} / ${formatMotionState(controlPipeline.motion_state_y)}`}</b>
                   <span>三段速度 X</span><b>{`${formatOptionalNumber(controlPipeline.velocity_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_3, 3)} px/ms`}</b>
                   <span>三段速度 Y</span><b>{`${formatOptionalNumber(controlPipeline.velocity_y_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_3, 3)} px/ms`}</b>
                   <span>均值速度</span><b>{formatPoint(controlPipeline.mean_velocity, controlPipeline.mean_velocity_y, 3, "px/ms")}</b>
-                  <span>过滤速度</span><b>{formatPoint(controlPipeline.filtered_velocity, controlPipeline.filtered_velocity_y, 3, "px/ms")}</b>
+                  <span>预测速度</span><b>{formatPoint(controlPipeline.prediction_velocity, controlPipeline.prediction_velocity_y, 3, "px/ms")}</b>
                   <span>加速度估计</span><b>{formatPoint(controlPipeline.acceleration_px_ms2, controlPipeline.acceleration_y_px_ms2, 4, "px/ms2")}</b>
                   <span>趋势一致性</span><b>{`${formatPercent(controlPipeline.trend_consistency, 0)} / ${formatPercent(controlPipeline.trend_consistency_y, 0)}`}</b>
                   <span>运动可信度</span><b>{`${formatPercent(controlPipeline.motion_confidence, 0)} / ${formatPercent(controlPipeline.motion_confidence_y, 0)}`}</b>
@@ -3883,7 +3880,7 @@ export function StudioConsoleView({
                 </div>
               </div>
               <div className="console-card">
-                <SectionTitle title="控制器输出" />
+                <SectionTitle title="输出限幅与命令" />
                 <div className="console-kv">
                   <span>控制模式</span><b>{controlModeLabel}</b>
                   <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
@@ -3963,11 +3960,11 @@ export function StudioConsoleView({
             <div className="console-card motion-control-mode-card static">
               <div className="motion-control-mode-copy">
                   <span className="class-config-eyebrow">控制算法</span>
-                <h3>双阶段 Atan 基础反馈</h3>
-                <p>{dualPhasePredictionEnabled ? "单目标 X / Y 预测先修正当前位置，随后进入投影、Atan、限幅和量化。" : "设备输出只由当前测量误差、投影、Atan、限幅和量化产生。"}</p>
+                <h3>目标到命令控制链</h3>
+                <p>{dualPhasePredictionEnabled ? "已选目标先按 aim 点速度给出提前瞄点，再进入连续非线性控制、输出限幅和量化。" : "设备输出只由当前测量误差、连续非线性控制、输出限幅和量化产生。"}</p>
               </div>
               <ModuleSwitch
-                label="启用 X / Y 目标预测"
+                label="启用 X / Y 目标速度预测"
                 detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。修改后即时进入实时控制配置。"
                 enabled={dualPhasePredictionEnabled}
                 onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)}
@@ -4037,7 +4034,7 @@ export function StudioConsoleView({
                   <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
                   <div><span>响应力度</span><b>{pResponseScale.toFixed(3)}</b></div>
                   <div><span>微调保持</span><b>{pResponseGainFloor.toFixed(2)}</b></div>
-                  <div><span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b></div>
+                  <div><span>目标速度预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b></div>
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("algorithm")} type="button">
                   <NovaIcon name="settings" size={15} />
@@ -4542,7 +4539,7 @@ export function StudioConsoleView({
       {wideThemeGallery ? <ThemeGallery /> : null}
 
       <AdvancedSettingsDialog
-        description="先按问题进入对应调参路径；响应、预测、稳定和标定分别调整，避免在同一张表里混改。"
+        description="按主链顺序调参：先目标速度预测，再连续非线性控制，再输出限幅；标定只在比例整体错误时修改。"
         dirty={configDialogDirty}
         eyebrow="参数设置 / 控制算法"
         footerNote={`当前算法：${controlModeLabel}`}
@@ -4578,7 +4575,7 @@ export function StudioConsoleView({
         </div>
         <div className="algorithm-settings-global-switches" aria-label="控制算法总开关">
           <ModuleSwitch
-            label="启用 X / Y 目标预测"
+            label="启用 X / Y 目标速度预测"
             detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。"
             enabled={dualPhasePredictionEnabled}
             onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)}
@@ -4611,9 +4608,9 @@ export function StudioConsoleView({
           {algorithmSettingsSection === "response" ? (
             <section aria-labelledby="algorithm-settings-response-tab" className="algorithm-settings-panel" id="algorithm-settings-response" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
-                <span>响应</span>
-                <h3 id="algorithm-settings-response-title">响应算法</h3>
-                <p>先调整体响应力度，再看小误差是否抖动、远距离是否跟得上，最后微调过渡形状和 Atan 曲线尺度。</p>
+                <span>连续非线性控制</span>
+                <h3 id="algorithm-settings-response-title">响应力度与 Atan 曲线</h3>
+                <p>这里决定控制器想移动多少：先调整体响应力度，再看小误差是否抖动、远距离是否跟得上，最后微调过渡形状和 Atan 曲线尺度。</p>
               </header>
               <div className="algorithm-tuning-order"><b>建议顺序</b><span>响应力度 → 微调保持 → 力度过渡 → Atan 曲线尺度</span></div>
               <div className="advanced-settings-grid two-column">
@@ -4625,9 +4622,9 @@ export function StudioConsoleView({
           {algorithmSettingsSection === "prediction" ? (
             <section aria-labelledby="algorithm-settings-prediction-tab" className="algorithm-settings-panel" id="algorithm-settings-prediction" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
-                <span>目标预测</span>
-                <h3 id="algorithm-settings-prediction-title">唯一锁定目标的 X / Y 预测</h3>
-                <p>预测使用已选目标最近 4 个位置形成的 3 段速度；常用调节只看执行反馈延迟、提前量、平滑窗口和断流重置。</p>
+                <span>目标速度预测</span>
+                <h3 id="algorithm-settings-prediction-title">唯一锁定目标的 aim 点提前量</h3>
+                <p>预测使用已选目标最近 4 个 aim 点形成的 3 段速度；常用调节只看执行反馈延迟、额外提前量和断流重置。</p>
               </header>
               <div className="advanced-settings-grid two-column">
                 {predictionCoreParameters
@@ -4663,11 +4660,11 @@ export function StudioConsoleView({
           {algorithmSettingsSection === "stability" ? (
             <section aria-labelledby="algorithm-settings-stability-tab" className="algorithm-settings-panel" id="algorithm-settings-stability" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
-                <span>稳定与输出</span>
-                <h3 id="algorithm-settings-stability-title">到位稳定与单次输出</h3>
+                <span>输出限幅</span>
+                <h3 id="algorithm-settings-stability-title">单次输出与到位保持</h3>
                 <p>这些参数不改变目标位置。它们限制每次能走多远，并决定什么时候认为已经到位、什么时候等待画面反馈。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低近距离单次上限，再检查到位半径；执行反馈延迟在“目标预测”中统一管理</span></div>
+              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低近距离单次上限，再检查到位半径；执行反馈延迟在“目标速度预测”中统一管理</span></div>
               <div className="advanced-settings-grid two-column">
                 {stabilityParameters.map(renderAlgorithmNumberParameter)}
               </div>
@@ -4677,11 +4674,11 @@ export function StudioConsoleView({
           {algorithmSettingsSection === "calibration" ? (
             <section aria-labelledby="algorithm-settings-calibration-tab" className="algorithm-settings-panel" id="algorithm-settings-calibration" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
-                <span>标定与时效</span>
+                <span>控制标定</span>
                 <h3 id="algorithm-settings-calibration-title">坐标标定与观测时效</h3>
                 <p>这里不是响应增益。FOV 与每圈 counts 必须对应真实游戏和设备；错误标定会让所有 Atan 参数一起表现错误。</p>
               </header>
-              <div className="algorithm-settings-warning"><b>不要用标定参数修响应</b><span>整体移动比例不对才检查标定；只是远近速度不合适，请回到“响应算法”。</span></div>
+              <div className="algorithm-settings-warning"><b>不要用标定参数修响应</b><span>整体移动比例不对才检查标定；只是远近速度不合适，请回到“连续非线性控制”。</span></div>
               <div className="advanced-settings-grid two-column">
                 {calibrationParameters.map(renderAlgorithmNumberParameter)}
               </div>

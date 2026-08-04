@@ -330,7 +330,7 @@ src/assets/illustrations/features/tracking-prediction.svg
 
 ### Control Algorithm
 
-Show raw error curve, EMA smoothing curve, PD/PID response, output clamp, and convergence. Use two curve layers: jitter input and smooth output.
+Show raw error curve, continuous response curve, prediction velocity, output clamp, and convergence. Use two curve layers: measured input and final output.
 
 Recommended file:
 
@@ -407,7 +407,7 @@ Use device, FPS, GPU, latency, temperature, realtime curve, ROI mini-map, global
 
 ### Studio
 
-Use model, parameter, PID, EMA, prediction, control-output icons, grouped parameter panels, curve previews, and help tooltip icons. The primary question is how parameters relate to control behavior.
+Use model, parameter, continuous response, prediction, control-output icons, grouped parameter panels, curve previews, and help tooltip icons. The primary question is how parameters relate to control behavior.
 
 Parameter groups use subtle grouping backgrounds, not large unrelated colors.
 

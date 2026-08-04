@@ -97,19 +97,18 @@ residual.
 
 ## Configuration Contract
 
-- Prediction is disabled by default and legacy migrations return it to the
-  disabled state instead of silently changing physical output.
+- Prediction is enabled by the production baseline and can be disabled explicitly
+  for a no-prediction control baseline.
 - Enabling prediction activates both X and Y for the one selected TrackId.
-- `prediction_lead_frames=0` still compensates measured frame age; it adds no
-  extra capture interval. The module switch is the only way to disable
-  prediction.
-- Positive `prediction_lead_frames` is an input to the internal adaptive
-  horizon. The first complete three-segment window preserves the configured
-  lead, stable continuous motion can receive a bounded half-frame bonus, and
-  stop/reverse/peek states reduce extra lead before velocity is projected.
-- Acceleration is only a weak correction on stable continuous motion. It is
-  bounded to a small fraction of the velocity projection and is not applied to
-  stationary, stop/reverse, peek, or first-window mean states.
+- `prediction_lead_ms=0` still compensates measured frame age and actuation
+  delay; it only removes the extra user lead. The module switch is the only way
+  to disable prediction.
+- Positive `prediction_lead_ms` is a direct time horizon in milliseconds. It no
+  longer depends on frame interval, so unstable FPS and PGIE interval changes do
+  not silently change the configured extra lead.
+- Acceleration remains telemetry only. Prediction output is the aim-point
+  velocity multiplied by the measured time horizon, then confidence-gated and
+  capped.
 - Prediction confidence is used as a motion-state gate. Stable continuous and
   stable mean windows can keep full projection strength, while low-confidence
   and peek patterns remain attenuated before the cap.

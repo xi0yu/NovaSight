@@ -5,7 +5,7 @@ use novasight_core::tracking::KalmanConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 10;
+pub const CURRENT_SCHEMA_VERSION: u32 = 11;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -471,8 +471,6 @@ pub struct PipelineRuntimeConfig {
     pub near_max_counts_per_update: f64,
     #[serde(default = "default_arrival_radius_counts")]
     pub arrival_radius_counts: f64,
-    #[serde(default = "default_velocity_smoothing_frames")]
-    pub velocity_smoothing_frames: f64,
     #[serde(default = "default_velocity_history_reset_gap_ms")]
     pub velocity_history_reset_gap_ms: f64,
     #[serde(default = "default_velocity_spread_base_px_ms")]
@@ -485,8 +483,8 @@ pub struct PipelineRuntimeConfig {
     pub velocity_change_relative: f64,
     #[serde(default = "default_prediction_enabled")]
     pub prediction_enabled: bool,
-    #[serde(default = "default_prediction_lead_frames")]
-    pub prediction_lead_frames: f64,
+    #[serde(default = "default_prediction_lead_ms")]
+    pub prediction_lead_ms: f64,
     #[serde(default = "default_prediction_far_absolute_cap_px")]
     pub prediction_far_absolute_cap_px: f64,
     #[serde(default = "default_prediction_far_base_cap_px")]
@@ -579,14 +577,13 @@ impl Default for PipelineRuntimeConfig {
             far_max_counts_per_update: default_far_max_counts_per_update(),
             near_max_counts_per_update: default_near_max_counts_per_update(),
             arrival_radius_counts: default_arrival_radius_counts(),
-            velocity_smoothing_frames: default_velocity_smoothing_frames(),
             velocity_history_reset_gap_ms: default_velocity_history_reset_gap_ms(),
             velocity_spread_base_px_ms: default_velocity_spread_base_px_ms(),
             velocity_spread_relative: default_velocity_spread_relative(),
             velocity_change_base_px_ms: default_velocity_change_base_px_ms(),
             velocity_change_relative: default_velocity_change_relative(),
             prediction_enabled: default_prediction_enabled(),
-            prediction_lead_frames: default_prediction_lead_frames(),
+            prediction_lead_ms: default_prediction_lead_ms(),
             prediction_far_absolute_cap_px: default_prediction_far_absolute_cap_px(),
             prediction_far_base_cap_px: default_prediction_far_base_cap_px(),
             prediction_far_relative_cap: default_prediction_far_relative_cap(),
@@ -726,12 +723,6 @@ impl PipelineRuntimeConfig {
             1_000.0,
         )?;
         validate_finite_range(
-            "pipeline.velocity_smoothing_frames",
-            self.velocity_smoothing_frames,
-            0.000_001,
-            120.0,
-        )?;
-        validate_finite_range(
             "pipeline.velocity_history_reset_gap_ms",
             self.velocity_history_reset_gap_ms,
             0.000_001,
@@ -762,10 +753,10 @@ impl PipelineRuntimeConfig {
             100.0,
         )?;
         validate_finite_range(
-            "pipeline.prediction_lead_frames",
-            self.prediction_lead_frames,
+            "pipeline.prediction_lead_ms",
+            self.prediction_lead_ms,
             0.0,
-            10.0,
+            1_000.0,
         )?;
         for (field, value) in [
             (
@@ -1140,10 +1131,6 @@ const fn default_arrival_radius_counts() -> f64 {
     3.0
 }
 
-const fn default_velocity_smoothing_frames() -> f64 {
-    3.0
-}
-
 const fn default_velocity_history_reset_gap_ms() -> f64 {
     80.0
 }
@@ -1168,8 +1155,8 @@ const fn default_prediction_enabled() -> bool {
     true
 }
 
-const fn default_prediction_lead_frames() -> f64 {
-    1.0
+const fn default_prediction_lead_ms() -> f64 {
+    16.0
 }
 
 const fn default_prediction_far_absolute_cap_px() -> f64 {

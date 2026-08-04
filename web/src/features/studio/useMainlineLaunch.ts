@@ -78,7 +78,7 @@ export const MAINLINE_LAUNCH_STAGES: MainlineLaunchStage[] = [
   },
   {
     title: "激活鼠标算法",
-    caption: "确认目标选择、跟踪与 Atan 鼠标算法已开始读取识别结果；输出设备不影响本步骤。"
+    caption: "确认目标选择、目标速度预测与连续非线性控制已开始读取识别结果；输出设备不影响本步骤。"
   }
 ];
 
@@ -491,7 +491,7 @@ export function useMainlineLaunch({
         const state = await waitForRuntimeEvidence(
           "激活鼠标算法",
           (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
-          "控制链路尚未读取识别结果，目标选择、跟踪与 Atan 鼠标算法没有输入。"
+          "控制链路尚未读取识别结果，目标选择、目标速度预测与连续非线性控制没有输入。"
         );
         const runtimeStatus = getRuntimeMainlineStatus(state);
         setProgressDetail(`${runtimeStatus.readinessLabel}：${runtimeStatus.readinessDetail}`);

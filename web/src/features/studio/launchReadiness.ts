@@ -366,7 +366,7 @@ function buildControlItem(runtime: RuntimeState | null, status: RuntimeMainlineS
       id: "control",
       label: "控制算法",
       state: "ready",
-      detail: "目标选择、跟踪或 Atan 控制已经收到识别结果。",
+      detail: "选择主要目标、目标速度预测与连续非线性控制已经收到识别结果。",
       evidence: `consumed=${formatOptionalInteger(status.consumedBatches)} · targeting=${formatOptionalInteger(status.targetingBatches)}`,
       blocking: true
     };
@@ -387,7 +387,7 @@ function buildControlItem(runtime: RuntimeState | null, status: RuntimeMainlineS
     id: "control",
     label: "控制算法",
     state: runtime?.running ? "idle" : "action",
-    detail: "启动主链后才会验证目标选择、预测与 Atan 输出。",
+    detail: "启动主链后才会验证目标选择、目标速度预测、连续非线性控制与命令输出。",
     evidence: "等待识别结果",
     blocking: true,
     action: "start-mainline",

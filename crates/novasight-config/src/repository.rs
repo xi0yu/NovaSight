@@ -599,6 +599,7 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     {
         remove_legacy_response_gain_fields(pipeline);
     }
+    let migrated_prediction_lead_ms = migrate_prediction_lead_ms(document, config);
 
     if schema_version >= CURRENT_SCHEMA_VERSION {
         return;
@@ -631,6 +632,9 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         }
         if schema_version < CURRENT_SCHEMA_VERSION {
             write_continuous_response_profile(pipeline, &config.pipeline);
+            write_prediction_lead_ms(pipeline, config.pipeline.prediction_lead_ms);
+        } else if migrated_prediction_lead_ms {
+            write_prediction_lead_ms(pipeline, config.pipeline.prediction_lead_ms);
         }
         remove_legacy_response_gain_fields(pipeline);
     }
@@ -806,6 +810,55 @@ fn write_continuous_response_profile(pipeline: &mut Mapping, config: &PipelineRu
     }
 }
 
+fn migrate_prediction_lead_ms(document: &mut Value, config: &mut AppConfig) -> bool {
+    let prediction_lead_ms_explicit =
+        section_has_fields(document, "pipeline", &["prediction_lead_ms"]);
+    let legacy_lead_frames = config
+        .pipeline
+        .legacy
+        .remove("prediction_lead_frames")
+        .and_then(|value| value.as_f64());
+    config.pipeline.legacy.remove("velocity_smoothing_frames");
+
+    let mut migrated = false;
+    if !prediction_lead_ms_explicit
+        && let Some(lead_frames) = legacy_lead_frames
+        && lead_frames.is_finite()
+    {
+        config.pipeline.prediction_lead_ms =
+            (lead_frames.max(0.0) * prediction_frame_interval_ms(config)).clamp(0.0, 1_000.0);
+        migrated = true;
+    }
+
+    if let Value::Mapping(root) = document
+        && let Some(Value::Mapping(pipeline)) = root.get_mut(Value::String("pipeline".to_owned()))
+    {
+        pipeline.remove(Value::String("prediction_lead_frames".to_owned()));
+        pipeline.remove(Value::String("velocity_smoothing_frames".to_owned()));
+        if migrated {
+            write_prediction_lead_ms(pipeline, config.pipeline.prediction_lead_ms);
+        }
+    }
+    migrated
+}
+
+fn prediction_frame_interval_ms(config: &AppConfig) -> f64 {
+    let fps = config
+        .capture
+        .as_ref()
+        .map(|capture| capture.fps)
+        .filter(|fps| *fps > 0)
+        .unwrap_or(config.limits.stream_fps);
+    1_000.0 / f64::from(fps.max(1))
+}
+
+fn write_prediction_lead_ms(pipeline: &mut Mapping, value: f64) {
+    pipeline.insert(
+        Value::String("prediction_lead_ms".to_owned()),
+        serde_yaml::to_value(value).expect("finite prediction lead migration value"),
+    );
+}
+
 fn remove_legacy_response_gain_fields(pipeline: &mut Mapping) {
     pipeline.remove(Value::String("far_kp".to_owned()));
     pipeline.remove(Value::String("near_kp".to_owned()));
@@ -887,6 +940,7 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "far_max_counts_per_update",
             "near_max_counts_per_update",
             "prediction_enabled",
+            "prediction_lead_ms",
             "residual_cap",
             "target_fov_radius_px",
             "target_min_confidence",
@@ -1356,6 +1410,11 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
         ),
         ("consumers", &config.consumers.legacy, &["preview"][..]),
         ("limits", &config.limits.legacy, &["stream_fps"][..]),
+        (
+            "pipeline",
+            &config.pipeline.legacy,
+            &["prediction_lead_frames", "velocity_smoothing_frames"][..],
+        ),
         ("control", &config.control.legacy, &[][..]),
     ] {
         if let Some(key) = reserved.iter().find(|key| legacy.contains_key(**key)) {

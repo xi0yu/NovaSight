@@ -19,7 +19,7 @@ DetectionBatch latest-only gate
 -> KmNetExecutor.move(dx, dy)
 ```
 
-The dedicated X/Y estimator consumes the measured aim point. It retains four positions from one target, derives three adjacent `px/ms` speeds, uses their arithmetic mean as the prediction velocity baseline, and applies a capture-dt adaptive EMA. The three-segment median remains diagnostic telemetry only. Tracker Kalman state is not used as V2's predicted aim, so there is no double prediction.
+The dedicated X/Y estimator consumes the measured aim point. It retains four positions from one target, derives three adjacent `px/ms` speeds, uses their mean for the first complete window, then uses a median-based continuous estimate to reject a single-segment outlier. Tracker Kalman state is not used as V2's predicted aim, so there is no double prediction.
 
 The active algorithm bypasses:
 
@@ -47,7 +47,7 @@ The observation call replaces the single pending complete integer command and ne
 - Capture age below zero, inference completion outside `[capture, control_now]`, stale age, or generation/frame rollback blocks the whole decision. A non-increasing capture timestamp resets prediction history and uses pure measured-position feedback for that otherwise valid observation.
 - Global observation cursors survive target switches; target-local estimator/mode/quantizer state does not.
 - Motion-estimator `dt_ms` is the adjacent same-target capture timestamp difference divided by `1_000_000`.
-- When `prediction.enabled` is true, prediction uses the arithmetic mean of the three capture intervals as one reference frame. The effective horizon starts from measured frame age plus actuation delay, then applies an internal motion-state lead: the first full window keeps the configured lead, stable continuous motion can add up to a small half-frame bonus, abrupt stop/reverse and stationary motion remove extra lead, and alternating peek keeps only a tiny lead. Filtered X/Y velocity is multiplied by that horizon, stable continuous acceleration can add a bounded weak correction, and the result is then strength-gated from motion confidence before a motion-aware cap. The cap can rise toward the configured absolute cap for stable motion even when the current measured error is small, but it does not expand for stationary, unavailable, or peek motion. Disabling prediction zeros every prediction offset and skips velocity-history updates.
+- When `prediction.enabled` is true, prediction estimates aim-point velocity from real adjacent capture timestamps. The horizon is `frame_age_ms + actuation_delay_ms + prediction_lead_ms`; velocity is multiplied by that time horizon, then strength-gated from motion confidence before a motion-aware cap. Acceleration remains telemetry only and does not add a second correction path. The cap can rise toward the configured absolute cap for stable motion even when the current measured error is small, but it does not expand for stationary, unavailable, or peek motion. Disabling prediction zeros every prediction offset and skips velocity-history updates.
 
 ## Coordinate Contract
 
@@ -62,9 +62,9 @@ The new algorithm alone owns:
 - FAR/NEAR selection from the final predicted control-point distance, while
   prediction caps remain based on measured error to avoid recursive authority;
 - four-position same-target history;
-- three-segment mean as the prediction baseline, diagnostic median, and time-adaptive EMA;
+- first-window three-segment mean, then median-based continuous velocity for single-outlier rejection;
 - spread/trend/detection/track-identity prediction confidence;
-- reference dt, configured/effective lead frames, relative and absolute caps;
+- reference dt, explicit `prediction_lead_ms`, relative and absolute caps;
 - measured-error zero-cross history;
 - per-axis sub-count quantizer residual.
 
@@ -100,7 +100,7 @@ Implementation owners:
 - `crates/novasight-runtime/src/supervisor.rs`
 - `crates/novasight-api/src/dto/runtime_compat.rs`
 
-Focused integration tests prove that consecutive DetectionBatch results replace the pending command, one control tick sends only the newest frame, and a newer observation also supersedes an older command that has left the slot but has not acquired the device lock. Prediction-disabled feedback remains the no-prediction baseline; `lead_frames=0` now means frame-age compensation without an extra capture interval.
+Focused integration tests prove that consecutive DetectionBatch results replace the pending command, one control tick sends only the newest frame, and a newer observation also supersedes an older command that has left the slot but has not acquired the device lock. Prediction-disabled feedback remains the no-prediction baseline; `prediction_lead_ms=0` still compensates measured frame age and actuation delay, but adds no extra user lead.
 
 ## Remaining Blind Spots
 

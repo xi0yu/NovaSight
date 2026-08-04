@@ -181,7 +181,7 @@ impl ConfigSchemaResponse {
                         ),
                         float(
                             "pipeline.near_threshold_px",
-                            "近远响应过渡中心",
+                            "控制响应过渡中心",
                             0.0,
                             10_000.0,
                             Some("px"),
@@ -210,14 +210,14 @@ impl ConfigSchemaResponse {
                         float("pipeline.p_response_scale", "响应力度", 0.0, 100.0, None),
                         float(
                             "pipeline.p_response_gain_floor",
-                            "连续响应低误差下界",
+                            "低误差响应下界",
                             0.0,
                             100.0,
                             None,
                         ),
                         float(
                             "pipeline.p_response_gain_ceiling",
-                            "连续响应高误差上界",
+                            "高误差响应上界",
                             0.0,
                             100.0,
                             None,
@@ -257,14 +257,7 @@ impl ConfigSchemaResponse {
                             1_000.0,
                             Some("count"),
                         ),
-                        boolean("pipeline.prediction_enabled", "启用目标位置预测"),
-                        float(
-                            "pipeline.velocity_smoothing_frames",
-                            "速度平滑帧数",
-                            0.000_001,
-                            120.0,
-                            Some("frame"),
-                        ),
+                        boolean("pipeline.prediction_enabled", "启用目标速度预测"),
                         float(
                             "pipeline.velocity_history_reset_gap_ms",
                             "预测历史重置间隔",
@@ -301,11 +294,11 @@ impl ConfigSchemaResponse {
                             None,
                         ),
                         float(
-                            "pipeline.prediction_lead_frames",
-                            "预测提前帧数",
+                            "pipeline.prediction_lead_ms",
+                            "目标速度预测额外提前量",
                             0.0,
-                            10.0,
-                            Some("frame"),
+                            1_000.0,
+                            Some("ms"),
                         ),
                         float(
                             "pipeline.prediction_far_absolute_cap_px",
@@ -824,12 +817,18 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 10);
+        assert_eq!(value["version"], 11);
         assert_eq!(value["values"]["server"]["port"], 5174);
         assert_eq!(value["values"]["pipeline"]["arrival_radius_counts"], 3.0);
         assert_eq!(
             value["values"]["pipeline"]["actuation_feedback_delay_ms"],
             4.0
+        );
+        assert_eq!(value["values"]["pipeline"]["prediction_lead_ms"], 16.0);
+        assert!(
+            value["values"]["pipeline"]
+                .get("prediction_lead_frames")
+                .is_none()
         );
         assert_eq!(value["values"]["inference"], Value::Null);
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {

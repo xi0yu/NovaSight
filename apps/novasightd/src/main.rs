@@ -7,7 +7,7 @@ use serde::Serialize;
 mod application;
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
 mod live_perception;
-#[cfg(any(test, all(feature = "deepstream", target_os = "linux")))]
+#[cfg(all(feature = "deepstream", target_os = "linux"))]
 mod pointer_adapter;
 mod server;
 

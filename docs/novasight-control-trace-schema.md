@@ -67,7 +67,7 @@ GStreamer PTS 或 wall clock 不得直接与这些字段相减。
 | P、D、U、prediction velocity term | rad |
 | algorithm aim/real error/control error/prediction offset | px |
 | algorithm velocity_x | px/s |
-| V2 robust velocity segments/mean/median/EMA/spread | px/ms |
+| V2 robust velocity segments/mean/median/selected velocity/spread | px/ms |
 | algorithm full error/float demand/integer command/residual | counts |
 | counts planned/queued/sent/estimated_applied/unobserved | counts |
 | scheduler pending_age | ms |
@@ -120,14 +120,14 @@ control:{detection_generation}:{frame_id}:{capture_ts_ns}
 
 ## algorithm_decision
 
-版本 3 新增专用算法决策块。版本 4 为 `dual_phase_atan_robust_predictive_v2` 增加 measured error 和四点短窗速度；当前 V2 进一步记录帧单位前瞻与后坐力前馈。V2 至少记录：
+版本 3 新增专用算法决策块。版本 4 为 `dual_phase_atan_robust_predictive_v2` 增加 measured error 和四点短窗速度；当前 V2 进一步记录毫秒级预测提前量与后坐力前馈。V2 至少记录：
 
 ```text
 algorithm_id / phase / measurement_dt_ms
 aim_px / bbox
 error_measured_px / error_control_px
-history position count / three segment velocities / mean / median / EMA / spread / detection and track confidence
-prediction reference dt / configured lead frames / raw and weighted offset / cap / safe offset
+history position count / three segment velocities / mean / median / selected prediction velocity / spread / detection and track confidence
+prediction reference dt / configured lead ms / raw and weighted offset / cap / safe offset
 recoil mode / enabled / active / left hold / configured-per-observation / visual demand / requested / combined demand / emitted / residual / block reason
 full_error_counts / float_demand / integer_command / quantizer_residual
 overzero_detected / will_emit / block_reason / executor_success

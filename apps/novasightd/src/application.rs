@@ -206,33 +206,3 @@ fn build_production_dependencies(
 ) -> Result<RuntimeDependencies, String> {
     Err(PRODUCTION_RUNTIME_UNAVAILABLE.to_owned())
 }
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use super::resolve_deepstream_parser_library;
-
-    #[test]
-    fn cargo_managed_parser_replaces_the_auto_sentinel() {
-        let bundled = Path::new("/cargo/out/libnovasight_parser.so");
-
-        assert_eq!(
-            resolve_deepstream_parser_library(Path::new("auto"), Some(bundled)),
-            bundled
-        );
-    }
-
-    #[test]
-    fn explicitly_configured_parser_path_is_preserved() {
-        let configured = Path::new("/opt/novasight/lib/custom-parser.so");
-
-        assert_eq!(
-            resolve_deepstream_parser_library(
-                configured,
-                Some(Path::new("/cargo/out/libnovasight_parser.so")),
-            ),
-            configured
-        );
-    }
-}

@@ -262,7 +262,7 @@ fn live_prediction_config_update_reaches_running_control_worker() {
         ..PipelineConfig::default()
     };
     config.control.prediction_enabled = true;
-    config.control.prediction_lead_frames = 0.0;
+    config.control.prediction_lead_ms = 0.0;
     let (mut runtime, ingress) =
         PipelineRuntime::start(config.clone(), daemon_clock, pointer).expect("pipeline starts");
     ingress.close_output_gate();
@@ -291,11 +291,11 @@ fn live_prediction_config_update_reaches_running_control_worker() {
 
     let before = runtime.metrics().dual_phase;
     assert_eq!(before.history_position_count, 4);
-    assert_eq!(before.prediction_lead_frames, 0.0);
+    assert_eq!(before.prediction_lead_ms, 0.0);
     assert!((before.prediction_horizon_ms - 12.0).abs() < 1e-6);
 
     let mut live = PipelineLiveConfig::from(&config);
-    live.control.prediction_lead_frames = 2.0;
+    live.control.prediction_lead_ms = 40.0;
     ingress.set_live_config(live).expect("live config updates");
 
     let generation = 5;
@@ -319,9 +319,9 @@ fn live_prediction_config_update_reaches_running_control_worker() {
 
     let after = runtime.metrics().dual_phase;
     assert_eq!(after.generation, generation);
-    assert_eq!(after.prediction_lead_frames, 2.0);
+    assert_eq!(after.prediction_lead_ms, 40.0);
     assert!(
-        after.prediction_horizon_ms > before.prediction_horizon_ms + 90.0,
+        after.prediction_horizon_ms > before.prediction_horizon_ms + 39.0,
         "running control worker must use the new prediction lead without restarting"
     );
     assert_eq!(runtime.metrics().status, PipelineStatus::Running);
