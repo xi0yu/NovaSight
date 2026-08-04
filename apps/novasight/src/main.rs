@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, ExitCode, Stdio};
@@ -25,6 +25,7 @@ const READY_FILE: &str = "run/ready.json";
 const PORTABLE_BIND_HOST: &str = "0.0.0.0";
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+const DAEMON_LOG_TAIL_BYTES: u64 = 12 * 1024;
 
 #[derive(Parser, Debug)]
 #[command(name = "novasight", about = "NovaSight portable launcher")]
@@ -88,7 +89,13 @@ async fn run() -> Result<()> {
 
     let _ = fs::remove_file(&layout.ready_file);
     let mut child = spawn_daemon(&layout)?;
-    let ready = wait_for_ready(&layout.ready_file, &mut child, DAEMON_READY_TIMEOUT).await?;
+    let ready = wait_for_ready(
+        &layout.ready_file,
+        &layout.daemon_log,
+        &mut child,
+        DAEMON_READY_TIMEOUT,
+    )
+    .await?;
     open_studio(&ready);
     supervise_spawned_daemon(&layout, child).await?;
     Ok(())
@@ -373,13 +380,18 @@ fn spawn_daemon(layout: &PortableLayout) -> Result<Child> {
 
 async fn wait_for_ready(
     ready_file: &Path,
+    daemon_log: &Path,
     child: &mut Child,
     timeout: Duration,
 ) -> Result<ReadyDocument> {
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait().context("check novasightd process")? {
-            bail!("novasightd exited before ready with status {status}");
+            bail!(
+                "novasightd exited before ready with status {status}; see {}\n{}",
+                daemon_log.display(),
+                daemon_log_tail(daemon_log)
+            );
         }
         if let Ok(ready) = read_ready_file(ready_file)
             && health_check(&ready.address)
@@ -388,13 +400,40 @@ async fn wait_for_ready(
         }
         if started.elapsed() >= timeout {
             bail!(
-                "novasightd did not become ready within {:?}; see {}",
+                "novasightd did not become ready within {:?}; see {}; daemon log {}\n{}",
                 timeout,
-                ready_file.display()
+                ready_file.display(),
+                daemon_log.display(),
+                daemon_log_tail(daemon_log)
             );
         }
         time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+fn daemon_log_tail(path: &Path) -> String {
+    match read_file_tail(path, DAEMON_LOG_TAIL_BYTES) {
+        Ok(text) if !text.trim().is_empty() => {
+            format!("last daemon log output:\n{}", text.trim_end())
+        }
+        Ok(_) => "daemon log is empty".to_owned(),
+        Err(error) => format!("daemon log unavailable: {error}"),
+    }
+}
+
+fn read_file_tail(path: &Path, max_bytes: u64) -> Result<String> {
+    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let len = file
+        .metadata()
+        .with_context(|| format!("stat {}", path.display()))?
+        .len();
+    let start = len.saturating_sub(max_bytes);
+    file.seek(SeekFrom::Start(start))
+        .with_context(|| format!("seek {}", path.display()))?;
+    let mut bytes = Vec::with_capacity((len - start).min(max_bytes) as usize);
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("read {}", path.display()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 async fn supervise_existing_daemon(layout: &PortableLayout, ready: &ReadyDocument) -> Result<()> {
