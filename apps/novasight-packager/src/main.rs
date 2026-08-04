@@ -364,7 +364,7 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn copy_runtime_web_tree(source: &Path, destination: &Path) -> Result<()> {
-    copy_runtime_web_tree_from_root(source, source, destination)
+    copy_runtime_web_tree_from_root(source, destination)
 }
 
 fn copy_model_asset_tree_if_present(source: &Path, destination: &Path) -> Result<()> {
@@ -416,11 +416,7 @@ fn should_package_model_asset_path(model_root: &Path, path: &Path) -> bool {
         || name.ends_with(".onnx.manifest.json")
 }
 
-fn copy_runtime_web_tree_from_root(
-    web_root: &Path,
-    source: &Path,
-    destination: &Path,
-) -> Result<()> {
+fn copy_runtime_web_tree_from_root(source: &Path, destination: &Path) -> Result<()> {
     if !source.is_dir() {
         bail!("{} is not a directory", source.display());
     }
@@ -428,42 +424,17 @@ fn copy_runtime_web_tree_from_root(
     for entry in fs::read_dir(source).with_context(|| format!("read {}", source.display()))? {
         let entry = entry.with_context(|| format!("read entry below {}", source.display()))?;
         let source_path = entry.path();
-        if !should_package_runtime_web_path(web_root, &source_path) {
-            continue;
-        }
         let destination_path = destination.join(entry.file_name());
         let metadata = entry
             .metadata()
             .with_context(|| format!("inspect {}", source_path.display()))?;
         if metadata.is_dir() {
-            copy_runtime_web_tree_from_root(web_root, &source_path, &destination_path)?;
+            copy_runtime_web_tree_from_root(&source_path, &destination_path)?;
         } else if metadata.is_file() {
             copy_file(&source_path, &destination_path)?;
         }
     }
     Ok(())
-}
-
-fn should_package_runtime_web_path(web_root: &Path, path: &Path) -> bool {
-    let Ok(relative) = path.strip_prefix(web_root) else {
-        return true;
-    };
-    let mut components = relative.components();
-    let Some(first) = components.next() else {
-        return true;
-    };
-    if first.as_os_str() == OsStr::new("landing") || first.as_os_str() == OsStr::new("landing.html")
-    {
-        return false;
-    }
-    if first.as_os_str() == OsStr::new("assets")
-        && let Some(second) = components.next()
-        && components.next().is_none()
-    {
-        let name = second.as_os_str().to_string_lossy();
-        return !name.starts_with("landing-");
-    }
-    true
 }
 
 fn validate_package(output: &Path) -> Result<()> {
@@ -601,32 +572,6 @@ mod tests {
 
         assert!(!output.join(READY_FILE).exists());
         fs::remove_dir_all(output).unwrap();
-    }
-
-    #[test]
-    fn runtime_web_package_excludes_landing_entrypoint() {
-        let web_root = Path::new("/tmp/novasight/out/web");
-
-        assert!(should_package_runtime_web_path(
-            web_root,
-            &web_root.join("index.html")
-        ));
-        assert!(should_package_runtime_web_path(
-            web_root,
-            &web_root.join("assets/main-abc123.js")
-        ));
-        assert!(!should_package_runtime_web_path(
-            web_root,
-            &web_root.join("landing.html")
-        ));
-        assert!(!should_package_runtime_web_path(
-            web_root,
-            &web_root.join("landing/assets/hero-bg.png")
-        ));
-        assert!(!should_package_runtime_web_path(
-            web_root,
-            &web_root.join("assets/landing-abc123.js")
-        ));
     }
 
     #[test]

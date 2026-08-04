@@ -1,5 +1,4 @@
 import { defineConfig } from "vite";
-import { resolve } from "node:path";
 
 export default defineConfig({
   server: {
@@ -15,13 +14,5 @@ export default defineConfig({
   build: {
     outDir: "../out/web",
     emptyOutDir: true,
-    rollupOptions: {
-      input: {
-        // 控制台 React 工程 (不改动, 维持原行为)
-        main: resolve(__dirname, "index.html"),
-        // 独立营销入口页 (新增, 访问 /landing/)
-        landing: resolve(__dirname, "landing.html"),
-      },
-    },
   },
 });
