@@ -1,6 +1,6 @@
 # NovaSight's single runtime configuration. Relative paths resolve from the
 # directory in which novasightd is started.
-schema_version: 11
+schema_version: 12
 revision: 0
 server:
   # Remote access belongs behind an authenticated TLS proxy.
@@ -21,19 +21,14 @@ limits:
 # every field below is consumed by the current Rust production hot path.
 pipeline:
   freshness_threshold_ms: 55.0
-  # 以该距离为中心，在前后 25% 范围内平滑推进连续 Atan 响应。
-  near_threshold_px: 12.0
   projection_fov_x_deg: 105.0
   projection_counts_per_360: 9980.0
   atan_scale_counts: 256.0
-  # 连续响应模型：0.30 * R(d) * S * atan(e/S)。
-  p_response_scale: 0.30
-  p_response_gain_floor: 0.6666666666666666
-  p_response_gain_ceiling: 1.0
-  p_response_curve_width_ratio: 0.25
+  # 连续响应模型：K_base * R(r) * S * atan(e/S)。
+  p_response_scale: 0.20
+  p_response_boost: 0.50
   p_response_curve_shape: 1.0
-  far_max_counts_per_update: 127.0
-  near_max_counts_per_update: 72.0
+  max_counts_per_update: 127.0
   # FOV 投影后的每轴到位半径。进入 3 counts 后清空残差，退出阈值自动扩大以抑制抖动。
   arrival_radius_counts: 3.0
   velocity_history_reset_gap_ms: 80.0
@@ -41,12 +36,7 @@ pipeline:
   velocity_spread_relative: 0.50
   prediction_enabled: true
   prediction_lead_ms: 16.0
-  prediction_far_absolute_cap_px: 10.0
-  prediction_far_base_cap_px: 1.25
-  prediction_far_relative_cap: 0.30
-  prediction_near_absolute_cap_px: 3.0
-  prediction_near_base_cap_px: 0.75
-  prediction_near_relative_cap: 0.20
+  prediction_cap_px: 10.0
   residual_cap: 1.0
   target_fov_radius_px: 180.0
   target_min_confidence: 0.5

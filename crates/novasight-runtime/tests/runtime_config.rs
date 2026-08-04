@@ -76,9 +76,7 @@ fn compose_pipeline_config_uses_continuous_response_fields() {
     let mut revision = 0;
     for (key, value) in [
         ("p_response_scale", 0.42),
-        ("p_response_gain_floor", 0.55),
-        ("p_response_gain_ceiling", 1.15),
-        ("p_response_curve_width_ratio", 0.40),
+        ("p_response_boost", 0.60),
         ("p_response_curve_shape", 1.50),
     ] {
         let config = YamlConfigRepository::new(&path)
@@ -96,8 +94,6 @@ fn compose_pipeline_config_uses_continuous_response_fields() {
     let pipeline = compose_pipeline_config(&config, None).unwrap();
 
     assert_eq!(pipeline.control.response_scale, 0.42);
-    assert_eq!(pipeline.control.response_gain_floor, 0.55);
-    assert_eq!(pipeline.control.response_gain_ceiling, 1.15);
-    assert_eq!(pipeline.control.response_curve_width_ratio, 0.40);
+    assert_eq!(pipeline.control.response_boost, 0.60);
     assert_eq!(pipeline.control.response_curve_shape, 1.50);
 }

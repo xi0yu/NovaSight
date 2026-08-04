@@ -5,7 +5,7 @@ use novasight_core::tracking::KalmanConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 11;
+pub const CURRENT_SCHEMA_VERSION: u32 = 12;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -447,8 +447,6 @@ const fn default_stream_fps() -> u32 {
 pub struct PipelineRuntimeConfig {
     #[serde(default = "default_freshness_threshold_ms")]
     pub freshness_threshold_ms: f64,
-    #[serde(default = "default_near_threshold_px")]
-    pub near_threshold_px: f64,
     #[serde(default = "default_projection_fov_x_deg")]
     pub projection_fov_x_deg: f64,
     #[serde(default = "default_projection_counts_per_360")]
@@ -457,18 +455,12 @@ pub struct PipelineRuntimeConfig {
     pub atan_scale_counts: f64,
     #[serde(default = "default_p_response_scale")]
     pub p_response_scale: f64,
-    #[serde(default = "default_p_response_gain_floor")]
-    pub p_response_gain_floor: f64,
-    #[serde(default = "default_p_response_gain_ceiling")]
-    pub p_response_gain_ceiling: f64,
-    #[serde(default = "default_response_curve_width_ratio")]
-    pub p_response_curve_width_ratio: f64,
+    #[serde(default = "default_p_response_boost")]
+    pub p_response_boost: f64,
     #[serde(default = "default_response_curve_shape")]
     pub p_response_curve_shape: f64,
-    #[serde(default = "default_far_max_counts_per_update")]
-    pub far_max_counts_per_update: f64,
-    #[serde(default = "default_near_max_counts_per_update")]
-    pub near_max_counts_per_update: f64,
+    #[serde(default = "default_max_counts_per_update")]
+    pub max_counts_per_update: f64,
     #[serde(default = "default_arrival_radius_counts")]
     pub arrival_radius_counts: f64,
     #[serde(default = "default_velocity_history_reset_gap_ms")]
@@ -481,18 +473,8 @@ pub struct PipelineRuntimeConfig {
     pub prediction_enabled: bool,
     #[serde(default = "default_prediction_lead_ms")]
     pub prediction_lead_ms: f64,
-    #[serde(default = "default_prediction_far_absolute_cap_px")]
-    pub prediction_far_absolute_cap_px: f64,
-    #[serde(default = "default_prediction_far_base_cap_px")]
-    pub prediction_far_base_cap_px: f64,
-    #[serde(default = "default_prediction_far_relative_cap")]
-    pub prediction_far_relative_cap: f64,
-    #[serde(default = "default_prediction_near_absolute_cap_px")]
-    pub prediction_near_absolute_cap_px: f64,
-    #[serde(default = "default_prediction_near_base_cap_px")]
-    pub prediction_near_base_cap_px: f64,
-    #[serde(default = "default_prediction_near_relative_cap")]
-    pub prediction_near_relative_cap: f64,
+    #[serde(default = "default_prediction_cap_px")]
+    pub prediction_cap_px: f64,
     #[serde(default = "default_residual_cap")]
     pub residual_cap: f64,
     #[serde(default = "default_target_fov_radius_px")]
@@ -561,29 +543,20 @@ impl Default for PipelineRuntimeConfig {
     fn default() -> Self {
         Self {
             freshness_threshold_ms: default_freshness_threshold_ms(),
-            near_threshold_px: default_near_threshold_px(),
             projection_fov_x_deg: default_projection_fov_x_deg(),
             projection_counts_per_360: default_projection_counts_per_360(),
             atan_scale_counts: default_atan_scale_counts(),
             p_response_scale: default_p_response_scale(),
-            p_response_gain_floor: default_p_response_gain_floor(),
-            p_response_gain_ceiling: default_p_response_gain_ceiling(),
-            p_response_curve_width_ratio: default_response_curve_width_ratio(),
+            p_response_boost: default_p_response_boost(),
             p_response_curve_shape: default_response_curve_shape(),
-            far_max_counts_per_update: default_far_max_counts_per_update(),
-            near_max_counts_per_update: default_near_max_counts_per_update(),
+            max_counts_per_update: default_max_counts_per_update(),
             arrival_radius_counts: default_arrival_radius_counts(),
             velocity_history_reset_gap_ms: default_velocity_history_reset_gap_ms(),
             velocity_spread_base_px_ms: default_velocity_spread_base_px_ms(),
             velocity_spread_relative: default_velocity_spread_relative(),
             prediction_enabled: default_prediction_enabled(),
             prediction_lead_ms: default_prediction_lead_ms(),
-            prediction_far_absolute_cap_px: default_prediction_far_absolute_cap_px(),
-            prediction_far_base_cap_px: default_prediction_far_base_cap_px(),
-            prediction_far_relative_cap: default_prediction_far_relative_cap(),
-            prediction_near_absolute_cap_px: default_prediction_near_absolute_cap_px(),
-            prediction_near_base_cap_px: default_prediction_near_base_cap_px(),
-            prediction_near_relative_cap: default_prediction_near_relative_cap(),
+            prediction_cap_px: default_prediction_cap_px(),
             residual_cap: default_residual_cap(),
             target_fov_radius_px: default_target_fov_radius_px(),
             target_min_confidence: default_target_min_confidence(),
@@ -624,9 +597,7 @@ impl PipelineRuntimeConfig {
     pub fn continuous_response(&self) -> ContinuousResponseRuntimeConfig {
         ContinuousResponseRuntimeConfig {
             scale: self.p_response_scale,
-            gain_floor: self.p_response_gain_floor,
-            gain_ceiling: self.p_response_gain_ceiling,
-            curve_width_ratio: self.p_response_curve_width_ratio,
+            boost: self.p_response_boost,
             curve_shape: self.p_response_curve_shape,
         }
     }
@@ -637,12 +608,6 @@ impl PipelineRuntimeConfig {
             self.freshness_threshold_ms,
             1.0,
             1_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.near_threshold_px",
-            self.near_threshold_px,
-            0.0,
-            10_000.0,
         )?;
         validate_finite_range(
             "pipeline.projection_fov_x_deg",
@@ -669,28 +634,10 @@ impl PipelineRuntimeConfig {
             100.0,
         )?;
         validate_finite_range(
-            "pipeline.p_response_gain_floor",
-            self.p_response_gain_floor,
+            "pipeline.p_response_boost",
+            self.p_response_boost,
             0.0,
             100.0,
-        )?;
-        validate_finite_range(
-            "pipeline.p_response_gain_ceiling",
-            self.p_response_gain_ceiling,
-            0.0,
-            100.0,
-        )?;
-        if self.p_response_gain_floor > self.p_response_gain_ceiling {
-            return Err(ConfigValidationError::new(
-                "pipeline.p_response_gain_floor",
-                "must be <= pipeline.p_response_gain_ceiling",
-            ));
-        }
-        validate_finite_range(
-            "pipeline.p_response_curve_width_ratio",
-            self.p_response_curve_width_ratio,
-            0.000_001,
-            10.0,
         )?;
         validate_finite_range(
             "pipeline.p_response_curve_shape",
@@ -699,14 +646,8 @@ impl PipelineRuntimeConfig {
             4.0,
         )?;
         validate_finite_range(
-            "pipeline.far_max_counts_per_update",
-            self.far_max_counts_per_update,
-            1.0,
-            f64::from(i16::MAX),
-        )?;
-        validate_finite_range(
-            "pipeline.near_max_counts_per_update",
-            self.near_max_counts_per_update,
+            "pipeline.max_counts_per_update",
+            self.max_counts_per_update,
             1.0,
             f64::from(i16::MAX),
         )?;
@@ -740,34 +681,12 @@ impl PipelineRuntimeConfig {
             0.0,
             1_000.0,
         )?;
-        for (field, value) in [
-            (
-                "pipeline.prediction_far_absolute_cap_px",
-                self.prediction_far_absolute_cap_px,
-            ),
-            (
-                "pipeline.prediction_far_base_cap_px",
-                self.prediction_far_base_cap_px,
-            ),
-            (
-                "pipeline.prediction_far_relative_cap",
-                self.prediction_far_relative_cap,
-            ),
-            (
-                "pipeline.prediction_near_absolute_cap_px",
-                self.prediction_near_absolute_cap_px,
-            ),
-            (
-                "pipeline.prediction_near_base_cap_px",
-                self.prediction_near_base_cap_px,
-            ),
-            (
-                "pipeline.prediction_near_relative_cap",
-                self.prediction_near_relative_cap,
-            ),
-        ] {
-            validate_finite_range(field, value, 0.0, 100_000.0)?;
-        }
+        validate_finite_range(
+            "pipeline.prediction_cap_px",
+            self.prediction_cap_px,
+            0.0,
+            100_000.0,
+        )?;
         validate_finite_range("pipeline.residual_cap", self.residual_cap, 0.0, 1.0)?;
         validate_finite_range(
             "pipeline.target_fov_radius_px",
@@ -941,9 +860,7 @@ impl PipelineRuntimeConfig {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContinuousResponseRuntimeConfig {
     pub scale: f64,
-    pub gain_floor: f64,
-    pub gain_ceiling: f64,
-    pub curve_width_ratio: f64,
+    pub boost: f64,
     pub curve_shape: f64,
 }
 
@@ -1065,10 +982,6 @@ const fn default_freshness_threshold_ms() -> f64 {
     55.0
 }
 
-const fn default_near_threshold_px() -> f64 {
-    12.0
-}
-
 const fn default_projection_fov_x_deg() -> f64 {
     105.0
 }
@@ -1081,32 +994,16 @@ const fn default_atan_scale_counts() -> f64 {
     256.0
 }
 
-const fn default_response_curve_width_ratio() -> f64 {
-    0.25
-}
-
 const fn default_response_curve_shape() -> f64 {
     1.0
 }
 
 const fn default_p_response_scale() -> f64 {
-    0.30
+    0.20
 }
 
-const fn default_p_response_gain_floor() -> f64 {
-    0.20 / 0.30
-}
-
-const fn default_p_response_gain_ceiling() -> f64 {
-    1.0
-}
-
-const fn default_far_max_counts_per_update() -> f64 {
-    127.0
-}
-
-const fn default_near_max_counts_per_update() -> f64 {
-    72.0
+const fn default_p_response_boost() -> f64 {
+    0.50
 }
 
 const fn default_arrival_radius_counts() -> f64 {
@@ -1133,28 +1030,12 @@ const fn default_prediction_lead_ms() -> f64 {
     16.0
 }
 
-const fn default_prediction_far_absolute_cap_px() -> f64 {
+const fn default_max_counts_per_update() -> f64 {
+    127.0
+}
+
+const fn default_prediction_cap_px() -> f64 {
     10.0
-}
-
-const fn default_prediction_far_base_cap_px() -> f64 {
-    1.25
-}
-
-const fn default_prediction_far_relative_cap() -> f64 {
-    0.30
-}
-
-const fn default_prediction_near_absolute_cap_px() -> f64 {
-    3.0
-}
-
-const fn default_prediction_near_base_cap_px() -> f64 {
-    0.75
-}
-
-const fn default_prediction_near_relative_cap() -> f64 {
-    0.20
 }
 
 const fn default_residual_cap() -> f64 {
@@ -1963,9 +1844,7 @@ mod tests {
     fn continuous_response_uses_canonical_fields() {
         let config = PipelineRuntimeConfig {
             p_response_scale: 0.42,
-            p_response_gain_floor: 0.50,
-            p_response_gain_ceiling: 1.20,
-            p_response_curve_width_ratio: 0.40,
+            p_response_boost: 0.60,
             p_response_curve_shape: 1.50,
             ..PipelineRuntimeConfig::default()
         };
@@ -1973,9 +1852,7 @@ mod tests {
         let response = config.continuous_response();
 
         assert_eq!(response.scale, 0.42);
-        assert_eq!(response.gain_floor, 0.50);
-        assert_eq!(response.gain_ceiling, 1.20);
-        assert_eq!(response.curve_width_ratio, 0.40);
+        assert_eq!(response.boost, 0.60);
         assert_eq!(response.curve_shape, 1.50);
     }
 

@@ -1421,8 +1421,7 @@ const fn lock_reason_label(reason: LockReason) -> &'static str {
 
 const fn control_mode_label(mode: ControlMode) -> &'static str {
     match mode {
-        ControlMode::Far => "FAR",
-        ControlMode::Near => "NEAR",
+        ControlMode::Continuous => "CONTINUOUS",
     }
 }
 
@@ -1539,7 +1538,7 @@ mod tests {
             dy: -3,
             emit_allowed: true,
             block_reason: BlockReason::None,
-            mode: ControlMode::Near,
+            mode: ControlMode::Continuous,
             velocity_x: 0.25,
             motion_confidence: 0.8,
             history_position_count: 4,
@@ -1696,7 +1695,7 @@ mod tests {
             pipeline["control_mode"],
             "dual_phase_atan_robust_predictive_v2"
         );
-        assert_eq!(pipeline["mode"], "NEAR");
+        assert_eq!(pipeline["mode"], "CONTINUOUS");
         assert_eq!(pipeline["prediction_truth"]["total_samples"], 12);
         assert_eq!(pipeline["prediction_truth"]["valid_position_samples"], 10);
         assert_eq!(pipeline["prediction_truth"]["projection"], "capped");

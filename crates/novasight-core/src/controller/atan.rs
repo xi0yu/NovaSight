@@ -17,7 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::response_curve::{ContinuousAtanConfig, ContinuousDemand, response_progress};
+use super::response_curve::{ContinuousAtanConfig, ContinuousDemand};
 use crate::limiter::{DeviceCountLimiter, DeviceCountLimits};
 use crate::prediction::{
     FocusTargetObservation, PredictionMotionState, SingleTargetPredictionConfig,
@@ -33,8 +33,7 @@ const ARRIVAL_CONFIRM_SAMPLES: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ControlMode {
-    Far,
-    Near,
+    Continuous,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -68,17 +67,13 @@ pub enum BlockReason {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DualPhaseConfig {
     pub freshness_threshold_ms: f64,
-    pub near_threshold_px: f64,
     pub projection_fov_x_deg: f64,
     pub projection_counts_per_360: f64,
     pub atan_scale_counts: f64,
     pub response_scale: f64,
-    pub response_gain_floor: f64,
-    pub response_gain_ceiling: f64,
-    pub response_curve_width_ratio: f64,
+    pub response_boost: f64,
     pub response_curve_shape: f64,
-    pub far_max_counts_per_update: f64,
-    pub near_max_counts_per_update: f64,
+    pub max_counts_per_update: f64,
     /// Half-size of the per-axis arrival box in projected device counts.
     pub arrival_radius_counts: f64,
     pub velocity_history_reset_gap_ms: f64,
@@ -89,12 +84,7 @@ pub struct DualPhaseConfig {
     /// actuation feedback gate.
     pub prediction_actuation_delay_ms: f64,
     pub prediction_lead_ms: f64,
-    pub prediction_far_absolute_cap_px: f64,
-    pub prediction_far_base_cap_px: f64,
-    pub prediction_far_relative_cap: f64,
-    pub prediction_near_absolute_cap_px: f64,
-    pub prediction_near_base_cap_px: f64,
-    pub prediction_near_relative_cap: f64,
+    pub prediction_cap_px: f64,
     pub source_width: u32,
     pub roi_width: u32,
     pub roi_height: u32,
@@ -108,17 +98,13 @@ impl Default for DualPhaseConfig {
     fn default() -> Self {
         Self {
             freshness_threshold_ms: 55.0,
-            near_threshold_px: 12.0,
             projection_fov_x_deg: 105.0,
             projection_counts_per_360: 9_980.0,
             atan_scale_counts: 256.0,
-            response_scale: 0.30,
-            response_gain_floor: 0.20 / 0.30,
-            response_gain_ceiling: 1.0,
-            response_curve_width_ratio: 0.25,
+            response_scale: 0.20,
+            response_boost: 0.50,
             response_curve_shape: 1.0,
-            far_max_counts_per_update: 127.0,
-            near_max_counts_per_update: 72.0,
+            max_counts_per_update: 127.0,
             arrival_radius_counts: 3.0,
             velocity_history_reset_gap_ms: 80.0,
             velocity_spread_base_px_ms: 0.12,
@@ -126,12 +112,7 @@ impl Default for DualPhaseConfig {
             prediction_enabled: true,
             prediction_actuation_delay_ms: 4.0,
             prediction_lead_ms: 16.0,
-            prediction_far_absolute_cap_px: 10.0,
-            prediction_far_base_cap_px: 1.25,
-            prediction_far_relative_cap: 0.30,
-            prediction_near_absolute_cap_px: 3.0,
-            prediction_near_base_cap_px: 0.75,
-            prediction_near_relative_cap: 0.20,
+            prediction_cap_px: 10.0,
             source_width: 640,
             roi_width: 640,
             roi_height: 640,
@@ -151,12 +132,7 @@ impl DualPhaseConfig {
             spread_relative: self.velocity_spread_relative,
             actuation_delay_ms: self.prediction_actuation_delay_ms,
             lead_ms: self.prediction_lead_ms,
-            far_absolute_cap_px: self.prediction_far_absolute_cap_px,
-            far_base_cap_px: self.prediction_far_base_cap_px,
-            far_relative_cap: self.prediction_far_relative_cap,
-            near_absolute_cap_px: self.prediction_near_absolute_cap_px,
-            near_base_cap_px: self.prediction_near_base_cap_px,
-            near_relative_cap: self.prediction_near_relative_cap,
+            cap_px: self.prediction_cap_px,
         }
     }
 }
@@ -281,7 +257,7 @@ impl ControlDecision {
             block_reason: reason,
             quantizer_residual_x: 0.0,
             quantizer_residual_y: 0.0,
-            mode: ControlMode::Far,
+            mode: ControlMode::Continuous,
             velocity_x: 0.0,
             velocity_y: 0.0,
             motion_state: PredictionMotionState::Unavailable,
@@ -426,12 +402,8 @@ impl ProjectionModel {
             || config.atan_scale_counts <= 0.0
             || !config.response_scale.is_finite()
             || config.response_scale < 0.0
-            || !config.response_gain_floor.is_finite()
-            || config.response_gain_floor < 0.0
-            || !config.response_gain_ceiling.is_finite()
-            || config.response_gain_floor > config.response_gain_ceiling
-            || !config.response_curve_width_ratio.is_finite()
-            || config.response_curve_width_ratio <= 0.0
+            || !config.response_boost.is_finite()
+            || config.response_boost < 0.0
             || !config.response_curve_shape.is_finite()
             || !(0.5..=4.0).contains(&config.response_curve_shape)
         {
@@ -610,46 +582,26 @@ impl DualPhaseControl {
                 self.limiter.reset_y();
             }
         }
-        let observed_distance = error_x.hypot(error_y);
-        // Prediction caps are scheduled from the measured observation so the
-        // predictor cannot enlarge its own envelope recursively.
-        let prediction_far_weight = response_progress(
-            observed_distance,
-            self.config.near_threshold_px,
-            self.config.response_curve_width_ratio,
-            self.config.response_curve_shape,
-        );
         let prediction = if capture_timestamp_discontinuity {
-            self.prediction
-                .unavailable(error_x, error_y, prediction_far_weight)
+            self.prediction.unavailable()
         } else {
             self.prediction.predict(FocusTargetObservation {
                 track_id: observation.target_id,
                 aim_x,
                 aim_y,
-                measured_error_x: error_x,
-                measured_error_y: error_y,
                 capture_ts_ns: observation.capture_ts_ns,
                 observation_age_ms: frame_age_ms,
                 detection_confidence: observation.detection_confidence,
                 identity_confidence: observation.track_confidence,
-                far_weight: prediction_far_weight,
             })
         };
         let predicted_offset_x = prediction.x.safe_offset;
         let predicted_offset_y = prediction.y.safe_offset;
         let filtered_error_x = error_x + predicted_offset_x;
         let filtered_error_y = error_y + predicted_offset_y;
-        // The response region must follow the point we actually intend to
-        // control, not the stale pre-prediction position.
-        let control_distance = filtered_error_x.hypot(filtered_error_y);
-        let mode = if control_distance <= self.config.near_threshold_px {
-            ControlMode::Near
-        } else {
-            ControlMode::Far
-        };
+        let mode = ControlMode::Continuous;
         let Some((mut response, full_x, full_y)) =
-            self.project_demand(filtered_error_x, filtered_error_y, control_distance)
+            self.project_demand(filtered_error_x, filtered_error_y)
         else {
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::GeometryInvalid);
@@ -808,26 +760,17 @@ impl DualPhaseControl {
         }
     }
 
-    fn project_demand(
-        &self,
-        error_x: f64,
-        error_y: f64,
-        measured_distance_px: f64,
-    ) -> Option<(ContinuousDemand, f64, f64)> {
+    fn project_demand(&self, error_x: f64, error_y: f64) -> Option<(ContinuousDemand, f64, f64)> {
         let config = self.config;
         let (full_x, full_y) = self.projection?.project(error_x, error_y);
         let response = ContinuousAtanConfig {
-            response_curve_center_px: config.near_threshold_px,
-            response_curve_width_ratio: config.response_curve_width_ratio,
-            response_curve_shape: config.response_curve_shape,
             scale_counts: config.atan_scale_counts,
             response_scale: config.response_scale,
-            response_gain_floor: config.response_gain_floor,
-            response_gain_ceiling: config.response_gain_ceiling,
-            near_limit_counts: config.near_max_counts_per_update,
-            far_limit_counts: config.far_max_counts_per_update,
+            response_boost: config.response_boost,
+            response_curve_shape: config.response_curve_shape,
+            max_counts_per_update: config.max_counts_per_update,
         }
-        .evaluate(measured_distance_px, full_x, full_y)?;
+        .evaluate(full_x, full_y)?;
         Some((response, full_x, full_y))
     }
 }
@@ -893,13 +836,11 @@ mod tests {
     }
 
     #[test]
-    fn confidence_weighted_vector_prediction_respects_far_cap() {
+    fn confidence_weighted_vector_prediction_respects_single_cap() {
         let config = DualPhaseConfig {
             prediction_enabled: true,
             prediction_lead_ms: 2.0,
-            prediction_far_absolute_cap_px: 3.0,
-            prediction_far_base_cap_px: 0.0,
-            prediction_far_relative_cap: 0.05,
+            prediction_cap_px: 3.0,
             ..DualPhaseConfig::default()
         };
         let mut control = DualPhaseControl::new(config);
@@ -1082,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn response_region_follows_the_predicted_control_point() {
+    fn prediction_offsets_feed_the_continuous_controller() {
         let mut control = DualPhaseControl::new(DualPhaseConfig {
             prediction_enabled: true,
             prediction_lead_ms: 1.0,
@@ -1111,7 +1052,7 @@ mod tests {
         let decision = decision.expect("last decision");
         assert!(decision.observed_error_x < 12.0);
         assert!(decision.filtered_error_x > 12.0);
-        assert_eq!(decision.mode, ControlMode::Far);
+        assert_eq!(decision.mode, ControlMode::Continuous);
     }
 
     #[test]

@@ -442,10 +442,8 @@ function formatMotionState(value: unknown): string {
 
 function formatResponseStage(value: unknown): string {
   switch (readString(value, "")) {
-    case "FAR":
-      return "远端";
-    case "NEAR":
-      return "近端";
+    case "CONTINUOUS":
+      return "连续";
     default:
       return NO_SAMPLE;
   }
@@ -1243,27 +1241,18 @@ export function StudioConsoleView({
   const freshnessThresholdMs = readNumber(rustPipelineConfig.freshness_threshold_ms, 55);
   const dualPhaseFovX = readNumber(rustPipelineConfig.projection_fov_x_deg, 105);
   const dualPhaseCountsPer360 = readNumber(rustPipelineConfig.projection_counts_per_360, 9980);
-  const dualPhaseNearThreshold = readNumber(rustPipelineConfig.near_threshold_px, 12);
-  const pResponseScale = readNumber(rustPipelineConfig.p_response_scale, 0.30);
-  const pResponseGainFloor = readNumber(rustPipelineConfig.p_response_gain_floor, 0.20 / 0.30);
-  const pResponseGainCeiling = readNumber(rustPipelineConfig.p_response_gain_ceiling, 1);
-  const pResponseCurveWidthRatio = readNumber(rustPipelineConfig.p_response_curve_width_ratio, 0.25);
+  const pResponseScale = readNumber(rustPipelineConfig.p_response_scale, 0.20);
+  const pResponseBoost = readNumber(rustPipelineConfig.p_response_boost, 0.50);
   const pResponseCurveShape = readNumber(rustPipelineConfig.p_response_curve_shape, 1);
   const dualPhaseAtanScale = readNumber(rustPipelineConfig.atan_scale_counts, 256);
-  const dualPhaseFarMaxCounts = readNumber(rustPipelineConfig.far_max_counts_per_update, 127);
-  const dualPhaseNearMaxCounts = readNumber(rustPipelineConfig.near_max_counts_per_update, 72);
+  const dualPhaseMaxCounts = readNumber(rustPipelineConfig.max_counts_per_update, 127);
   const dualPhaseArrivalRadiusCounts = readNumber(rustPipelineConfig.arrival_radius_counts, 3);
   const dualPhasePredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, true);
   const dualPhasePredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
   const velocitySpreadBasePxMs = readNumber(rustPipelineConfig.velocity_spread_base_px_ms, 0.12);
   const velocitySpreadRelative = readNumber(rustPipelineConfig.velocity_spread_relative, 0.50);
   const dualPhasePredictionLeadMs = readNumber(rustPipelineConfig.prediction_lead_ms, 16);
-  const dualPhasePredictionFarCapPx = readNumber(rustPipelineConfig.prediction_far_absolute_cap_px, 10);
-  const dualPhasePredictionFarBaseCapPx = readNumber(rustPipelineConfig.prediction_far_base_cap_px, 1.25);
-  const dualPhasePredictionFarRelativeCap = readNumber(rustPipelineConfig.prediction_far_relative_cap, 0.30);
-  const dualPhasePredictionNearCapPx = readNumber(rustPipelineConfig.prediction_near_absolute_cap_px, 3);
-  const dualPhasePredictionNearBaseCapPx = readNumber(rustPipelineConfig.prediction_near_base_cap_px, 0.75);
-  const dualPhasePredictionNearRelativeCap = readNumber(rustPipelineConfig.prediction_near_relative_cap, 0.20);
+  const dualPhasePredictionCapPx = readNumber(rustPipelineConfig.prediction_cap_px, 10);
   const residualCap = readNumber(rustPipelineConfig.residual_cap, 1);
   const actuationFeedbackDelayMs = readNumber(rustPipelineConfig.actuation_feedback_delay_ms, 4);
   const targetMinConfidence = readNumber(rustPipelineConfig.target_min_confidence, 0.5);
@@ -2499,25 +2488,16 @@ export function StudioConsoleView({
     calibrationParameters
   } = buildAlgorithmParameterGroups({
     pResponseScale,
-    pResponseGainFloor,
-    pResponseGainCeiling,
-    pResponseCurveWidthRatio,
+    pResponseBoost,
     pResponseCurveShape,
-    dualPhaseNearThreshold,
     dualPhaseAtanScale,
     actuationFeedbackDelayMs,
     dualPhasePredictionLeadMs,
     dualPhasePredictionHistoryResetGapMs,
     velocitySpreadBasePxMs,
     velocitySpreadRelative,
-    dualPhasePredictionFarCapPx,
-    dualPhasePredictionFarBaseCapPx,
-    dualPhasePredictionFarRelativeCap,
-    dualPhasePredictionNearCapPx,
-    dualPhasePredictionNearBaseCapPx,
-    dualPhasePredictionNearRelativeCap,
-    dualPhaseNearMaxCounts,
-    dualPhaseFarMaxCounts,
+    dualPhasePredictionCapPx,
+    dualPhaseMaxCounts,
     dualPhaseArrivalRadiusCounts,
     residualCap,
     dualPhaseFovX,
@@ -2535,8 +2515,8 @@ export function StudioConsoleView({
     {
       id: "response",
       label: "响应",
-      value: `力度 ${formatNumber(pResponseScale, 3)} · 保持 ${formatNumber(pResponseGainFloor, 2)}`,
-      detail: `过渡 ${formatNumber(pResponseCurveShape, 2)} · 曲线 ${formatNumber(dualPhaseAtanScale, 1)}`,
+      value: `力度 ${formatNumber(pResponseScale, 3)} · 增强 ${formatNumber(pResponseBoost, 2)}`,
+      detail: `曲线 ${formatNumber(pResponseCurveShape, 2)} · Atan ${formatNumber(dualPhaseAtanScale, 1)}`,
       icon: "response-curve"
     },
     {
@@ -2551,7 +2531,7 @@ export function StudioConsoleView({
     {
       id: "stability",
       label: "限制",
-      value: `近端 ${formatNumber(dualPhaseNearMaxCounts, 0)} · 远端 ${formatNumber(dualPhaseFarMaxCounts, 0)}`,
+      value: `最大移动 ${formatNumber(dualPhaseMaxCounts, 0)} counts`,
       detail: `到位 ${formatNumber(dualPhaseArrivalRadiusCounts, 1)} counts · 残差 ${formatNumber(residualCap, 2)}`,
       icon: "control"
     },
@@ -4029,7 +4009,7 @@ export function StudioConsoleView({
                 <div className="advanced-settings-summary">
                   <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
                   <div><span>响应力度</span><b>{pResponseScale.toFixed(3)}</b></div>
-                  <div><span>微调保持</span><b>{pResponseGainFloor.toFixed(2)}</b></div>
+                  <div><span>力度增强</span><b>{pResponseBoost.toFixed(2)}</b></div>
                   <div><span>目标速度预测</span><b>{dualPhasePredictionEnabled ? "二维 aim 已启用" : "已关闭"}</b></div>
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("algorithm")} type="button">
@@ -4608,7 +4588,7 @@ export function StudioConsoleView({
                 <h3 id="algorithm-settings-response-title">响应力度与 Atan 曲线</h3>
                 <p>这里决定控制器想移动多少：先调整体响应力度，再看小误差是否抖动、远距离是否跟得上，最后微调过渡形状和 Atan 曲线尺度。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>建议顺序</b><span>响应力度 → 微调保持 → 力度过渡 → Atan 曲线尺度</span></div>
+              <div className="algorithm-tuning-order"><b>建议顺序</b><span>响应力度 → 力度增强 → 响应曲线 → Atan 尺度</span></div>
               <div className="advanced-settings-grid two-column">
                 {responseParameters.map(renderAlgorithmNumberParameter)}
               </div>

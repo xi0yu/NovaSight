@@ -144,7 +144,7 @@ fn first_observation_has_zero_velocity_and_predicted_offset() {
 }
 
 #[test]
-fn rust_feedback_matches_the_python_projection_and_atan_reference() {
+fn rust_feedback_matches_the_continuous_projection_and_atan_reference() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let decision = control.calculate(ControlObservation {
         generation: 1,
@@ -161,7 +161,7 @@ fn rust_feedback_matches_the_python_projection_and_atan_reference() {
         trigger_active: true,
     });
 
-    assert_eq!((decision.dx, decision.dy), (90, 75));
+    assert_eq!((decision.dx, decision.dy), (88, 73));
     assert!((0.0..1.0).contains(&decision.quantizer_residual_x));
     assert!((0.0..1.0).contains(&decision.quantizer_residual_y));
 }
@@ -517,7 +517,7 @@ fn release_trigger_drops_fractional_count_but_keeps_history() {
 }
 
 #[test]
-fn near_mode_is_selected_for_small_error() {
+fn continuous_mode_is_reported_for_small_error() {
     let mut control = DualPhaseControl::new(DualPhaseConfig::default());
     let observation = ControlObservation {
         generation: 1,
@@ -534,5 +534,5 @@ fn near_mode_is_selected_for_small_error() {
         trigger_active: true,
     };
     let decision = control.calculate(observation);
-    assert_eq!(decision.mode, ControlMode::Near);
+    assert_eq!(decision.mode, ControlMode::Continuous);
 }

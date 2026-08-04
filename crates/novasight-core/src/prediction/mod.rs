@@ -32,12 +32,7 @@ pub struct SingleTargetPredictionConfig {
     /// prediction horizon before the optional time lead.
     pub actuation_delay_ms: f64,
     pub lead_ms: f64,
-    pub far_absolute_cap_px: f64,
-    pub far_base_cap_px: f64,
-    pub far_relative_cap: f64,
-    pub near_absolute_cap_px: f64,
-    pub near_base_cap_px: f64,
-    pub near_relative_cap: f64,
+    pub cap_px: f64,
 }
 
 impl SingleTargetPredictionConfig {
@@ -55,16 +50,8 @@ impl SingleTargetPredictionConfig {
             && self.actuation_delay_ms >= 0.0
             && self.lead_ms.is_finite()
             && (0.0..=1_000.0).contains(&self.lead_ms)
-            && [
-                self.far_absolute_cap_px,
-                self.far_base_cap_px,
-                self.far_relative_cap,
-                self.near_absolute_cap_px,
-                self.near_base_cap_px,
-                self.near_relative_cap,
-            ]
-            .into_iter()
-            .all(|value| value.is_finite() && value >= 0.0)
+            && self.cap_px.is_finite()
+            && self.cap_px >= 0.0
     }
 }
 
@@ -73,8 +60,6 @@ pub struct FocusTargetObservation {
     pub track_id: u64,
     pub aim_x: f64,
     pub aim_y: f64,
-    pub measured_error_x: f64,
-    pub measured_error_y: f64,
     pub capture_ts_ns: u64,
     /// Time already elapsed from this capture to the current control
     /// calculation. Prediction starts at capture time, so this measured age
@@ -82,9 +67,6 @@ pub struct FocusTargetObservation {
     pub observation_age_ms: f64,
     pub detection_confidence: f64,
     pub identity_confidence: f64,
-    /// Continuous FAR response weight shared with the controller response
-    /// curve. Zero is fully NEAR and one is fully FAR.
-    pub far_weight: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -147,17 +129,11 @@ impl SingleTargetPredictor {
 
     /// Return the configured prediction envelope without advancing history.
     /// Used when the current observation cannot safely join the time series.
-    pub fn unavailable(
-        &self,
-        measured_error_x: f64,
-        measured_error_y: f64,
-        far_weight: f64,
-    ) -> SingleTargetPrediction {
+    pub fn unavailable(&self) -> SingleTargetPrediction {
         if !self.config.enabled {
             return SingleTargetPrediction::default();
         }
-        let measured_error_radius = Vector2::new(measured_error_x, measured_error_y).magnitude();
-        let allowed_cap = self.allowed_cap(measured_error_radius, far_weight);
+        let allowed_cap = self.allowed_cap();
         SingleTargetPrediction {
             x: AxisPrediction {
                 allowed_cap,
@@ -183,11 +159,7 @@ impl SingleTargetPredictor {
             || !observation.observation_age_ms.is_finite()
             || observation.observation_age_ms < 0.0
         {
-            return self.unavailable(
-                observation.measured_error_x,
-                observation.measured_error_y,
-                observation.far_weight,
-            );
+            return self.unavailable();
         }
 
         let Some(estimate) = self.velocity.update(
@@ -198,11 +170,7 @@ impl SingleTargetPredictor {
             observation.detection_confidence,
             observation.identity_confidence,
         ) else {
-            return self.unavailable(
-                observation.measured_error_x,
-                observation.measured_error_y,
-                observation.far_weight,
-            );
+            return self.unavailable();
         };
 
         let allowed = estimate.reference_dt_ms.is_finite() && estimate.reference_dt_ms > 0.0;
@@ -220,9 +188,7 @@ impl SingleTargetPredictor {
         };
         let raw_offset = estimate.velocity.scale(horizon_ms);
         let weighted_offset = raw_offset.scale(prediction_strength);
-        let measured_error_radius =
-            Vector2::new(observation.measured_error_x, observation.measured_error_y).magnitude();
-        let allowed_cap = self.allowed_cap(measured_error_radius, observation.far_weight);
+        let allowed_cap = self.allowed_cap();
         let safe_offset = clamp_vector_magnitude(weighted_offset, allowed_cap);
 
         SingleTargetPrediction {
@@ -252,31 +218,9 @@ impl SingleTargetPredictor {
         }
     }
 
-    fn allowed_cap(&self, measured_error_radius: f64, far_weight: f64) -> f64 {
-        let far_weight = far_weight.clamp(0.0, 1.0);
-        let absolute_cap = lerp(
-            self.config.near_absolute_cap_px,
-            self.config.far_absolute_cap_px,
-            far_weight,
-        );
-        let base_cap = lerp(
-            self.config.near_base_cap_px,
-            self.config.far_base_cap_px,
-            far_weight,
-        );
-        let relative_cap = lerp(
-            self.config.near_relative_cap,
-            self.config.far_relative_cap,
-            far_weight,
-        );
-        absolute_cap
-            .min(base_cap + relative_cap * measured_error_radius.max(0.0))
-            .max(0.0)
+    fn allowed_cap(&self) -> f64 {
+        self.config.cap_px.max(0.0)
     }
-}
-
-fn lerp(start: f64, end: f64, weight: f64) -> f64 {
-    start + (end - start) * weight
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -652,12 +596,7 @@ mod tests {
             spread_relative: 0.50,
             actuation_delay_ms: 4.0,
             lead_ms: 10.0,
-            far_absolute_cap_px: 10.0,
-            far_base_cap_px: 1.25,
-            far_relative_cap: 0.30,
-            near_absolute_cap_px: 3.0,
-            near_base_cap_px: 0.75,
-            near_relative_cap: 0.20,
+            cap_px: 10.0,
         }
     }
 
@@ -666,22 +605,16 @@ mod tests {
             track_id: 1,
             aim_x,
             aim_y,
-            measured_error_x: aim_x - 100.0,
-            measured_error_y: aim_y - 100.0,
             capture_ts_ns: 1_000_000_000 + elapsed_ms * 1_000_000,
             observation_age_ms: 8.0,
             detection_confidence: 1.0,
             identity_confidence: 1.0,
-            far_weight: 1.0,
         }
     }
 
     fn high_cap_config() -> SingleTargetPredictionConfig {
         SingleTargetPredictionConfig {
-            far_absolute_cap_px: 100.0,
-            far_base_cap_px: 100.0,
-            near_absolute_cap_px: 100.0,
-            near_base_cap_px: 100.0,
+            cap_px: 100.0,
             ..config()
         }
     }
@@ -763,12 +696,7 @@ mod tests {
     #[test]
     fn vector_cap_preserves_prediction_direction() {
         let cfg = SingleTargetPredictionConfig {
-            far_absolute_cap_px: 5.0,
-            far_base_cap_px: 5.0,
-            far_relative_cap: 0.0,
-            near_absolute_cap_px: 5.0,
-            near_base_cap_px: 5.0,
-            near_relative_cap: 0.0,
+            cap_px: 5.0,
             ..config()
         };
         let prediction = feed_points(
@@ -816,10 +744,7 @@ mod tests {
     fn zero_extra_lead_still_compensates_observation_and_actuation_age() {
         let mut zero_lead = config();
         zero_lead.lead_ms = 0.0;
-        zero_lead.far_absolute_cap_px = 100.0;
-        zero_lead.far_base_cap_px = 100.0;
-        zero_lead.near_absolute_cap_px = 100.0;
-        zero_lead.near_base_cap_px = 100.0;
+        zero_lead.cap_px = 100.0;
         let prediction = feed_points(
             zero_lead,
             &[

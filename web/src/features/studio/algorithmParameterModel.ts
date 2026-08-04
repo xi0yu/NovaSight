@@ -30,26 +30,17 @@ export type DualPhasePipelineField =
   | "freshness_threshold_ms"
   | "projection_fov_x_deg"
   | "projection_counts_per_360"
-  | "near_threshold_px"
   | "p_response_scale"
-  | "p_response_gain_floor"
-  | "p_response_gain_ceiling"
-  | "p_response_curve_width_ratio"
+  | "p_response_boost"
   | "p_response_curve_shape"
   | "atan_scale_counts"
-  | "far_max_counts_per_update"
-  | "near_max_counts_per_update"
+  | "max_counts_per_update"
   | "prediction_enabled"
   | "velocity_history_reset_gap_ms"
   | "velocity_spread_base_px_ms"
   | "velocity_spread_relative"
   | "prediction_lead_ms"
-  | "prediction_far_absolute_cap_px"
-  | "prediction_far_base_cap_px"
-  | "prediction_far_relative_cap"
-  | "prediction_near_absolute_cap_px"
-  | "prediction_near_base_cap_px"
-  | "prediction_near_relative_cap"
+  | "prediction_cap_px"
   | "arrival_radius_counts"
   | "residual_cap"
   | "actuation_feedback_delay_ms";
@@ -85,25 +76,16 @@ export type TargetingPipelineField =
 
 export type AlgorithmParameterValues = {
   pResponseScale: number;
-  pResponseGainFloor: number;
-  pResponseGainCeiling: number;
-  pResponseCurveWidthRatio: number;
+  pResponseBoost: number;
   pResponseCurveShape: number;
-  dualPhaseNearThreshold: number;
   dualPhaseAtanScale: number;
   actuationFeedbackDelayMs: number;
   dualPhasePredictionLeadMs: number;
   dualPhasePredictionHistoryResetGapMs: number;
   velocitySpreadBasePxMs: number;
   velocitySpreadRelative: number;
-  dualPhasePredictionFarCapPx: number;
-  dualPhasePredictionFarBaseCapPx: number;
-  dualPhasePredictionFarRelativeCap: number;
-  dualPhasePredictionNearCapPx: number;
-  dualPhasePredictionNearBaseCapPx: number;
-  dualPhasePredictionNearRelativeCap: number;
-  dualPhaseNearMaxCounts: number;
-  dualPhaseFarMaxCounts: number;
+  dualPhasePredictionCapPx: number;
+  dualPhaseMaxCounts: number;
   dualPhaseArrivalRadiusCounts: number;
   residualCap: number;
   dualPhaseFovX: number;
@@ -166,21 +148,21 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         applyMode: "live"
       },
       {
-        key: "p_response_gain_floor",
-        label: "微调保持",
-        detail: "小误差时相对响应力度的下界。调高会更容易消除最后误差，过高会让目标附近更容易晃。",
-        value: values.pResponseGainFloor,
+        key: "p_response_boost",
+        label: "力度增强",
+        detail: "误差变大时在基础力度上增加多少响应。调高会增强追踪，过高会让大幅移动过猛。",
+        value: values.pResponseBoost,
         min: 0,
-        max: 1,
-        recommendedMin: 0.1,
-        recommendedMax: 1,
+        max: 100,
+        recommendedMin: 0,
+        recommendedMax: 2,
         step: 0.001,
         applyMode: "live"
       },
       {
         key: "p_response_curve_shape",
-        label: "力度过渡",
-        detail: "控制响应从微调保持过渡到完整力度的形状。低于 1 更早变有力，高于 1 更晚变有力。",
+        label: "响应曲线",
+        detail: "控制 R(r) 的增长形状。低于 1 更早增强，高于 1 更晚增强。",
         value: values.pResponseCurveShape,
         min: 0.5,
         max: 4,
@@ -190,21 +172,8 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         applyMode: "live"
       },
       {
-        key: "near_threshold_px",
-        label: "响应中心",
-        detail: "径向误差到达该距离附近时，连续响应曲线进入中段过渡。",
-        value: values.dualPhaseNearThreshold,
-        min: 0,
-        max: 10000,
-        recommendedMin: 0,
-        recommendedMax: 1000,
-        step: 0.1,
-        unit: "px",
-        applyMode: "live"
-      },
-      {
         key: "atan_scale_counts",
-        label: "响应曲线",
+        label: "Atan 尺度",
         detail: "决定大误差何时开始被曲线压缩。增大后中远距离输出更接近线性，减小则更早压缩。",
         value: values.dualPhaseAtanScale,
         min: 0.000001,
@@ -286,10 +255,10 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
     ],
     predictionCapParameters: [
       {
-        key: "prediction_far_absolute_cap_px",
-        label: "远距离预测硬上限",
-        detail: "远距离阶段允许的最终预测位移硬上限。",
-        value: values.dualPhasePredictionFarCapPx,
+        key: "prediction_cap_px",
+        label: "预测位移上限",
+        detail: "目标速度预测最多把 aim 点向未来推进多少像素。这是预测位移 cap，不是鼠标输出上限。",
+        value: values.dualPhasePredictionCapPx,
         min: 0,
         max: 100000,
         recommendedMin: 0,
@@ -297,91 +266,14 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         step: 0.1,
         unit: "px",
         riskLevel: "advanced"
-      },
-      {
-        key: "prediction_far_base_cap_px",
-        label: "远距离预测基础上限",
-        detail: "动态上限的基础部分；最终仍受硬上限约束。",
-        value: values.dualPhasePredictionFarBaseCapPx,
-        min: 0,
-        max: 100000,
-        recommendedMin: 0,
-        recommendedMax: 20,
-        step: 0.1,
-        unit: "px",
-        riskLevel: "advanced"
-      },
-      {
-        key: "prediction_far_relative_cap",
-        label: "远距离预测相对上限",
-        detail: "当前误差越大，允许的预测位移按该比例增加。",
-        value: values.dualPhasePredictionFarRelativeCap,
-        min: 0,
-        max: 100,
-        recommendedMin: 0,
-        recommendedMax: 2,
-        step: 0.01,
-        riskLevel: "advanced"
-      },
-      {
-        key: "prediction_near_absolute_cap_px",
-        label: "近距离预测硬上限",
-        detail: "接近准星时允许的最终预测位移硬上限。",
-        value: values.dualPhasePredictionNearCapPx,
-        min: 0,
-        max: 100000,
-        recommendedMin: 0,
-        recommendedMax: 40,
-        step: 0.1,
-        unit: "px",
-        riskLevel: "advanced"
-      },
-      {
-        key: "prediction_near_base_cap_px",
-        label: "近距离预测基础上限",
-        detail: "近距离动态上限的基础部分，用于避免小误差被过量提前。",
-        value: values.dualPhasePredictionNearBaseCapPx,
-        min: 0,
-        max: 100000,
-        recommendedMin: 0,
-        recommendedMax: 12,
-        step: 0.1,
-        unit: "px",
-        riskLevel: "advanced"
-      },
-      {
-        key: "prediction_near_relative_cap",
-        label: "近距离预测相对上限",
-        detail: "按当前误差比例增加近距离允许的预测位移。",
-        value: values.dualPhasePredictionNearRelativeCap,
-        min: 0,
-        max: 100,
-        recommendedMin: 0,
-        recommendedMax: 2,
-        step: 0.01,
-        riskLevel: "advanced"
       }
     ],
     stabilityParameters: [
       {
-        key: "near_max_counts_per_update",
-        label: "近距离单次上限",
-        detail: "靠近目标时每轮最多输出多少。降低可抑制越过瞄点，但过低会降低收敛速度。",
-        value: values.dualPhaseNearMaxCounts,
-        min: 1,
-        max: 32767,
-        recommendedMin: 1,
-        recommendedMax: 2000,
-        step: 1,
-        unit: "counts",
-        kind: "stepper",
-        transform: Math.round
-      },
-      {
-        key: "far_max_counts_per_update",
-        label: "远距离单次上限",
-        detail: "远距离追赶时每轮最多输出多少；它独立于 KMNet 的设备协议上限。",
-        value: values.dualPhaseFarMaxCounts,
+        key: "max_counts_per_update",
+        label: "最大移动量",
+        detail: "控制器每轮最多输出多少设备 counts。它限制命令输出，不改变预测 aim 点。",
+        value: values.dualPhaseMaxCounts,
         min: 1,
         max: 32767,
         recommendedMin: 1,

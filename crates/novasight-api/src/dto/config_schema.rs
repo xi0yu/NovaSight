@@ -180,13 +180,6 @@ impl ConfigSchemaResponse {
                             Some("ms"),
                         ),
                         float(
-                            "pipeline.near_threshold_px",
-                            "控制响应过渡中心",
-                            0.0,
-                            10_000.0,
-                            Some("px"),
-                        ),
-                        float(
                             "pipeline.projection_fov_x_deg",
                             "水平视场角",
                             0.000_001,
@@ -209,24 +202,10 @@ impl ConfigSchemaResponse {
                         ),
                         float("pipeline.p_response_scale", "响应力度", 0.0, 100.0, None),
                         float(
-                            "pipeline.p_response_gain_floor",
-                            "低误差响应下界",
+                            "pipeline.p_response_boost",
+                            "连续力度增强",
                             0.0,
                             100.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.p_response_gain_ceiling",
-                            "高误差响应上界",
-                            0.0,
-                            100.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.p_response_curve_width_ratio",
-                            "力度过渡宽度",
-                            0.000_001,
-                            10.0,
                             None,
                         ),
                         float(
@@ -237,15 +216,8 @@ impl ConfigSchemaResponse {
                             None,
                         ),
                         float(
-                            "pipeline.far_max_counts_per_update",
-                            "远目标单次计数上限",
-                            1.0,
-                            i16::MAX as f64,
-                            Some("count"),
-                        ),
-                        float(
-                            "pipeline.near_max_counts_per_update",
-                            "近目标单次计数上限",
+                            "pipeline.max_counts_per_update",
+                            "单次计数上限",
                             1.0,
                             i16::MAX as f64,
                             Some("count"),
@@ -287,46 +259,11 @@ impl ConfigSchemaResponse {
                             Some("ms"),
                         ),
                         float(
-                            "pipeline.prediction_far_absolute_cap_px",
-                            "远区预测绝对上限",
+                            "pipeline.prediction_cap_px",
+                            "预测位移上限",
                             0.0,
                             100_000.0,
                             Some("px"),
-                        ),
-                        float(
-                            "pipeline.prediction_far_base_cap_px",
-                            "远区预测基础上限",
-                            0.0,
-                            100_000.0,
-                            Some("px"),
-                        ),
-                        float(
-                            "pipeline.prediction_far_relative_cap",
-                            "远区预测相对上限",
-                            0.0,
-                            100_000.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.prediction_near_absolute_cap_px",
-                            "近区预测绝对上限",
-                            0.0,
-                            100_000.0,
-                            Some("px"),
-                        ),
-                        float(
-                            "pipeline.prediction_near_base_cap_px",
-                            "近区预测基础上限",
-                            0.0,
-                            100_000.0,
-                            Some("px"),
-                        ),
-                        float(
-                            "pipeline.prediction_near_relative_cap",
-                            "近区预测相对上限",
-                            0.0,
-                            100_000.0,
-                            None,
                         ),
                         float(
                             "pipeline.residual_cap",
@@ -803,7 +740,7 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 11);
+        assert_eq!(value["version"], 12);
         assert_eq!(value["values"]["server"]["port"], 5174);
         assert_eq!(value["values"]["pipeline"]["arrival_radius_counts"], 3.0);
         assert_eq!(
@@ -811,6 +748,19 @@ mod tests {
             4.0
         );
         assert_eq!(value["values"]["pipeline"]["prediction_lead_ms"], 16.0);
+        assert_eq!(value["values"]["pipeline"]["p_response_boost"], 0.5);
+        assert_eq!(value["values"]["pipeline"]["max_counts_per_update"], 127.0);
+        assert_eq!(value["values"]["pipeline"]["prediction_cap_px"], 10.0);
+        assert!(
+            value["values"]["pipeline"]
+                .get("p_response_gain_floor")
+                .is_none()
+        );
+        assert!(
+            value["values"]["pipeline"]
+                .get("far_max_counts_per_update")
+                .is_none()
+        );
         assert!(
             value["values"]["pipeline"]
                 .get("prediction_lead_frames")

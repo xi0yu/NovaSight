@@ -1,4 +1,4 @@
-schema_version: 9
+schema_version: 12
 revision: 0
 server:
   host: 0.0.0.0
@@ -14,26 +14,19 @@ limits:
   stream_fps: 30
 pipeline:
   freshness_threshold_ms: 55.0
-  near_threshold_px: 12.0
   projection_fov_x_deg: 105.0
   projection_counts_per_360: 9980.0
   atan_scale_counts: 256.0
-  far_kp: 0.30
-  far_max_counts_per_update: 127.0
-  near_kp: 0.20
-  near_max_counts_per_update: 72.0
-  velocity_smoothing_frames: 3.0
+  p_response_scale: 0.20
+  p_response_boost: 0.50
+  p_response_curve_shape: 1.0
+  max_counts_per_update: 127.0
   velocity_history_reset_gap_ms: 80.0
   velocity_spread_base_px_ms: 0.12
   velocity_spread_relative: 0.50
   prediction_enabled: true
-  prediction_lead_frames: 1.0
-  prediction_far_absolute_cap_px: 10.0
-  prediction_far_base_cap_px: 1.25
-  prediction_far_relative_cap: 0.30
-  prediction_near_absolute_cap_px: 3.0
-  prediction_near_base_cap_px: 0.75
-  prediction_near_relative_cap: 0.20
+  prediction_lead_ms: 16.0
+  prediction_cap_px: 10.0
   residual_cap: 1.0
   target_debounce_distance_px: 64.0
   target_fov_radius_px: 180.0

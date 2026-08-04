@@ -146,7 +146,7 @@ fn moving_target_records_emit_typed_decisions() {
                 trigger_active: true,
             };
             let decision = control.calculate(observation);
-            assert!(decision.mode == ControlMode::Far || decision.mode == ControlMode::Near);
+            assert_eq!(decision.mode, ControlMode::Continuous);
         }
     }
 }
@@ -171,7 +171,7 @@ fn dual_phase_first_observation_emits_first_decision() {
     let decision = control.calculate(observation);
     assert!(decision.emit_allowed);
     assert_eq!(decision.block_reason, BlockReason::None);
-    assert_eq!(decision.mode, ControlMode::Far);
+    assert_eq!(decision.mode, ControlMode::Continuous);
 }
 
 #[test]

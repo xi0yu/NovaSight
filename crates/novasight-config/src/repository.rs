@@ -27,14 +27,10 @@ use super::{AppConfig, CURRENT_SCHEMA_VERSION, ConfigValidationError, PipelineRu
 const CONFIG_LOCK_WAIT: Duration = Duration::from_millis(250);
 const CONFIG_LOCK_RETRY: Duration = Duration::from_millis(2);
 const DEFAULT_RUNTIME_CONFIG: &str = include_str!("bootstrap.yaml");
-const LEGACY_ATAN_SCALE_COUNTS: f64 = 256.0;
-const LEGACY_FAR_MAX_COUNTS_PER_UPDATE: f64 = 127.0;
-const LEGACY_NEAR_MAX_COUNTS_PER_UPDATE: f64 = 72.0;
-const RESPONSIVE_ATAN_SCALE_COUNTS: f64 = 256.0;
 const RESPONSIVE_FAR_KP: f64 = 0.30;
-const RESPONSIVE_FAR_MAX_COUNTS_PER_UPDATE: f64 = 127.0;
 const RESPONSIVE_NEAR_KP: f64 = 0.20;
-const RESPONSIVE_NEAR_MAX_COUNTS_PER_UPDATE: f64 = 72.0;
+const RESPONSIVE_MAX_COUNTS_PER_UPDATE: f64 = 127.0;
+const RESPONSIVE_PREDICTION_CAP_PX: f64 = 10.0;
 const RESPONSIVE_TARGET_TRACK_MAX_AGE: u64 = 5;
 
 pub trait ConfigRepository {
@@ -571,52 +567,50 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     {
         control.remove(Value::String("humanized_motion".to_owned()));
     }
-    let continuous_response_explicit = section_has_fields(
-        document,
-        "pipeline",
-        &[
-            "p_response_scale",
-            "p_response_gain_floor",
-            "p_response_gain_ceiling",
-            "p_response_curve_width_ratio",
-            "p_response_curve_shape",
-        ],
+    let response_boost_explicit = section_has_fields(document, "pipeline", &["p_response_boost"]);
+    let max_counts_explicit = section_has_fields(document, "pipeline", &["max_counts_per_update"]);
+    let prediction_cap_explicit = section_has_fields(document, "pipeline", &["prediction_cap_px"]);
+    let legacy_runtime_control = take_legacy_runtime_control_fields(&mut config.pipeline);
+    let migrated_runtime_control = legacy_runtime_control.has_any()
+        || (schema_version < CURRENT_SCHEMA_VERSION
+            && (!response_boost_explicit || !max_counts_explicit || !prediction_cap_explicit));
+    apply_runtime_control_migration(
+        &mut config.pipeline,
+        legacy_runtime_control,
+        response_boost_explicit,
+        max_counts_explicit,
+        prediction_cap_explicit,
     );
-    let legacy_response_gain = take_legacy_response_gain(&mut config.pipeline);
-    let migrated_responsive_profile = schema_version < CURRENT_SCHEMA_VERSION
-        && legacy_response_gain
-            .is_some_and(|gain| uses_legacy_generated_response_profile(&config.pipeline, gain));
-    if migrated_responsive_profile {
-        apply_responsive_response_profile(&mut config.pipeline);
-    } else if schema_version < CURRENT_SCHEMA_VERSION
-        && !continuous_response_explicit
-        && let Some(gain) = legacy_response_gain
-    {
-        apply_migrated_legacy_response_gain(&mut config.pipeline, gain);
+    if schema_version < CURRENT_SCHEMA_VERSION && config.pipeline.target_track_max_age == 2 {
+        config.pipeline.target_track_max_age = RESPONSIVE_TARGET_TRACK_MAX_AGE;
     }
     if let Value::Mapping(root) = document
         && let Some(Value::Mapping(pipeline)) = root.get_mut(Value::String("pipeline".to_owned()))
     {
-        remove_legacy_response_gain_fields(pipeline);
+        remove_legacy_runtime_control_fields(pipeline);
     }
     let migrated_prediction_lead_ms = migrate_prediction_lead_ms(document, config);
 
-    if schema_version >= CURRENT_SCHEMA_VERSION {
+    if schema_version >= CURRENT_SCHEMA_VERSION && !migrated_runtime_control {
         return;
     }
 
     if schema_version < 6 {
         config.pipeline.prediction_enabled = true;
     }
-    config.schema_version = CURRENT_SCHEMA_VERSION;
+    if schema_version < CURRENT_SCHEMA_VERSION {
+        config.schema_version = CURRENT_SCHEMA_VERSION;
+    }
 
     let Value::Mapping(root) = document else {
         return;
     };
-    root.insert(
-        Value::String("schema_version".to_owned()),
-        Value::Number(u64::from(CURRENT_SCHEMA_VERSION).into()),
-    );
+    if schema_version < CURRENT_SCHEMA_VERSION {
+        root.insert(
+            Value::String("schema_version".to_owned()),
+            Value::Number(u64::from(CURRENT_SCHEMA_VERSION).into()),
+        );
+    }
     let pipeline = root
         .entry(Value::String("pipeline".to_owned()))
         .or_insert_with(|| Value::Mapping(Default::default()));
@@ -627,16 +621,13 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
                 Value::Bool(true),
             );
         }
-        if migrated_responsive_profile {
-            write_responsive_response_profile(pipeline);
-        }
-        if schema_version < CURRENT_SCHEMA_VERSION {
+        if schema_version < CURRENT_SCHEMA_VERSION || migrated_runtime_control {
             write_continuous_response_profile(pipeline, &config.pipeline);
             write_prediction_lead_ms(pipeline, config.pipeline.prediction_lead_ms);
         } else if migrated_prediction_lead_ms {
             write_prediction_lead_ms(pipeline, config.pipeline.prediction_lead_ms);
         }
-        remove_legacy_response_gain_fields(pipeline);
+        remove_legacy_runtime_control_fields(pipeline);
     }
     let control = root
         .entry(Value::String("control".to_owned()))
@@ -660,154 +651,170 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     }
 }
 
-#[derive(Clone, Copy)]
-struct LegacyResponseGain {
-    far_kp: f64,
-    near_kp: f64,
-}
-
-fn take_legacy_response_gain(pipeline: &mut PipelineRuntimeConfig) -> Option<LegacyResponseGain> {
-    let far_kp = pipeline
-        .legacy
-        .remove("far_kp")
-        .and_then(|value| value.as_f64());
-    let near_kp = pipeline
-        .legacy
-        .remove("near_kp")
-        .and_then(|value| value.as_f64());
-    if far_kp.is_none() && near_kp.is_none() {
-        return None;
-    }
-    Some(LegacyResponseGain {
-        far_kp: far_kp.unwrap_or(RESPONSIVE_FAR_KP),
-        near_kp: near_kp.unwrap_or(RESPONSIVE_NEAR_KP),
-    })
-}
-
-fn uses_legacy_generated_response_profile(
-    pipeline: &PipelineRuntimeConfig,
-    gain: LegacyResponseGain,
-) -> bool {
-    response_profile_matches(
-        pipeline,
-        gain,
-        LEGACY_ATAN_SCALE_COUNTS,
-        0.22,
-        LEGACY_FAR_MAX_COUNTS_PER_UPDATE,
-        0.20,
-        LEGACY_NEAR_MAX_COUNTS_PER_UPDATE,
-    ) || response_profile_matches(
-        pipeline,
-        gain,
-        LEGACY_ATAN_SCALE_COUNTS,
-        0.45,
-        LEGACY_FAR_MAX_COUNTS_PER_UPDATE,
-        0.22,
-        LEGACY_NEAR_MAX_COUNTS_PER_UPDATE,
-    ) || response_profile_matches(pipeline, gain, 1_024.0, 0.90, 600.0, 0.30, 120.0)
-}
-
-fn response_profile_matches(
-    pipeline: &PipelineRuntimeConfig,
-    gain: LegacyResponseGain,
-    atan_scale_counts: f64,
-    far_kp: f64,
-    far_max_counts_per_update: f64,
-    near_kp: f64,
-    near_max_counts_per_update: f64,
-) -> bool {
-    pipeline.atan_scale_counts == atan_scale_counts
-        && gain.far_kp == far_kp
-        && pipeline.far_max_counts_per_update == far_max_counts_per_update
-        && gain.near_kp == near_kp
-        && pipeline.near_max_counts_per_update == near_max_counts_per_update
-}
-
-fn apply_responsive_response_profile(pipeline: &mut PipelineRuntimeConfig) {
-    pipeline.atan_scale_counts = RESPONSIVE_ATAN_SCALE_COUNTS;
-    pipeline.far_max_counts_per_update = RESPONSIVE_FAR_MAX_COUNTS_PER_UPDATE;
-    pipeline.near_max_counts_per_update = RESPONSIVE_NEAR_MAX_COUNTS_PER_UPDATE;
-    pipeline.p_response_scale = RESPONSIVE_FAR_KP;
-    pipeline.p_response_gain_floor = RESPONSIVE_NEAR_KP / RESPONSIVE_FAR_KP;
-    pipeline.p_response_gain_ceiling = 1.0;
-    pipeline.p_response_curve_width_ratio = 0.25;
-    pipeline.p_response_curve_shape = 1.0;
-    pipeline.prediction_enabled = true;
-    if pipeline.target_track_max_age == 2 {
-        pipeline.target_track_max_age = RESPONSIVE_TARGET_TRACK_MAX_AGE;
-    }
-}
-
-fn apply_migrated_legacy_response_gain(
-    pipeline: &mut PipelineRuntimeConfig,
-    gain: LegacyResponseGain,
-) {
-    if gain.far_kp > 0.0 && gain.near_kp <= gain.far_kp {
-        pipeline.p_response_scale = gain.far_kp;
-        pipeline.p_response_gain_floor = gain.near_kp / gain.far_kp;
-    } else if gain.near_kp > 0.0 {
-        pipeline.p_response_scale = gain.near_kp;
-        pipeline.p_response_gain_floor = 1.0;
-    } else {
-        pipeline.p_response_scale = 0.0;
-        pipeline.p_response_gain_floor = 1.0;
-    }
-    pipeline.p_response_gain_ceiling = 1.0;
-    pipeline.p_response_curve_width_ratio = 0.25;
-    pipeline.p_response_curve_shape = 1.0;
-}
-
-fn write_responsive_response_profile(pipeline: &mut Mapping) {
-    for (key, value) in [
-        ("atan_scale_counts", RESPONSIVE_ATAN_SCALE_COUNTS),
-        (
-            "far_max_counts_per_update",
-            RESPONSIVE_FAR_MAX_COUNTS_PER_UPDATE,
-        ),
-        (
-            "near_max_counts_per_update",
-            RESPONSIVE_NEAR_MAX_COUNTS_PER_UPDATE,
-        ),
-        ("p_response_scale", RESPONSIVE_FAR_KP),
-        (
-            "p_response_gain_floor",
-            RESPONSIVE_NEAR_KP / RESPONSIVE_FAR_KP,
-        ),
-        ("p_response_gain_ceiling", 1.0),
-        ("p_response_curve_width_ratio", 0.25),
-        ("p_response_curve_shape", 1.0),
-    ] {
-        pipeline.insert(
-            Value::String(key.to_owned()),
-            serde_yaml::to_value(value).expect("finite responsive control value"),
-        );
-    }
-    pipeline.insert(
-        Value::String("prediction_enabled".to_owned()),
-        Value::Bool(true),
-    );
-    pipeline.insert(
-        Value::String("target_track_max_age".to_owned()),
-        Value::Number(RESPONSIVE_TARGET_TRACK_MAX_AGE.into()),
-    );
-}
-
 fn write_continuous_response_profile(pipeline: &mut Mapping, config: &PipelineRuntimeConfig) {
     for (key, value) in [
         ("p_response_scale", config.p_response_scale),
-        ("p_response_gain_floor", config.p_response_gain_floor),
-        ("p_response_gain_ceiling", config.p_response_gain_ceiling),
-        (
-            "p_response_curve_width_ratio",
-            config.p_response_curve_width_ratio,
-        ),
+        ("p_response_boost", config.p_response_boost),
         ("p_response_curve_shape", config.p_response_curve_shape),
+        ("max_counts_per_update", config.max_counts_per_update),
+        ("prediction_cap_px", config.prediction_cap_px),
     ] {
         pipeline.insert(
             Value::String(key.to_owned()),
             serde_yaml::to_value(value).expect("finite continuous response migration value"),
         );
     }
+}
+
+#[derive(Clone, Copy, Default)]
+struct LegacyRuntimeControlFields {
+    far_kp: Option<f64>,
+    near_kp: Option<f64>,
+    response_gain_floor: Option<f64>,
+    response_gain_ceiling: Option<f64>,
+    far_max_counts_per_update: Option<f64>,
+    near_max_counts_per_update: Option<f64>,
+    prediction_far_absolute_cap_px: Option<f64>,
+    prediction_near_absolute_cap_px: Option<f64>,
+}
+
+impl LegacyRuntimeControlFields {
+    fn has_any(self) -> bool {
+        self.far_kp.is_some()
+            || self.near_kp.is_some()
+            || self.response_gain_floor.is_some()
+            || self.response_gain_ceiling.is_some()
+            || self.far_max_counts_per_update.is_some()
+            || self.near_max_counts_per_update.is_some()
+            || self.prediction_far_absolute_cap_px.is_some()
+            || self.prediction_near_absolute_cap_px.is_some()
+    }
+}
+
+fn take_legacy_runtime_control_fields(
+    pipeline: &mut PipelineRuntimeConfig,
+) -> LegacyRuntimeControlFields {
+    let fields = LegacyRuntimeControlFields {
+        far_kp: take_legacy_f64(&mut pipeline.legacy, "far_kp"),
+        near_kp: take_legacy_f64(&mut pipeline.legacy, "near_kp"),
+        response_gain_floor: take_legacy_f64(&mut pipeline.legacy, "p_response_gain_floor"),
+        response_gain_ceiling: take_legacy_f64(&mut pipeline.legacy, "p_response_gain_ceiling"),
+        far_max_counts_per_update: take_legacy_f64(
+            &mut pipeline.legacy,
+            "far_max_counts_per_update",
+        ),
+        near_max_counts_per_update: take_legacy_f64(
+            &mut pipeline.legacy,
+            "near_max_counts_per_update",
+        ),
+        prediction_far_absolute_cap_px: take_legacy_f64(
+            &mut pipeline.legacy,
+            "prediction_far_absolute_cap_px",
+        ),
+        prediction_near_absolute_cap_px: take_legacy_f64(
+            &mut pipeline.legacy,
+            "prediction_near_absolute_cap_px",
+        ),
+    };
+    for key in [
+        "near_threshold_px",
+        "p_response_curve_width_ratio",
+        "prediction_far_base_cap_px",
+        "prediction_far_relative_cap",
+        "prediction_near_base_cap_px",
+        "prediction_near_relative_cap",
+    ] {
+        pipeline.legacy.remove(key);
+    }
+    fields
+}
+
+fn take_legacy_f64(legacy: &mut BTreeMap<String, Value>, key: &str) -> Option<f64> {
+    legacy.remove(key).and_then(|value| value.as_f64())
+}
+
+fn apply_runtime_control_migration(
+    pipeline: &mut PipelineRuntimeConfig,
+    legacy: LegacyRuntimeControlFields,
+    response_boost_explicit: bool,
+    max_counts_explicit: bool,
+    prediction_cap_explicit: bool,
+) {
+    if !response_boost_explicit {
+        if let Some((base, high)) = legacy_response_gain_bounds(pipeline, legacy) {
+            pipeline.p_response_scale = base;
+            pipeline.p_response_boost = response_boost_from_bounds(base, high);
+        }
+    }
+    if !max_counts_explicit {
+        if let Some(max_counts) = max_finite([
+            legacy.far_max_counts_per_update,
+            legacy.near_max_counts_per_update,
+        ]) {
+            pipeline.max_counts_per_update = max_counts;
+        } else if legacy.has_any() {
+            pipeline.max_counts_per_update = RESPONSIVE_MAX_COUNTS_PER_UPDATE;
+        }
+    }
+    if !prediction_cap_explicit {
+        if let Some(cap_px) = max_finite([
+            legacy.prediction_far_absolute_cap_px,
+            legacy.prediction_near_absolute_cap_px,
+        ]) {
+            pipeline.prediction_cap_px = cap_px;
+        } else if legacy.has_any() {
+            pipeline.prediction_cap_px = RESPONSIVE_PREDICTION_CAP_PX;
+        }
+    }
+    if legacy.has_any() {
+        pipeline.p_response_curve_shape = pipeline.p_response_curve_shape.clamp(0.5, 4.0);
+        pipeline.prediction_enabled = true;
+    }
+}
+
+fn legacy_response_gain_bounds(
+    pipeline: &PipelineRuntimeConfig,
+    legacy: LegacyRuntimeControlFields,
+) -> Option<(f64, f64)> {
+    if legacy.far_kp.is_some() || legacy.near_kp.is_some() {
+        let far = legacy.far_kp.unwrap_or(RESPONSIVE_FAR_KP);
+        let near = legacy.near_kp.unwrap_or(RESPONSIVE_NEAR_KP);
+        return gain_bounds(near, far);
+    }
+    if legacy.response_gain_floor.is_some() || legacy.response_gain_ceiling.is_some() {
+        let floor = legacy.response_gain_floor.unwrap_or(1.0);
+        let ceiling = legacy.response_gain_ceiling.unwrap_or(1.0);
+        return gain_bounds(
+            pipeline.p_response_scale * floor,
+            pipeline.p_response_scale * ceiling,
+        );
+    }
+    None
+}
+
+fn gain_bounds(left: f64, right: f64) -> Option<(f64, f64)> {
+    if !left.is_finite() || !right.is_finite() {
+        return None;
+    }
+    let base = left.min(right).max(0.0);
+    let high = left.max(right).max(base);
+    Some((base, high))
+}
+
+fn response_boost_from_bounds(base: f64, high: f64) -> f64 {
+    if base <= f64::EPSILON {
+        0.0
+    } else {
+        ((high / base) - 1.0).max(0.0)
+    }
+}
+
+fn max_finite(values: [Option<f64>; 2]) -> Option<f64> {
+    values
+        .into_iter()
+        .flatten()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .reduce(f64::max)
 }
 
 fn migrate_prediction_lead_ms(document: &mut Value, config: &mut AppConfig) -> bool {
@@ -859,9 +866,25 @@ fn write_prediction_lead_ms(pipeline: &mut Mapping, value: f64) {
     );
 }
 
-fn remove_legacy_response_gain_fields(pipeline: &mut Mapping) {
-    pipeline.remove(Value::String("far_kp".to_owned()));
-    pipeline.remove(Value::String("near_kp".to_owned()));
+fn remove_legacy_runtime_control_fields(pipeline: &mut Mapping) {
+    for key in [
+        "far_kp",
+        "near_kp",
+        "near_threshold_px",
+        "p_response_gain_floor",
+        "p_response_gain_ceiling",
+        "p_response_curve_width_ratio",
+        "far_max_counts_per_update",
+        "near_max_counts_per_update",
+        "prediction_far_absolute_cap_px",
+        "prediction_far_base_cap_px",
+        "prediction_far_relative_cap",
+        "prediction_near_absolute_cap_px",
+        "prediction_near_base_cap_px",
+        "prediction_near_relative_cap",
+    ] {
+        pipeline.remove(Value::String(key.to_owned()));
+    }
 }
 
 fn nested_section_has_fields(
@@ -928,19 +951,16 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
         "pipeline",
         &[
             "freshness_threshold_ms",
-            "near_threshold_px",
             "projection_fov_x_deg",
             "projection_counts_per_360",
             "atan_scale_counts",
             "p_response_scale",
-            "p_response_gain_floor",
-            "p_response_gain_ceiling",
-            "p_response_curve_width_ratio",
+            "p_response_boost",
             "p_response_curve_shape",
-            "far_max_counts_per_update",
-            "near_max_counts_per_update",
+            "max_counts_per_update",
             "prediction_enabled",
             "prediction_lead_ms",
+            "prediction_cap_px",
             "residual_cap",
             "target_fov_radius_px",
             "target_min_confidence",
@@ -1413,7 +1433,24 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
         (
             "pipeline",
             &config.pipeline.legacy,
-            &["prediction_lead_frames", "velocity_smoothing_frames"][..],
+            &[
+                "prediction_lead_frames",
+                "velocity_smoothing_frames",
+                "far_kp",
+                "near_kp",
+                "near_threshold_px",
+                "p_response_gain_floor",
+                "p_response_gain_ceiling",
+                "p_response_curve_width_ratio",
+                "far_max_counts_per_update",
+                "near_max_counts_per_update",
+                "prediction_far_absolute_cap_px",
+                "prediction_far_base_cap_px",
+                "prediction_far_relative_cap",
+                "prediction_near_absolute_cap_px",
+                "prediction_near_base_cap_px",
+                "prediction_near_relative_cap",
+            ][..],
         ),
         ("control", &config.control.legacy, &[][..]),
     ] {
@@ -1807,6 +1844,57 @@ mod tests {
         let error = verify_path_identity(&path, &opened).unwrap_err();
 
         assert_eq!(error.code(), "CONFIG_PATH_CHANGED");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn legacy_runtime_control_fields_save_back_as_continuous_controls() {
+        let directory = std::env::temp_dir().join(format!(
+            "novasight-config-control-migration-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("novasight.yaml");
+        fs::write(
+            &path,
+            r#"
+schema_version: 9
+revision: 0
+pipeline:
+  far_kp: 0.30
+  near_kp: 0.20
+  far_max_counts_per_update: 127.0
+  near_max_counts_per_update: 72.0
+  prediction_enabled: true
+  prediction_lead_ms: 16.0
+  prediction_far_absolute_cap_px: 10.0
+  prediction_near_absolute_cap_px: 3.0
+"#,
+        )
+        .unwrap();
+
+        let repository = YamlConfigRepository::new(&path);
+        let loaded = repository.load_config().unwrap();
+
+        assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!((loaded.pipeline.p_response_scale - 0.20).abs() < 1e-12);
+        assert!((loaded.pipeline.p_response_boost - 0.50).abs() < 1e-12);
+        assert_eq!(loaded.pipeline.max_counts_per_update, 127.0);
+        assert_eq!(loaded.pipeline.prediction_cap_px, 10.0);
+        assert!(!loaded.pipeline.legacy.contains_key("far_kp"));
+        assert!(!loaded.pipeline.legacy.contains_key("near_kp"));
+
+        repository.save_config(&loaded, loaded.revision).unwrap();
+        let body = fs::read_to_string(&path).unwrap();
+
+        assert!(body.contains("p_response_boost"));
+        assert!(body.contains("max_counts_per_update"));
+        assert!(body.contains("prediction_cap_px"));
+        assert!(!body.contains("far_kp"));
+        assert!(!body.contains("near_kp"));
+        assert!(!body.contains("far_max_counts_per_update"));
+        assert!(!body.contains("near_max_counts_per_update"));
         fs::remove_dir_all(directory).unwrap();
     }
 }
