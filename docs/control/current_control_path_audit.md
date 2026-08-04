@@ -1,8 +1,8 @@
 # NovaSight Current Mouse Control Path Audit
 
-Date: 2026-07-15
+Date: 2026-08-04
 
-Status: live-code audit after promoting `dual_phase_atan_robust_predictive_v2` and retaining V1 as an isolated comparison implementation.
+Status: live-code audit for the current continuous nonlinear Atan control path.
 
 ## Active Mainline
 
@@ -13,20 +13,23 @@ DetectionBatch latest-only gate
 -> RuntimeTracker (identity/association)
 -> RuntimeTargetSelector
 -> RawAimPointProjector using current bbox
--> dual_phase_atan_robust_predictive_v2
+-> continuous nonlinear Atan control
 -> capacity-one latest-replace CommandScheduler
 -> MouseCommandExecutor
 -> KmNetExecutor.move(dx, dy)
 ```
 
-The dedicated X/Y estimator consumes the measured aim point. It retains four positions from one target, derives three adjacent `px/ms` speeds, uses their mean for the first complete window, then uses a median-based continuous estimate to reject a single-segment outlier. Tracker Kalman state is not used as V2's predicted aim, so there is no double prediction.
+The dedicated 2D estimator consumes the measured aim point. It retains four
+positions from one target, derives three adjacent `px/ms` velocity vectors, and
+uses their medoid to reject a single-segment outlier. Tracker Kalman state is
+not used as the final predicted aim, so there is no double prediction.
 
-The active algorithm bypasses:
+The active algorithm does not use:
 
 ```text
-RuntimeService._mouse_observation_metadata legacy prediction
-MouseController legacy deadzone/arrival/slew/rounding envelope
-legacy CommandScheduler trajectory split path
+RuntimeService._mouse_observation_metadata prediction
+MouseController deadzone/arrival/slew/rounding envelope
+CommandScheduler trajectory split path
 ```
 
 ## Per-Observation Ownership
@@ -39,7 +42,7 @@ direct_output = false
 latest_replace = true
 ```
 
-The observation call replaces the single pending complete integer command and never calls hardware. `RuntimeService.process_control_tick()` takes at most that one command and sends it through `MouseCommandExecutor`. A newer observation or clear event increments the delivery epoch, so a command already removed from the slot but still waiting for the device lock is discarded before the device call. Scheduler step limits equal V2's per-update limit, so this path never creates a multi-step trajectory or count debt.
+The observation call replaces the single pending complete integer command and never calls hardware. `RuntimeService.process_control_tick()` takes at most that one command and sends it through `MouseCommandExecutor`. A newer observation or clear event increments the delivery epoch, so a command already removed from the slot but still waiting for the device lock is discarded before the device call. Scheduler step limits equal the controller's per-update limit, so this path never creates a multi-step trajectory or count debt.
 
 ## Source And Time Contract
 
@@ -47,7 +50,13 @@ The observation call replaces the single pending complete integer command and ne
 - Capture age below zero, inference completion outside `[capture, control_now]`, stale age, or generation/frame rollback blocks the whole decision. A non-increasing capture timestamp resets prediction history and uses pure measured-position feedback for that otherwise valid observation.
 - Global observation cursors survive target switches; target-local estimator/mode/quantizer state does not.
 - Motion-estimator `dt_ms` is the adjacent same-target capture timestamp difference divided by `1_000_000`.
-- When `prediction.enabled` is true, prediction estimates aim-point velocity from real adjacent capture timestamps. The horizon is `frame_age_ms + actuation_delay_ms + prediction_lead_ms`; velocity is multiplied by that time horizon, then strength-gated from motion confidence before a motion-aware cap. Acceleration remains telemetry only and does not add a second correction path. The cap can rise toward the configured absolute cap for stable motion even when the current measured error is small, but it does not expand for stationary, unavailable, or peek motion. Disabling prediction zeros every prediction offset and skips velocity-history updates.
+- When `prediction.enabled` is true, prediction estimates aim-point velocity
+  from real adjacent capture timestamps. The horizon is
+  `frame_age_ms + actuation_delay_ms + prediction_lead_ms`; velocity is
+  multiplied by that time horizon, then strength-gated from motion confidence
+  before `prediction_cap_px` vector limiting. Acceleration remains telemetry only
+  and does not add a second correction path. Disabling prediction zeros every
+  prediction offset and skips velocity-history updates.
 
 ## Coordinate Contract
 
@@ -57,38 +66,35 @@ If source geometry is unavailable or untrusted, the aim observation is invalid a
 
 ## State Ownership
 
-The new algorithm alone owns:
+The control algorithm alone owns:
 
-- FAR/NEAR selection from the final predicted control-point distance, while
-  prediction caps remain based on measured error to avoid recursive authority;
+- continuous response gain from projected counts-domain error magnitude;
 - four-position same-target history;
-- first-window three-segment mean, then median-based continuous velocity for single-outlier rejection;
+- three-segment medoid velocity for single-outlier rejection;
 - spread/trend/detection/track-identity prediction confidence;
-- reference dt, explicit `prediction_lead_ms`, relative and absolute caps;
+- reference dt, explicit `prediction_lead_ms`, and `prediction_cap_px`;
 - measured-error zero-cross history;
 - per-axis sub-count quantizer residual.
 
 The runtime owns target selection, initial trigger readiness, algorithm calculation, reset edges, the capacity-one delivery slot, and telemetry publication. Immediately before the serialized device call, the registry verifies that no newer submission superseded the selected command, then `MouseCommandExecutor` rechecks the trigger snapshot, command deadline, and increasing generation. The delivery slot retains at most one complete command and no trajectory.
 
-## Compatibility Algorithms
-
-The remaining compatibility implementations stay selectable under their own config namespaces:
-
-```text
-control.algorithms.calibrated_angular
-control.algorithms.universal_saturated
-```
-
-These generic controllers continue to use the existing `MouseController` envelope and legacy `scheduler_enabled` choice. Removed `ttbox_pid_atan` and `dual_phase_atan_predictive_v1` config blocks are discarded during legacy migration; an old configuration that still selects either ID is migrated to `dual_phase_atan_robust_predictive_v2`.
-
 ## Configuration Contract
 
 ```text
-control.active_algorithm
-control.algorithms.<algorithm_id>.*
+pipeline.p_response_scale
+pipeline.p_response_boost
+pipeline.p_response_curve_shape
+pipeline.max_counts_per_update
+pipeline.arrival_radius_counts
+pipeline.prediction_lead_ms
+pipeline.prediction_cap_px
 ```
 
-The loader migrates the preceding `control.mode` and top-level algorithm blocks. Runtime compatibility projection is now owned by Rust; serialized config and Studio edits use the isolated namespace.
+The Atan scale `S` is fixed internally at 256 counts and is not part of the
+user-facing configuration contract.
+
+Runtime config and Studio edits use the same `pipeline.*` fields that are
+composed into `ContinuousControlConfig`.
 
 ## Direct Evidence
 
@@ -98,7 +104,7 @@ Implementation owners:
 - `crates/novasight-core/src/prediction/mod.rs`
 - `crates/novasight-pipeline/src/runtime.rs`
 - `crates/novasight-runtime/src/supervisor.rs`
-- `crates/novasight-api/src/dto/runtime_compat.rs`
+- `crates/novasight-api/src/dto/runtime_status.rs`
 
 Focused integration tests prove that consecutive DetectionBatch results replace the pending command, one control tick sends only the newest frame, and a newer observation also supersedes an older command that has left the slot but has not acquired the device lock. Prediction-disabled feedback remains the no-prediction baseline; `prediction_lead_ms=0` still compensates measured frame age and actuation delay, but adds no extra user lead.
 
@@ -106,6 +112,6 @@ Focused integration tests prove that consecutive DetectionBatch results replace 
 
 The least-certain production value is still physical actuation delay. Successful device-send timestamps do not prove when the game consumes input or when the result appears in capture.
 
-The largest control-model limitation is self-motion contamination: screen velocity combines target movement, manual view movement, and NovaSight's own prior output. V2 keeps prediction small and immediately removable; exact self-motion subtraction remains deferred until counts-to-visual timing is measured.
+The largest control-model limitation is self-motion contamination: screen velocity combines target movement, manual view movement, and NovaSight's own prior output. The current prediction layer keeps prediction small and immediately removable; exact self-motion subtraction remains deferred until counts-to-visual timing is measured.
 
 Capture resource/caps success also does not prove nonblack visual content. That requires a separate GPU content probe and is outside mouse-control ownership.

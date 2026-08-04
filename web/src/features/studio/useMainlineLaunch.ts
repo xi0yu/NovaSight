@@ -568,7 +568,7 @@ export function useMainlineLaunch({
       await emergencyStopRuntimePipeline();
       const stoppedState = await getRuntimeState(undefined, LAUNCH_STATUS_REQUEST_TIMEOUT_MS);
       onRuntimeStateChange(stoppedState);
-      setProgressDetail("NovaSight 已确认紧急停止；旧输出已失效，启动流程已取消。");
+      setProgressDetail("NovaSight 已确认紧急停止；待发送输出已失效，启动流程已取消。");
       await onRefresh();
     } catch (err) {
       setLocalError(`取消启动失败：${getErrorMessage(err)}`);

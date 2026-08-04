@@ -241,7 +241,7 @@
   --status-disabled-fg: #7a8499;
   --status-disabled-icon: #8a92a0;
 
-  /* Legacy compatibility aliases */
+  /* Stable aliases used by existing component styles */
   --surface-1: var(--bg-elevated);
   --surface-2: var(--bg-surface);
   --surface-3: var(--bg-subtle);

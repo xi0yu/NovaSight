@@ -237,9 +237,6 @@ pub enum PredictionTruthMotionClass {
     Continuous,
     Accelerating,
     Decelerating,
-    Stop,
-    Reverse,
-    Peek,
     Jitter,
     #[default]
     Unknown,
@@ -706,27 +703,6 @@ fn classify_prediction_truth_motion(
     {
         return PredictionTruthMotionClass::Static;
     }
-    if matches!(
-        sample.motion_state_x,
-        PredictionMotionState::AlternatingPeek
-    ) || matches!(
-        sample.motion_state_y,
-        PredictionMotionState::AlternatingPeek
-    ) {
-        return PredictionTruthMotionClass::Peek;
-    }
-    if matches!(
-        sample.motion_state_x,
-        PredictionMotionState::AbruptStopOrReverse
-    ) || matches!(
-        sample.motion_state_y,
-        PredictionMotionState::AbruptStopOrReverse
-    ) {
-        if speed <= (config.static_speed_px_ms * 3.0).max(config.static_speed_px_ms) {
-            return PredictionTruthMotionClass::Stop;
-        }
-        return PredictionTruthMotionClass::Reverse;
-    }
     let trend = sample
         .trend_consistency_x
         .min(sample.trend_consistency_y)
@@ -746,15 +722,12 @@ fn classify_prediction_truth_motion(
     }
 }
 
-fn prediction_truth_motion_class_order() -> [PredictionTruthMotionClass; 9] {
+fn prediction_truth_motion_class_order() -> [PredictionTruthMotionClass; 6] {
     [
         PredictionTruthMotionClass::Static,
         PredictionTruthMotionClass::Continuous,
         PredictionTruthMotionClass::Accelerating,
         PredictionTruthMotionClass::Decelerating,
-        PredictionTruthMotionClass::Stop,
-        PredictionTruthMotionClass::Reverse,
-        PredictionTruthMotionClass::Peek,
         PredictionTruthMotionClass::Jitter,
         PredictionTruthMotionClass::Unknown,
     ]
@@ -1109,9 +1082,9 @@ mod tests {
         for sample in &mut continuous {
             sample.acceleration_x_px_ms2 = 0.1;
         }
-        let mut peek = continuous.clone();
-        for sample in &mut peek {
-            sample.motion_state_x = PredictionMotionState::AlternatingPeek;
+        let mut unstable = continuous.clone();
+        for sample in &mut unstable {
+            sample.motion_state_x = PredictionMotionState::Unstable;
         }
 
         let config = PredictionTruthConfig {
@@ -1120,15 +1093,15 @@ mod tests {
             ..PredictionTruthConfig::default()
         };
         let continuous_report = score_prediction_truth(&continuous, config.clone());
-        let peek_report = score_prediction_truth(&peek, config);
+        let unstable_report = score_prediction_truth(&unstable, config);
 
         assert!((continuous_report.horizons[0].mae_px - 1.0).abs() < 1e-12);
-        assert!((peek_report.horizons[0].mae_px - 1.0).abs() < 1e-12);
+        assert!((unstable_report.horizons[0].mae_px - 1.0).abs() < 1e-12);
     }
 
     #[test]
-    fn prediction_truth_groups_peek_motion_separately() {
-        let samples = (0..4)
+    fn prediction_truth_groups_low_trend_motion_as_jitter() {
+        let mut samples = (0..4)
             .map(|index| {
                 prediction_truth_sample(
                     index + 1,
@@ -1136,11 +1109,14 @@ mod tests {
                     80.0,
                     0.4,
                     0.0,
-                    PredictionMotionState::AlternatingPeek,
+                    PredictionMotionState::Unstable,
                     PredictionMotionState::Stationary,
                 )
             })
             .collect::<Vec<_>>();
+        for sample in &mut samples {
+            sample.trend_consistency_x = 0.10;
+        }
 
         let report = score_prediction_truth(
             &samples,
@@ -1151,13 +1127,13 @@ mod tests {
             },
         );
 
-        let peek = report
+        let jitter = report
             .motion_classes
             .iter()
-            .find(|score| score.motion_class == PredictionTruthMotionClass::Peek)
-            .expect("peek bucket");
-        assert_eq!(peek.horizons[0].sample_pairs, 3);
-        assert!(peek.horizons[0].mae_px < 1e-12);
+            .find(|score| score.motion_class == PredictionTruthMotionClass::Jitter)
+            .expect("jitter bucket");
+        assert_eq!(jitter.horizons[0].sample_pairs, 3);
+        assert!(jitter.horizons[0].mae_px < 1e-12);
     }
 
     fn sample(

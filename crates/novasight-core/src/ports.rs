@@ -57,7 +57,7 @@ pub trait PointerDevice: Send + Sync {
     }
 
     /// Read both hardware buttons when the adapter exposes them. Existing
-    /// adapters that only expose one combined trigger retain safe compatibility.
+    /// adapters that only expose one combined trigger keep safe default behavior.
     fn buttons(&self) -> Result<Option<PointerButtons>, AppError> {
         self.trigger_active()
             .map(|active| active.map(|left| PointerButtons { left, right: false }))

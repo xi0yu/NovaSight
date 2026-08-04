@@ -1,4 +1,4 @@
-use novasight_core::controller::DualPhaseConfig;
+use novasight_core::controller::ContinuousControlConfig;
 use novasight_core::controller::recoil::RecoilConfig;
 use novasight_core::tracking::{KalmanConfig, TargetingConfig};
 use novasight_pipeline::{PipelineConfig, TriggerMode};
@@ -61,11 +61,10 @@ pub fn compose_pipeline_config(
             .map_err(|error| error.to_string())?,
             candidate_max_aspect_ratio: adapters.pipeline.candidate_max_aspect_ratio,
         },
-        control: DualPhaseConfig {
+        control: ContinuousControlConfig {
             freshness_threshold_ms: adapters.pipeline.freshness_threshold_ms,
             projection_fov_x_deg: adapters.pipeline.projection_fov_x_deg,
             projection_counts_per_360: adapters.pipeline.projection_counts_per_360,
-            atan_scale_counts: adapters.pipeline.atan_scale_counts,
             response_scale: response.scale,
             response_boost: response.boost,
             response_curve_shape: response.curve_shape,

@@ -1,5 +1,5 @@
-//! Phase 2 algorithm-slice end-to-end test. Drives the full pipeline
-//! `FreshnessGate -> Tracker -> TargetingCore -> DualPhaseControl` against the
+//! Algorithm-slice end-to-end test. Drives the full pipeline
+//! `FreshnessGate -> Tracker -> TargetingCore -> ContinuousControl` against the
 //! captured regression fixtures. The runtime session is *not* the
 //! subject of this test; we instantiate each algorithm directly
 //! so the Phase 1 contract tests are not disturbed.
@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use novasight_core::controller::{
-    BlockReason, ControlMode, ControlObservation, DualPhaseConfig, DualPhaseControl,
+    BlockReason, ContinuousControl, ContinuousControlConfig, ControlMode, ControlObservation,
 };
 use novasight_core::freshness::{FreshnessPolicy, evaluate as freshness_evaluate};
 use novasight_core::perception::types::Detection;
@@ -63,7 +63,7 @@ fn freshness_records_route_through_freshness_gate() {
 }
 
 #[test]
-fn static_target_pipeline_drives_freshness_targeting_and_dual_phase() {
+fn static_target_pipeline_drives_freshness_targeting_and_control() {
     let records = load_records("static-target.jsonl");
     assert!(!records.is_empty());
     let policy = FreshnessPolicy::new(55.0).expect("policy");
@@ -86,7 +86,7 @@ fn static_target_pipeline_drives_freshness_targeting_and_dual_phase() {
             .iter()
             .find(|det| det.object_id() == target && det.class_id() == target_class)
             .expect("matched detection");
-        let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+        let mut control = ContinuousControl::new(ContinuousControlConfig::default());
         let observation = ControlObservation {
             generation: frame["generation"].as_u64().expect("generation"),
             target_id: target,
@@ -113,7 +113,7 @@ fn moving_target_records_emit_typed_decisions() {
     let records = load_records("moving-target.jsonl");
     assert!(!records.is_empty());
     let mut tracking = TargetingCore::new(TargetingConfig::default());
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     for record in &records {
         let frame = &record["frame"];
         let detections: Vec<Detection> = record["detections"]
@@ -152,8 +152,8 @@ fn moving_target_records_emit_typed_decisions() {
 }
 
 #[test]
-fn dual_phase_first_observation_emits_first_decision() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+fn control_first_observation_emits_first_decision() {
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let observation = ControlObservation {
         generation: 1,
         target_id: 1,
@@ -176,13 +176,13 @@ fn dual_phase_first_observation_emits_first_decision() {
 
 #[test]
 fn closed_loop_algorithm_score_tracks_visual_convergence() {
-    let control_config = DualPhaseConfig::default();
+    let control_config = ContinuousControlConfig::default();
     let focal_x = (control_config.source_width as f64 * 0.5)
         / (control_config.projection_fov_x_deg.to_radians() * 0.5).tan();
     let observation_px_per_count =
         focal_x * (std::f64::consts::TAU / control_config.projection_counts_per_360).tan();
     let mut targeting = TargetingCore::new(TargetingConfig::default());
-    let mut control = DualPhaseControl::new(control_config);
+    let mut control = ContinuousControl::new(control_config);
     let mut true_error_x = 100.0;
     let mut delayed_errors = [true_error_x; 3];
     let mut trace = Vec::new();

@@ -1,4 +1,4 @@
-//! Phase 2 deterministic tracker and targeting core.
+//! Deterministic tracker and targeting core.
 //!
 //! The runtime replaces the Python ``RuntimeTracker`` and
 //! ``RuntimeTargetSelector`` modules. It consumes admitted detector
@@ -445,7 +445,7 @@ impl TargetingCore {
         self.locked.as_ref()
     }
 
-    /// Deterministic compatibility entry point for tests and replay fixtures.
+    /// Deterministic replay entry point for tests and fixtures.
     /// Production callers use [`Self::select_at`] so switch hysteresis is
     /// measured from the admitted capture timestamp.
     pub fn select(

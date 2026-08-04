@@ -311,6 +311,7 @@ function rangeLabel(min: number, max: number, unit = ""): string {
 export function ParameterNumberControl({
   label,
   detail,
+  formula,
   value,
   min,
   max,
@@ -327,6 +328,7 @@ export function ParameterNumberControl({
 }: {
   label: string;
   detail?: string;
+  formula?: string;
   value: number;
   min: number;
   max: number;
@@ -353,6 +355,7 @@ export function ParameterNumberControl({
       <div className="parameter-control-header">
         <label htmlFor={`${controlId}-${kind === "stepper" ? "value" : "range"}`} title={detail}>{label}</label>
         <span className="parameter-control-meta" aria-label="参数属性">
+          {formula ? <span title="算法符号">{formula}</span> : null}
           {unit ? <span>{unit}</span> : null}
           <span>{applyModeLabel(applyMode)}</span>
           {outsideRecommendedRange ? <span data-tone="warning">超推荐</span> : null}

@@ -11,6 +11,10 @@ pub mod replay;
 mod response_curve;
 
 pub use atan::{
-    ActuationFeedback, BlockReason, ControlDecision, ControlMode, ControlObservation,
-    DualPhaseConfig, DualPhaseControl,
+    ActuationFeedback, BlockReason, ContinuousControl, ContinuousControlConfig, ControlDecision,
+    ControlMode, ControlObservation, DEFAULT_ATAN_SCALE_COUNTS,
+};
+pub use response_curve::{
+    ERROR_ACQUISITION_BOOST_FRACTION as ATAN_RESPONSE_STATIC_BOOST_FRACTION,
+    MOTION_BOOST_FRACTION as ATAN_RESPONSE_MOTION_BOOST_FRACTION,
 };

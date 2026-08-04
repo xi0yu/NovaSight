@@ -1,4 +1,4 @@
-//! Typed units used by the Phase 2 coordinate geometry.
+//! Typed units used by coordinate geometry.
 //!
 //! Each newtype owns a single, non-negative, finite pixel count. Newtypes
 //! are deliberately thin: they enforce the validation rules once at the

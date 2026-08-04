@@ -16,7 +16,6 @@ pipeline:
   freshness_threshold_ms: 55.0
   projection_fov_x_deg: 105.0
   projection_counts_per_360: 9980.0
-  atan_scale_counts: 256.0
   p_response_scale: 0.20
   p_response_boost: 0.50
   p_response_curve_shape: 1.0

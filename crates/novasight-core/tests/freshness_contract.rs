@@ -1,4 +1,4 @@
-//! Phase 2 freshness contract tests. Pins the Rust `FreshnessPolicy`
+//! Freshness contract tests. Pins the Rust `FreshnessPolicy`
 //! against the captured `FreshnessGate` contract in
 //! `freshness-reset.jsonl`; this test parses those records and
 //! asserts the Rust gate produces the same decision for each case.

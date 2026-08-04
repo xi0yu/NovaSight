@@ -17,14 +17,12 @@ consumers:
   preview: true
 limits:
   stream_fps: 30
-# This is deliberately smaller than the legacy Python `control` section:
-# every field below is consumed by the current Rust production hot path.
+# Every field below is consumed by the current Rust production hot path.
 pipeline:
   freshness_threshold_ms: 55.0
   projection_fov_x_deg: 105.0
   projection_counts_per_360: 9980.0
-  atan_scale_counts: 256.0
-  # 连续响应模型：K_base * R(r) * S * atan(e/S)。
+  # 连续响应模型：K_base * R(r) * S * atan(e/S)，S 固定为内部常量 256 counts。
   p_response_scale: 0.20
   p_response_boost: 0.50
   p_response_curve_shape: 1.0

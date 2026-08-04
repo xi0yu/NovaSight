@@ -2,7 +2,7 @@
 //!
 //! TensorRT/CUDA ownership stays behind `novasight-tensorrt`; this module owns
 //! the user-supplied model semantics, the canonical manifest transaction and
-//! the compatibility profile returned to the current WebUI.
+//! the parser profile returned to the current WebUI.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};

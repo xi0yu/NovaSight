@@ -978,8 +978,8 @@ fn process_restart_sections(
             config_value_differs(&effective.device, &desired.device)?,
         ),
         (
-            "legacy",
-            config_value_differs(&effective.legacy, &desired.legacy)?,
+            "extra",
+            config_value_differs(&effective.extra, &desired.extra)?,
         ),
     ] {
         if differs {
@@ -1040,8 +1040,8 @@ fn non_pipeline_pending_sections(
             config_value_differs(&effective.device, &desired.device)?,
         ),
         (
-            "legacy",
-            config_value_differs(&effective.legacy, &desired.legacy)?,
+            "extra",
+            config_value_differs(&effective.extra, &desired.extra)?,
         ),
     ] {
         if differs {

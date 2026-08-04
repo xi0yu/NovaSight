@@ -1,4 +1,4 @@
-//! Phase 2 coordinate-space transform.
+//! Current coordinate-space transform.
 //!
 //! Mirrors the semantics of ``novasight.coordinates.CoordinateTransform``
 //! without depending on any Python, OpenCV, or GStreamer type. Every
@@ -196,7 +196,7 @@ impl CoordinateTransform {
     }
 }
 
-/// Convenience constructor for the common Phase 2 fixture shape.
+/// Convenience constructor for the common replay fixture shape.
 pub fn standard_transform(
     model: f64,
     roi: f64,

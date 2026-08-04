@@ -329,7 +329,7 @@ novasight-client
 ### Commit 10 — Phase 2 algorithm wiring into Fake Pipeline
 
 **Modify:**
-- `rust/crates/novasight-pipeline/src/fake/` — `FakeCapture` produces `FrameMeta`-shaped values; `FakeInference` runs through the existing `TargetingCore` + `DualPhaseControl` from `novasight-core`; `FakeControl` quantizes via `PerAxisQuantizer`; `FakeDevice` writes to a `LatestCommandSlot`
+- `rust/crates/novasight-pipeline/src/fake/` — `FakeCapture` produces `FrameMeta`-shaped values; `FakeInference` runs through the existing `TargetingCore` + `ContinuousControl` from `novasight-core`; `FakeControl` quantizes via `PerAxisQuantizer`; `FakeDevice` writes to a `LatestCommandSlot`
 - `rust/crates/novasight-pipeline/src/pipeline.rs` — `PipelineRuntime::start` now wires the four fake workers together via typed `LatestSlot<T>` between stages
 
 **Tests:** add:

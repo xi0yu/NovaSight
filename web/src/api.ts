@@ -212,7 +212,7 @@ export type ParserPresetId =
 
 export type ParserContract = {
   requested_preset: ParserPresetId;
-  compatibility: "yolov5" | "yolov8_yolo11";
+  output_family: "yolov5" | "yolov8_yolo11";
   has_objectness: boolean;
   parser_library: "novasight_builtin";
   parser_function: "NvDsInferParseNovaSight";
@@ -559,8 +559,30 @@ export type ConfigSectionSchema = {
   fields: ConfigFieldSchema[];
 };
 
+export type ConfigAlgorithmResponseSchema = {
+  formula: string;
+  radial_multiplier_formula: string;
+  atan_scale_counts: number;
+  static_acquisition_boost_fraction: number;
+  motion_boost_fraction: number;
+};
+
+export type ConfigAlgorithmPredictionSchema = {
+  model: string;
+  aim_history_points: number;
+  velocity_segments: number;
+};
+
+export type ConfigAlgorithmSchema = {
+  id: string;
+  label: string;
+  response: ConfigAlgorithmResponseSchema;
+  prediction: ConfigAlgorithmPredictionSchema;
+};
+
 export type ConfigSchemaResponse = {
   version: number;
+  algorithm?: ConfigAlgorithmSchema;
   values: RuntimeConfig;
   sections: ConfigSectionSchema[];
 };

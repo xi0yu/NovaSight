@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 
 import { StatusBadge } from "../visual";
-import { toneToStatus, type LegacyTone } from "../../design/statusTokens";
+import { toneToStatus, type StatusTone } from "../../design/statusTokens";
 
 type StatusIndicatorProps = {
-  tone: LegacyTone;
+  tone: StatusTone;
   children: ReactNode;
 };
 

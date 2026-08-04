@@ -1,4 +1,4 @@
-//! Phase 2 freshness gate.
+//! Freshness gate.
 //!
 //! Pure admission logic. The gate chooses the strictest positive
 //! threshold from a set of inputs and returns a typed rejection reason
@@ -13,7 +13,7 @@ use crate::error::AppError;
 use crate::units::Nanoseconds;
 
 /// Maximum plausible frame age, in milliseconds, before the timestamp is
-/// treated as synthetic (test/legacy seam) rather than monotonic.
+/// treated as synthetic replay or unit-test seam rather than monotonic.
 const DEFAULT_MAX_PLAUSIBLE_AGE_MS: f64 = 3_600_000.0;
 const PLAUSIBILITY_MULTIPLIER: f64 = 100.0;
 
@@ -127,7 +127,7 @@ pub fn evaluate(policy: &FreshnessPolicy, capture_ts_ns: u64, now_ns: u64) -> Fr
         return FreshnessOutcome::admit(age);
     }
     if age > policy.max_plausible_age_ms {
-        // Synthetic timestamps from legacy unit seams are not policed.
+        // Synthetic timestamps from replay and unit-test seams are not policed.
         return FreshnessOutcome::admit(age);
     }
     if age > policy.threshold_ms {

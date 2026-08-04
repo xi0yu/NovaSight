@@ -43,12 +43,12 @@ type UseModelSwitchWorkflowInput = {
   setSelectedModelVersionId: (id: number | "") => void;
 };
 
-function parserCompatibilityLabel(compatibility: string | undefined): string {
-  if (compatibility === "yolov5") {
-    return "YOLO v5 兼容";
+function parserOutputFamilyLabel(outputFamily: string | undefined): string {
+  if (outputFamily === "yolov5") {
+    return "YOLO v5 解析格式";
   }
-  if (compatibility === "yolov8_yolo11") {
-    return "YOLO v8 / v11 兼容";
+  if (outputFamily === "yolov8_yolo11") {
+    return "YOLO v8 / v11 解析格式";
   }
   return "";
 }
@@ -200,7 +200,7 @@ export function useModelSwitchWorkflow({
       if (response.report && !response.report.applied) {
         throw new Error(response.report.message);
       }
-      const parserLabel = parserCompatibilityLabel(response.parser_contract?.compatibility);
+      const parserLabel = parserOutputFamilyLabel(response.parser_contract?.output_family);
       const switchSummary = response.report?.message ??
         "Engine 输入输出验证完成，运行配置已自动生成并切换。";
       const manifestSummary = response.preparation?.manifest_action === "generated"

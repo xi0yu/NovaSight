@@ -21,6 +21,7 @@ import {
   disconnectKmNet,
   clearCrosshairTemplate,
   crosshairTemplatePreviewUrl,
+  getConfigSchema,
   getRuntimeConfig,
   learnCrosshair,
   HealthResponse,
@@ -33,6 +34,7 @@ import {
   ModelVersion,
   ParserPresetId,
   RuntimeConfig,
+  ConfigSchemaResponse,
   RuntimeConfigValue,
   RuntimeState,
   RuntimeStatusTopic,
@@ -79,10 +81,13 @@ import {
 } from "./StudioControls";
 import {
   buildAlgorithmParameterGroups,
+  buildConfigFieldIndex,
   buildTargetingParameterGroups,
+  FIXED_ATAN_SCALE_COUNTS,
+  validateStudioConfigSchema,
   type AlgorithmSettingsSection,
   type AlgorithmNumberParameter,
-  type DualPhasePipelineField,
+  type ControlPipelineField,
   type TargetingNumberParameter,
   type TargetingPipelineField
 } from "./algorithmParameterModel";
@@ -108,9 +113,10 @@ import {
 import { persistRuntimeConfigField } from "./runtimeConfigPersistence";
 import "./studio-settings.css";
 
-const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
+const DEFAULT_CONTROL_ALGORITHM = "continuous_atan_predictive_v1";
 const CONTROL_ALGORITHM_LABEL = "连续 Atan 控制";
 const CONTROL_ALGORITHM_DESCRIPTION = "当前链路：选择主要目标、目标速度预测、连续非线性控制、输出限幅、命令输出。";
+const CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX = "配置 schema 与 Studio 参数不一致";
 type KmnetTestMessageTone = "success" | "warning";
 const loadModelManagerDialog = () => import("../models/ModelManagerDialog");
 const ModelManagerDialog = lazy(() =>
@@ -423,16 +429,12 @@ function formatOptionalInteger(value: unknown): string {
 
 function formatMotionState(value: unknown): string {
   switch (readString(value, "")) {
-    case "mean":
-      return "三段均值";
     case "continuous":
       return "连续运动";
-    case "abrupt_stop_or_reverse":
-      return "急停 / 反向";
-    case "alternating_peek":
-      return "左右 Peek";
     case "stationary":
       return "静止";
+    case "unstable":
+      return "不稳定";
     case "unavailable":
       return "不可用";
     default:
@@ -736,10 +738,12 @@ export function StudioConsoleView({
   const [previewActiveOverride, setPreviewActiveOverride] = useState<boolean | null>(null);
   const [previewTogglePending, setPreviewTogglePending] = useState(false);
   const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtimeConfig));
+  const [configSchema, setConfigSchema] = useState<ConfigSchemaResponse | null>(null);
   const [configDialogDirty, setConfigDialogDirty] = useState(false);
   const [configDialogSaving, setConfigDialogSaving] = useState(false);
   const [dialogSaveError, setDialogSaveError] = useState<string | null>(null);
   const dialogSaving = configDialogSaving;
+  const configFieldIndex = useMemo(() => buildConfigFieldIndex(configSchema), [configSchema]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
   const runtimeConfigLatestRef = useRef<RuntimeConfig | null>(runtimeConfig);
@@ -802,6 +806,41 @@ export function StudioConsoleView({
     focusAlgorithmSettingsSection(ALGORITHM_SETTINGS_SECTIONS[nextIndex].id);
   }, [algorithmSettingsSection, focusAlgorithmSettingsSection]);
 
+  const applyConfigSchema = useCallback((schema: ConfigSchemaResponse) => {
+    const issues = validateStudioConfigSchema(schema);
+    setConfigSchema(schema);
+    if (issues.length > 0) {
+      const summary = issues
+        .slice(0, 3)
+        .map((issue) => `${issue.path}: ${issue.reason}`)
+        .join("；");
+      setLocalError(`${CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX}：${summary}`);
+      return;
+    }
+    setLocalError((current) =>
+      current?.startsWith(CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX) ? null : current
+    );
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getConfigSchema()
+      .then((schema) => {
+        if (cancelled) {
+          return;
+        }
+        applyConfigSchema(schema);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          reportError(error, { source: "config-schema", title: "配置 schema 读取失败" });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyConfigSchema]);
+
   const openConfigDialog = useCallback((dialog: ConfigDialogId) => {
     if (dialogSavingRef.current || pendingConfigWritesRef.current > 0) {
       return;
@@ -851,6 +890,9 @@ export function StudioConsoleView({
     try {
       const result = await updateRuntimeConfig(draft);
       const applied = normalizeRuntimeConfig(result.config);
+      if (result.schema) {
+        applyConfigSchema(result.schema);
+      }
       runtimeConfigLatestRef.current = applied;
       configDraftRef.current = applied;
       setConfigDraft(applied);
@@ -873,7 +915,7 @@ export function StudioConsoleView({
       setConfigDialogSaving(false);
       setBusy(null);
     }
-  }, [finishConfigDialog, onRuntimeConfigChange]);
+  }, [applyConfigSchema, finishConfigDialog, onRuntimeConfigChange]);
 
   const requestDismissConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
     if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
@@ -1239,20 +1281,19 @@ export function StudioConsoleView({
   const targetSwitchContinuityScore = readNumber(rustPipelineConfig.target_switch_min_continuity_score, 0.7);
   const targetSwitchDelayMs = readNumber(rustPipelineConfig.target_switch_delay_ms, 50);
   const freshnessThresholdMs = readNumber(rustPipelineConfig.freshness_threshold_ms, 55);
-  const dualPhaseFovX = readNumber(rustPipelineConfig.projection_fov_x_deg, 105);
-  const dualPhaseCountsPer360 = readNumber(rustPipelineConfig.projection_counts_per_360, 9980);
+  const controlFovX = readNumber(rustPipelineConfig.projection_fov_x_deg, 105);
+  const controlCountsPer360 = readNumber(rustPipelineConfig.projection_counts_per_360, 9980);
   const pResponseScale = readNumber(rustPipelineConfig.p_response_scale, 0.20);
   const pResponseBoost = readNumber(rustPipelineConfig.p_response_boost, 0.50);
   const pResponseCurveShape = readNumber(rustPipelineConfig.p_response_curve_shape, 1);
-  const dualPhaseAtanScale = readNumber(rustPipelineConfig.atan_scale_counts, 256);
-  const dualPhaseMaxCounts = readNumber(rustPipelineConfig.max_counts_per_update, 127);
-  const dualPhaseArrivalRadiusCounts = readNumber(rustPipelineConfig.arrival_radius_counts, 3);
-  const dualPhasePredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, true);
-  const dualPhasePredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
+  const controlMaxCounts = readNumber(rustPipelineConfig.max_counts_per_update, 127);
+  const controlArrivalRadiusCounts = readNumber(rustPipelineConfig.arrival_radius_counts, 3);
+  const controlPredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, true);
+  const controlPredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
   const velocitySpreadBasePxMs = readNumber(rustPipelineConfig.velocity_spread_base_px_ms, 0.12);
   const velocitySpreadRelative = readNumber(rustPipelineConfig.velocity_spread_relative, 0.50);
-  const dualPhasePredictionLeadMs = readNumber(rustPipelineConfig.prediction_lead_ms, 16);
-  const dualPhasePredictionCapPx = readNumber(rustPipelineConfig.prediction_cap_px, 10);
+  const controlPredictionLeadMs = readNumber(rustPipelineConfig.prediction_lead_ms, 16);
+  const controlPredictionCapPx = readNumber(rustPipelineConfig.prediction_cap_px, 10);
   const residualCap = readNumber(rustPipelineConfig.residual_cap, 1);
   const actuationFeedbackDelayMs = readNumber(rustPipelineConfig.actuation_feedback_delay_ms, 4);
   const targetMinConfidence = readNumber(rustPipelineConfig.target_min_confidence, 0.5);
@@ -1273,13 +1314,21 @@ export function StudioConsoleView({
   const recoilIntervalMs = readNumber(recoilConfig.interval_ms, 16);
   const recoilYCounts = readNumber(recoilConfig.y_counts, 1);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
+  const triggerModeApplyMode = configFieldIndex?.get("control.trigger_mode")?.restart_required ? "restart" : "live";
+  const controlAlgorithmId = readString(configSchema?.algorithm?.id, DEFAULT_CONTROL_ALGORITHM);
+  const controlAlgorithmLabel = readString(configSchema?.algorithm?.label, CONTROL_ALGORITHM_LABEL);
+  const algorithmAtanScaleCounts = readNumber(
+    configSchema?.algorithm?.response?.atan_scale_counts,
+    FIXED_ATAN_SCALE_COUNTS
+  );
+  const algorithmVelocitySegments = readNumber(configSchema?.algorithm?.prediction?.velocity_segments, 3);
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
   const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, true);
   const outputEnabled = readBoolean(controlConfig.output_enabled, true);
-  const controlModeLabel = CONTROL_ALGORITHM_LABEL;
+  const controlModeLabel = controlAlgorithmLabel;
 
   useEffect(() => {
     runtimeConfigLatestRef.current = runtimeConfig;
@@ -1333,7 +1382,7 @@ export function StudioConsoleView({
         : "未连接";
   const kmnetRuntimeConnectionLabel = runtime?.running === true
     ? kmnetRestartRequired
-      ? kmnetRuntimeConnected ? "旧配置仍连接" : "等待重启"
+      ? kmnetRuntimeConnected ? "运行配置仍连接" : "等待重启"
       : kmnetRuntimeConnected ? "已连接" : "未连接"
     : "主链未运行";
   const kmnetDiagnosticDisabled = kmnetRestartRequired
@@ -1633,7 +1682,7 @@ export function StudioConsoleView({
     errorDistancePx: predictedErrorDistancePx,
     controlFrameAgeMs,
     measurementDtMs: controlMeasurementDtMs,
-    predictionEnabled: dualPhasePredictionEnabled,
+    predictionEnabled: controlPredictionEnabled,
     controllerActive: controlHasSample,
     controllerMode: controlModeLabel,
     movementStrategy: readString(controlPipeline.movement_strategy, ""),
@@ -1701,7 +1750,7 @@ export function StudioConsoleView({
       postprocessApplied: postprocessSettingsApplied,
       controlModeLabel,
       triggerModeLabel: triggerModeLabel(triggerMode),
-      predictionEnabled: dualPhasePredictionEnabled,
+      predictionEnabled: controlPredictionEnabled,
       freshnessThresholdLabel: formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms"),
       outputEnabled,
       outputRuntimeConnected: kmnetRuntimeConnected,
@@ -1727,7 +1776,7 @@ export function StudioConsoleView({
       displayCaptureProfile,
       displayCaptureProfileSource,
       displayedInputShape,
-      dualPhasePredictionEnabled,
+      controlPredictionEnabled,
       effectiveConfigRevision,
       kmnetAutoConnect,
       kmnetHost,
@@ -2277,6 +2326,9 @@ export function StudioConsoleView({
         );
         const result = await request;
         const applied = normalizeRuntimeConfig(result.config);
+        if (result.schema) {
+          applyConfigSchema(result.schema);
+        }
         // Always advance the canonical persisted revision. A newer optimistic
         // edit may still own the visible draft, but the next queued transaction
         // must never be built from an older revision.
@@ -2306,7 +2358,7 @@ export function StudioConsoleView({
         }
       }
     },
-    [onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
+    [applyConfigSchema, onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
   );
 
   const requestOutputGateChange = useCallback((enabled: boolean) => {
@@ -2324,7 +2376,7 @@ export function StudioConsoleView({
       description: "开启后，Rust 控制链产生的新鲜控制量可以通过当前 kmNet 会话发送到物理设备。",
       details: [
         `设备：${kmnetHost || "未填写"}:${kmnetPort || "未填写"} · ${kmnetRuntimeConnected ? "当前已连接" : "当前未连接"}`,
-        "旧命令不会补发；暂停输出或断开 kmNet 会立即清空待发送命令。"
+        "被取代命令不会补发；暂停输出或断开 kmNet 会立即清空待发送命令。"
       ],
       confirmLabel: "确认开启输出",
       danger: true,
@@ -2391,13 +2443,16 @@ export function StudioConsoleView({
         return null;
       }
       const applied = normalizeRuntimeConfig(result.config);
+      if (result.schema) {
+        applyConfigSchema(result.schema);
+      }
       runtimeConfigLatestRef.current = applied;
       configDraftRef.current = applied;
       setConfigDraft(applied);
       onRuntimeConfigChange(applied);
       return result;
     },
-    [onRuntimeConfigChange]
+    [applyConfigSchema, onRuntimeConfigChange]
   );
 
   const handleCenteredRoiSizeChange = useCallback(
@@ -2472,8 +2527,8 @@ export function StudioConsoleView({
     [updateConfigField]
   );
 
-  const updateDualPhaseField = useCallback(
-    async (key: DualPhasePipelineField, value: RuntimeConfigValue) => {
+  const updateControlPipelineField = useCallback(
+    async (key: ControlPipelineField, value: RuntimeConfigValue) => {
       await updateConfigField("pipeline", key, value);
     },
     [updateConfigField]
@@ -2486,24 +2541,26 @@ export function StudioConsoleView({
     predictionCapParameters,
     stabilityParameters,
     calibrationParameters
-  } = buildAlgorithmParameterGroups({
-    pResponseScale,
-    pResponseBoost,
-    pResponseCurveShape,
-    dualPhaseAtanScale,
-    actuationFeedbackDelayMs,
-    dualPhasePredictionLeadMs,
-    dualPhasePredictionHistoryResetGapMs,
-    velocitySpreadBasePxMs,
-    velocitySpreadRelative,
-    dualPhasePredictionCapPx,
-    dualPhaseMaxCounts,
-    dualPhaseArrivalRadiusCounts,
-    residualCap,
-    dualPhaseFovX,
-    dualPhaseCountsPer360,
-    freshnessThresholdMs
-  });
+  } = buildAlgorithmParameterGroups(
+    {
+      pResponseScale,
+      pResponseBoost,
+      pResponseCurveShape,
+      actuationFeedbackDelayMs,
+      controlPredictionLeadMs,
+      controlPredictionHistoryResetGapMs,
+      velocitySpreadBasePxMs,
+      velocitySpreadRelative,
+      controlPredictionCapPx,
+      controlMaxCounts,
+      controlArrivalRadiusCounts,
+      residualCap,
+      controlFovX,
+      controlCountsPer360,
+      freshnessThresholdMs
+    },
+    configFieldIndex
+  );
 
   const algorithmTuningBrief: Array<{
     id: AlgorithmSettingsSection;
@@ -2516,29 +2573,29 @@ export function StudioConsoleView({
       id: "response",
       label: "响应",
       value: `力度 ${formatNumber(pResponseScale, 3)} · 增强 ${formatNumber(pResponseBoost, 2)}`,
-      detail: `曲线 ${formatNumber(pResponseCurveShape, 2)} · Atan ${formatNumber(dualPhaseAtanScale, 1)}`,
+      detail: `曲线 ${formatNumber(pResponseCurveShape, 2)} · S ${formatNumber(algorithmAtanScaleCounts, 0)} counts`,
       icon: "response-curve"
     },
     {
       id: "prediction",
       label: "预测",
-      value: dualPhasePredictionEnabled ? "4 点二维速度" : "关闭",
-      detail: dualPhasePredictionEnabled
-        ? `提前 ${formatNumber(dualPhasePredictionLeadMs, 1)} ms · 断流 ${formatNumber(dualPhasePredictionHistoryResetGapMs, 0)} ms`
+      value: controlPredictionEnabled ? "运动门控 4 点速度" : "关闭",
+      detail: controlPredictionEnabled
+        ? `${formatNumber(algorithmVelocitySegments, 0)} 段速度 · 提前 ${formatNumber(controlPredictionLeadMs, 1)} ms · 断流 ${formatNumber(controlPredictionHistoryResetGapMs, 0)} ms`
         : "当前观测直接进入控制器",
       icon: "target"
     },
     {
       id: "stability",
       label: "限制",
-      value: `最大移动 ${formatNumber(dualPhaseMaxCounts, 0)} counts`,
-      detail: `到位 ${formatNumber(dualPhaseArrivalRadiusCounts, 1)} counts · 残差 ${formatNumber(residualCap, 2)}`,
+      value: `最大移动 ${formatNumber(controlMaxCounts, 0)} counts`,
+      detail: `到位 ${formatNumber(controlArrivalRadiusCounts, 1)} counts · 残差 ${formatNumber(residualCap, 2)}`,
       icon: "control"
     },
     {
       id: "calibration",
       label: "标定",
-      value: `${formatNumber(dualPhaseFovX, 1)}° · ${formatNumber(dualPhaseCountsPer360, 0)} counts`,
+      value: `${formatNumber(controlFovX, 1)}° · ${formatNumber(controlCountsPer360, 0)} counts`,
       detail: `观测最大帧龄 ${formatNumber(freshnessThresholdMs, 1)} ms`,
       icon: "settings"
     }
@@ -2549,6 +2606,7 @@ export function StudioConsoleView({
       key={parameter.key}
       label={parameter.label}
       detail={parameter.detail}
+      formula={parameter.formula}
       value={parameter.value}
       min={parameter.min}
       max={parameter.max}
@@ -2559,7 +2617,7 @@ export function StudioConsoleView({
       kind={parameter.kind}
       applyMode={parameter.applyMode ?? "live"}
       riskLevel={parameter.riskLevel}
-      onCommit={(value) => updateDualPhaseField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
+      onCommit={(value) => updateControlPipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
     />
   );
 
@@ -2567,29 +2625,32 @@ export function StudioConsoleView({
     targetAdvancedParameters,
     trackerCoreParameters,
     trackerKalmanParameters
-  } = buildTargetingParameterGroups({
-    targetMinConfidence,
-    candidateRatioMaxAspect,
-    targetSwitchPreferenceAdvantage,
-    targetSwitchContinuityScore,
-    targetSwitchDelayMs,
-    trackerMaxMatchDistance,
-    trackerPositionCostWeight,
-    trackerIouCostWeight,
-    trackerScaleCostWeight,
-    trackerMaxSizeRatio,
-    trackerMaxAssociationDtMs,
-    targetTrackMaxAge,
-    targetLostGraceMs,
-    trackerKalmanAccelerationNoise,
-    trackerKalmanMeasurementNoiseX,
-    trackerKalmanMeasurementNoiseY,
-    trackerKalmanMaxPredictDtMs,
-    trackerKalmanMaxPredictMissingMs,
-    trackerKalmanMaxPredictSteps,
-    trackerKalmanNisThreshold,
-    trackerKalmanNisHardReject
-  });
+  } = buildTargetingParameterGroups(
+    {
+      targetMinConfidence,
+      candidateRatioMaxAspect,
+      targetSwitchPreferenceAdvantage,
+      targetSwitchContinuityScore,
+      targetSwitchDelayMs,
+      trackerMaxMatchDistance,
+      trackerPositionCostWeight,
+      trackerIouCostWeight,
+      trackerScaleCostWeight,
+      trackerMaxSizeRatio,
+      trackerMaxAssociationDtMs,
+      targetTrackMaxAge,
+      targetLostGraceMs,
+      trackerKalmanAccelerationNoise,
+      trackerKalmanMeasurementNoiseX,
+      trackerKalmanMeasurementNoiseY,
+      trackerKalmanMaxPredictDtMs,
+      trackerKalmanMaxPredictMissingMs,
+      trackerKalmanMaxPredictSteps,
+      trackerKalmanNisThreshold,
+      trackerKalmanNisHardReject
+    },
+    configFieldIndex
+  );
 
   const renderTargetingNumberParameter = (parameter: TargetingNumberParameter) => (
     <ParameterNumberControl
@@ -3151,6 +3212,9 @@ export function StudioConsoleView({
             payload.revision = canonical.revision;
             const result = await updateRuntimeConfig(payload);
             const applied = normalizeRuntimeConfig(result.config);
+            if (result.schema) {
+              applyConfigSchema(result.schema);
+            }
             runtimeConfigLatestRef.current = applied;
             configDraftRef.current = applied;
             setConfigDraft(applied);
@@ -3818,7 +3882,7 @@ export function StudioConsoleView({
                   <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                   <span>目标类别</span><b>{activeRuntimeClassLabel || NO_SAMPLE}</b>
                   <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                  <span>目标速度预测</span><b>{dualPhasePredictionEnabled ? "4 点二维 aim 预测" : "已关闭"}</b>
+                  <span>目标速度预测</span><b>{controlPredictionEnabled ? "4 点二维 aim 预测" : "已关闭"}</b>
                 </div>
               </div>
               <div className="console-card">
@@ -3830,8 +3894,8 @@ export function StudioConsoleView({
                   <span>误差距离</span><b>{formatOptionalNumber(predictedErrorDistancePx, 2, "px")}</b>
                   <span>控制 dt</span><b>{controlMeasurementDtS === null ? NO_SAMPLE : `${(controlMeasurementDtS * 1000).toFixed(3)} ms`}</b>
                   <span>控制观测帧龄</span><b>{formatOptionalNumber(controlFrameAgeMs, 2, "ms")}</b>
-                  <span>预测执行延迟</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_actuation_delay_ms, 2, "ms") : "已关闭"}</b>
-                  <span>预测实际时域</span><b>{dualPhasePredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_horizon_ms, 2, "ms") : "已关闭"}</b>
+                  <span>预测执行延迟</span><b>{controlPredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_actuation_delay_ms, 2, "ms") : "已关闭"}</b>
+                  <span>预测实际时域</span><b>{controlPredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_horizon_ms, 2, "ms") : "已关闭"}</b>
                 </div>
               </div>
               <div className="console-card">
@@ -3841,7 +3905,7 @@ export function StudioConsoleView({
                   <span>运动状态</span><b>{formatMotionState(controlPipeline.motion_state)}</b>
                   <span>速度段 X</span><b>{`${formatOptionalNumber(controlPipeline.velocity_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_3, 3)} px/ms`}</b>
                   <span>速度段 Y</span><b>{`${formatOptionalNumber(controlPipeline.velocity_y_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_3, 3)} px/ms`}</b>
-                  <span>三段均值速度</span><b>{formatPoint(controlPipeline.mean_velocity, controlPipeline.mean_velocity_y, 3, "px/ms")}</b>
+                  <span>三段平均速度</span><b>{formatPoint(controlPipeline.mean_velocity, controlPipeline.mean_velocity_y, 3, "px/ms")}</b>
                   <span>鲁棒预测速度</span><b>{formatPoint(controlPipeline.prediction_velocity, controlPipeline.prediction_velocity_y, 3, "px/ms")}</b>
                   <span>加速度估计</span><b>{formatPoint(controlPipeline.acceleration_px_ms2, controlPipeline.acceleration_y_px_ms2, 4, "px/ms2")}</b>
                   <span>方向一致性</span><b>{formatPercent(controlPipeline.trend_consistency, 0)}</b>
@@ -3917,7 +3981,7 @@ export function StudioConsoleView({
                 detail={outputEnabled
                   ? kmnetRestartRequired
                     ? "kmNet 新配置等待 novasightd 重启；需要立即停发时请断开 kmNet"
-                    : "关闭后立即清空待发送旧命令"
+                    : "关闭后立即清空被取代命令"
                   : kmnetRestartRequired
                     ? "重启 novasightd 装载 kmNet 新配置后才能打开输出"
                     : !kmnetAutoConnect
@@ -3937,13 +4001,13 @@ export function StudioConsoleView({
               <div className="motion-control-mode-copy">
                   <span className="class-config-eyebrow">控制算法</span>
                 <h3>目标到命令控制链</h3>
-                <p>{dualPhasePredictionEnabled ? "已选目标先按 aim 点速度给出提前瞄点，再进入连续非线性控制、输出限幅和量化。" : "设备输出只由当前测量误差、连续非线性控制、输出限幅和量化产生。"}</p>
+                <p>{controlPredictionEnabled ? "已选目标先按 aim 点速度给出提前瞄点，再进入连续非线性控制、输出限幅和量化。" : "设备输出只由当前测量误差、连续非线性控制、输出限幅和量化产生。"}</p>
               </div>
               <ModuleSwitch
                 label="启用 X / Y 目标速度预测"
                 detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。修改后即时进入实时控制配置。"
-                enabled={dualPhasePredictionEnabled}
-                onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)}
+                enabled={controlPredictionEnabled}
+                onToggle={(enabled) => updateControlPipelineField("prediction_enabled", enabled)}
               />
             </div>
             <div className="console-card class-config-summary-card">
@@ -3973,17 +4037,18 @@ export function StudioConsoleView({
                 管理类别配置
               </button>
             </div>
-            <div className="console-grid2 params-control-grid compact-content-grid" data-algorithm-page={DEFAULT_CONTROL_ALGORITHM}>
+            <div className="console-grid2 params-control-grid compact-content-grid" data-algorithm-page={controlAlgorithmId}>
               <div className="console-card">
                 <SectionTitle title="控制模式" />
                 <div className="console-kv compact-kv" aria-label="控制模式">
-                  <span>当前控制器</span><b>{CONTROL_ALGORITHM_LABEL}</b>
+                  <span>当前控制器</span><b>{controlModeLabel}</b>
                 </div>
                 <p className="console-section-note">{CONTROL_ALGORITHM_DESCRIPTION}</p>
                 <SelectControl
                   label="触发方式"
                   detail="硬件触发使用 NovaSight 缓存的 kmNet 按键状态；自动控制只要求存在合格目标。"
                   value={triggerMode}
+                  applyMode={triggerModeApplyMode}
                   options={[
                     { value: "hardware", label: "kmNet 硬件按键触发" },
                     { value: "always", label: "检测到目标后自动控制" }
@@ -4007,10 +4072,10 @@ export function StudioConsoleView({
                 <SectionTitle title={`控制算法 · ${controlModeLabel}`} />
                 <p className="console-section-note">当前控制链路仅使用投影、增益、Atan 响应曲线和单次限幅。</p>
                 <div className="advanced-settings-summary">
-                  <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
+                  <div><span>FOVX</span><b>{controlFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
                   <div><span>响应力度</span><b>{pResponseScale.toFixed(3)}</b></div>
                   <div><span>力度增强</span><b>{pResponseBoost.toFixed(2)}</b></div>
-                  <div><span>目标速度预测</span><b>{dualPhasePredictionEnabled ? "二维 aim 已启用" : "已关闭"}</b></div>
+                  <div><span>目标速度预测</span><b>{controlPredictionEnabled ? "二维 aim 已启用" : "已关闭"}</b></div>
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("algorithm")} type="button">
                   <NovaIcon name="settings" size={15} />
@@ -4284,7 +4349,7 @@ export function StudioConsoleView({
                       : kmnetLastError || (kmnetConnectionFailed ? "请检查地址、端口、UUID 和网络连通性。" : "视觉主链继续运行，物理偏移输出保持关闭。")}</span>
                   </div>
                   {kmnetRestartRequired ? (
-                    <small>这是配置生效等待，不是 kmNet 网络连接失败；重启前不会尝试用旧设备对象连接新配置。</small>
+                    <small>这是配置生效等待，不是 kmNet 网络连接失败；重启前不会尝试用当前设备对象连接新配置。</small>
                   ) : kmnetRetryable ? (
                     <small>
                       {rustControlPlane
@@ -4392,7 +4457,7 @@ export function StudioConsoleView({
               </div>
               <div className="console-kv compact-kv">
                 <span>调度方式</span><b>最新观测优先</b>
-                <span>行为</span><b>新观测覆盖未发送的旧命令</b>
+                <span>行为</span><b>新观测覆盖未发送命令</b>
                 <span>待发送容量</span><b>1 条完整命令</b>
                 <span>最终校验</span><b>输出前校验</b>
               </div>
@@ -4553,8 +4618,8 @@ export function StudioConsoleView({
           <ModuleSwitch
             label="启用 X / Y 目标速度预测"
             detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。"
-            enabled={dualPhasePredictionEnabled}
-            onToggle={(enabled) => updateDualPhaseField("prediction_enabled", enabled)}
+            enabled={controlPredictionEnabled}
+            onToggle={(enabled) => updateControlPipelineField("prediction_enabled", enabled)}
           />
         </div>
         <div className="algorithm-settings-layout">
@@ -4586,9 +4651,9 @@ export function StudioConsoleView({
               <header className="algorithm-settings-panel-header">
                 <span>连续非线性控制</span>
                 <h3 id="algorithm-settings-response-title">响应力度与 Atan 曲线</h3>
-                <p>这里决定控制器想移动多少：先调整体响应力度，再看小误差是否抖动、远距离是否跟得上，最后微调过渡形状和 Atan 曲线尺度。</p>
+                <p>这里决定控制器想移动多少：u = K_base * R(r) * S * atan(e / S)，S 固定为 256 counts，R(r) = 1 + B * (1 - exp(-(r ^ gamma)))。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>建议顺序</b><span>响应力度 → 力度增强 → 响应曲线 → Atan 尺度</span></div>
+              <div className="algorithm-tuning-order"><b>建议顺序</b><span>响应力度 → 力度增强 → 响应曲线；S 固定为 256 counts</span></div>
               <div className="advanced-settings-grid two-column">
                 {responseParameters.map(renderAlgorithmNumberParameter)}
               </div>
@@ -4600,14 +4665,14 @@ export function StudioConsoleView({
               <header className="algorithm-settings-panel-header">
                 <span>目标速度预测</span>
                 <h3 id="algorithm-settings-prediction-title">唯一锁定目标的 aim 点提前量</h3>
-                <p>预测使用已选目标最近 4 个 aim 点形成的 3 段速度；常用调节只看执行反馈延迟、额外提前量和断流重置。</p>
+                <p>预测只改变目标 aim 点：P_pred = P + V * T_future；T_future = 观测帧龄 + 执行反馈延迟 + 预测提前量。</p>
               </header>
               <div className="advanced-settings-grid two-column">
                 {predictionCoreParameters
                   .filter((parameter) => parameter.key === "actuation_feedback_delay_ms")
                   .map(renderAlgorithmNumberParameter)}
               </div>
-              {dualPhasePredictionEnabled ? (
+              {controlPredictionEnabled ? (
                 <>
                   <div className="advanced-settings-grid two-column">
                     {predictionCoreParameters
@@ -4638,9 +4703,9 @@ export function StudioConsoleView({
               <header className="algorithm-settings-panel-header">
                 <span>输出限幅</span>
                 <h3 id="algorithm-settings-stability-title">单次输出与到位保持</h3>
-                <p>这些参数不改变目标位置。它们限制每次能走多远，并决定什么时候认为已经到位、什么时候等待画面反馈。</p>
+                <p>这些参数不改变目标位置。M 限制单次 counts 输出，D 决定到位停止，Q_res 只保留不足 1 count 的小数余量。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低近距离单次上限，再检查到位半径；执行反馈延迟在“目标速度预测”中统一管理</span></div>
+              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低单次输出上限，再检查到位半径；执行反馈延迟在“目标速度预测”中统一管理</span></div>
               <div className="advanced-settings-grid two-column">
                 {stabilityParameters.map(renderAlgorithmNumberParameter)}
               </div>
@@ -4654,7 +4719,7 @@ export function StudioConsoleView({
                 <h3 id="algorithm-settings-calibration-title">坐标标定与观测时效</h3>
                 <p>这里不是响应增益。FOV 与每圈 counts 必须对应真实游戏和设备；错误标定会让所有 Atan 参数一起表现错误。</p>
               </header>
-              <div className="algorithm-settings-warning"><b>不要用标定参数修响应</b><span>整体移动比例不对才检查标定；只是远近速度不合适，请回到“连续非线性控制”。</span></div>
+              <div className="algorithm-settings-warning"><b>不要用标定参数修响应</b><span>整体移动比例不对才检查标定；只是误差区间的响应不合适，请回到“连续非线性控制”。</span></div>
               <div className="advanced-settings-grid two-column">
                 {calibrationParameters.map(renderAlgorithmNumberParameter)}
               </div>

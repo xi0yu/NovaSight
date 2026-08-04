@@ -37,63 +37,50 @@ fn bundled_runtime_config_loads_current_algorithm_defaults() {
     let path = directory.join("novasight.yaml");
     YamlConfigRepository::initialize_default(&path).unwrap();
 
-    let config = YamlConfigRepository::load(path).unwrap();
+    let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 11);
-    assert_eq!(config.pipeline.p_response_scale, 0.30);
+    assert_eq!(config.schema_version, 12);
+    assert_eq!(config.pipeline.p_response_scale, 0.20);
+    assert_eq!(config.pipeline.p_response_boost, 0.50);
     assert_eq!(config.pipeline.p_response_curve_shape, 1.0);
-    assert_eq!(config.pipeline.atan_scale_counts, 256.0);
+    assert_eq!(config.pipeline.max_counts_per_update, 127.0);
     assert_eq!(config.pipeline.prediction_lead_ms, 16.0);
+    assert_eq!(config.pipeline.prediction_cap_px, 10.0);
     assert!(config.pipeline.prediction_enabled);
+
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert!(persisted["pipeline"]["atan_scale_counts"].is_null());
 }
 
 #[test]
-fn schema_ten_prediction_frame_lead_migrates_to_time_lead() {
+fn older_schema_uses_current_prediction_defaults() {
     let directory = TempDirectory::new();
-    let path = directory.join("schema-ten-prediction-lead.yaml");
+    let path = directory.join("schema-ten-current-prediction.yaml");
     fs::write(
         &path,
         r#"schema_version: 10
 limits:
   stream_fps: 40
 pipeline:
-  prediction_lead_frames: 2.0
-  velocity_smoothing_frames: 5.0
+  prediction_enabled: true
+  atan_scale_counts: 999.0
 "#,
     )
     .unwrap();
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 11);
-    assert!((config.pipeline.prediction_lead_ms - 50.0).abs() < 1e-12);
-    assert!(
-        !config
-            .pipeline
-            .legacy
-            .contains_key("prediction_lead_frames")
-    );
-    assert!(
-        !config
-            .pipeline
-            .legacy
-            .contains_key("velocity_smoothing_frames")
-    );
+    assert_eq!(config.schema_version, 12);
+    assert_eq!(config.pipeline.prediction_lead_ms, 16.0);
+    assert!(config.pipeline.extra.is_empty());
 
     YamlConfigRepository::new(&path)
         .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["schema_version"], 11);
-    assert_eq!(persisted["pipeline"]["prediction_lead_ms"], 50.0);
-    assert!(
-        persisted["pipeline"]
-            .get("prediction_lead_frames")
-            .is_none()
-    );
-    assert!(
-        persisted["pipeline"]
-            .get("velocity_smoothing_frames")
-            .is_none()
-    );
+    assert_eq!(persisted["schema_version"], 12);
+    assert_eq!(persisted["pipeline"]["prediction_lead_ms"], 16.0);
+    assert_eq!(persisted["pipeline"]["p_response_boost"], 0.5);
+    assert_eq!(persisted["pipeline"]["prediction_cap_px"], 10.0);
+    assert!(persisted["pipeline"]["atan_scale_counts"].is_null());
 }

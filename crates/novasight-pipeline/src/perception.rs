@@ -46,7 +46,7 @@ pub struct PerceptionRuntimeContract {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ParserContract {
     pub requested_preset: String,
-    pub compatibility: String,
+    pub output_family: String,
     pub has_objectness: bool,
     pub parser_library: String,
     pub parser_function: String,

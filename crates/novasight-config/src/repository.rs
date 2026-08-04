@@ -27,10 +27,6 @@ use super::{AppConfig, CURRENT_SCHEMA_VERSION, ConfigValidationError, PipelineRu
 const CONFIG_LOCK_WAIT: Duration = Duration::from_millis(250);
 const CONFIG_LOCK_RETRY: Duration = Duration::from_millis(2);
 const DEFAULT_RUNTIME_CONFIG: &str = include_str!("bootstrap.yaml");
-const RESPONSIVE_FAR_KP: f64 = 0.30;
-const RESPONSIVE_NEAR_KP: f64 = 0.20;
-const RESPONSIVE_MAX_COUNTS_PER_UPDATE: f64 = 127.0;
-const RESPONSIVE_PREDICTION_CAP_PX: f64 = 10.0;
 const RESPONSIVE_TARGET_TRACK_MAX_AGE: u64 = 5;
 
 pub trait ConfigRepository {
@@ -211,7 +207,7 @@ pub enum ConfigError {
     Busy {
         path: PathBuf,
     },
-    ReservedLegacyKey {
+    UnsupportedConfigKey {
         path: PathBuf,
         section: &'static str,
         key: String,
@@ -253,7 +249,7 @@ impl ConfigError {
             Self::RevisionConflict { .. } => "CONFIG_REVISION_CONFLICT",
             Self::RevisionOverflow { .. } => "CONFIG_REVISION_OVERFLOW",
             Self::Busy { .. } => "CONFIG_BUSY",
-            Self::ReservedLegacyKey { .. } => "CONFIG_RESERVED_LEGACY_KEY",
+            Self::UnsupportedConfigKey { .. } => "CONFIG_UNSUPPORTED_CONFIG_KEY",
             Self::InvalidFieldTarget { .. } => "CONFIG_INVALID_FIELD_TARGET",
             Self::InvalidReplacementDocument { .. } => "CONFIG_REPLACEMENT_INVALID",
             Self::SymlinkUnsupported { .. } => "CONFIG_SYMLINK_UNSUPPORTED",
@@ -273,7 +269,7 @@ impl ConfigError {
             | Self::RevisionConflict { path, .. }
             | Self::RevisionOverflow { path, .. }
             | Self::Busy { path }
-            | Self::ReservedLegacyKey { path, .. }
+            | Self::UnsupportedConfigKey { path, .. }
             | Self::InvalidFieldTarget { path, .. }
             | Self::InvalidReplacementDocument { path, .. }
             | Self::SymlinkUnsupported { path }
@@ -351,9 +347,9 @@ impl fmt::Display for ConfigError {
                 "configuration is being updated by another writer: {}",
                 path.display()
             ),
-            Self::ReservedLegacyKey { path, section, key } => write!(
+            Self::UnsupportedConfigKey { path, section, key } => write!(
                 formatter,
-                "configuration legacy key {section}.{key} is reserved at {}",
+                "configuration key {section}.{key} is unsupported at {}",
                 path.display()
             ),
             Self::InvalidFieldTarget {
@@ -405,7 +401,7 @@ impl Error for ConfigError {
             | Self::RevisionConflict { .. }
             | Self::RevisionOverflow { .. }
             | Self::Busy { .. }
-            | Self::ReservedLegacyKey { .. }
+            | Self::UnsupportedConfigKey { .. }
             | Self::InvalidFieldTarget { .. }
             | Self::InvalidReplacementDocument { .. }
             | Self::SymlinkUnsupported { .. }
@@ -441,6 +437,7 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
             path: path.to_owned(),
             source,
         })?;
+    validate_extra_keys(path, &config)?;
     Ok((file, document, config))
 }
 
@@ -448,11 +445,12 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     let schema_version = config.schema_version;
     let interval_recoil_explicit =
         nested_section_has_fields(document, "control", "recoil", &["interval_ms", "y_counts"]);
-    let removed_humanized_motion = config.control.legacy.remove("humanized_motion").is_some();
-    config.pipeline.legacy.remove("projection_invert_y");
-    config.pipeline.legacy.remove("max_command_age_ms");
-    config.pipeline.legacy.remove("output_interval_ms");
-    let mut removed_legacy_recoil = false;
+    let removed_humanized_motion = config.control.extra.remove("humanized_motion").is_some();
+    config.pipeline.extra.remove("projection_invert_y");
+    config.pipeline.extra.remove("max_command_age_ms");
+    config.pipeline.extra.remove("output_interval_ms");
+    config.pipeline.extra.remove("atan_scale_counts");
+    let mut removed_retired_recoil = false;
     for field in [
         "base_rate_counts_s",
         "max_rate_counts_s",
@@ -464,42 +462,42 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         "max_fast_add_ratio",
         "stale_threshold_ms",
     ] {
-        removed_legacy_recoil |= config.control.recoil.legacy.remove(field).is_some();
+        removed_retired_recoil |= config.control.recoil.extra.remove(field).is_some();
     }
     // Physical output migration must follow the fields that are actually present,
-    // not a missing or incorrectly declared schema version. A legacy rate-based
+    // not a missing or incorrectly declared schema version. A retired rate-based
     // profile has no safe, behavior-preserving conversion to interval/count steps.
-    let recoil_requires_recommission = removed_legacy_recoil && !interval_recoil_explicit;
+    let recoil_requires_recommission = removed_retired_recoil && !interval_recoil_explicit;
     if recoil_requires_recommission {
         config.control.recoil.enabled = false;
     }
-    let legacy_class_weight = config
+    let retired_class_weight = config
         .pipeline
-        .legacy
+        .extra
         .remove("target_selection_class_weight")
         .and_then(|value| value.as_f64());
-    let legacy_distance_weight = config
+    let retired_distance_weight = config
         .pipeline
-        .legacy
+        .extra
         .remove("target_selection_distance_weight")
         .and_then(|value| value.as_f64());
-    let legacy_sticky_bias = config
+    let retired_sticky_bias = config
         .pipeline
-        .legacy
+        .extra
         .remove("target_sticky_bias")
         .and_then(|value| value.as_f64());
     let class_ratio_explicit =
         section_has_fields(document, "pipeline", &["target_selection_class_ratio"]);
-    let has_legacy_target_scoring = legacy_class_weight.is_some()
-        || legacy_distance_weight.is_some()
-        || legacy_sticky_bias.is_some();
-    let migrated_class_ratio = (!class_ratio_explicit && has_legacy_target_scoring)
+    let has_retired_target_scoring = retired_class_weight.is_some()
+        || retired_distance_weight.is_some()
+        || retired_sticky_bias.is_some();
+    let migrated_class_ratio = (!class_ratio_explicit && has_retired_target_scoring)
         .then(|| {
-            let class_weight = legacy_class_weight.unwrap_or(0.55).max(0.0);
-            let distance_weight = legacy_distance_weight.unwrap_or(0.40).max(0.0);
+            let class_weight = retired_class_weight.unwrap_or(0.55).max(0.0);
+            let distance_weight = retired_distance_weight.unwrap_or(0.40).max(0.0);
             let generated_defaults = (class_weight - 0.55).abs() < f64::EPSILON
                 && (distance_weight - 0.40).abs() < f64::EPSILON
-                && legacy_sticky_bias.is_none_or(|value| (value - 0.25).abs() < f64::EPSILON);
+                && retired_sticky_bias.is_none_or(|value| (value - 0.25).abs() < f64::EPSILON);
             if generated_defaults {
                 return Some(0.35);
             }
@@ -522,10 +520,10 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
             }
         }
     }
-    config.paths.legacy.remove("python_executable");
+    config.paths.extra.remove("python_executable");
     if let Some(device) = &mut config.device {
-        device.legacy.remove("helper_module");
-        device.legacy.remove("reconnect_cooldown_ms");
+        device.extra.remove("helper_module");
+        device.extra.remove("reconnect_cooldown_ms");
     }
     remove_section_fields(document, "paths", &["python_executable"]);
     remove_section_fields(
@@ -533,6 +531,7 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         "pipeline",
         &[
             "projection_invert_y",
+            "atan_scale_counts",
             "target_selection_class_weight",
             "target_selection_distance_weight",
             "target_sticky_bias",
@@ -567,31 +566,10 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     {
         control.remove(Value::String("humanized_motion".to_owned()));
     }
-    let response_boost_explicit = section_has_fields(document, "pipeline", &["p_response_boost"]);
-    let max_counts_explicit = section_has_fields(document, "pipeline", &["max_counts_per_update"]);
-    let prediction_cap_explicit = section_has_fields(document, "pipeline", &["prediction_cap_px"]);
-    let legacy_runtime_control = take_legacy_runtime_control_fields(&mut config.pipeline);
-    let migrated_runtime_control = legacy_runtime_control.has_any()
-        || (schema_version < CURRENT_SCHEMA_VERSION
-            && (!response_boost_explicit || !max_counts_explicit || !prediction_cap_explicit));
-    apply_runtime_control_migration(
-        &mut config.pipeline,
-        legacy_runtime_control,
-        response_boost_explicit,
-        max_counts_explicit,
-        prediction_cap_explicit,
-    );
     if schema_version < CURRENT_SCHEMA_VERSION && config.pipeline.target_track_max_age == 2 {
         config.pipeline.target_track_max_age = RESPONSIVE_TARGET_TRACK_MAX_AGE;
     }
-    if let Value::Mapping(root) = document
-        && let Some(Value::Mapping(pipeline)) = root.get_mut(Value::String("pipeline".to_owned()))
-    {
-        remove_legacy_runtime_control_fields(pipeline);
-    }
-    let migrated_prediction_lead_ms = migrate_prediction_lead_ms(document, config);
-
-    if schema_version >= CURRENT_SCHEMA_VERSION && !migrated_runtime_control {
+    if schema_version >= CURRENT_SCHEMA_VERSION {
         return;
     }
 
@@ -621,13 +599,9 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
                 Value::Bool(true),
             );
         }
-        if schema_version < CURRENT_SCHEMA_VERSION || migrated_runtime_control {
-            write_continuous_response_profile(pipeline, &config.pipeline);
-            write_prediction_lead_ms(pipeline, config.pipeline.prediction_lead_ms);
-        } else if migrated_prediction_lead_ms {
-            write_prediction_lead_ms(pipeline, config.pipeline.prediction_lead_ms);
+        if schema_version < CURRENT_SCHEMA_VERSION {
+            write_current_control_defaults(pipeline, &config.pipeline);
         }
-        remove_legacy_runtime_control_fields(pipeline);
     }
     let control = root
         .entry(Value::String("control".to_owned()))
@@ -651,239 +625,34 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     }
 }
 
-fn write_continuous_response_profile(pipeline: &mut Mapping, config: &PipelineRuntimeConfig) {
+fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRuntimeConfig) {
     for (key, value) in [
         ("p_response_scale", config.p_response_scale),
         ("p_response_boost", config.p_response_boost),
         ("p_response_curve_shape", config.p_response_curve_shape),
         ("max_counts_per_update", config.max_counts_per_update),
+        ("arrival_radius_counts", config.arrival_radius_counts),
+        (
+            "velocity_history_reset_gap_ms",
+            config.velocity_history_reset_gap_ms,
+        ),
+        (
+            "velocity_spread_base_px_ms",
+            config.velocity_spread_base_px_ms,
+        ),
+        ("velocity_spread_relative", config.velocity_spread_relative),
+        ("prediction_lead_ms", config.prediction_lead_ms),
         ("prediction_cap_px", config.prediction_cap_px),
+        ("residual_cap", config.residual_cap),
+        (
+            "actuation_feedback_delay_ms",
+            config.actuation_feedback_delay_ms,
+        ),
     ] {
         pipeline.insert(
             Value::String(key.to_owned()),
             serde_yaml::to_value(value).expect("finite continuous response migration value"),
         );
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct LegacyRuntimeControlFields {
-    far_kp: Option<f64>,
-    near_kp: Option<f64>,
-    response_gain_floor: Option<f64>,
-    response_gain_ceiling: Option<f64>,
-    far_max_counts_per_update: Option<f64>,
-    near_max_counts_per_update: Option<f64>,
-    prediction_far_absolute_cap_px: Option<f64>,
-    prediction_near_absolute_cap_px: Option<f64>,
-}
-
-impl LegacyRuntimeControlFields {
-    fn has_any(self) -> bool {
-        self.far_kp.is_some()
-            || self.near_kp.is_some()
-            || self.response_gain_floor.is_some()
-            || self.response_gain_ceiling.is_some()
-            || self.far_max_counts_per_update.is_some()
-            || self.near_max_counts_per_update.is_some()
-            || self.prediction_far_absolute_cap_px.is_some()
-            || self.prediction_near_absolute_cap_px.is_some()
-    }
-}
-
-fn take_legacy_runtime_control_fields(
-    pipeline: &mut PipelineRuntimeConfig,
-) -> LegacyRuntimeControlFields {
-    let fields = LegacyRuntimeControlFields {
-        far_kp: take_legacy_f64(&mut pipeline.legacy, "far_kp"),
-        near_kp: take_legacy_f64(&mut pipeline.legacy, "near_kp"),
-        response_gain_floor: take_legacy_f64(&mut pipeline.legacy, "p_response_gain_floor"),
-        response_gain_ceiling: take_legacy_f64(&mut pipeline.legacy, "p_response_gain_ceiling"),
-        far_max_counts_per_update: take_legacy_f64(
-            &mut pipeline.legacy,
-            "far_max_counts_per_update",
-        ),
-        near_max_counts_per_update: take_legacy_f64(
-            &mut pipeline.legacy,
-            "near_max_counts_per_update",
-        ),
-        prediction_far_absolute_cap_px: take_legacy_f64(
-            &mut pipeline.legacy,
-            "prediction_far_absolute_cap_px",
-        ),
-        prediction_near_absolute_cap_px: take_legacy_f64(
-            &mut pipeline.legacy,
-            "prediction_near_absolute_cap_px",
-        ),
-    };
-    for key in [
-        "near_threshold_px",
-        "p_response_curve_width_ratio",
-        "prediction_far_base_cap_px",
-        "prediction_far_relative_cap",
-        "prediction_near_base_cap_px",
-        "prediction_near_relative_cap",
-    ] {
-        pipeline.legacy.remove(key);
-    }
-    fields
-}
-
-fn take_legacy_f64(legacy: &mut BTreeMap<String, Value>, key: &str) -> Option<f64> {
-    legacy.remove(key).and_then(|value| value.as_f64())
-}
-
-fn apply_runtime_control_migration(
-    pipeline: &mut PipelineRuntimeConfig,
-    legacy: LegacyRuntimeControlFields,
-    response_boost_explicit: bool,
-    max_counts_explicit: bool,
-    prediction_cap_explicit: bool,
-) {
-    if !response_boost_explicit {
-        if let Some((base, high)) = legacy_response_gain_bounds(pipeline, legacy) {
-            pipeline.p_response_scale = base;
-            pipeline.p_response_boost = response_boost_from_bounds(base, high);
-        }
-    }
-    if !max_counts_explicit {
-        if let Some(max_counts) = max_finite([
-            legacy.far_max_counts_per_update,
-            legacy.near_max_counts_per_update,
-        ]) {
-            pipeline.max_counts_per_update = max_counts;
-        } else if legacy.has_any() {
-            pipeline.max_counts_per_update = RESPONSIVE_MAX_COUNTS_PER_UPDATE;
-        }
-    }
-    if !prediction_cap_explicit {
-        if let Some(cap_px) = max_finite([
-            legacy.prediction_far_absolute_cap_px,
-            legacy.prediction_near_absolute_cap_px,
-        ]) {
-            pipeline.prediction_cap_px = cap_px;
-        } else if legacy.has_any() {
-            pipeline.prediction_cap_px = RESPONSIVE_PREDICTION_CAP_PX;
-        }
-    }
-    if legacy.has_any() {
-        pipeline.p_response_curve_shape = pipeline.p_response_curve_shape.clamp(0.5, 4.0);
-        pipeline.prediction_enabled = true;
-    }
-}
-
-fn legacy_response_gain_bounds(
-    pipeline: &PipelineRuntimeConfig,
-    legacy: LegacyRuntimeControlFields,
-) -> Option<(f64, f64)> {
-    if legacy.far_kp.is_some() || legacy.near_kp.is_some() {
-        let far = legacy.far_kp.unwrap_or(RESPONSIVE_FAR_KP);
-        let near = legacy.near_kp.unwrap_or(RESPONSIVE_NEAR_KP);
-        return gain_bounds(near, far);
-    }
-    if legacy.response_gain_floor.is_some() || legacy.response_gain_ceiling.is_some() {
-        let floor = legacy.response_gain_floor.unwrap_or(1.0);
-        let ceiling = legacy.response_gain_ceiling.unwrap_or(1.0);
-        return gain_bounds(
-            pipeline.p_response_scale * floor,
-            pipeline.p_response_scale * ceiling,
-        );
-    }
-    None
-}
-
-fn gain_bounds(left: f64, right: f64) -> Option<(f64, f64)> {
-    if !left.is_finite() || !right.is_finite() {
-        return None;
-    }
-    let base = left.min(right).max(0.0);
-    let high = left.max(right).max(base);
-    Some((base, high))
-}
-
-fn response_boost_from_bounds(base: f64, high: f64) -> f64 {
-    if base <= f64::EPSILON {
-        0.0
-    } else {
-        ((high / base) - 1.0).max(0.0)
-    }
-}
-
-fn max_finite(values: [Option<f64>; 2]) -> Option<f64> {
-    values
-        .into_iter()
-        .flatten()
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .reduce(f64::max)
-}
-
-fn migrate_prediction_lead_ms(document: &mut Value, config: &mut AppConfig) -> bool {
-    let prediction_lead_ms_explicit =
-        section_has_fields(document, "pipeline", &["prediction_lead_ms"]);
-    let legacy_lead_frames = config
-        .pipeline
-        .legacy
-        .remove("prediction_lead_frames")
-        .and_then(|value| value.as_f64());
-    config.pipeline.legacy.remove("velocity_smoothing_frames");
-
-    let mut migrated = false;
-    if !prediction_lead_ms_explicit
-        && let Some(lead_frames) = legacy_lead_frames
-        && lead_frames.is_finite()
-    {
-        config.pipeline.prediction_lead_ms =
-            (lead_frames.max(0.0) * prediction_frame_interval_ms(config)).clamp(0.0, 1_000.0);
-        migrated = true;
-    }
-
-    if let Value::Mapping(root) = document
-        && let Some(Value::Mapping(pipeline)) = root.get_mut(Value::String("pipeline".to_owned()))
-    {
-        pipeline.remove(Value::String("prediction_lead_frames".to_owned()));
-        pipeline.remove(Value::String("velocity_smoothing_frames".to_owned()));
-        if migrated {
-            write_prediction_lead_ms(pipeline, config.pipeline.prediction_lead_ms);
-        }
-    }
-    migrated
-}
-
-fn prediction_frame_interval_ms(config: &AppConfig) -> f64 {
-    let fps = config
-        .capture
-        .as_ref()
-        .map(|capture| capture.fps)
-        .filter(|fps| *fps > 0)
-        .unwrap_or(config.limits.stream_fps);
-    1_000.0 / f64::from(fps.max(1))
-}
-
-fn write_prediction_lead_ms(pipeline: &mut Mapping, value: f64) {
-    pipeline.insert(
-        Value::String("prediction_lead_ms".to_owned()),
-        serde_yaml::to_value(value).expect("finite prediction lead migration value"),
-    );
-}
-
-fn remove_legacy_runtime_control_fields(pipeline: &mut Mapping) {
-    for key in [
-        "far_kp",
-        "near_kp",
-        "near_threshold_px",
-        "p_response_gain_floor",
-        "p_response_gain_ceiling",
-        "p_response_curve_width_ratio",
-        "far_max_counts_per_update",
-        "near_max_counts_per_update",
-        "prediction_far_absolute_cap_px",
-        "prediction_far_base_cap_px",
-        "prediction_far_relative_cap",
-        "prediction_near_absolute_cap_px",
-        "prediction_near_base_cap_px",
-        "prediction_near_relative_cap",
-    ] {
-        pipeline.remove(Value::String(key.to_owned()));
     }
 }
 
@@ -953,7 +722,6 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "freshness_threshold_ms",
             "projection_fov_x_deg",
             "projection_counts_per_360",
-            "atan_scale_counts",
             "p_response_scale",
             "p_response_boost",
             "p_response_curve_shape",
@@ -1162,7 +930,7 @@ fn save_document(
             path: path.to_owned(),
             source,
         })?;
-    validate_legacy_keys(path, config)?;
+    validate_extra_keys(path, config)?;
     let mut next = config.clone();
     next.revision =
         current
@@ -1261,7 +1029,7 @@ fn save_document_field(
             path: path.to_owned(),
             source,
         })?;
-    validate_legacy_keys(path, &persisted)?;
+    validate_extra_keys(path, &persisted)?;
     let serialized = serde_yaml::to_string(&document).map_err(|source| ConfigError::Serialize {
         path: path.to_owned(),
         source,
@@ -1358,7 +1126,7 @@ fn replace_document(
             path: path.to_owned(),
             source,
         })?;
-    validate_legacy_keys(path, &persisted)?;
+    validate_extra_keys(path, &persisted)?;
     let serialized = serde_yaml::to_string(&document).map_err(|source| ConfigError::Serialize {
         path: path.to_owned(),
         source,
@@ -1395,11 +1163,11 @@ fn reject_symlink(path: &Path) -> Result<(), ConfigError> {
     }
 }
 
-fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigError> {
-    for (section, legacy, reserved) in [
+fn validate_extra_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigError> {
+    for (section, extra, reserved) in [
         (
             "root",
-            &config.legacy,
+            &config.extra,
             &[
                 "schema_version",
                 "revision",
@@ -1417,56 +1185,42 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
                 "device",
             ][..],
         ),
-        ("server", &config.server.legacy, &["host", "port"][..]),
+        ("server", &config.server.extra, &["host", "port"][..]),
         (
             "replay",
-            &config.replay.legacy,
+            &config.replay.extra,
             &["enabled", "frame_interval_ms", "output_gate_open"][..],
         ),
         (
             "paths",
-            &config.paths.legacy,
+            &config.paths.extra,
             &["data_dir", "model_dir", "database", "license"][..],
         ),
-        ("consumers", &config.consumers.legacy, &["preview"][..]),
-        ("limits", &config.limits.legacy, &["stream_fps"][..]),
-        (
-            "pipeline",
-            &config.pipeline.legacy,
-            &[
-                "prediction_lead_frames",
-                "velocity_smoothing_frames",
-                "far_kp",
-                "near_kp",
-                "near_threshold_px",
-                "p_response_gain_floor",
-                "p_response_gain_ceiling",
-                "p_response_curve_width_ratio",
-                "far_max_counts_per_update",
-                "near_max_counts_per_update",
-                "prediction_far_absolute_cap_px",
-                "prediction_far_base_cap_px",
-                "prediction_far_relative_cap",
-                "prediction_near_absolute_cap_px",
-                "prediction_near_base_cap_px",
-                "prediction_near_relative_cap",
-            ][..],
-        ),
-        ("control", &config.control.legacy, &[][..]),
+        ("consumers", &config.consumers.extra, &["preview"][..]),
+        ("limits", &config.limits.extra, &["stream_fps"][..]),
+        ("pipeline", &config.pipeline.extra, &[][..]),
+        ("control", &config.control.extra, &[][..]),
     ] {
-        if let Some(key) = reserved.iter().find(|key| legacy.contains_key(**key)) {
-            return Err(ConfigError::ReservedLegacyKey {
+        if let Some(key) = reserved.iter().find(|key| extra.contains_key(**key)) {
+            return Err(ConfigError::UnsupportedConfigKey {
                 path: path.to_owned(),
                 section,
                 key: (*key).to_owned(),
             });
         }
     }
+    if let Some(key) = config.pipeline.extra.keys().next() {
+        return Err(ConfigError::UnsupportedConfigKey {
+            path: path.to_owned(),
+            section: "pipeline",
+            key: key.clone(),
+        });
+    }
     if let Some(capture) = &config.capture {
-        validate_reserved_legacy(
+        validate_reserved_extra(
             path,
             "capture",
-            &capture.legacy,
+            &capture.extra,
             &[
                 "device",
                 "backend",
@@ -1483,10 +1237,10 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
         )?;
     }
     if let Some(inference) = &config.inference {
-        validate_reserved_legacy(
+        validate_reserved_extra(
             path,
             "inference",
-            &inference.legacy,
+            &inference.extra,
             &[
                 "enabled",
                 "backend",
@@ -1507,10 +1261,10 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
         )?;
     }
     if let Some(device) = &config.device {
-        validate_reserved_legacy(
+        validate_reserved_extra(
             path,
             "hardware",
-            &device.legacy,
+            &device.extra,
             &[
                 "auto_connect",
                 "backend",
@@ -1528,14 +1282,14 @@ fn validate_legacy_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErr
     Ok(())
 }
 
-fn validate_reserved_legacy(
+fn validate_reserved_extra(
     path: &Path,
     section: &'static str,
-    legacy: &BTreeMap<String, Value>,
+    extra: &BTreeMap<String, Value>,
     reserved: &[&str],
 ) -> Result<(), ConfigError> {
-    if let Some(key) = reserved.iter().find(|key| legacy.contains_key(**key)) {
-        Err(ConfigError::ReservedLegacyKey {
+    if let Some(key) = reserved.iter().find(|key| extra.contains_key(**key)) {
+        Err(ConfigError::UnsupportedConfigKey {
             path: path.to_owned(),
             section,
             key: (*key).to_owned(),
@@ -1848,9 +1602,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_runtime_control_fields_save_back_as_continuous_controls() {
+    fn unknown_pipeline_control_field_is_rejected_on_load() {
         let directory = std::env::temp_dir().join(format!(
-            "novasight-config-control-migration-test-{}",
+            "novasight-config-pipeline-field-test-{}",
             std::process::id()
         ));
         let _ = fs::remove_dir_all(&directory);
@@ -1859,42 +1613,19 @@ mod tests {
         fs::write(
             &path,
             r#"
-schema_version: 9
-revision: 0
-pipeline:
-  far_kp: 0.30
-  near_kp: 0.20
-  far_max_counts_per_update: 127.0
-  near_max_counts_per_update: 72.0
-  prediction_enabled: true
-  prediction_lead_ms: 16.0
-  prediction_far_absolute_cap_px: 10.0
-  prediction_near_absolute_cap_px: 3.0
-"#,
+    schema_version: 12
+    revision: 0
+    pipeline:
+      prediction_enabled: true
+      retired_control_knob: 1.0
+    "#,
         )
         .unwrap();
 
         let repository = YamlConfigRepository::new(&path);
-        let loaded = repository.load_config().unwrap();
+        let error = repository.load_config().unwrap_err();
 
-        assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
-        assert!((loaded.pipeline.p_response_scale - 0.20).abs() < 1e-12);
-        assert!((loaded.pipeline.p_response_boost - 0.50).abs() < 1e-12);
-        assert_eq!(loaded.pipeline.max_counts_per_update, 127.0);
-        assert_eq!(loaded.pipeline.prediction_cap_px, 10.0);
-        assert!(!loaded.pipeline.legacy.contains_key("far_kp"));
-        assert!(!loaded.pipeline.legacy.contains_key("near_kp"));
-
-        repository.save_config(&loaded, loaded.revision).unwrap();
-        let body = fs::read_to_string(&path).unwrap();
-
-        assert!(body.contains("p_response_boost"));
-        assert!(body.contains("max_counts_per_update"));
-        assert!(body.contains("prediction_cap_px"));
-        assert!(!body.contains("far_kp"));
-        assert!(!body.contains("near_kp"));
-        assert!(!body.contains("far_max_counts_per_update"));
-        assert!(!body.contains("near_max_counts_per_update"));
+        assert_eq!(error.code(), "CONFIG_UNSUPPORTED_CONFIG_KEY");
         fs::remove_dir_all(directory).unwrap();
     }
 }

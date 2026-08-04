@@ -12,12 +12,12 @@ use novasight_runtime::{
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct CompatibilityHealth {
+pub(crate) struct RuntimeHealth {
     pub ok: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct CompatibilityRuntimeStart {
+pub(crate) struct RuntimeStartResponse {
     pub running: bool,
     pub accepted: bool,
     pub failed: bool,
@@ -25,7 +25,7 @@ pub(crate) struct CompatibilityRuntimeStart {
     pub operation_id: Option<String>,
 }
 
-impl From<&RuntimeSnapshot> for CompatibilityRuntimeStart {
+impl From<&RuntimeSnapshot> for RuntimeStartResponse {
     fn from(snapshot: &RuntimeSnapshot) -> Self {
         Self {
             running: snapshot.pipeline.state == PipelineState::Running,
@@ -38,7 +38,7 @@ impl From<&RuntimeSnapshot> for CompatibilityRuntimeStart {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct CompatibilityStatusFrame<T> {
+pub(crate) struct RuntimeStatusFrame<T> {
     pub kind: &'static str,
     pub topic: &'static str,
     pub full: bool,
@@ -46,7 +46,7 @@ pub(crate) struct CompatibilityStatusFrame<T> {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct CompatibilityRuntimeState {
+pub(crate) struct RuntimeStatusState {
     pub running: bool,
     pub source: String,
     pub active_model: Option<serde_json::Value>,
@@ -62,7 +62,7 @@ pub(crate) struct CompatibilityRuntimeState {
 }
 
 #[derive(Serialize)]
-struct CompatibilityRuntimePatch<'a> {
+struct RuntimeStatusPatch<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     running: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,7 +89,7 @@ struct CompatibilityRuntimePatch<'a> {
     fatal_error: Option<&'a Option<RuntimeErrorSummary>>,
 }
 
-impl CompatibilityRuntimePatch<'_> {
+impl RuntimeStatusPatch<'_> {
     fn empty() -> Self {
         Self {
             running: None,
@@ -108,13 +108,13 @@ impl CompatibilityRuntimePatch<'_> {
     }
 }
 
-pub(crate) fn serialize_compatibility_status_frame(
+pub(crate) fn serialize_runtime_status_frame(
     topic: &'static str,
     full: bool,
-    state: &CompatibilityRuntimeState,
+    state: &RuntimeStatusState,
 ) -> serde_json::Result<String> {
     if full || topic == "full" {
-        return serde_json::to_string(&CompatibilityStatusFrame {
+        return serde_json::to_string(&RuntimeStatusFrame {
             kind: "runtime_snapshot",
             topic,
             full: true,
@@ -122,7 +122,7 @@ pub(crate) fn serialize_compatibility_status_frame(
         });
     }
 
-    let mut patch = CompatibilityRuntimePatch::empty();
+    let mut patch = RuntimeStatusPatch::empty();
     patch.running = Some(state.running);
     patch.fatal_error = Some(&state.fatal_error);
     match topic {
@@ -164,7 +164,7 @@ pub(crate) fn serialize_compatibility_status_frame(
             patch.pipeline = Some(&state.pipeline);
         }
     }
-    serde_json::to_string(&CompatibilityStatusFrame {
+    serde_json::to_string(&RuntimeStatusFrame {
         kind: "runtime_snapshot",
         topic,
         full: false,
@@ -462,7 +462,7 @@ pub(crate) struct ControlPipelineState {
     pub velocity_2: Option<f64>,
     pub velocity_3: Option<f64>,
     pub mean_velocity: Option<f64>,
-    pub median_velocity: Option<f64>,
+    pub medoid_velocity: Option<f64>,
     pub prediction_velocity: Option<f64>,
     pub motion_state: Option<PredictionMotionState>,
     pub trend_consistency: Option<f64>,
@@ -483,7 +483,7 @@ pub(crate) struct ControlPipelineState {
     pub velocity_y_2: Option<f64>,
     pub velocity_y_3: Option<f64>,
     pub mean_velocity_y: Option<f64>,
-    pub median_velocity_y: Option<f64>,
+    pub medoid_velocity_y: Option<f64>,
     pub prediction_velocity_y: Option<f64>,
     pub motion_state_y: Option<PredictionMotionState>,
     pub trend_consistency_y: Option<f64>,
@@ -532,7 +532,7 @@ pub(crate) struct ControlPipelineState {
     pub recoil_block_reason: RecoilBlockReason,
 }
 
-impl CompatibilityRuntimeState {
+impl RuntimeStatusState {
     #[cfg(test)]
     pub fn new(
         snapshot: &RuntimeSnapshot,
@@ -603,7 +603,7 @@ impl CompatibilityRuntimeState {
                     .and_then(|active| parse_nchw_dimensions(&active.version.input_shape))
             });
         let device_config = runtime_config.and_then(|config| config.device.as_ref());
-        let dual_phase = snapshot.pipeline_metrics.dual_phase;
+        let control = snapshot.pipeline_metrics.control;
         let target_selection = &snapshot.pipeline_metrics.target_selection;
         let has_target_sample = snapshot.pipeline_metrics.targeting_batches > 0;
         let target_detection_index = target_selection.target_object_id.and_then(|object_id| {
@@ -619,8 +619,8 @@ impl CompatibilityRuntimeState {
         let effective_class_filter = config
             .map(|config| config.pipeline.target_class_filter.clone())
             .unwrap_or_else(|| "all".to_owned());
-        let control_sample = dual_phase.sample_available;
-        let control_reason = control_sample.then_some(block_reason_label(dual_phase.block_reason));
+        let control_sample = control.sample_available;
+        let control_reason = control_sample.then_some(block_reason_label(control.block_reason));
         let running = snapshot.pipeline.state == PipelineState::Running;
         let source = capture_config
             .map(|capture| capture.device.to_string_lossy().into_owned())
@@ -808,8 +808,8 @@ impl CompatibilityRuntimeState {
             &target_pipeline,
             control_sample,
             control_reason,
-            dual_phase.emit_allowed,
-            dual_phase.trigger_active,
+            control.emit_allowed,
+            control.trigger_active,
         );
         let metadata_extractions = metrics
             .probed_buffers
@@ -1007,14 +1007,12 @@ impl CompatibilityRuntimeState {
                 control: VisionControlState {
                     global_state: if control_sample { "CALCULATED" } else { "IDLE" },
                     output_enabled: snapshot.pipeline_metrics.output_gate_open,
-                    aim_x: control_sample
-                        .then_some(dual_phase.aim_x + dual_phase.predicted_offset_x),
-                    aim_y: control_sample
-                        .then_some(dual_phase.aim_y + dual_phase.predicted_offset_y),
-                    dx: control_sample.then_some(dual_phase.dx),
-                    dy: control_sample.then_some(dual_phase.dy),
-                    will_emit: control_sample.then_some(dual_phase.emit_allowed),
-                    trigger_active: control_sample.then_some(dual_phase.trigger_active),
+                    aim_x: control_sample.then_some(control.aim_x + control.predicted_offset_x),
+                    aim_y: control_sample.then_some(control.aim_y + control.predicted_offset_y),
+                    dx: control_sample.then_some(control.dx),
+                    dy: control_sample.then_some(control.dy),
+                    will_emit: control_sample.then_some(control.emit_allowed),
+                    trigger_active: control_sample.then_some(control.trigger_active),
                     reason: control_reason,
                     no_send_reason: control_reason.filter(|reason| !reason.is_empty()),
                     candidates: target_selection.inside_fov,
@@ -1039,108 +1037,100 @@ impl CompatibilityRuntimeState {
                         },
                     },
                     mouse_observation: MouseObservationState {
-                        control_width_px: control_sample.then_some(dual_phase.observation_width),
-                        control_height_px: control_sample.then_some(dual_phase.observation_height),
-                        observed_x_px: control_sample.then_some(dual_phase.aim_x),
-                        observed_y_px: control_sample.then_some(dual_phase.aim_y),
+                        control_width_px: control_sample.then_some(control.observation_width),
+                        control_height_px: control_sample.then_some(control.observation_height),
+                        observed_x_px: control_sample.then_some(control.aim_x),
+                        observed_y_px: control_sample.then_some(control.aim_y),
                         predicted_x_px: control_sample
-                            .then_some(dual_phase.aim_x + dual_phase.predicted_offset_x),
+                            .then_some(control.aim_x + control.predicted_offset_x),
                         predicted_y_px: control_sample
-                            .then_some(dual_phase.aim_y + dual_phase.predicted_offset_y),
-                        measurement_dt_s: dual_phase.measurement_dt_ms.map(|value| value / 1_000.0),
+                            .then_some(control.aim_y + control.predicted_offset_y),
+                        measurement_dt_s: control.measurement_dt_ms.map(|value| value / 1_000.0),
                     },
                     pipeline: ControlPipelineState {
-                        control_mode: "dual_phase_atan_robust_predictive_v2",
+                        control_mode: "continuous_atan_predictive_v1",
                         movement_strategy: "latest_replace",
                         prediction_truth: snapshot.pipeline_metrics.prediction_truth.clone(),
-                        mode: control_sample.then_some(control_mode_label(dual_phase.mode)),
-                        frame_age_ms: control_sample.then_some(dual_phase.frame_age_ms),
+                        mode: control_sample.then_some(control_mode_label(control.mode)),
+                        frame_age_ms: control_sample.then_some(control.frame_age_ms),
                         history_position_count: control_sample
-                            .then_some(dual_phase.history_position_count),
-                        velocity_1: dual_phase.velocity_samples[0],
-                        velocity_2: dual_phase.velocity_samples[1],
-                        velocity_3: dual_phase.velocity_samples[2],
-                        mean_velocity: dual_phase.mean_velocity,
-                        median_velocity: dual_phase.median_velocity,
-                        prediction_velocity: control_sample.then_some(dual_phase.velocity_x),
-                        motion_state: control_sample.then_some(dual_phase.motion_state),
-                        trend_consistency: control_sample.then_some(dual_phase.trend_consistency),
-                        acceleration_px_ms2: control_sample
-                            .then_some(dual_phase.acceleration_px_ms2),
-                        velocity_spread: dual_phase.velocity_spread,
-                        motion_confidence: control_sample.then_some(dual_phase.motion_confidence),
-                        measurement_dt_s: dual_phase.measurement_dt_ms.map(|value| value / 1_000.0),
-                        reference_dt_ms: control_sample.then_some(dual_phase.reference_dt_ms),
+                            .then_some(control.history_position_count),
+                        velocity_1: control.velocity_samples[0],
+                        velocity_2: control.velocity_samples[1],
+                        velocity_3: control.velocity_samples[2],
+                        mean_velocity: control.mean_velocity,
+                        medoid_velocity: control.medoid_velocity,
+                        prediction_velocity: control_sample.then_some(control.velocity_x),
+                        motion_state: control_sample.then_some(control.motion_state),
+                        trend_consistency: control_sample.then_some(control.trend_consistency),
+                        acceleration_px_ms2: control_sample.then_some(control.acceleration_px_ms2),
+                        velocity_spread: control.velocity_spread,
+                        motion_confidence: control_sample.then_some(control.motion_confidence),
+                        measurement_dt_s: control.measurement_dt_ms.map(|value| value / 1_000.0),
+                        reference_dt_ms: control_sample.then_some(control.reference_dt_ms),
                         prediction_actuation_delay_ms: control_sample
-                            .then_some(dual_phase.prediction_actuation_delay_ms),
-                        prediction_lead_ms: control_sample.then_some(dual_phase.prediction_lead_ms),
+                            .then_some(control.prediction_actuation_delay_ms),
+                        prediction_lead_ms: control_sample.then_some(control.prediction_lead_ms),
                         prediction_horizon_ms: control_sample
-                            .then_some(dual_phase.prediction_horizon_ms),
+                            .then_some(control.prediction_horizon_ms),
                         prediction_raw_offset_x: control_sample
-                            .then_some(dual_phase.prediction_raw_offset_x),
+                            .then_some(control.prediction_raw_offset_x),
                         prediction_weighted_offset_x: control_sample
-                            .then_some(dual_phase.prediction_weighted_offset_x),
+                            .then_some(control.prediction_weighted_offset_x),
                         prediction_allowed_cap_x: control_sample
-                            .then_some(dual_phase.prediction_allowed_cap_x),
+                            .then_some(control.prediction_allowed_cap_x),
                         prediction_safe_offset_x: control_sample
-                            .then_some(dual_phase.predicted_offset_x),
-                        prediction_allowed: control_sample.then_some(dual_phase.prediction_allowed),
-                        velocity_y_1: dual_phase.velocity_samples_y[0],
-                        velocity_y_2: dual_phase.velocity_samples_y[1],
-                        velocity_y_3: dual_phase.velocity_samples_y[2],
-                        mean_velocity_y: dual_phase.mean_velocity_y,
-                        median_velocity_y: dual_phase.median_velocity_y,
-                        prediction_velocity_y: control_sample.then_some(dual_phase.velocity_y),
-                        motion_state_y: control_sample.then_some(dual_phase.motion_state_y),
-                        trend_consistency_y: control_sample
-                            .then_some(dual_phase.trend_consistency_y),
+                            .then_some(control.predicted_offset_x),
+                        prediction_allowed: control_sample.then_some(control.prediction_allowed),
+                        velocity_y_1: control.velocity_samples_y[0],
+                        velocity_y_2: control.velocity_samples_y[1],
+                        velocity_y_3: control.velocity_samples_y[2],
+                        mean_velocity_y: control.mean_velocity_y,
+                        medoid_velocity_y: control.medoid_velocity_y,
+                        prediction_velocity_y: control_sample.then_some(control.velocity_y),
+                        motion_state_y: control_sample.then_some(control.motion_state_y),
+                        trend_consistency_y: control_sample.then_some(control.trend_consistency_y),
                         acceleration_y_px_ms2: control_sample
-                            .then_some(dual_phase.acceleration_y_px_ms2),
-                        velocity_spread_y: dual_phase.velocity_spread_y,
-                        motion_confidence_y: control_sample
-                            .then_some(dual_phase.motion_confidence_y),
-                        measurement_dt_y_s: dual_phase
+                            .then_some(control.acceleration_y_px_ms2),
+                        velocity_spread_y: control.velocity_spread_y,
+                        motion_confidence_y: control_sample.then_some(control.motion_confidence_y),
+                        measurement_dt_y_s: control
                             .measurement_dt_ms_y
                             .map(|value| value / 1_000.0),
-                        reference_dt_y_ms: control_sample.then_some(dual_phase.reference_dt_ms_y),
+                        reference_dt_y_ms: control_sample.then_some(control.reference_dt_ms_y),
                         prediction_raw_offset_y: control_sample
-                            .then_some(dual_phase.prediction_raw_offset_y),
+                            .then_some(control.prediction_raw_offset_y),
                         prediction_weighted_offset_y: control_sample
-                            .then_some(dual_phase.prediction_weighted_offset_y),
+                            .then_some(control.prediction_weighted_offset_y),
                         prediction_allowed_cap_y: control_sample
-                            .then_some(dual_phase.prediction_allowed_cap_y),
+                            .then_some(control.prediction_allowed_cap_y),
                         prediction_safe_offset_y: control_sample
-                            .then_some(dual_phase.predicted_offset_y),
+                            .then_some(control.predicted_offset_y),
                         prediction_allowed_y: control_sample
-                            .then_some(dual_phase.prediction_allowed_y),
-                        observed_error_x_px: control_sample.then_some(dual_phase.observed_error_x),
-                        observed_error_y_px: control_sample.then_some(dual_phase.observed_error_y),
-                        predicted_error_x_px: control_sample.then_some(dual_phase.filtered_error_x),
-                        predicted_error_y_px: control_sample.then_some(dual_phase.filtered_error_y),
-                        full_error_counts_x: control_sample
-                            .then_some(dual_phase.full_error_counts_x),
-                        full_error_counts_y: control_sample
-                            .then_some(dual_phase.full_error_counts_y),
-                        float_demand_x: control_sample.then_some(dual_phase.float_demand_x),
-                        float_demand_y: control_sample.then_some(dual_phase.float_demand_y),
-                        integer_command_x: control_sample.then_some(dual_phase.dx),
-                        integer_command_y: control_sample.then_some(dual_phase.dy),
+                            .then_some(control.prediction_allowed_y),
+                        observed_error_x_px: control_sample.then_some(control.observed_error_x),
+                        observed_error_y_px: control_sample.then_some(control.observed_error_y),
+                        predicted_error_x_px: control_sample.then_some(control.filtered_error_x),
+                        predicted_error_y_px: control_sample.then_some(control.filtered_error_y),
+                        full_error_counts_x: control_sample.then_some(control.full_error_counts_x),
+                        full_error_counts_y: control_sample.then_some(control.full_error_counts_y),
+                        float_demand_x: control_sample.then_some(control.float_demand_x),
+                        float_demand_y: control_sample.then_some(control.float_demand_y),
+                        integer_command_x: control_sample.then_some(control.dx),
+                        integer_command_y: control_sample.then_some(control.dy),
                         quantizer_residual_x: control_sample
-                            .then_some(dual_phase.quantizer_residual_x),
+                            .then_some(control.quantizer_residual_x),
                         quantizer_residual_y: control_sample
-                            .then_some(dual_phase.quantizer_residual_y),
-                        arrival_settled_x: control_sample.then_some(dual_phase.arrival_settled_x),
-                        arrival_settled_y: control_sample.then_some(dual_phase.arrival_settled_y),
-                        arrival_hold_x: control_sample.then_some(dual_phase.arrival_hold_x),
-                        arrival_hold_y: control_sample.then_some(dual_phase.arrival_hold_y),
+                            .then_some(control.quantizer_residual_y),
+                        arrival_settled_x: control_sample.then_some(control.arrival_settled_x),
+                        arrival_settled_y: control_sample.then_some(control.arrival_settled_y),
+                        arrival_hold_x: control_sample.then_some(control.arrival_hold_x),
+                        arrival_hold_y: control_sample.then_some(control.arrival_hold_y),
                         arrival_enter_counts: control_sample
-                            .then_some(dual_phase.arrival_enter_counts),
-                        arrival_exit_counts: control_sample
-                            .then_some(dual_phase.arrival_exit_counts),
-                        actuation_pending_x: control_sample
-                            .then_some(dual_phase.actuation_pending_x),
-                        actuation_pending_y: control_sample
-                            .then_some(dual_phase.actuation_pending_y),
+                            .then_some(control.arrival_enter_counts),
+                        arrival_exit_counts: control_sample.then_some(control.arrival_exit_counts),
+                        actuation_pending_x: control_sample.then_some(control.actuation_pending_x),
+                        actuation_pending_y: control_sample.then_some(control.actuation_pending_y),
                         block_reason: control_reason,
                         recoil_mode: config.map_or("interval_additive", |config| {
                             if config.control.recoil.require_target {
@@ -1489,7 +1479,7 @@ mod tests {
         AppConfig, PipelineState, RuntimeErrorSummary, RuntimeSnapshot, SubsystemState,
     };
 
-    use super::CompatibilityRuntimeState;
+    use super::RuntimeStatusState;
 
     #[test]
     fn degraded_kmnet_is_disconnected_retryable_and_exposes_the_runtime_error() {
@@ -1505,7 +1495,7 @@ mod tests {
             ..AppConfig::default()
         };
 
-        let value = serde_json::to_value(CompatibilityRuntimeState::new(
+        let value = serde_json::to_value(RuntimeStatusState::new(
             &snapshot,
             Some(&config),
             Some(0),
@@ -1527,7 +1517,7 @@ mod tests {
     #[test]
     fn projects_daemon_owned_control_telemetry_into_studio_shape() {
         let mut snapshot = RuntimeSnapshot::default();
-        snapshot.pipeline_metrics.dual_phase = ControlDecision {
+        snapshot.pipeline_metrics.control = ControlDecision {
             sample_available: true,
             aim_x: 330.0,
             aim_y: 317.0,
@@ -1544,7 +1534,7 @@ mod tests {
             history_position_count: 4,
             velocity_samples: [Some(0.2), Some(0.3), Some(0.25)],
             mean_velocity: Some(0.25),
-            median_velocity: Some(0.25),
+            medoid_velocity: Some(0.25),
             velocity_spread: Some(0.05),
             motion_state: PredictionMotionState::Continuous,
             trend_consistency: 0.92,
@@ -1560,9 +1550,9 @@ mod tests {
             motion_confidence_y: 0.75,
             velocity_samples_y: [Some(-0.08), Some(-0.12), Some(-0.10)],
             mean_velocity_y: Some(-0.10),
-            median_velocity_y: Some(-0.10),
+            medoid_velocity_y: Some(-0.10),
             velocity_spread_y: Some(0.02),
-            motion_state_y: PredictionMotionState::AbruptStopOrReverse,
+            motion_state_y: PredictionMotionState::Unstable,
             trend_consistency_y: 0.25,
             acceleration_y_px_ms2: -0.005,
             measurement_dt_ms_y: Some(8.0),
@@ -1657,7 +1647,7 @@ mod tests {
             ..TargetSelection::default()
         };
 
-        let value = serde_json::to_value(CompatibilityRuntimeState::new(
+        let value = serde_json::to_value(RuntimeStatusState::new(
             &snapshot, None, None, true, None, None,
         ))
         .unwrap();
@@ -1691,10 +1681,7 @@ mod tests {
         assert_eq!(value["vision"]["inference"]["generation"], 9);
         assert_eq!(value["vision"]["detection_items"][0]["object_id"], 91);
         assert_eq!(value["vision"]["detection_items"][0]["cx"], 330.0);
-        assert_eq!(
-            pipeline["control_mode"],
-            "dual_phase_atan_robust_predictive_v2"
-        );
+        assert_eq!(pipeline["control_mode"], "continuous_atan_predictive_v1");
         assert_eq!(pipeline["mode"], "CONTINUOUS");
         assert_eq!(pipeline["prediction_truth"]["total_samples"], 12);
         assert_eq!(pipeline["prediction_truth"]["valid_position_samples"], 10);
@@ -1712,7 +1699,7 @@ mod tests {
         assert_eq!(pipeline["prediction_safe_offset_x"], 1.6);
         assert_eq!(pipeline["mean_velocity_y"], -0.10);
         assert_eq!(pipeline["prediction_velocity_y"], -0.10);
-        assert_eq!(pipeline["motion_state_y"], "abrupt_stop_or_reverse");
+        assert_eq!(pipeline["motion_state_y"], "unstable");
         assert_eq!(pipeline["trend_consistency_y"], 0.25);
         assert_eq!(pipeline["acceleration_y_px_ms2"], -0.005);
         assert_eq!(pipeline["prediction_safe_offset_y"], -0.6);
@@ -1752,7 +1739,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.pipeline.target_class_filter = "1".to_owned();
 
-        let value = serde_json::to_value(CompatibilityRuntimeState::new(
+        let value = serde_json::to_value(RuntimeStatusState::new(
             &snapshot,
             Some(&config),
             Some(0),

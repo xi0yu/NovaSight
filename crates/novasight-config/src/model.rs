@@ -36,7 +36,7 @@ pub struct AppConfig {
     #[serde(default, rename = "hardware", alias = "device")]
     pub device: Option<DeviceConfig>,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for AppConfig {
@@ -55,7 +55,7 @@ impl Default for AppConfig {
             capture: None,
             inference: None,
             device: None,
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -215,7 +215,7 @@ pub struct RustControlConfig {
     #[serde(default)]
     pub recoil: RecoilConfig,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 /// Determines whether a valid target is sufficient to activate movement or
@@ -239,7 +239,7 @@ pub struct RecoilConfig {
     #[serde(default = "default_recoil_y_counts")]
     pub y_counts: i32,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for RecoilConfig {
@@ -249,7 +249,7 @@ impl Default for RecoilConfig {
             require_target: default_recoil_require_target(),
             interval_ms: default_recoil_interval_ms(),
             y_counts: default_recoil_y_counts(),
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -305,7 +305,7 @@ pub struct CrosshairConfig {
     #[serde(default = "default_crosshair_max_step_px")]
     pub max_step_px: f64,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for CrosshairConfig {
@@ -321,7 +321,7 @@ impl Default for CrosshairConfig {
             max_offset_px: default_crosshair_max_offset_px(),
             min_similarity: default_crosshair_min_similarity(),
             max_step_px: default_crosshair_max_step_px(),
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -419,7 +419,7 @@ pub struct ConsumerConfig {
     #[serde(default)]
     pub preview: bool,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -427,14 +427,14 @@ pub struct LimitsConfig {
     #[serde(default = "default_stream_fps")]
     pub stream_fps: u32,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             stream_fps: default_stream_fps(),
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -451,8 +451,6 @@ pub struct PipelineRuntimeConfig {
     pub projection_fov_x_deg: f64,
     #[serde(default = "default_projection_counts_per_360")]
     pub projection_counts_per_360: f64,
-    #[serde(default = "default_atan_scale_counts")]
-    pub atan_scale_counts: f64,
     #[serde(default = "default_p_response_scale")]
     pub p_response_scale: f64,
     #[serde(default = "default_p_response_boost")]
@@ -536,7 +534,7 @@ pub struct PipelineRuntimeConfig {
     #[serde(skip)]
     pub(crate) production_fields_explicit: bool,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for PipelineRuntimeConfig {
@@ -545,7 +543,6 @@ impl Default for PipelineRuntimeConfig {
             freshness_threshold_ms: default_freshness_threshold_ms(),
             projection_fov_x_deg: default_projection_fov_x_deg(),
             projection_counts_per_360: default_projection_counts_per_360(),
-            atan_scale_counts: default_atan_scale_counts(),
             p_response_scale: default_p_response_scale(),
             p_response_boost: default_p_response_boost(),
             p_response_curve_shape: default_response_curve_shape(),
@@ -588,7 +585,7 @@ impl Default for PipelineRuntimeConfig {
             candidate_max_aspect_ratio: default_candidate_max_aspect_ratio(),
             actuation_feedback_delay_ms: default_actuation_feedback_delay_ms(),
             production_fields_explicit: false,
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -618,12 +615,6 @@ impl PipelineRuntimeConfig {
         validate_finite_range(
             "pipeline.projection_counts_per_360",
             self.projection_counts_per_360,
-            0.000_001,
-            1_000_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.atan_scale_counts",
-            self.atan_scale_counts,
             0.000_001,
             1_000_000.0,
         )?;
@@ -990,10 +981,6 @@ const fn default_projection_counts_per_360() -> f64 {
     9_980.0
 }
 
-const fn default_atan_scale_counts() -> f64 {
-    256.0
-}
-
 const fn default_response_curve_shape() -> f64 {
     1.0
 }
@@ -1207,7 +1194,7 @@ pub struct CaptureConfig {
     #[serde(skip)]
     pub(crate) production_fields_explicit: bool,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for CaptureConfig {
@@ -1229,7 +1216,7 @@ impl Default for CaptureConfig {
             roi_width: 0,
             roi_height: 0,
             production_fields_explicit: false,
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -1336,7 +1323,7 @@ pub struct InferenceConfig {
     #[serde(skip)]
     pub(crate) production_fields_explicit: bool,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for InferenceConfig {
@@ -1364,7 +1351,7 @@ impl Default for InferenceConfig {
             deepstream_shutdown_timeout_ms: default_deepstream_shutdown_timeout_ms(),
             input_source: InferenceInputSource::default(),
             production_fields_explicit: false,
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -1515,7 +1502,7 @@ pub struct DeviceConfig {
     #[serde(skip)]
     pub(crate) production_fields_explicit: bool,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for DeviceConfig {
@@ -1532,7 +1519,7 @@ impl Default for DeviceConfig {
             monitor_timeout_ms: default_kmnet_monitor_timeout_ms(),
             trigger_poll_interval_ms: default_kmnet_trigger_poll_interval_ms(),
             production_fields_explicit: false,
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -1621,7 +1608,7 @@ pub struct ServerConfig {
     #[serde(default = "default_control_socket")]
     pub control_socket: PathBuf,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for ServerConfig {
@@ -1630,7 +1617,7 @@ impl Default for ServerConfig {
             host: default_server_host(),
             port: default_server_port(),
             control_socket: default_control_socket(),
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -1644,7 +1631,7 @@ pub struct ReplayConfig {
     #[serde(default)]
     pub output_gate_open: bool,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for ReplayConfig {
@@ -1653,7 +1640,7 @@ impl Default for ReplayConfig {
             enabled: default_replay_enabled(),
             frame_interval_ms: default_frame_interval_ms(),
             output_gate_open: false,
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -1669,7 +1656,7 @@ pub struct PathConfig {
     #[serde(default = "default_license")]
     pub license: PathBuf,
     #[serde(default, flatten)]
-    pub legacy: BTreeMap<String, Value>,
+    pub extra: BTreeMap<String, Value>,
 }
 
 impl Default for PathConfig {
@@ -1679,7 +1666,7 @@ impl Default for PathConfig {
             model_dir: default_model_dir(),
             database: default_database(),
             license: default_license(),
-            legacy: BTreeMap::new(),
+            extra: BTreeMap::new(),
         }
     }
 }
@@ -1967,7 +1954,7 @@ mod tests {
         let paused: AppConfig =
             serde_yaml::from_str("control:\n  output_enabled: false\n").unwrap();
         assert!(!paused.control.output_enabled);
-        assert!(!paused.control.legacy.contains_key("output_enabled"));
+        assert!(!paused.control.extra.contains_key("output_enabled"));
     }
 
     #[test]

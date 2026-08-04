@@ -1,4 +1,4 @@
-//! Phase 2 coordinate-geometry contract tests. These pin the behaviour of
+//! Coordinate-geometry contract tests. These pin the behaviour of
 //! the Rust `CoordinateTransform` against the captured regression
 //! fixtures in `tests/fixtures/*.jsonl`; this test parses those files and
 //! asserts that the Rust transform produces the same scale, the same

@@ -45,7 +45,7 @@ impl Clock for LaneClock {
 }
 
 #[test]
-fn pipeline_runtime_drives_phase2_algorithms_and_device_on_owned_threads() {
+fn pipeline_runtime_drives_current_algorithms_and_device_on_owned_threads() {
     let epoch = RuntimeEpoch(7);
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
     let device = Arc::new(RecordingPointerDevice::default());
@@ -82,7 +82,7 @@ fn pipeline_runtime_drives_phase2_algorithms_and_device_on_owned_threads() {
     assert_eq!(receipts[0].target_object_id, 1);
     assert_ne!(receipts[0].delta_x_counts, 0);
     let live_metrics = runtime.metrics();
-    let control = live_metrics.dual_phase;
+    let control = live_metrics.control;
     assert!(control.sample_available);
     assert_eq!(control.generation, 1);
     assert_eq!(control.observation_width, 640);
@@ -283,13 +283,13 @@ fn live_prediction_config_update_reaches_running_control_worker() {
             )
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(1);
-        while runtime.metrics().dual_phase.generation < generation && Instant::now() < deadline {
+        while runtime.metrics().control.generation < generation && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(runtime.metrics().dual_phase.generation, generation);
+        assert_eq!(runtime.metrics().control.generation, generation);
     }
 
-    let before = runtime.metrics().dual_phase;
+    let before = runtime.metrics().control;
     assert_eq!(before.history_position_count, 4);
     assert_eq!(before.prediction_lead_ms, 0.0);
     assert!((before.prediction_horizon_ms - 12.0).abs() < 1e-6);
@@ -313,11 +313,11 @@ fn live_prediction_config_update_reaches_running_control_worker() {
         )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(1);
-    while runtime.metrics().dual_phase.generation < generation && Instant::now() < deadline {
+    while runtime.metrics().control.generation < generation && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
 
-    let after = runtime.metrics().dual_phase;
+    let after = runtime.metrics().control;
     assert_eq!(after.generation, generation);
     assert_eq!(after.prediction_lead_ms, 40.0);
     assert!(
@@ -625,7 +625,7 @@ fn due_recoil_emits_at_the_predicted_aim_point_when_tracking_is_settled() {
     let daemon_clock: Arc<dyn Clock> = clock.clone();
     let device = Arc::new(RecordingPointerDevice::default());
     let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
-    let mut control = novasight_core::controller::DualPhaseConfig {
+    let mut control = novasight_core::controller::ContinuousControlConfig {
         prediction_enabled: true,
         ..Default::default()
     };
@@ -822,7 +822,7 @@ fn target_guard_uses_the_existing_tracker_loss_grace_without_predicted_control()
     assert_eq!(receipts[0].target_object_id, 0);
     assert_eq!(receipts[0].delta_y_counts, 2);
     assert_eq!(
-        runtime.metrics().dual_phase.block_reason,
+        runtime.metrics().control.block_reason,
         novasight_core::controller::BlockReason::TargetInvalid
     );
 
@@ -859,7 +859,7 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
     let (mut runtime, ingress) = PipelineRuntime::start_suspended(
         PipelineConfig {
             epoch,
-            control: novasight_core::controller::DualPhaseConfig {
+            control: novasight_core::controller::ContinuousControlConfig {
                 prediction_enabled: true,
                 ..Default::default()
             },
@@ -928,7 +928,7 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
     }
 
     let metrics = runtime.metrics();
-    let control = metrics.dual_phase;
+    let control = metrics.control;
     let recoil = metrics.recoil;
     assert_eq!(control.generation, 7);
     assert!(control.predicted_offset_y > 0.0);

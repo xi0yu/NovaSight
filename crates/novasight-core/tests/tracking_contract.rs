@@ -1,4 +1,4 @@
-//! Phase 2 tracker and targeting contract tests. Pins the deterministic
+//! Tracker and targeting contract tests. Pins the deterministic
 //! selection and reset edges from `target-switch-loss.jsonl` and a few
 //! negative cases. The fixtures preserve the target-selection edges the
 //! runtime must continue to respect.

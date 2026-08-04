@@ -271,18 +271,18 @@ export function ModelSelectionPanel({
               <dd>{selectedArtifact ? modelStatusLabel(selectedArtifact.status) : selectedModel?.kind === "engine" ? "后缀已接受，切换时验证" : "不可加载"}</dd>
             </div>
             <div className="wide model-parser-preset">
-              <dt>解析兼容模式</dt>
+              <dt>解析格式</dt>
               <dd>
                 <select
-                  aria-label="模型解析兼容模式"
+                  aria-label="模型解析格式"
                   disabled={busy !== null}
                   onChange={(event) => onParserPresetChange(event.target.value as ParserPresetId)}
                   value={parserPreset}
                 >
                   <option value="auto">自动识别（推荐）</option>
-                  <option value="yolov5">YOLO v5 兼容</option>
-                  <option value="yolov8">YOLO v8 兼容</option>
-                  <option value="yolo11">YOLO v11 兼容</option>
+                  <option value="yolov5">YOLO v5 解析格式</option>
+                  <option value="yolov8">YOLO v8 解析格式</option>
+                  <option value="yolo11">YOLO v11 解析格式</option>
                   <option value="novasight_generic">NovaSight 通用解析器（内置）</option>
                 </select>
                 <small>目录浏览不加载 Engine；确认切换后才验证真实输入输出。</small>

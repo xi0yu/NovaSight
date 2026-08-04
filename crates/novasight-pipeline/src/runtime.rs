@@ -11,8 +11,8 @@ use novasight_core::controller::recoil::{
     IntervalRecoilController, RecoilConfig, RecoilDecision, RecoilInput, mix_tracking_and_recoil,
 };
 use novasight_core::controller::{
-    ActuationFeedback, ControlDecision as DualPhaseDecision, ControlObservation, DualPhaseConfig,
-    DualPhaseControl,
+    ActuationFeedback, ContinuousControl, ContinuousControlConfig, ControlDecision,
+    ControlObservation,
 };
 use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore, TrackState};
 use novasight_core::{
@@ -80,11 +80,11 @@ pub enum TriggerMode {
 pub struct PipelineConfig {
     pub epoch: RuntimeEpoch,
     pub targeting: TargetingConfig,
-    pub control: DualPhaseConfig,
+    pub control: ContinuousControlConfig,
     /// Hardware trigger polling cadence. `None` leaves trigger ownership with
     /// the control plane (recording/replay); production devices set this.
     pub trigger_poll_interval_ms: Option<u64>,
-    /// Python-compatible activation policy. `Always` still respects the
+    /// Runtime activation policy. `Always` still respects the
     /// output gate, device connection, freshness, and target-validity guards.
     pub trigger_mode: TriggerMode,
     /// Minimum device-to-capture visibility delay after a successful move.
@@ -101,7 +101,7 @@ pub struct PipelineConfig {
 #[derive(Clone, Debug)]
 pub struct PipelineLiveConfig {
     pub targeting: TargetingConfig,
-    pub control: DualPhaseConfig,
+    pub control: ContinuousControlConfig,
     pub actuation_feedback_delay_ns: u64,
 }
 
@@ -124,7 +124,7 @@ struct DeviceWorkerConfig {
 #[derive(Clone, Copy, Debug)]
 struct ControlWorkerConfig {
     epoch: RuntimeEpoch,
-    control: DualPhaseConfig,
+    control: ContinuousControlConfig,
 }
 
 impl Default for PipelineConfig {
@@ -132,7 +132,7 @@ impl Default for PipelineConfig {
         Self {
             epoch: RuntimeEpoch(1),
             targeting: TargetingConfig::default(),
-            control: DualPhaseConfig::default(),
+            control: ContinuousControlConfig::default(),
             trigger_poll_interval_ms: None,
             trigger_mode: TriggerMode::Always,
             actuation_feedback_delay_ns: 4_000_000,
@@ -174,7 +174,7 @@ pub struct PipelineMetrics {
     pub last_fault: Option<String>,
     pub detections: DetectionTelemetry,
     pub target_selection: TargetSelection,
-    pub dual_phase: DualPhaseDecision,
+    pub control: ControlDecision,
     #[serde(default)]
     pub prediction_truth: PredictionTruthReport,
     pub recoil: RecoilDecision,
@@ -245,7 +245,7 @@ struct AtomicMetrics {
     last_device_error: Mutex<Option<String>>,
     vision: Mutex<VisionTelemetry>,
     last_device_receipt: AtomicDeviceReceipt,
-    dual_phase: Mutex<DualPhaseDecision>,
+    control: Mutex<ControlDecision>,
     prediction_truth: Mutex<VecDeque<PredictionTruthSample>>,
     recoil: Mutex<RecoilDecision>,
 }
@@ -372,7 +372,7 @@ struct SharedState {
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
     targeting_config: Mutex<TargetingConfig>,
-    control_config: Mutex<DualPhaseConfig>,
+    control_config: Mutex<ContinuousControlConfig>,
     recoil_config: Mutex<RecoilConfig>,
 }
 
@@ -455,15 +455,15 @@ impl SharedState {
 
     /// Telemetry must never stall the realtime control lane. A concurrent
     /// status snapshot may keep the previous complete sample for one poll.
-    fn record_dual_phase(&self, value: DualPhaseDecision) {
-        match self.metrics.dual_phase.try_lock() {
+    fn record_control_decision(&self, value: ControlDecision) {
+        match self.metrics.control.try_lock() {
             Ok(mut telemetry) => *telemetry = value,
             Err(TryLockError::WouldBlock) => {}
             Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
         }
     }
 
-    fn record_prediction_truth(&self, value: DualPhaseDecision) {
+    fn record_prediction_truth(&self, value: ControlDecision) {
         let sample = PredictionTruthSample::from_control_decision(&value);
         match self.metrics.prediction_truth.try_lock() {
             Ok(mut samples) => {
@@ -559,7 +559,7 @@ impl SharedState {
     }
 
     fn clear_control_telemetry(&self) {
-        self.record_dual_phase(DualPhaseDecision::default());
+        self.record_control_decision(ControlDecision::default());
         self.record_recoil(RecoilDecision::default());
         self.metrics
             .prediction_truth
@@ -1536,7 +1536,7 @@ fn spawn_control_worker(
         .spawn(move || {
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "control", || {
-                let mut control = DualPhaseControl::new(config.control);
+                let mut control = ContinuousControl::new(config.control);
                 let mut config_version = shared.control_config_version.load(Ordering::Acquire);
                 let mut previous_capture_ts_ns = None;
                 let mut next_telemetry_at_ns = 0;
@@ -1611,7 +1611,7 @@ fn spawn_control_worker(
                     let decision = control.calculate_with_feedback(observation, feedback);
                     shared.record_prediction_truth(decision);
                     if control_now_ns >= next_telemetry_at_ns {
-                        shared.record_dual_phase(decision);
+                        shared.record_control_decision(decision);
                         next_telemetry_at_ns =
                             control_now_ns.saturating_add(CONTROL_TELEMETRY_MIN_INTERVAL_NS);
                     }
@@ -1933,9 +1933,9 @@ fn snapshot_metrics(
             .clone(),
         detections,
         target_selection,
-        dual_phase: *shared
+        control: *shared
             .metrics
-            .dual_phase
+            .control
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         prediction_truth,

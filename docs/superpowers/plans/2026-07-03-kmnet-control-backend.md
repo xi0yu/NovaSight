@@ -14,7 +14,7 @@
 
 - Modify: `novasight/config/runtime.py`
   - Add kmNet `uuid`, `monitor_port`, `flip_dy`.
-  - Add control move mode, move duration, trace, deadzone, near/far speed.
+  - Add control move mode, move duration, trace, deadzone, response and output-limit controls.
 - Modify: `novasight/config/schema.py`
   - Expose the new kmNet and proportional fields to frontend schema.
 - Modify: `novasight/contracts.py`

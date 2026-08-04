@@ -2,7 +2,7 @@
 
 > **Execution:** Use `subagent-driven-development` task by task. Each task starts with a failing behavioral test, ends with focused verification and review, and must not begin DeepStream or kmNet integration.
 
-**Goal:** Replace the Phase 1 proportional replay placeholder with behaviorally verified Rust geometry, freshness, tracking, targeting, dual-phase control, quantization, residual, and latest-command algorithms using captured Python fixtures.
+**Goal:** Replace the Phase 1 proportional replay placeholder with behaviorally verified Rust geometry, freshness, tracking, targeting, continuous control, quantization, residual, and latest-command algorithms using captured Python fixtures.
 
 **Scope boundary:** Phase 2 is pure algorithm work. Keep the Python/C++ runtime, Axum routes, YAML/SQLite/License/model ownership, DeepStream bridge, GStreamer, TensorRT, CUDA, and every live device adapter unchanged. `RecordingPointerDevice` remains the only output sink. No production output gate may open.
 
@@ -20,23 +20,23 @@
 - Create: `rust/fixtures/phase2/moving-target.jsonl`
 - Create: `rust/fixtures/phase2/target-switch-loss.jsonl`
 - Create: `rust/fixtures/phase2/freshness-reset.jsonl`
-- Create: `rust/fixtures/phase2/dual-phase-control.jsonl`
+- Create: `rust/fixtures/phase2/continuous-control-control.jsonl`
 
 **Source authority:**
 - `novasight/coordinates.py`, `novasight/roi.py`
 - `novasight/runtime/freshness.py`, `tracker.py`, `target_selector.py`, `kalman.py`
-- `novasight/control/algorithms/dual_phase_atan_robust_predictive_v2/`
-- `tests/test_roi.py`, `test_runtime_tracker.py`, `test_runtime_pipeline.py`, `test_dual_phase_atan_robust_predictive_v2.py`, `test_mouse_control.py`
+- `novasight/control/algorithms/continuous_atan_predictive_v1/`
+- `tests/test_roi.py`, `test_runtime_tracker.py`, `test_runtime_pipeline.py`, `test_continuous_atan_predictive_v1.py`, `test_mouse_control.py`
 
 **Steps:**
 1. Write an exporter test that fails because the fixture schema and deterministic exporter do not exist.
 2. Define schema version `1` with explicit units and domains: epoch, generation, monotonic nanoseconds, model/ROI/control geometry, detections, trigger sample, target state/reason, control intermediates, integer output, residual, and tolerances.
-3. Export canonical cases: center/off-center; shifted ROI; moving target; dropout/reacquire; target switch debounce; coordinate-space change; stale/duplicate observation; FAR/NEAR transition; sign inversion; saturation; fractional residual; terminal reset.
+3. Export canonical cases: center/off-center; shifted ROI; moving target; dropout/reacquire; target switch debounce; coordinate-space change; stale/duplicate observation; continuous response transition; sign inversion; saturation; fractional residual; terminal reset.
 4. Run the exporter twice and assert byte-identical output. Reject NaN/Inf and unordered object maps.
 5. Verify Python tests that own these contracts still pass.
 
 **Verification:**
-- `pytest -q tests/test_phase2_replay_fixture_export.py tests/test_roi.py tests/test_runtime_tracker.py tests/test_dual_phase_atan_robust_predictive_v2.py`
+- `pytest -q tests/test_phase2_replay_fixture_export.py tests/test_roi.py tests/test_runtime_tracker.py tests/test_continuous_atan_predictive_v1.py`
 - Commit: `test(phase2): capture Python algorithm replay fixtures`
 
 ---
@@ -132,26 +132,25 @@
 
 ---
 
-## Task 5: Port Dual-Phase ControlCore
+## Task 5: Port Continuous ControlCore
 
 **Files:**
-- Create: `rust/crates/novasight-core/src/control/dual_phase_v2/mod.rs`
-- Create: `rust/crates/novasight-core/src/control/dual_phase_v2/config.rs`
-- Create: `rust/crates/novasight-core/src/control/dual_phase_v2/history.rs`
-- Create: `rust/crates/novasight-core/src/control/dual_phase_v2/model.rs`
+- Create: `rust/crates/novasight-core/src/controller/atan.rs`
+- Create: `rust/crates/novasight-core/src/controller/response_curve.rs`
+- Create: `rust/crates/novasight-core/src/prediction/mod.rs`
 - Create: `rust/crates/novasight-core/tests/control_trace_parity.rs`
 - Modify: `rust/crates/novasight-core/src/control/mod.rs`
 - Modify: `rust/crates/novasight-core/src/error.rs`
 
 **Interfaces:**
-- `DualPhaseControl` consumes an admitted typed observation and returns a typed decision plus compatibility telemetry.
-- FAR/NEAR transition, velocity history, lead prediction, atan response, caps, deadzone, slew, recoil contribution, and reset reasons are explicit state-machine concepts.
+- `ContinuousControl` consumes an admitted typed observation and returns a typed decision plus compatibility telemetry.
+- Continuous response curve, velocity history, lead prediction, atan response, caps, deadzone, slew, recoil contribution, and reset reasons are explicit state-machine concepts.
 - Algorithm state is epoch/target/coordinate-space scoped.
 
 **Steps:**
 1. Write JSONL fixture parity tests for every intermediate and exact state transition before implementation.
 2. Define validated config structs; reject non-finite, negative, inverted, and inconsistent thresholds.
-3. Implement bounded motion history and deterministic FAR/NEAR transitions.
+3. Implement bounded motion history and deterministic continuous response transitions.
 4. Implement prediction and controller math in `f64`, recording explicit tolerance only for noncritical floating intermediates.
 5. Reset derivative/history on epoch, target, coordinate-space, stale, duplicate, and terminal events.
 6. Keep `ProportionalReplayControl` available only as a Phase 1 test adapter; Runtime integration switches explicitly in Task 7.
@@ -159,7 +158,7 @@
 **Verification:**
 - `cargo test -p novasight-core --test control_trace_parity`
 - `cargo test -p novasight-core`
-- Commit: `feat(core): port dual-phase predictive control`
+- Commit: `feat(core): port continuous predictive control`
 
 ---
 
@@ -201,7 +200,7 @@
 - Modify: `rust/bins/relink_server/src/bootstrap.rs`
 
 **Interfaces:**
-- Pipeline becomes `ReplayPerceptionSource → FreshnessGate → Tracker → TargetingCore → DualPhaseControl → Quantizer → LatestCommandSlot → RecordingPointerDevice`.
+- Pipeline becomes `ReplayPerceptionSource → FreshnessGate → Tracker → TargetingCore → ContinuousControl → Quantizer → LatestCommandSlot → RecordingPointerDevice`.
 - RuntimeManager remains the only lifecycle owner; terminal faults still travel through its bounded event channel.
 - API additions are telemetry-only and backward compatible; existing keys/types remain unchanged.
 
@@ -249,7 +248,7 @@
 ## Phase 2 Definition of Done
 
 - Checked-in fixtures are deterministic, versioned, and generated from current Python behavior.
-- Rust geometry, freshness, tracking, targeting, dual-phase control, quantization, residual, and latest-command semantics match fixtures.
+- Rust geometry, freshness, tracking, targeting, continuous control, quantization, residual, and latest-command semantics match fixtures.
 - Noncritical floating tolerances are explicit; identity/state/reset/integer/residual outcomes are exact.
 - RuntimeManager remains sole lifecycle owner; no post-stop/post-fault/post-switch command leaks.
 - All channels/slots stay bounded and slow consumers do not backpressure runtime.

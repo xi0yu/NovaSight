@@ -1,7 +1,7 @@
 import type { NovaIconName } from "./iconNames";
 
 export type NovaStatus = "normal" | "running" | "waiting" | "warning" | "error" | "disabled";
-export type LegacyTone = "good" | "warn" | "bad" | "idle";
+export type StatusTone = "good" | "warn" | "bad" | "idle";
 
 export type StatusSpec = {
   icon: NovaIconName;
@@ -42,7 +42,7 @@ export const statusSpecs: Record<NovaStatus, StatusSpec> = {
   },
 };
 
-export function toneToStatus(tone: LegacyTone): NovaStatus {
+export function toneToStatus(tone: StatusTone): NovaStatus {
   switch (tone) {
     case "good":
       return "normal";

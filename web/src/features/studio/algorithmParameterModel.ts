@@ -1,4 +1,4 @@
-import type { RuntimeConfigValue } from "../../api";
+import type { ConfigFieldSchema, ConfigSchemaResponse, RuntimeConfigValue } from "../../api";
 import type {
   ParameterApplyMode,
   ParameterNumberKind,
@@ -9,6 +9,7 @@ export type StudioNumberParameter<Field extends string> = {
   key: Field;
   label: string;
   detail: string;
+  formula?: string;
   value: number;
   min: number;
   max: number;
@@ -22,74 +23,196 @@ export type StudioNumberParameter<Field extends string> = {
   transform?: (value: number) => RuntimeConfigValue;
 };
 
-export type AlgorithmNumberParameter = StudioNumberParameter<DualPhasePipelineField>;
+export type AlgorithmNumberParameter = StudioNumberParameter<ControlPipelineField>;
 export type TargetingNumberParameter = StudioNumberParameter<TargetingPipelineField>;
 export type AlgorithmSettingsSection = "response" | "prediction" | "stability" | "calibration";
+export const FIXED_ATAN_SCALE_COUNTS = 256;
 
-export type DualPhasePipelineField =
-  | "freshness_threshold_ms"
-  | "projection_fov_x_deg"
-  | "projection_counts_per_360"
-  | "p_response_scale"
-  | "p_response_boost"
-  | "p_response_curve_shape"
-  | "atan_scale_counts"
-  | "max_counts_per_update"
-  | "prediction_enabled"
-  | "velocity_history_reset_gap_ms"
-  | "velocity_spread_base_px_ms"
-  | "velocity_spread_relative"
-  | "prediction_lead_ms"
-  | "prediction_cap_px"
-  | "arrival_radius_counts"
-  | "residual_cap"
-  | "actuation_feedback_delay_ms";
+export const CONTROL_PIPELINE_FIELDS = [
+  "freshness_threshold_ms",
+  "projection_fov_x_deg",
+  "projection_counts_per_360",
+  "p_response_scale",
+  "p_response_boost",
+  "p_response_curve_shape",
+  "max_counts_per_update",
+  "prediction_enabled",
+  "velocity_history_reset_gap_ms",
+  "velocity_spread_base_px_ms",
+  "velocity_spread_relative",
+  "prediction_lead_ms",
+  "prediction_cap_px",
+  "arrival_radius_counts",
+  "residual_cap",
+  "actuation_feedback_delay_ms"
+] as const;
 
-export type TargetingPipelineField =
-  | "target_fov_radius_px"
-  | "target_min_confidence"
-  | "target_track_max_age"
-  | "target_track_max_lost_age_ms"
-  | "tracker_max_match_distance"
-  | "tracker_position_cost_weight"
-  | "tracker_iou_cost_weight"
-  | "tracker_scale_cost_weight"
-  | "tracker_max_size_ratio"
-  | "tracker_max_association_dt_ms"
-  | "tracker_kalman_acceleration_noise"
-  | "tracker_kalman_measurement_noise_x"
-  | "tracker_kalman_measurement_noise_y"
-  | "tracker_kalman_max_predict_dt_ms"
-  | "tracker_kalman_max_predict_missing_ms"
-  | "tracker_kalman_max_predict_steps"
-  | "tracker_kalman_nis_threshold"
-  | "tracker_kalman_nis_hard_reject"
-  | "target_class_priority"
-  | "target_class_filter"
-  | "target_selection_class_ratio"
-  | "target_switch_min_preference_advantage"
-  | "target_switch_min_continuity_score"
-  | "target_switch_delay_ms"
-  | "target_aim_y_ratio"
-  | "target_class_aim_y_ratios"
-  | "candidate_max_aspect_ratio";
+export type ControlPipelineField = typeof CONTROL_PIPELINE_FIELDS[number];
+
+export const TARGETING_PIPELINE_FIELDS = [
+  "target_fov_radius_px",
+  "target_min_confidence",
+  "target_track_max_age",
+  "target_track_max_lost_age_ms",
+  "tracker_max_match_distance",
+  "tracker_position_cost_weight",
+  "tracker_iou_cost_weight",
+  "tracker_scale_cost_weight",
+  "tracker_max_size_ratio",
+  "tracker_max_association_dt_ms",
+  "tracker_kalman_acceleration_noise",
+  "tracker_kalman_measurement_noise_x",
+  "tracker_kalman_measurement_noise_y",
+  "tracker_kalman_max_predict_dt_ms",
+  "tracker_kalman_max_predict_missing_ms",
+  "tracker_kalman_max_predict_steps",
+  "tracker_kalman_nis_threshold",
+  "tracker_kalman_nis_hard_reject",
+  "target_class_priority",
+  "target_class_filter",
+  "target_selection_class_ratio",
+  "target_switch_min_preference_advantage",
+  "target_switch_min_continuity_score",
+  "target_switch_delay_ms",
+  "target_aim_y_ratio",
+  "target_class_aim_y_ratios",
+  "candidate_max_aspect_ratio"
+] as const;
+
+export type TargetingPipelineField = typeof TARGETING_PIPELINE_FIELDS[number];
+
+export type ConfigFieldIndex = ReadonlyMap<string, ConfigFieldSchema>;
+
+export type StudioConfigSchemaIssue = {
+  path: string;
+  reason: string;
+};
+
+const NUMERIC_SCHEMA_TYPES = new Set<ConfigFieldSchema["type"]>(["int", "float"]);
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function pipelinePath(field: string): string {
+  return `pipeline.${field}`;
+}
+
+export function buildConfigFieldIndex(schema: ConfigSchemaResponse | null | undefined): ConfigFieldIndex | null {
+  if (!schema) {
+    return null;
+  }
+  const fields = new Map<string, ConfigFieldSchema>();
+  for (const section of schema.sections) {
+    for (const field of section.fields) {
+      fields.set(field.path, field);
+    }
+  }
+  return fields;
+}
+
+export function validateStudioConfigSchema(schema: ConfigSchemaResponse): StudioConfigSchemaIssue[] {
+  const fields = buildConfigFieldIndex(schema);
+  if (!fields) {
+    return [{ path: "schema", reason: "missing config schema" }];
+  }
+  const issues: StudioConfigSchemaIssue[] = [];
+  if (!schema.algorithm) {
+    issues.push({ path: "algorithm", reason: "backend schema must expose the active control algorithm descriptor" });
+  } else {
+    if (!isFiniteNumber(schema.algorithm.response.atan_scale_counts) || schema.algorithm.response.atan_scale_counts <= 0) {
+      issues.push({ path: "algorithm.response.atan_scale_counts", reason: "Atan scale must be a positive number" });
+    }
+    if (
+      !isFiniteNumber(schema.algorithm.response.static_acquisition_boost_fraction)
+      || !isFiniteNumber(schema.algorithm.response.motion_boost_fraction)
+    ) {
+      issues.push({ path: "algorithm.response", reason: "response boost fractions must be numeric" });
+    }
+    if (schema.algorithm.prediction.aim_history_points !== 4 || schema.algorithm.prediction.velocity_segments !== 3) {
+      issues.push({ path: "algorithm.prediction", reason: "Studio prediction display expects 4 aim points and 3 velocity segments" });
+    }
+  }
+  for (const key of CONTROL_PIPELINE_FIELDS) {
+    const path = pipelinePath(key);
+    const field = fields.get(path);
+    if (!field) {
+      issues.push({ path, reason: "Studio control parameter is not exposed by backend schema" });
+      continue;
+    }
+    if (key === "prediction_enabled") {
+      if (field.type !== "bool") {
+        issues.push({ path, reason: `expected bool schema field, got ${field.type}` });
+      }
+    } else if (!NUMERIC_SCHEMA_TYPES.has(field.type)) {
+      issues.push({ path, reason: `expected numeric schema field, got ${field.type}` });
+    }
+    if (field.restart_required) {
+      issues.push({ path, reason: "control algorithm field must be hot-applied by the backend" });
+    }
+  }
+  for (const key of TARGETING_PIPELINE_FIELDS) {
+    const path = pipelinePath(key);
+    const field = fields.get(path);
+    if (!field) {
+      issues.push({ path, reason: "Studio targeting parameter is not exposed by backend schema" });
+      continue;
+    }
+    if (field.restart_required) {
+      issues.push({ path, reason: "targeting field must be hot-applied by the backend" });
+    }
+  }
+  return issues;
+}
+
+function schemaBackedNumberParameter<Field extends string>(
+  schemaIndex: ConfigFieldIndex | null | undefined,
+  section: "pipeline",
+  parameter: StudioNumberParameter<Field>
+): StudioNumberParameter<Field> | null {
+  if (!schemaIndex) {
+    return parameter;
+  }
+  const field = schemaIndex.get(`${section}.${parameter.key}`);
+  if (!field || !NUMERIC_SCHEMA_TYPES.has(field.type)) {
+    return null;
+  }
+  const min = isFiniteNumber(field.min) ? field.min : parameter.min;
+  const max = isFiniteNumber(field.max) ? field.max : parameter.max;
+  return {
+    ...parameter,
+    label: field.label || parameter.label,
+    min,
+    max,
+    unit: field.unit ?? parameter.unit,
+    applyMode: field.restart_required ? "restart" : "live"
+  };
+}
+
+function schemaBackedNumberParameters<Field extends string>(
+  schemaIndex: ConfigFieldIndex | null | undefined,
+  parameters: StudioNumberParameter<Field>[]
+): StudioNumberParameter<Field>[] {
+  return parameters
+    .map((parameter) => schemaBackedNumberParameter(schemaIndex, "pipeline", parameter))
+    .filter((parameter): parameter is StudioNumberParameter<Field> => parameter !== null);
+}
 
 export type AlgorithmParameterValues = {
   pResponseScale: number;
   pResponseBoost: number;
   pResponseCurveShape: number;
-  dualPhaseAtanScale: number;
   actuationFeedbackDelayMs: number;
-  dualPhasePredictionLeadMs: number;
-  dualPhasePredictionHistoryResetGapMs: number;
+  controlPredictionLeadMs: number;
+  controlPredictionHistoryResetGapMs: number;
   velocitySpreadBasePxMs: number;
   velocitySpreadRelative: number;
-  dualPhasePredictionCapPx: number;
-  dualPhaseMaxCounts: number;
-  dualPhaseArrivalRadiusCounts: number;
+  controlPredictionCapPx: number;
+  controlMaxCounts: number;
+  controlArrivalRadiusCounts: number;
   residualCap: number;
-  dualPhaseFovX: number;
-  dualPhaseCountsPer360: number;
+  controlFovX: number;
+  controlCountsPer360: number;
   freshnessThresholdMs: number;
 };
 
@@ -132,12 +255,16 @@ export type TargetingParameterGroups = {
   trackerKalmanParameters: TargetingNumberParameter[];
 };
 
-export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues): AlgorithmParameterGroups {
-  return {
+export function buildAlgorithmParameterGroups(
+  values: AlgorithmParameterValues,
+  schemaIndex?: ConfigFieldIndex | null
+): AlgorithmParameterGroups {
+  const groups: AlgorithmParameterGroups = {
     responseParameters: [
       {
         key: "p_response_scale",
         label: "响应力度",
+        formula: "K_base",
         detail: "连续响应模型的基础倍率。整体调高会更快、更有力；过高会增加过冲和摆动。",
         value: values.pResponseScale,
         min: 0,
@@ -150,7 +277,8 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "p_response_boost",
         label: "力度增强",
-        detail: "误差变大时在基础力度上增加多少响应。调高会增强追踪，过高会让大幅移动过猛。",
+        formula: "B",
+        detail: "基础远距增强与运动可信增强的总倍率。稳定横移时会吃到更多动态增强，静止或晃动时只保留基础增强。",
         value: values.pResponseBoost,
         min: 0,
         max: 100,
@@ -162,7 +290,8 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "p_response_curve_shape",
         label: "响应曲线",
-        detail: "控制 R(r) 的增长形状。低于 1 更早增强，高于 1 更晚增强。",
+        formula: "gamma",
+        detail: "控制 R(r) 的增长形状。低于 1 更早进入增强，高于 1 更晚增强。",
         value: values.pResponseCurveShape,
         min: 0.5,
         max: 4,
@@ -170,25 +299,13 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         recommendedMax: 2,
         step: 0.01,
         applyMode: "live"
-      },
-      {
-        key: "atan_scale_counts",
-        label: "Atan 尺度",
-        detail: "决定大误差何时开始被曲线压缩。增大后中远距离输出更接近线性，减小则更早压缩。",
-        value: values.dualPhaseAtanScale,
-        min: 0.000001,
-        max: 1000000,
-        recommendedMin: 0.1,
-        recommendedMax: 10000,
-        step: 0.1,
-        unit: "counts",
-        applyMode: "live"
       }
     ],
     predictionCoreParameters: [
       {
         key: "actuation_feedback_delay_ms",
         label: "执行与反馈延迟",
+        formula: "T_delay",
         detail: "命令发出到画面可观察到响应的延迟：预测会补偿这段时间，发送后也会等待这段时间再接受新画面反馈。",
         value: values.actuationFeedbackDelayMs,
         min: 0,
@@ -202,8 +319,9 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "prediction_lead_ms",
         label: "预测提前量",
+        formula: "T_extra",
         detail: "在观测帧龄和执行反馈延迟之外，沿 aim 点速度额外提前的时间。跟不上移动目标时小幅增加；急停或过度预判时降低。",
-        value: values.dualPhasePredictionLeadMs,
+        value: values.controlPredictionLeadMs,
         min: 0,
         max: 1000,
         recommendedMin: 0,
@@ -215,8 +333,9 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "velocity_history_reset_gap_ms",
         label: "断流历史重置",
-        detail: "相邻有效画面超过该时间后清空 4 点 / 3 段速度历史，避免断流后继续沿旧方向预测。",
-        value: values.dualPhasePredictionHistoryResetGapMs,
+        formula: "history",
+        detail: "相邻有效画面超过该时间后清空 4 点 / 3 段速度历史，避免断流后继续沿上次方向预测。",
+        value: values.controlPredictionHistoryResetGapMs,
         min: 0.000001,
         max: 10000,
         recommendedMin: 10,
@@ -230,6 +349,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "velocity_spread_base_px_ms",
         label: "二维速度离散基础容差",
+        formula: "spread0",
         detail: "3 段二维 aim 速度的幅度离散超过基础值加相对值后，预测可信度会降低。",
         value: values.velocitySpreadBasePxMs,
         min: 0.000001,
@@ -243,6 +363,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "velocity_spread_relative",
         label: "二维速度离散相对容差",
+        formula: "spread%",
         detail: "按当前二维速度幅度放宽离散容差，避免高速目标被固定阈值误判。",
         value: values.velocitySpreadRelative,
         min: 0,
@@ -257,8 +378,9 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "prediction_cap_px",
         label: "预测位移上限",
+        formula: "cap_pred",
         detail: "目标速度预测最多把 aim 点向未来推进多少像素。这是预测位移 cap，不是鼠标输出上限。",
-        value: values.dualPhasePredictionCapPx,
+        value: values.controlPredictionCapPx,
         min: 0,
         max: 100000,
         recommendedMin: 0,
@@ -272,8 +394,9 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "max_counts_per_update",
         label: "最大移动量",
+        formula: "M",
         detail: "控制器每轮最多输出多少设备 counts。它限制命令输出，不改变预测 aim 点。",
-        value: values.dualPhaseMaxCounts,
+        value: values.controlMaxCounts,
         min: 1,
         max: 32767,
         recommendedMin: 1,
@@ -286,8 +409,9 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "arrival_radius_counts",
         label: "到位停止半径",
+        formula: "D",
         detail: "每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞。",
-        value: values.dualPhaseArrivalRadiusCounts,
+        value: values.controlArrivalRadiusCounts,
         min: 0.5,
         max: 1000,
         recommendedMin: 0.5,
@@ -298,6 +422,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "residual_cap",
         label: "小数残差上限",
+        formula: "Q_res",
         detail: "限制不足一个设备计数的累计余量，范围为 0～1；不是额外移动速度。",
         value: values.residualCap,
         min: 0,
@@ -310,8 +435,9 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "projection_fov_x_deg",
         label: "水平视场角 FOVX",
+        formula: "proj_fov",
         detail: "当前游戏水平视场角，用于把像素误差换算成角度误差。",
-        value: values.dualPhaseFovX,
+        value: values.controlFovX,
         min: 0.000001,
         max: 179.999999,
         recommendedMin: 30,
@@ -323,8 +449,9 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "projection_counts_per_360",
         label: "设备每圈 counts",
+        formula: "proj_counts",
         detail: "鼠标完成 360°转向所需的真实设备计数，用于把角度需求换算成输出 counts。",
-        value: values.dualPhaseCountsPer360,
+        value: values.controlCountsPer360,
         min: 0.000001,
         max: 1000000,
         recommendedMin: 1,
@@ -338,6 +465,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       {
         key: "freshness_threshold_ms",
         label: "可用观测最大帧龄",
+        formula: "freshness",
         detail: "超过该帧龄的识别结果不会进入控制器；它是安全时效门，不是固定推理时长。",
         value: values.freshnessThresholdMs,
         min: 1,
@@ -350,10 +478,21 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       }
     ]
   };
+  return {
+    responseParameters: schemaBackedNumberParameters(schemaIndex, groups.responseParameters),
+    predictionCoreParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionCoreParameters),
+    predictionConfidenceParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionConfidenceParameters),
+    predictionCapParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionCapParameters),
+    stabilityParameters: schemaBackedNumberParameters(schemaIndex, groups.stabilityParameters),
+    calibrationParameters: schemaBackedNumberParameters(schemaIndex, groups.calibrationParameters)
+  };
 }
 
-export function buildTargetingParameterGroups(values: TargetingParameterValues): TargetingParameterGroups {
-  return {
+export function buildTargetingParameterGroups(
+  values: TargetingParameterValues,
+  schemaIndex?: ConfigFieldIndex | null
+): TargetingParameterGroups {
+  const groups: TargetingParameterGroups = {
     targetAdvancedParameters: [
       {
         key: "target_min_confidence",
@@ -413,7 +552,7 @@ export function buildTargetingParameterGroups(values: TargetingParameterValues):
       {
         key: "tracker_max_match_distance",
         label: "归一化匹配距离",
-        detail: "旧 Track 与新检测框允许关联的最大归一化距离。过大容易误关联，过小会断轨。",
+        detail: "已有 Track 与新检测框允许关联的最大归一化距离。过大容易误关联，过小会断轨。",
         value: values.trackerMaxMatchDistance,
         min: 0.000001,
         max: 100,
@@ -473,7 +612,7 @@ export function buildTargetingParameterGroups(values: TargetingParameterValues):
       {
         key: "tracker_max_association_dt_ms",
         label: "最大关联时间间隔",
-        detail: "两次观测间隔超过该值时，不使用旧轨迹继续关联。",
+        detail: "两次观测间隔超过该值时，不使用上一轨迹继续关联。",
         value: values.trackerMaxAssociationDtMs,
         min: 1,
         max: 10000,
@@ -613,7 +752,7 @@ export function buildTargetingParameterGroups(values: TargetingParameterValues):
       {
         key: "tracker_kalman_nis_hard_reject",
         label: "NIS 硬拒绝阈值",
-        detail: "创新量超过该值时，该检测与旧 Track 不允许关联。降低会减少误关联，过低会造成频繁断轨。",
+        detail: "创新量超过该值时，该检测与已有 Track 不允许关联。降低会减少误关联，过低会造成频繁断轨。",
         value: values.trackerKalmanNisHardReject,
         min: Math.max(0.000001, values.trackerKalmanNisThreshold),
         max: 1000000,
@@ -623,5 +762,10 @@ export function buildTargetingParameterGroups(values: TargetingParameterValues):
         riskLevel: "advanced"
       }
     ]
+  };
+  return {
+    targetAdvancedParameters: schemaBackedNumberParameters(schemaIndex, groups.targetAdvancedParameters),
+    trackerCoreParameters: schemaBackedNumberParameters(schemaIndex, groups.trackerCoreParameters),
+    trackerKalmanParameters: schemaBackedNumberParameters(schemaIndex, groups.trackerKalmanParameters)
   };
 }

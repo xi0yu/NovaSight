@@ -1,4 +1,4 @@
-//! Phase 2 output contract tests. Pins the typed behavior of the
+//! Output contract tests. Pins the typed behavior of the
 //! `AxisCountLimiter` / `DeviceCountLimiter` contract used to convert a
 //! fractional control demand into a delivery-ready integer command.
 

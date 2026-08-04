@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "NovaSight Phase 2 Replay Fixture",
-  "description": "Deterministic, versioned replay fixtures for the Phase 2 pure-algorithm Rust port. Every field uses an explicit unit; Rust tests parse this schema and assert exact equality for identity, state, reset, integer, and residual outcomes. Floating-point values are compared with the per-field tolerance declared in this schema.",
+  "title": "NovaSight Runtime Replay Fixture",
+  "description": "Deterministic, versioned replay fixtures for the current pure-algorithm Rust runtime. Every field uses an explicit unit; Rust tests parse this schema and assert exact equality for identity, state, reset, integer, and residual outcomes. Floating-point values are compared with the per-field tolerance declared in this schema.",
   "version": "1",
   "epoch_unit": "u64",
   "generation_unit": "u64",
@@ -9,8 +9,8 @@
   "tolerances": {
     "geometry_f64_abs": 1e-9,
     "geometry_f32_abs": 1e-5,
-    "control_far_abs": 1e-6,
-    "control_near_abs": 1e-3,
+    "control_response_abs": 1e-6,
+    "control_arrival_abs": 1e-3,
     "velocity_abs": 1e-3,
     "atan_abs": 1e-9
   },

@@ -1,5 +1,5 @@
-//! Phase 2 algorithm microbench. Runs the full Phase 2 pipeline
-//! (FreshnessGate -> Tracker -> TargetingCore -> DualPhaseControl) for a fixed
+//! Runtime algorithm microbench. Runs the full runtime algorithm path
+//! (FreshnessGate -> Tracker -> TargetingCore -> ContinuousControl) for a fixed
 //! number of frames and prints a
 //! compact P50/P95/P99 latency table plus allocations per emit.
 //! Invoked via ``cargo bench -p novasight-core --bench
@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use novasight_core::controller::{ControlObservation, DualPhaseConfig, DualPhaseControl};
+use novasight_core::controller::{ContinuousControl, ContinuousControlConfig, ControlObservation};
 use novasight_core::freshness::{FreshnessPolicy, evaluate as freshness_evaluate};
 use novasight_core::perception::types::Detection;
 use novasight_core::tracking::{TargetingConfig, TargetingCore};
@@ -55,7 +55,7 @@ fn main() {
     let records = load_records("static-target.jsonl");
     let policy = FreshnessPolicy::new(55.0).expect("policy");
     let mut tracking = TargetingCore::new(TargetingConfig::default());
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
 
     let mut samples: Vec<u128> = Vec::with_capacity(ITERATIONS);
     for _ in 0..ITERATIONS {
@@ -105,7 +105,7 @@ fn main() {
     sorted.sort_unstable();
     let p95 = percentile(&mut sorted.clone(), 0.95);
     let p99 = percentile(&mut sorted, 0.99);
-    println!("Phase 2 algorithm microbench: {} iterations", total);
+    println!("Runtime algorithm microbench: {} iterations", total);
     println!("  p50: {p50} ns");
     println!("  p95: {p95} ns");
     println!("  p99: {p99} ns");

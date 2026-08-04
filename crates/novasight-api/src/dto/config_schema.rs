@@ -1,3 +1,7 @@
+use novasight_core::controller::{
+    ATAN_RESPONSE_MOTION_BOOST_FRACTION, ATAN_RESPONSE_STATIC_BOOST_FRACTION,
+    DEFAULT_ATAN_SCALE_COUNTS,
+};
 use novasight_runtime::AppConfig;
 use serde::Serialize;
 use serde_json::Value;
@@ -5,8 +9,33 @@ use serde_json::Value;
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ConfigSchemaResponse {
     version: u32,
+    algorithm: ConfigAlgorithmSchema,
     values: Value,
     sections: Vec<ConfigSectionSchema>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ConfigAlgorithmSchema {
+    id: &'static str,
+    label: &'static str,
+    response: ConfigAlgorithmResponseSchema,
+    prediction: ConfigAlgorithmPredictionSchema,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ConfigAlgorithmResponseSchema {
+    formula: &'static str,
+    radial_multiplier_formula: &'static str,
+    atan_scale_counts: f64,
+    static_acquisition_boost_fraction: f64,
+    motion_boost_fraction: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ConfigAlgorithmPredictionSchema {
+    model: &'static str,
+    aim_history_points: u32,
+    velocity_segments: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -39,6 +68,22 @@ impl ConfigSchemaResponse {
     pub(crate) fn new(config: &AppConfig) -> Self {
         Self {
             version: config.schema_version,
+            algorithm: ConfigAlgorithmSchema {
+                id: "continuous_atan_predictive_v1",
+                label: "连续 Atan 控制",
+                response: ConfigAlgorithmResponseSchema {
+                    formula: "u = K_base * R(r, motion_strength) * S * atan(e_pred / S)",
+                    radial_multiplier_formula: "R = 1 + B * (static + motion * motion_strength) * (1 - exp(-(r ^ gamma)))",
+                    atan_scale_counts: DEFAULT_ATAN_SCALE_COUNTS,
+                    static_acquisition_boost_fraction: ATAN_RESPONSE_STATIC_BOOST_FRACTION,
+                    motion_boost_fraction: ATAN_RESPONSE_MOTION_BOOST_FRACTION,
+                },
+                prediction: ConfigAlgorithmPredictionSchema {
+                    model: "motion-gated four-point velocity",
+                    aim_history_points: 4,
+                    velocity_segments: 3,
+                },
+            },
             values: serde_json::to_value(config)
                 .expect("validated AppConfig must have a JSON representation"),
             sections: vec![
@@ -139,7 +184,7 @@ impl ConfigSchemaResponse {
                     "控制输出",
                     vec![
                         hot_boolean("control.output_enabled", "允许设备位移输出"),
-                        select(
+                        hot_select(
                             "control.trigger_mode",
                             "输出触发方式",
                             &["always", "hardware"],
@@ -189,13 +234,6 @@ impl ConfigSchemaResponse {
                         float(
                             "pipeline.projection_counts_per_360",
                             "水平一周鼠标计数",
-                            0.000_001,
-                            1_000_000.0,
-                            Some("count"),
-                        ),
-                        float(
-                            "pipeline.atan_scale_counts",
-                            "Atan 响应尺度",
                             0.000_001,
                             1_000_000.0,
                             Some("count"),
@@ -678,6 +716,17 @@ fn select(
     }
 }
 
+fn hot_select(
+    path: &'static str,
+    label: &'static str,
+    options: &'static [&'static str],
+) -> ConfigFieldSchema {
+    ConfigFieldSchema {
+        restart_required: false,
+        ..select(path, label, options)
+    }
+}
+
 fn integer(
     path: &'static str,
     label: &'static str,
@@ -741,6 +790,18 @@ mod tests {
         let value = serde_json::to_value(schema).unwrap();
 
         assert_eq!(value["version"], 12);
+        assert_eq!(value["algorithm"]["id"], "continuous_atan_predictive_v1");
+        assert_eq!(value["algorithm"]["response"]["atan_scale_counts"], 256.0);
+        assert_eq!(
+            value["algorithm"]["response"]["static_acquisition_boost_fraction"],
+            0.35
+        );
+        assert_eq!(
+            value["algorithm"]["response"]["motion_boost_fraction"],
+            0.65
+        );
+        assert_eq!(value["algorithm"]["prediction"]["aim_history_points"], 4);
+        assert_eq!(value["algorithm"]["prediction"]["velocity_segments"], 3);
         assert_eq!(value["values"]["server"]["port"], 5174);
         assert_eq!(value["values"]["pipeline"]["arrival_radius_counts"], 3.0);
         assert_eq!(
@@ -751,21 +812,6 @@ mod tests {
         assert_eq!(value["values"]["pipeline"]["p_response_boost"], 0.5);
         assert_eq!(value["values"]["pipeline"]["max_counts_per_update"], 127.0);
         assert_eq!(value["values"]["pipeline"]["prediction_cap_px"], 10.0);
-        assert!(
-            value["values"]["pipeline"]
-                .get("p_response_gain_floor")
-                .is_none()
-        );
-        assert!(
-            value["values"]["pipeline"]
-                .get("far_max_counts_per_update")
-                .is_none()
-        );
-        assert!(
-            value["values"]["pipeline"]
-                .get("prediction_lead_frames")
-                .is_none()
-        );
         assert_eq!(value["values"]["inference"], Value::Null);
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
             section["id"] == "inference"
@@ -799,6 +845,71 @@ mod tests {
             .find(|field| field["path"] == "pipeline.p_response_scale")
             .unwrap();
         assert_eq!(response_scale["restart_required"], false);
+        let hot_control_paths = [
+            "control.output_enabled",
+            "control.trigger_mode",
+            "pipeline.freshness_threshold_ms",
+            "pipeline.projection_fov_x_deg",
+            "pipeline.projection_counts_per_360",
+            "pipeline.p_response_scale",
+            "pipeline.p_response_boost",
+            "pipeline.p_response_curve_shape",
+            "pipeline.max_counts_per_update",
+            "pipeline.prediction_enabled",
+            "pipeline.velocity_history_reset_gap_ms",
+            "pipeline.velocity_spread_base_px_ms",
+            "pipeline.velocity_spread_relative",
+            "pipeline.prediction_lead_ms",
+            "pipeline.prediction_cap_px",
+            "pipeline.arrival_radius_counts",
+            "pipeline.residual_cap",
+            "pipeline.actuation_feedback_delay_ms",
+            "pipeline.target_fov_radius_px",
+            "pipeline.target_min_confidence",
+            "pipeline.target_track_max_age",
+            "pipeline.target_track_max_lost_age_ms",
+            "pipeline.tracker_max_match_distance",
+            "pipeline.tracker_position_cost_weight",
+            "pipeline.tracker_iou_cost_weight",
+            "pipeline.tracker_scale_cost_weight",
+            "pipeline.tracker_max_size_ratio",
+            "pipeline.tracker_max_association_dt_ms",
+            "pipeline.tracker_kalman_acceleration_noise",
+            "pipeline.tracker_kalman_measurement_noise_x",
+            "pipeline.tracker_kalman_measurement_noise_y",
+            "pipeline.tracker_kalman_max_predict_dt_ms",
+            "pipeline.tracker_kalman_max_predict_missing_ms",
+            "pipeline.tracker_kalman_max_predict_steps",
+            "pipeline.tracker_kalman_nis_threshold",
+            "pipeline.tracker_kalman_nis_hard_reject",
+            "pipeline.target_class_priority",
+            "pipeline.target_class_filter",
+            "pipeline.target_selection_class_ratio",
+            "pipeline.target_switch_min_preference_advantage",
+            "pipeline.target_switch_min_continuity_score",
+            "pipeline.target_switch_delay_ms",
+            "pipeline.target_aim_y_ratio",
+            "pipeline.target_class_aim_y_ratios",
+            "pipeline.candidate_max_aspect_ratio",
+        ];
+        for path in hot_control_paths {
+            let field = value["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|section| section["fields"].as_array().unwrap())
+                .find(|field| field["path"] == path)
+                .unwrap_or_else(|| panic!("missing config schema field {path}"));
+            assert_eq!(field["restart_required"], false, "{path} must be hot");
+        }
+        assert!(
+            value["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|section| section["fields"].as_array().unwrap())
+                .all(|field| field["path"] != "pipeline.atan_scale_counts")
+        );
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
             section["id"] == "crosshair"
                 && section["fields"]

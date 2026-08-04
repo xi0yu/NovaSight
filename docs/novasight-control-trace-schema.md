@@ -12,7 +12,7 @@ schema：`novasight.control_trace` version `5`
 DetectionBatch
 -> Tracker / Kalman
 -> control calculation
--> algorithm-specific delivery (V2 latest-replace Scheduler or configured legacy delivery)
+-> continuous latest-replace delivery
 -> device send result
 ```
 
@@ -67,13 +67,13 @@ GStreamer PTS 或 wall clock 不得直接与这些字段相减。
 | P、D、U、prediction velocity term | rad |
 | algorithm aim/real error/control error/prediction offset | px |
 | algorithm velocity_x | px/s |
-| V2 robust velocity segments/mean/median/selected velocity/spread | px/ms |
+| continuous predictor velocity segments/mean/medoid/selected velocity/spread | px/ms |
 | algorithm full error/float demand/integer command/residual | counts |
 | counts planned/queued/sent/estimated_applied/unobserved | counts |
 | scheduler pending_age | ms |
 | timestamp fields | ns |
 
-`tracker.velocity_px_s` 是兼容字段名，含义是屏幕表观速度，不是目标世界速度。`algorithm_decision.estimator.velocity_x_px_s` 是 V1 Kalman 估计结果；V2 使用 `algorithm_decision.robust_velocity`，单位固定为 `px/ms`，两者不得混算。
+`tracker.velocity_px_s` 的含义是屏幕表观速度，不是目标世界速度。当前控制决策使用 `algorithm_decision.robust_velocity`，单位固定为 `px/ms`；它来自 aim 点短窗速度，不与 Kalman 状态速度混算。
 
 ## Correlation ID
 
@@ -120,7 +120,7 @@ control:{detection_generation}:{frame_id}:{capture_ts_ns}
 
 ## algorithm_decision
 
-版本 3 新增专用算法决策块。版本 4 为 `dual_phase_atan_robust_predictive_v2` 增加 measured error 和四点短窗速度；当前 V2 进一步记录毫秒级预测提前量与后坐力前馈。V2 至少记录：
+版本 3 新增专用算法决策块。当前 `continuous_atan_predictive_v1` 记录 measured error、四点短窗速度、毫秒级预测提前量与后坐力前馈。算法决策至少记录：
 
 ```text
 algorithm_id / phase / measurement_dt_ms
@@ -145,7 +145,9 @@ delivery_mode / scheduler_used
 }
 ```
 
-`scheduler` 顶层仍为兼容结构。V2 写入 `used=true`、`delivery_mode=latest_replace`，并且最多暴露一条完整待发送命令；新观测覆盖旧命令，不形成分步轨迹。
+`scheduler` 顶层记录 latest-replace 交付状态。当前控制链写入
+`used=true`、`delivery_mode=latest_replace`，并且最多暴露一条完整待发送
+命令；新观测覆盖未发送命令，不形成分步轨迹。
 
 ## 采集位置
 

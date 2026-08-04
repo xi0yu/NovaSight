@@ -147,7 +147,7 @@ novasight-core ------------> no infrastructure crates
 
 ### 4.4 Control
 
-职责：将 SelectedTarget、geometry、trigger 和 timing 组成 `ControlObservation`；执行算法状态、prediction、FAR/NEAR、Atan、quantization、residual 和 reset edge；输出完整 `ControlDecision`。不调用设备。
+职责：将 SelectedTarget、geometry、trigger 和 timing 组成 `ControlObservation`；执行连续响应控制、prediction、Atan、quantization、residual 和 reset edge；输出完整 `ControlDecision`。不调用设备。
 
 ### 4.5 Output
 

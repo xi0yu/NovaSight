@@ -106,7 +106,7 @@ function buildCaptureItem(input: BuildProductConfigProfileInput): ProductConfigI
       label: "采集规格",
       state: "restart",
       value: input.captureProfile,
-      detail: "采集或 ROI 已保存，但运行态仍在使用旧区域。",
+      detail: "采集或 ROI 已保存，但运行态仍在使用未生效区域。",
       evidence: `${input.captureSource} · ROI ${input.roiLabel}`,
       action: "capture",
       actionLabel: "检查采集"
@@ -153,7 +153,7 @@ function buildModelItem(input: BuildProductConfigProfileInput): ProductConfigIte
       label: "模型与推理",
       state: "restart",
       value: input.modelName,
-      detail: "模型或后处理参数已保存，当前运行状态仍在使用旧值。",
+      detail: "模型或后处理参数已保存，当前运行状态仍在使用未生效值。",
       evidence: `${input.artifactLabel} · ${input.postprocessLabel}`,
       action: "models",
       actionLabel: "检查模型"
@@ -182,25 +182,13 @@ function buildModelItem(input: BuildProductConfigProfileInput): ProductConfigIte
 }
 
 function buildControlItem(input: BuildProductConfigProfileInput): ProductConfigItem {
-  if (input.configRestartRequired) {
-    return {
-      id: "control",
-      label: "控制策略",
-      state: "restart",
-      value: input.controlModeLabel,
-      detail: "控制参数已保存，重启主链后才会完全生效。",
-      evidence: `${input.triggerModeLabel} · ${input.predictionEnabled ? "预测开启" : "预测关闭"}`,
-      action: "control",
-      actionLabel: "检查控制"
-    };
-  }
   if (input.runtimeRunning) {
     return {
       id: "control",
       label: "控制策略",
       state: "live",
       value: input.controlModeLabel,
-      detail: "目标选择、目标速度预测、连续非线性控制与输出限幅正在生效。",
+      detail: "目标选择、速度预测、连续非线性控制与输出限幅按当前运行配置生效。",
       evidence: `${input.triggerModeLabel} · 新鲜度 ${input.freshnessThresholdLabel}`
     };
   }
@@ -398,7 +386,7 @@ export function buildProductConfigProfile(input: BuildProductConfigProfileInput)
     {
       label: "配置版本",
       value: revisionLabel(input.desiredRevision, input.effectiveRevision),
-      detail: input.configRestartRequired ? "运行态仍在旧版本" : "保存值与运行态一致"
+      detail: input.configRestartRequired ? "运行态仍在上一版本" : "保存值与运行态一致"
     },
     {
       label: "推理方式",

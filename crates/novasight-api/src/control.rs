@@ -33,13 +33,13 @@ use tokio::sync::{Mutex, watch};
 use tracing::Instrument;
 
 use crate::dto::{
-    CompatibilityHealth, CompatibilityRuntimeStart, CompatibilityRuntimeState,
-    ConfigSchemaResponse, serialize_compatibility_status_frame,
+    ConfigSchemaResponse, RuntimeHealth, RuntimeStartResponse, RuntimeStatusState,
+    serialize_runtime_status_frame,
 };
 use crate::license_session::LicenseSession;
 use crate::websocket::status::send_while_receiving;
 
-const COMPATIBILITY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+const STATUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug)]
@@ -143,10 +143,10 @@ pub fn build_control_router_with_platform_queries(
         )
         .route("/api/license/activate", post(activate_license))
         .route("/api/license/temporary", post(grant_temporary_license))
-        .route("/api/runtime/state", get(legacy_status))
-        .route("/api/runtime/start", post(legacy_start))
-        .route("/api/runtime/stop", post(legacy_stop))
-        .route("/ws/status", get(legacy_events))
+        .route("/api/runtime/state", get(runtime_status))
+        .route("/api/runtime/start", post(runtime_start))
+        .route("/api/runtime/stop", post(runtime_stop))
+        .route("/ws/status", get(runtime_events))
         .route("/api/v1/status", get(status))
         .route("/api/v1/config", get(config).patch(update_config))
         .route("/api/v1/config/commands", post(apply_config_command))
@@ -156,7 +156,7 @@ pub fn build_control_router_with_platform_queries(
         .route("/api/v1/runtime/emergency-stop", post(emergency_stop))
         .route("/api/v1/daemon/shutdown", post(shutdown_daemon))
         .route("/api/v1/events", get(events))
-        .route("/api/config", get(config).post(update_legacy_config))
+        .route("/api/config", get(config).post(update_config_document))
         .route("/api/config/schema", get(config_schema))
         .route("/api/capture/state", get(capture_state))
         .route(
@@ -590,48 +590,45 @@ fn required_license_feature(method: &Method, path: &str) -> Option<&'static str>
     None
 }
 
-async fn health(State(state): State<ControlState>) -> Json<CompatibilityHealth> {
+async fn health(State(state): State<ControlState>) -> Json<RuntimeHealth> {
     let daemon = state.runtime.snapshot().daemon.state;
-    Json(CompatibilityHealth {
+    Json(RuntimeHealth {
         ok: daemon == DaemonState::Ready && state.runtime.is_supervisor_alive(),
     })
 }
 
-async fn legacy_status(State(state): State<ControlState>) -> Json<CompatibilityRuntimeState> {
+async fn runtime_status(State(state): State<ControlState>) -> Json<RuntimeStatusState> {
     let snapshot = state.runtime.snapshot();
-    Json(compatibility_state(&state, &snapshot).await)
+    Json(runtime_state(&state, &snapshot).await)
 }
 
-async fn legacy_start(
+async fn runtime_start(
     State(state): State<ControlState>,
-) -> Result<Json<CompatibilityRuntimeStart>, ControlApiError> {
+) -> Result<Json<RuntimeStartResponse>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_runtime_license(&state).await?;
     prepare_config_for_start(&state).await?;
     let snapshot = state.runtime.start().await?;
-    Ok(Json(CompatibilityRuntimeStart::from(&snapshot)))
+    Ok(Json(RuntimeStartResponse::from(&snapshot)))
 }
 
-async fn legacy_stop(
+async fn runtime_stop(
     State(state): State<ControlState>,
-) -> Result<Json<CompatibilityRuntimeState>, ControlApiError> {
+) -> Result<Json<RuntimeStatusState>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     let snapshot = state.runtime.stop().await?;
-    Ok(Json(compatibility_state(&state, &snapshot).await))
+    Ok(Json(runtime_state(&state, &snapshot).await))
 }
 
-async fn compatibility_state(
-    state: &ControlState,
-    snapshot: &RuntimeSnapshot,
-) -> CompatibilityRuntimeState {
-    compatibility_state_for_topic(state, snapshot, "full").await
+async fn runtime_state(state: &ControlState, snapshot: &RuntimeSnapshot) -> RuntimeStatusState {
+    runtime_state_for_topic(state, snapshot, "full").await
 }
 
-async fn compatibility_state_for_topic(
+async fn runtime_state_for_topic(
     state: &ControlState,
     snapshot: &RuntimeSnapshot,
     topic: &'static str,
-) -> CompatibilityRuntimeState {
+) -> RuntimeStatusState {
     let config = match &state.config {
         Some(service) => Some(service.snapshot().await),
         None => None,
@@ -641,7 +638,7 @@ async fn compatibility_state_for_topic(
         .as_ref()
         .map(ConfigService::blocking_effective_snapshot);
     let effective_revision = state.config.as_ref().map(ConfigService::effective_revision);
-    CompatibilityRuntimeState::for_topic(
+    RuntimeStatusState::for_topic(
         snapshot,
         config.as_ref(),
         effective_config.as_ref(),
@@ -780,11 +777,8 @@ async fn crosshair_template_preview(
 
 async fn executors(State(state): State<ControlState>) -> Json<serde_json::Value> {
     let snapshot = state.runtime.snapshot();
-    let compatibility = compatibility_state(&state, &snapshot).await;
-    Json(
-        serde_json::to_value(compatibility.executor)
-            .expect("compatibility executor DTO must serialize"),
-    )
+    let status = runtime_state(&state, &snapshot).await;
+    Json(serde_json::to_value(status.executor).expect("runtime executor DTO must serialize"))
 }
 
 async fn connect_device(
@@ -1069,11 +1063,8 @@ async fn config_schema(
 
 async fn capture_state(State(state): State<ControlState>) -> Json<serde_json::Value> {
     let snapshot = state.runtime.snapshot();
-    let compatibility = compatibility_state(&state, &snapshot).await;
-    Json(
-        serde_json::to_value(compatibility.capture)
-            .expect("compatibility capture DTO must serialize"),
-    )
+    let status = runtime_state(&state, &snapshot).await;
+    Json(serde_json::to_value(status.capture).expect("runtime capture DTO must serialize"))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1155,10 +1146,9 @@ async fn select_capture(
     service.apply_capture_profile(&selected).await?;
 
     let snapshot = state.runtime.snapshot();
-    let compatibility = compatibility_state(&state, &snapshot).await;
+    let status = runtime_state(&state, &snapshot).await;
     Ok(Json(
-        serde_json::to_value(compatibility.capture)
-            .expect("compatibility capture DTO must serialize"),
+        serde_json::to_value(status.capture).expect("runtime capture DTO must serialize"),
     ))
 }
 
@@ -1167,10 +1157,9 @@ async fn stop_capture(
 ) -> Result<Json<serde_json::Value>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     let snapshot = state.runtime.stop().await?;
-    let compatibility = compatibility_state(&state, &snapshot).await;
+    let status = runtime_state(&state, &snapshot).await;
     Ok(Json(
-        serde_json::to_value(compatibility.capture)
-            .expect("compatibility capture DTO must serialize"),
+        serde_json::to_value(status.capture).expect("runtime capture DTO must serialize"),
     ))
 }
 
@@ -1225,7 +1214,7 @@ async fn apply_config_command(
     Ok(Json(result))
 }
 
-async fn update_legacy_config(
+async fn update_config_document(
     State(state): State<ControlState>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<ConfigUpdate>, ControlApiError> {
@@ -1301,13 +1290,13 @@ async fn events(websocket: WebSocketUpgrade, State(state): State<ControlState>) 
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct CompatibilityStatusQuery {
+struct RuntimeStatusQuery {
     topic: Option<String>,
 }
 
-async fn legacy_events(
+async fn runtime_events(
     websocket: WebSocketUpgrade,
-    Query(query): Query<CompatibilityStatusQuery>,
+    Query(query): Query<RuntimeStatusQuery>,
     State(state): State<ControlState>,
     trusted_local_control: Option<Extension<TrustedLocalControl>>,
     headers: HeaderMap,
@@ -1327,7 +1316,7 @@ async fn legacy_events(
             Err(error) => return error.into_response(),
         }
     }
-    websocket.on_upgrade(move |socket| stream_legacy_events(socket, state, query))
+    websocket.on_upgrade(move |socket| stream_runtime_events(socket, state, query))
 }
 
 async fn close_unlicensed_websocket(mut socket: WebSocket) {
@@ -1339,15 +1328,11 @@ async fn close_unlicensed_websocket(mut socket: WebSocket) {
         .await;
 }
 
-async fn stream_legacy_events(
-    socket: WebSocket,
-    state: ControlState,
-    query: CompatibilityStatusQuery,
-) {
+async fn stream_runtime_events(socket: WebSocket, state: ControlState, query: RuntimeStatusQuery) {
     let mut snapshots = state.runtime.subscribe();
     let mut shutdown = state.shutdown.clone();
-    let topic = normalize_compatibility_topic(query.topic.as_deref());
-    let mut heartbeat = tokio::time::interval(COMPATIBILITY_HEARTBEAT_INTERVAL);
+    let topic = normalize_runtime_topic(query.topic.as_deref());
+    let mut heartbeat = tokio::time::interval(STATUS_HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     heartbeat.tick().await;
     let (mut outbound, mut inbound) = socket.split();
@@ -1357,11 +1342,8 @@ async fn stream_legacy_events(
         if snapshot_changed {
             let current = snapshots.borrow_and_update().clone();
             let build_topic = if first_frame { "full" } else { topic };
-            let compatibility =
-                compatibility_state_for_topic(&state, current.as_ref(), build_topic).await;
-            let Ok(payload) =
-                serialize_compatibility_status_frame(topic, first_frame, &compatibility)
-            else {
+            let status = runtime_state_for_topic(&state, current.as_ref(), build_topic).await;
+            let Ok(payload) = serialize_runtime_status_frame(topic, first_frame, &status) else {
                 return;
             };
             match send_or_shutdown(
@@ -1401,7 +1383,7 @@ async fn stream_legacy_events(
     }
 }
 
-fn normalize_compatibility_topic(topic: Option<&str>) -> &'static str {
+fn normalize_runtime_topic(topic: Option<&str>) -> &'static str {
     let topic = topic.unwrap_or_default().trim().to_ascii_lowercase();
     match topic.as_str() {
         "summary" => "summary",
@@ -1592,7 +1574,7 @@ impl IntoResponse for ControlApiError {
                     }
                     "CONFIG_PARSE_ERROR"
                     | "CONFIG_VALIDATION_ERROR"
-                    | "CONFIG_RESERVED_LEGACY_KEY"
+                    | "CONFIG_UNSUPPORTED_CONFIG_KEY"
                     | "CONFIG_INVALID_FIELD_TARGET"
                     | "CONFIG_FIELD_VALUE_INVALID"
                     | "CONFIG_HOT_UPDATE_TRANSACTION_REQUIRED"

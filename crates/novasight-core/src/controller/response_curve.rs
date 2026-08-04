@@ -7,8 +7,8 @@
 //! schedules the dynamic part of that multiplier; a small acquisition fraction
 //! remains available for large static errors.
 
-const ERROR_ACQUISITION_BOOST_FRACTION: f64 = 0.35;
-const MOTION_BOOST_FRACTION: f64 = 1.0 - ERROR_ACQUISITION_BOOST_FRACTION;
+pub const ERROR_ACQUISITION_BOOST_FRACTION: f64 = 0.35;
+pub const MOTION_BOOST_FRACTION: f64 = 1.0 - ERROR_ACQUISITION_BOOST_FRACTION;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ContinuousAtanConfig {
