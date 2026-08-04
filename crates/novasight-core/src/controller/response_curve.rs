@@ -1,20 +1,21 @@
-//! Continuous FAR/NEAR Atan response for one selected target.
+//! Continuous Atan response for one selected target.
 //!
 //! Atan is the response curve: it already supplies a nonlinear proportional
 //! response and a continuously decreasing effective gain as the error grows.
-//! FAR and NEAR are therefore blended as two parameterizations of that one
-//! curve instead of being stacked as an additional gain stage.
-
-const TRANSITION_HALF_WIDTH_RATIO: f64 = 0.25;
+//! The radial response schedule owns how strongly that curve is allowed to act
+//! as the predicted target distance moves from settled to far.
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct BlendedAtanConfig {
-    pub near_threshold_px: f64,
+pub(super) struct ContinuousAtanConfig {
+    pub response_curve_center_px: f64,
+    pub response_curve_width_ratio: f64,
+    pub response_curve_shape: f64,
     pub scale_counts: f64,
-    pub far_kp: f64,
-    pub far_limit_counts: f64,
-    pub near_kp: f64,
+    pub response_scale: f64,
+    pub response_gain_floor: f64,
+    pub response_gain_ceiling: f64,
     pub near_limit_counts: f64,
+    pub far_limit_counts: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -24,7 +25,7 @@ pub(super) struct ContinuousDemand {
     pub limit_counts: f64,
 }
 
-impl BlendedAtanConfig {
+impl ContinuousAtanConfig {
     pub fn evaluate(
         self,
         measured_distance_px: f64,
@@ -40,14 +41,21 @@ impl BlendedAtanConfig {
             return None;
         }
 
-        let far_weight = far_weight(measured_distance_px, self.near_threshold_px);
-        // Both regions share one Atan scale, so blending their responses is
-        // algebraically identical to blending Kp first. This keeps the hot
-        // path at one response Atan per axis even inside the transition band.
-        let kp = lerp(self.near_kp, self.far_kp, far_weight);
-        let limit_counts = lerp(self.near_limit_counts, self.far_limit_counts, far_weight);
-        let x = atan_response(full_error_counts_x, kp, self.scale_counts);
-        let y = atan_response(full_error_counts_y, kp, self.scale_counts);
+        let progress = response_progress(
+            measured_distance_px,
+            self.response_curve_center_px,
+            self.response_curve_width_ratio,
+            self.response_curve_shape,
+        );
+        let response_gain = self.response_scale
+            * lerp(
+                self.response_gain_floor,
+                self.response_gain_ceiling,
+                progress,
+            );
+        let limit_counts = lerp(self.near_limit_counts, self.far_limit_counts, progress);
+        let x = atan_response(full_error_counts_x, response_gain, self.scale_counts);
+        let y = atan_response(full_error_counts_y, response_gain, self.scale_counts);
         if !x.is_finite() || !y.is_finite() || !limit_counts.is_finite() {
             return None;
         }
@@ -55,14 +63,20 @@ impl BlendedAtanConfig {
     }
 
     fn valid(self) -> bool {
-        self.near_threshold_px.is_finite()
-            && self.near_threshold_px >= 0.0
+        self.response_curve_center_px.is_finite()
+            && self.response_curve_center_px >= 0.0
+            && self.response_curve_width_ratio.is_finite()
+            && self.response_curve_width_ratio > 0.0
+            && self.response_curve_shape.is_finite()
+            && (0.5..=4.0).contains(&self.response_curve_shape)
             && self.scale_counts.is_finite()
             && self.scale_counts > 0.0
-            && self.far_kp.is_finite()
-            && self.far_kp >= 0.0
-            && self.near_kp.is_finite()
-            && self.near_kp >= 0.0
+            && self.response_scale.is_finite()
+            && self.response_scale >= 0.0
+            && self.response_gain_floor.is_finite()
+            && self.response_gain_floor >= 0.0
+            && self.response_gain_ceiling.is_finite()
+            && self.response_gain_floor <= self.response_gain_ceiling
             && valid_limit(self.far_limit_counts)
             && valid_limit(self.near_limit_counts)
     }
@@ -76,18 +90,36 @@ fn atan_response(error_counts: f64, kp: f64, scale_counts: f64) -> f64 {
     kp * scale_counts * (error_counts / scale_counts).atan()
 }
 
-/// FAR and NEAR remain exact outside a transition band spanning 50% of the
-/// configured threshold. Inside it, cubic smoothstep removes the parameter
-/// jump without introducing another gain stage or another user-facing knob.
-pub(super) fn far_weight(distance_px: f64, near_threshold_px: f64) -> f64 {
-    if near_threshold_px <= f64::EPSILON {
+/// Return a bounded radial response progress value. With the default width and
+/// shape it exactly matches the legacy smoothstep schedule used by migrations.
+pub(super) fn response_progress(
+    distance_px: f64,
+    center_px: f64,
+    width_ratio: f64,
+    shape: f64,
+) -> f64 {
+    if center_px <= f64::EPSILON {
         return 1.0;
     }
-    let half_width = near_threshold_px * TRANSITION_HALF_WIDTH_RATIO;
-    let inner = near_threshold_px - half_width;
-    let outer = near_threshold_px + half_width;
+    let half_width = (center_px * width_ratio.max(1e-9)).max(1e-9);
+    let inner = center_px - half_width;
+    let outer = center_px + half_width;
     let t = ((distance_px - inner) / (outer - inner)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+    shaped_smoothstep(t, shape)
+}
+
+fn shaped_smoothstep(t: f64, shape: f64) -> f64 {
+    let base = t * t * (3.0 - 2.0 * t);
+    if (shape - 1.0).abs() <= f64::EPSILON {
+        return base;
+    }
+    let gamma = shape.clamp(0.5, 4.0);
+    if base <= 0.0 || base >= 1.0 {
+        return base;
+    }
+    let left = base.powf(gamma);
+    let right = (1.0 - base).powf(gamma);
+    left / (left + right)
 }
 
 fn lerp(start: f64, end: f64, weight: f64) -> f64 {
@@ -96,16 +128,22 @@ fn lerp(start: f64, end: f64, weight: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlendedAtanConfig, atan_response};
+    use super::{ContinuousAtanConfig, atan_response, response_progress};
 
-    fn config() -> BlendedAtanConfig {
-        BlendedAtanConfig {
-            near_threshold_px: 12.0,
+    const DEFAULT_RESPONSE_CURVE_WIDTH_RATIO: f64 = 0.25;
+    const DEFAULT_RESPONSE_CURVE_SHAPE: f64 = 1.0;
+
+    fn config() -> ContinuousAtanConfig {
+        ContinuousAtanConfig {
+            response_curve_center_px: 12.0,
+            response_curve_width_ratio: DEFAULT_RESPONSE_CURVE_WIDTH_RATIO,
+            response_curve_shape: DEFAULT_RESPONSE_CURVE_SHAPE,
             scale_counts: 256.0,
-            far_kp: 0.22,
-            far_limit_counts: 127.0,
-            near_kp: 0.20,
+            response_scale: 0.22,
+            response_gain_floor: 0.20 / 0.22,
+            response_gain_ceiling: 1.0,
             near_limit_counts: 72.0,
+            far_limit_counts: 127.0,
         }
     }
 
@@ -116,14 +154,8 @@ mod tests {
         let near = config.evaluate(8.0, full_error, 0.0).expect("near");
         let far = config.evaluate(16.0, full_error, 0.0).expect("far");
 
-        assert_eq!(
-            near.x,
-            atan_response(full_error, config.near_kp, config.scale_counts)
-        );
-        assert_eq!(
-            far.x,
-            atan_response(full_error, config.far_kp, config.scale_counts)
-        );
+        assert_eq!(near.x, atan_response(full_error, 0.20, config.scale_counts));
+        assert_eq!(far.x, atan_response(full_error, 0.22, config.scale_counts));
         assert_eq!(near.limit_counts, config.near_limit_counts);
         assert_eq!(far.limit_counts, config.far_limit_counts);
     }
@@ -137,5 +169,35 @@ mod tests {
         assert!((after.x - before.x).abs() < 1e-5);
         assert!((after.y - before.y).abs() < 1e-5);
         assert!((after.limit_counts - before.limit_counts).abs() < 1e-4);
+    }
+
+    #[test]
+    fn migrated_profile_exactly_matches_legacy_gain_schedule() {
+        let config = config();
+        for distance in [0.0, 6.0, 9.0, 12.0, 15.0, 18.0, 24.0] {
+            let progress = response_progress(
+                distance,
+                config.response_curve_center_px,
+                config.response_curve_width_ratio,
+                config.response_curve_shape,
+            );
+            let legacy_kp = 0.20 + (0.22 - 0.20) * progress;
+            let migrated_gain = config.response_scale
+                * (config.response_gain_floor
+                    + (config.response_gain_ceiling - config.response_gain_floor) * progress);
+            assert!((migrated_gain - legacy_kp).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn response_shape_adjusts_transition_without_leaving_bounds() {
+        let early = response_progress(10.0, 12.0, DEFAULT_RESPONSE_CURVE_WIDTH_RATIO, 0.5);
+        let neutral = response_progress(10.0, 12.0, DEFAULT_RESPONSE_CURVE_WIDTH_RATIO, 1.0);
+        let late = response_progress(10.0, 12.0, DEFAULT_RESPONSE_CURVE_WIDTH_RATIO, 2.0);
+
+        assert!(early > neutral);
+        assert!(neutral > late);
+        assert!((0.0..=1.0).contains(&early));
+        assert!((0.0..=1.0).contains(&late));
     }
 }

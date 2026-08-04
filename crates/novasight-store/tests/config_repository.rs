@@ -51,7 +51,7 @@ fn initializes_the_single_local_runtime_config() {
 
     let config = YamlConfigRepository::load(runtime_config).unwrap();
 
-    assert_eq!(config.schema_version, 9);
+    assert_eq!(config.schema_version, 10);
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
@@ -63,9 +63,12 @@ fn initializes_the_single_local_runtime_config() {
     assert_eq!(config.replay.frame_interval_ms, 16);
     assert!(!config.replay.output_gate_open);
     assert_eq!(config.pipeline.atan_scale_counts, 256.0);
-    assert_eq!(config.pipeline.far_kp, 0.30);
+    assert_eq!(config.pipeline.p_response_scale, 0.30);
+    assert!((config.pipeline.p_response_gain_floor - (0.20 / 0.30)).abs() < 1e-12);
+    assert_eq!(config.pipeline.p_response_gain_ceiling, 1.0);
+    assert_eq!(config.pipeline.p_response_curve_width_ratio, 0.25);
+    assert_eq!(config.pipeline.p_response_curve_shape, 1.0);
     assert_eq!(config.pipeline.far_max_counts_per_update, 127.0);
-    assert_eq!(config.pipeline.near_kp, 0.20);
     assert_eq!(config.pipeline.near_max_counts_per_update, 72.0);
     assert!(config.pipeline.prediction_enabled);
     assert_eq!(config.pipeline.target_track_max_age, 5);
@@ -260,7 +263,7 @@ fn infrastructure_defaults_do_not_invent_missing_production_adapters() {
 
     let config = YamlConfigRepository::load(path).unwrap();
 
-    assert_eq!(config.schema_version, 9);
+    assert_eq!(config.schema_version, 10);
     assert_eq!(config.revision, 0);
     assert_eq!(config.server.host, "127.0.0.1");
     assert_eq!(config.server.port, 5174);
@@ -301,24 +304,39 @@ pipeline:
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 9);
+    assert_eq!(config.schema_version, 10);
     assert!(config.pipeline.prediction_enabled);
     assert_eq!(config.pipeline.atan_scale_counts, 256.0);
-    assert_eq!(config.pipeline.far_kp, 0.30);
+    assert_eq!(config.pipeline.p_response_scale, 0.30);
+    assert!((config.pipeline.p_response_gain_floor - (0.20 / 0.30)).abs() < 1e-12);
+    assert_eq!(config.pipeline.p_response_gain_ceiling, 1.0);
+    assert_eq!(config.pipeline.p_response_curve_width_ratio, 0.25);
+    assert_eq!(config.pipeline.p_response_curve_shape, 1.0);
     assert_eq!(config.pipeline.far_max_counts_per_update, 127.0);
-    assert_eq!(config.pipeline.near_kp, 0.20);
     assert_eq!(config.pipeline.near_max_counts_per_update, 72.0);
 
     YamlConfigRepository::new(&path)
         .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["schema_version"], 9);
+    assert_eq!(persisted["schema_version"], 10);
     assert_eq!(persisted["pipeline"]["prediction_enabled"], true);
     assert_eq!(persisted["pipeline"]["atan_scale_counts"], 256.0);
-    assert_eq!(persisted["pipeline"]["far_kp"], 0.30);
+    assert_eq!(persisted["pipeline"]["p_response_scale"], 0.30);
+    assert!(
+        (persisted["pipeline"]["p_response_gain_floor"]
+            .as_f64()
+            .expect("migrated response gain floor")
+            - (0.20 / 0.30))
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(persisted["pipeline"]["p_response_gain_ceiling"], 1.0);
+    assert_eq!(persisted["pipeline"]["p_response_curve_width_ratio"], 0.25);
+    assert_eq!(persisted["pipeline"]["p_response_curve_shape"], 1.0);
+    assert!(persisted["pipeline"].get("far_kp").is_none());
     assert_eq!(persisted["pipeline"]["far_max_counts_per_update"], 127.0);
-    assert_eq!(persisted["pipeline"]["near_kp"], 0.20);
+    assert!(persisted["pipeline"].get("near_kp").is_none());
     assert_eq!(persisted["pipeline"]["near_max_counts_per_update"], 72.0);
     assert!(persisted["control"].get("humanized_motion").is_none());
 }
@@ -340,11 +358,14 @@ pipeline:
     )
     .unwrap();
     let migrated = YamlConfigRepository::load(generated_path).unwrap();
-    assert_eq!(migrated.schema_version, 9);
+    assert_eq!(migrated.schema_version, 10);
     assert_eq!(migrated.pipeline.atan_scale_counts, 256.0);
-    assert_eq!(migrated.pipeline.far_kp, 0.30);
+    assert_eq!(migrated.pipeline.p_response_scale, 0.30);
+    assert!((migrated.pipeline.p_response_gain_floor - (0.20 / 0.30)).abs() < 1e-12);
+    assert_eq!(migrated.pipeline.p_response_gain_ceiling, 1.0);
+    assert_eq!(migrated.pipeline.p_response_curve_width_ratio, 0.25);
+    assert_eq!(migrated.pipeline.p_response_curve_shape, 1.0);
     assert_eq!(migrated.pipeline.far_max_counts_per_update, 127.0);
-    assert_eq!(migrated.pipeline.near_kp, 0.20);
     assert_eq!(migrated.pipeline.near_max_counts_per_update, 72.0);
     assert!(migrated.pipeline.prediction_enabled);
 
@@ -361,9 +382,27 @@ pipeline:
 "#,
     )
     .unwrap();
-    let custom = YamlConfigRepository::load(custom_path).unwrap();
-    assert_eq!(custom.schema_version, 9);
-    assert_eq!(custom.pipeline.far_kp, 0.30);
+    let custom = YamlConfigRepository::load(&custom_path).unwrap();
+    assert_eq!(custom.schema_version, 10);
+    assert_eq!(custom.pipeline.p_response_scale, 0.30);
+    assert!((custom.pipeline.p_response_gain_floor - (0.22 / 0.30)).abs() < 1e-12);
+
+    YamlConfigRepository::new(&custom_path)
+        .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
+        .unwrap();
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(custom_path).unwrap()).unwrap();
+    assert_eq!(persisted["schema_version"], 10);
+    assert_eq!(persisted["pipeline"]["p_response_scale"], 0.30);
+    assert!(
+        (persisted["pipeline"]["p_response_gain_floor"]
+            .as_f64()
+            .expect("custom migrated response gain floor")
+            - (0.22 / 0.30))
+            .abs()
+            < 1e-12
+    );
+    assert!(persisted["pipeline"].get("far_kp").is_none());
+    assert!(persisted["pipeline"].get("near_kp").is_none());
 }
 
 #[test]
@@ -388,12 +427,15 @@ pipeline:
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 9);
+    assert_eq!(config.schema_version, 10);
     assert!(config.pipeline.prediction_enabled);
     assert_eq!(config.pipeline.atan_scale_counts, 256.0);
-    assert_eq!(config.pipeline.far_kp, 0.30);
+    assert_eq!(config.pipeline.p_response_scale, 0.30);
+    assert!((config.pipeline.p_response_gain_floor - (0.20 / 0.30)).abs() < 1e-12);
+    assert_eq!(config.pipeline.p_response_gain_ceiling, 1.0);
+    assert_eq!(config.pipeline.p_response_curve_width_ratio, 0.25);
+    assert_eq!(config.pipeline.p_response_curve_shape, 1.0);
     assert_eq!(config.pipeline.far_max_counts_per_update, 127.0);
-    assert_eq!(config.pipeline.near_kp, 0.20);
     assert_eq!(config.pipeline.near_max_counts_per_update, 72.0);
     assert_eq!(config.pipeline.target_track_max_age, 5);
 
@@ -401,12 +443,24 @@ pipeline:
         .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["schema_version"], 9);
+    assert_eq!(persisted["schema_version"], 10);
     assert_eq!(persisted["pipeline"]["prediction_enabled"], true);
     assert_eq!(persisted["pipeline"]["atan_scale_counts"], 256.0);
-    assert_eq!(persisted["pipeline"]["far_kp"], 0.30);
+    assert_eq!(persisted["pipeline"]["p_response_scale"], 0.30);
+    assert!(
+        (persisted["pipeline"]["p_response_gain_floor"]
+            .as_f64()
+            .expect("migrated response gain floor")
+            - (0.20 / 0.30))
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(persisted["pipeline"]["p_response_gain_ceiling"], 1.0);
+    assert_eq!(persisted["pipeline"]["p_response_curve_width_ratio"], 0.25);
+    assert_eq!(persisted["pipeline"]["p_response_curve_shape"], 1.0);
+    assert!(persisted["pipeline"].get("far_kp").is_none());
     assert_eq!(persisted["pipeline"]["far_max_counts_per_update"], 127.0);
-    assert_eq!(persisted["pipeline"]["near_kp"], 0.20);
+    assert!(persisted["pipeline"].get("near_kp").is_none());
     assert_eq!(persisted["pipeline"]["near_max_counts_per_update"], 72.0);
     assert_eq!(persisted["pipeline"]["target_track_max_age"], 5);
 }
@@ -534,7 +588,7 @@ control:
     .unwrap();
 
     let config = YamlConfigRepository::load(&path).unwrap();
-    assert_eq!(config.schema_version, 9);
+    assert_eq!(config.schema_version, 10);
     assert!(!config.control.recoil.enabled);
     assert_eq!(config.control.recoil.interval_ms, 16);
     assert_eq!(config.control.recoil.y_counts, 1);
@@ -557,7 +611,7 @@ control:
 fn legacy_rate_recoil_cannot_bypass_recommissioning_with_an_untrusted_schema_version() {
     for (case, schema) in [
         ("missing", ""),
-        ("incorrect-current", "schema_version: 9\n"),
+        ("incorrect-current", "schema_version: 10\n"),
     ] {
         let directory = TempDirectory::new();
         let path = directory.join(format!("{case}-schema-rate-recoil.yaml"));
@@ -1135,7 +1189,7 @@ fn document_replacement_uses_revision_guard_and_preserves_unsubmitted_extensions
         .replace_document(replacement, 5)
         .unwrap();
 
-    assert_eq!(saved.schema_version, 9);
+    assert_eq!(saved.schema_version, 10);
     assert_eq!(saved.revision, 6);
     assert_eq!(saved.server.port, 7000);
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();

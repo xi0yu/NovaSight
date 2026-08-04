@@ -20,6 +20,7 @@ pub fn compose_pipeline_config(
     if !adapters.inference.enabled {
         return Err("inference.enabled must be true for the live runtime".to_owned());
     }
+    let response = adapters.pipeline.continuous_response();
     Ok(PipelineConfig {
         targeting: TargetingConfig {
             target_fov_radius_px: adapters.pipeline.target_fov_radius_px,
@@ -66,9 +67,12 @@ pub fn compose_pipeline_config(
             projection_fov_x_deg: adapters.pipeline.projection_fov_x_deg,
             projection_counts_per_360: adapters.pipeline.projection_counts_per_360,
             atan_scale_counts: adapters.pipeline.atan_scale_counts,
-            far_kp: adapters.pipeline.far_kp,
+            response_scale: response.scale,
+            response_gain_floor: response.gain_floor,
+            response_gain_ceiling: response.gain_ceiling,
+            response_curve_width_ratio: response.curve_width_ratio,
+            response_curve_shape: response.curve_shape,
             far_max_counts_per_update: adapters.pipeline.far_max_counts_per_update,
-            near_kp: adapters.pipeline.near_kp,
             near_max_counts_per_update: adapters.pipeline.near_max_counts_per_update,
             arrival_radius_counts: adapters.pipeline.arrival_radius_counts,
             velocity_smoothing_frames: adapters.pipeline.velocity_smoothing_frames,

@@ -207,7 +207,35 @@ impl ConfigSchemaResponse {
                             1_000_000.0,
                             Some("count"),
                         ),
-                        float("pipeline.far_kp", "远目标反馈增益", 0.0, 100.0, None),
+                        float("pipeline.p_response_scale", "响应力度", 0.0, 100.0, None),
+                        float(
+                            "pipeline.p_response_gain_floor",
+                            "连续响应低误差下界",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
+                        float(
+                            "pipeline.p_response_gain_ceiling",
+                            "连续响应高误差上界",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
+                        float(
+                            "pipeline.p_response_curve_width_ratio",
+                            "力度过渡宽度",
+                            0.000_001,
+                            10.0,
+                            None,
+                        ),
+                        float(
+                            "pipeline.p_response_curve_shape",
+                            "力度过渡形状",
+                            0.5,
+                            4.0,
+                            None,
+                        ),
                         float(
                             "pipeline.far_max_counts_per_update",
                             "远目标单次计数上限",
@@ -215,7 +243,6 @@ impl ConfigSchemaResponse {
                             i16::MAX as f64,
                             Some("count"),
                         ),
-                        float("pipeline.near_kp", "近目标反馈增益", 0.0, 100.0, None),
                         float(
                             "pipeline.near_max_counts_per_update",
                             "近目标单次计数上限",
@@ -797,7 +824,7 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 9);
+        assert_eq!(value["version"], 10);
         assert_eq!(value["values"]["server"]["port"], 5174);
         assert_eq!(value["values"]["pipeline"]["arrival_radius_counts"], 3.0);
         assert_eq!(
@@ -829,14 +856,14 @@ mod tests {
             .find(|field| field["path"] == "control.output_enabled")
             .unwrap();
         assert_eq!(output_gate["restart_required"], false);
-        let far_gain = value["sections"]
+        let response_scale = value["sections"]
             .as_array()
             .unwrap()
             .iter()
             .flat_map(|section| section["fields"].as_array().unwrap())
-            .find(|field| field["path"] == "pipeline.far_kp")
+            .find(|field| field["path"] == "pipeline.p_response_scale")
             .unwrap();
-        assert_eq!(far_gain["restart_required"], false);
+        assert_eq!(response_scale["restart_required"], false);
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
             section["id"] == "crosshair"
                 && section["fields"]

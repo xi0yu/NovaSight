@@ -31,8 +31,11 @@ export type DualPhasePipelineField =
   | "projection_fov_x_deg"
   | "projection_counts_per_360"
   | "near_threshold_px"
-  | "far_kp"
-  | "near_kp"
+  | "p_response_scale"
+  | "p_response_gain_floor"
+  | "p_response_gain_ceiling"
+  | "p_response_curve_width_ratio"
+  | "p_response_curve_shape"
   | "atan_scale_counts"
   | "far_max_counts_per_update"
   | "near_max_counts_per_update"
@@ -84,8 +87,11 @@ export type TargetingPipelineField =
   | "candidate_max_aspect_ratio";
 
 export type AlgorithmParameterValues = {
-  dualPhaseNearKp: number;
-  dualPhaseFarKp: number;
+  pResponseScale: number;
+  pResponseGainFloor: number;
+  pResponseGainCeiling: number;
+  pResponseCurveWidthRatio: number;
+  pResponseCurveShape: number;
   dualPhaseNearThreshold: number;
   dualPhaseAtanScale: number;
   actuationFeedbackDelayMs: number;
@@ -170,10 +176,10 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
   return {
     responseParameters: [
       {
-        key: "near_kp",
-        label: "近距离响应强度（NEAR Kp）",
-        detail: "目标接近准星后的主要响应参数。过高会过冲和左右往返，过低会贴近后跟不上。",
-        value: values.dualPhaseNearKp,
+        key: "p_response_scale",
+        label: "响应力度",
+        detail: "连续响应模型的基础倍率。整体调高会更快、更有力；过高会增加过冲和摆动。",
+        value: values.pResponseScale,
         min: 0,
         max: 100,
         recommendedMin: 0.001,
@@ -182,21 +188,33 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
         applyMode: "live"
       },
       {
-        key: "far_kp",
-        label: "远距离响应强度（FAR Kp）",
-        detail: "目标离准星较远时的追赶强度。它不是 KMNet 设备能力上限。",
-        value: values.dualPhaseFarKp,
+        key: "p_response_gain_floor",
+        label: "微调保持",
+        detail: "小误差时相对响应力度的下界。调高会更容易消除最后误差，过高会让目标附近更容易晃。",
+        value: values.pResponseGainFloor,
         min: 0,
-        max: 100,
-        recommendedMin: 0.001,
-        recommendedMax: 0.999,
+        max: 1,
+        recommendedMin: 0.1,
+        recommendedMax: 1,
         step: 0.001,
+        applyMode: "live"
+      },
+      {
+        key: "p_response_curve_shape",
+        label: "力度过渡",
+        detail: "控制响应从微调保持过渡到完整力度的形状。低于 1 更早变有力，高于 1 更晚变有力。",
+        value: values.pResponseCurveShape,
+        min: 0.5,
+        max: 4,
+        recommendedMin: 0.5,
+        recommendedMax: 2,
+        step: 0.01,
         applyMode: "live"
       },
       {
         key: "near_threshold_px",
-        label: "近远过渡位置",
-        detail: "误差在该位置附近时，从 NEAR 平滑过渡到 FAR；决定多近开始进入精细控制。",
+        label: "响应中心",
+        detail: "径向误差到达该距离附近时，连续响应曲线进入中段过渡。",
         value: values.dualPhaseNearThreshold,
         min: 0,
         max: 10000,
@@ -208,7 +226,7 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       },
       {
         key: "atan_scale_counts",
-        label: "Atan 曲线尺度",
+        label: "响应曲线",
         detail: "决定大误差何时开始被曲线压缩。增大后中远距离输出更接近线性，减小则更早压缩。",
         value: values.dualPhaseAtanScale,
         min: 0.000001,

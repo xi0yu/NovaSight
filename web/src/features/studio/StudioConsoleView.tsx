@@ -110,8 +110,8 @@ import { persistRuntimeConfigField } from "./runtimeConfigPersistence";
 import "./studio-settings.css";
 
 const DEFAULT_CONTROL_ALGORITHM = "dual_phase_atan_robust_predictive_v2";
-const CONTROL_ALGORITHM_LABEL = "双阶段 Atan 控制";
-const CONTROL_ALGORITHM_DESCRIPTION = "当前控制器：单目标预测、角度投影、连续双阶段 Atan 响应、限幅与量化。";
+const CONTROL_ALGORITHM_LABEL = "连续 Atan 控制";
+const CONTROL_ALGORITHM_DESCRIPTION = "当前控制器：单目标预测、角度投影、连续 Atan 响应、限幅与量化。";
 type KmnetTestMessageTone = "success" | "warning";
 const loadModelManagerDialog = () => import("../models/ModelManagerDialog");
 const ModelManagerDialog = lazy(() =>
@@ -436,6 +436,17 @@ function formatMotionState(value: unknown): string {
       return "静止";
     case "unavailable":
       return "不可用";
+    default:
+      return NO_SAMPLE;
+  }
+}
+
+function formatResponseStage(value: unknown): string {
+  switch (readString(value, "")) {
+    case "FAR":
+      return "远端";
+    case "NEAR":
+      return "近端";
     default:
       return NO_SAMPLE;
   }
@@ -1234,8 +1245,11 @@ export function StudioConsoleView({
   const dualPhaseFovX = readNumber(rustPipelineConfig.projection_fov_x_deg, 105);
   const dualPhaseCountsPer360 = readNumber(rustPipelineConfig.projection_counts_per_360, 9980);
   const dualPhaseNearThreshold = readNumber(rustPipelineConfig.near_threshold_px, 12);
-  const dualPhaseFarKp = readNumber(rustPipelineConfig.far_kp, 0.30);
-  const dualPhaseNearKp = readNumber(rustPipelineConfig.near_kp, 0.20);
+  const pResponseScale = readNumber(rustPipelineConfig.p_response_scale, 0.30);
+  const pResponseGainFloor = readNumber(rustPipelineConfig.p_response_gain_floor, 0.20 / 0.30);
+  const pResponseGainCeiling = readNumber(rustPipelineConfig.p_response_gain_ceiling, 1);
+  const pResponseCurveWidthRatio = readNumber(rustPipelineConfig.p_response_curve_width_ratio, 0.25);
+  const pResponseCurveShape = readNumber(rustPipelineConfig.p_response_curve_shape, 1);
   const dualPhaseAtanScale = readNumber(rustPipelineConfig.atan_scale_counts, 256);
   const dualPhaseFarMaxCounts = readNumber(rustPipelineConfig.far_max_counts_per_update, 127);
   const dualPhaseNearMaxCounts = readNumber(rustPipelineConfig.near_max_counts_per_update, 72);
@@ -2488,8 +2502,11 @@ export function StudioConsoleView({
     stabilityParameters,
     calibrationParameters
   } = buildAlgorithmParameterGroups({
-    dualPhaseNearKp,
-    dualPhaseFarKp,
+    pResponseScale,
+    pResponseGainFloor,
+    pResponseGainCeiling,
+    pResponseCurveWidthRatio,
+    pResponseCurveShape,
     dualPhaseNearThreshold,
     dualPhaseAtanScale,
     actuationFeedbackDelayMs,
@@ -2525,8 +2542,8 @@ export function StudioConsoleView({
     {
       id: "response",
       label: "响应",
-      value: `NEAR ${formatNumber(dualPhaseNearKp, 3)} · FAR ${formatNumber(dualPhaseFarKp, 3)}`,
-      detail: `过渡 ${formatNumber(dualPhaseNearThreshold, 1)} px · Atan ${formatNumber(dualPhaseAtanScale, 1)}`,
+      value: `力度 ${formatNumber(pResponseScale, 3)} · 保持 ${formatNumber(pResponseGainFloor, 2)}`,
+      detail: `过渡 ${formatNumber(pResponseCurveShape, 2)} · 曲线 ${formatNumber(dualPhaseAtanScale, 1)}`,
       icon: "response-curve"
     },
     {
@@ -2541,7 +2558,7 @@ export function StudioConsoleView({
     {
       id: "stability",
       label: "限制",
-      value: `NEAR ${formatNumber(dualPhaseNearMaxCounts, 0)} · FAR ${formatNumber(dualPhaseFarMaxCounts, 0)}`,
+      value: `近端 ${formatNumber(dualPhaseNearMaxCounts, 0)} · 远端 ${formatNumber(dualPhaseFarMaxCounts, 0)}`,
       detail: `到位 ${formatNumber(dualPhaseArrivalRadiusCounts, 1)} counts · 残差 ${formatNumber(residualCap, 2)}`,
       icon: "control"
     },
@@ -3870,7 +3887,7 @@ export function StudioConsoleView({
                 <div className="console-kv">
                   <span>控制模式</span><b>{controlModeLabel}</b>
                   <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
-                  <span>FAR / NEAR</span><b>{readString(controlPipeline.mode, "") || NO_SAMPLE}</b>
+                  <span>响应阶段</span><b>{formatResponseStage(controlPipeline.mode)}</b>
                   <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
                   <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
                   <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
@@ -4018,7 +4035,8 @@ export function StudioConsoleView({
                 <p className="console-section-note">当前控制链路仅使用投影、增益、Atan 响应曲线和单次限幅。</p>
                 <div className="advanced-settings-summary">
                   <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
-                  <div><span>FAR / NEAR Kp</span><b>{dualPhaseFarKp.toFixed(3)} / {dualPhaseNearKp.toFixed(3)}</b></div>
+                  <div><span>响应力度</span><b>{pResponseScale.toFixed(3)}</b></div>
+                  <div><span>微调保持</span><b>{pResponseGainFloor.toFixed(2)}</b></div>
                   <div><span>位置预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b></div>
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("algorithm")} type="button">
@@ -4595,9 +4613,9 @@ export function StudioConsoleView({
               <header className="algorithm-settings-panel-header">
                 <span>响应</span>
                 <h3 id="algorithm-settings-response-title">响应算法</h3>
-                <p>先判断问题发生在远距离还是准星附近。近距离过冲优先降低 NEAR Kp；远距离跟随偏慢再提高 FAR Kp。</p>
+                <p>先调整体响应力度，再看小误差是否抖动、远距离是否跟得上，最后微调过渡形状和 Atan 曲线尺度。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>建议顺序</b><span>近距离响应 → 远距离响应 → 过渡位置 → Atan 曲线尺度</span></div>
+              <div className="algorithm-tuning-order"><b>建议顺序</b><span>响应力度 → 微调保持 → 力度过渡 → Atan 曲线尺度</span></div>
               <div className="advanced-settings-grid two-column">
                 {responseParameters.map(renderAlgorithmNumberParameter)}
               </div>

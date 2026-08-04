@@ -315,7 +315,7 @@ async fn pipeline_config_update_refreshes_live_control_without_restarting_pipeli
                 .uri("/api/v1/config")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"section":"pipeline","key":"far_kp","value":0.31}"#,
+                    r#"{"section":"pipeline","key":"p_response_scale","value":0.31}"#,
                 ))
                 .unwrap(),
         )
@@ -333,7 +333,13 @@ async fn pipeline_config_update_refreshes_live_control_without_restarting_pipeli
             .contains("live control path")
     );
     assert_eq!(config.effective_revision(), 1);
-    assert_eq!(config.blocking_effective_snapshot().pipeline.far_kp, 0.31);
+    assert_eq!(
+        config
+            .blocking_effective_snapshot()
+            .pipeline
+            .p_response_scale,
+        0.31
+    );
     assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Running);
     assert_eq!(runtime.snapshot().pipeline.epoch.unwrap().0, 1);
 
@@ -1077,7 +1083,7 @@ inference:
     assert_eq!(response.status(), StatusCode::OK);
     let schema: Value =
         serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
-    assert_eq!(schema["version"], 9);
+    assert_eq!(schema["version"], 10);
     assert_eq!(schema["values"]["revision"], 4);
     assert_eq!(schema["values"]["server"]["port"], 6000);
     assert_eq!(
@@ -1111,6 +1117,11 @@ inference:
         .unwrap();
     let pipeline_fields = pipeline["fields"].as_array().unwrap();
     for path in [
+        "pipeline.p_response_scale",
+        "pipeline.p_response_gain_floor",
+        "pipeline.p_response_gain_ceiling",
+        "pipeline.p_response_curve_width_ratio",
+        "pipeline.p_response_curve_shape",
         "pipeline.tracker_kalman_max_predict_dt_ms",
         "pipeline.tracker_kalman_max_predict_missing_ms",
         "pipeline.tracker_kalman_max_predict_steps",

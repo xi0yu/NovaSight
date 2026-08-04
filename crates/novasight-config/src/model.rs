@@ -5,7 +5,7 @@ use novasight_core::tracking::KalmanConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 9;
+pub const CURRENT_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -455,12 +455,18 @@ pub struct PipelineRuntimeConfig {
     pub projection_counts_per_360: f64,
     #[serde(default = "default_atan_scale_counts")]
     pub atan_scale_counts: f64,
-    #[serde(default = "default_far_kp")]
-    pub far_kp: f64,
+    #[serde(default = "default_p_response_scale")]
+    pub p_response_scale: f64,
+    #[serde(default = "default_p_response_gain_floor")]
+    pub p_response_gain_floor: f64,
+    #[serde(default = "default_p_response_gain_ceiling")]
+    pub p_response_gain_ceiling: f64,
+    #[serde(default = "default_response_curve_width_ratio")]
+    pub p_response_curve_width_ratio: f64,
+    #[serde(default = "default_response_curve_shape")]
+    pub p_response_curve_shape: f64,
     #[serde(default = "default_far_max_counts_per_update")]
     pub far_max_counts_per_update: f64,
-    #[serde(default = "default_near_kp")]
-    pub near_kp: f64,
     #[serde(default = "default_near_max_counts_per_update")]
     pub near_max_counts_per_update: f64,
     #[serde(default = "default_arrival_radius_counts")]
@@ -565,9 +571,12 @@ impl Default for PipelineRuntimeConfig {
             projection_fov_x_deg: default_projection_fov_x_deg(),
             projection_counts_per_360: default_projection_counts_per_360(),
             atan_scale_counts: default_atan_scale_counts(),
-            far_kp: default_far_kp(),
+            p_response_scale: default_p_response_scale(),
+            p_response_gain_floor: default_p_response_gain_floor(),
+            p_response_gain_ceiling: default_p_response_gain_ceiling(),
+            p_response_curve_width_ratio: default_response_curve_width_ratio(),
+            p_response_curve_shape: default_response_curve_shape(),
             far_max_counts_per_update: default_far_max_counts_per_update(),
-            near_kp: default_near_kp(),
             near_max_counts_per_update: default_near_max_counts_per_update(),
             arrival_radius_counts: default_arrival_radius_counts(),
             velocity_smoothing_frames: default_velocity_smoothing_frames(),
@@ -621,6 +630,16 @@ impl Default for PipelineRuntimeConfig {
 }
 
 impl PipelineRuntimeConfig {
+    pub fn continuous_response(&self) -> ContinuousResponseRuntimeConfig {
+        ContinuousResponseRuntimeConfig {
+            scale: self.p_response_scale,
+            gain_floor: self.p_response_gain_floor,
+            gain_ceiling: self.p_response_gain_ceiling,
+            curve_width_ratio: self.p_response_curve_width_ratio,
+            curve_shape: self.p_response_curve_shape,
+        }
+    }
+
     fn validate(&self) -> Result<(), ConfigValidationError> {
         validate_finite_range(
             "pipeline.freshness_threshold_ms",
@@ -652,14 +671,48 @@ impl PipelineRuntimeConfig {
             0.000_001,
             1_000_000.0,
         )?;
-        validate_finite_range("pipeline.far_kp", self.far_kp, 0.0, 100.0)?;
+        validate_finite_range(
+            "pipeline.p_response_scale",
+            self.p_response_scale,
+            0.0,
+            100.0,
+        )?;
+        validate_finite_range(
+            "pipeline.p_response_gain_floor",
+            self.p_response_gain_floor,
+            0.0,
+            100.0,
+        )?;
+        validate_finite_range(
+            "pipeline.p_response_gain_ceiling",
+            self.p_response_gain_ceiling,
+            0.0,
+            100.0,
+        )?;
+        if self.p_response_gain_floor > self.p_response_gain_ceiling {
+            return Err(ConfigValidationError::new(
+                "pipeline.p_response_gain_floor",
+                "must be <= pipeline.p_response_gain_ceiling",
+            ));
+        }
+        validate_finite_range(
+            "pipeline.p_response_curve_width_ratio",
+            self.p_response_curve_width_ratio,
+            0.000_001,
+            10.0,
+        )?;
+        validate_finite_range(
+            "pipeline.p_response_curve_shape",
+            self.p_response_curve_shape,
+            0.5,
+            4.0,
+        )?;
         validate_finite_range(
             "pipeline.far_max_counts_per_update",
             self.far_max_counts_per_update,
             1.0,
             f64::from(i16::MAX),
         )?;
-        validate_finite_range("pipeline.near_kp", self.near_kp, 0.0, 100.0)?;
         validate_finite_range(
             "pipeline.near_max_counts_per_update",
             self.near_max_counts_per_update,
@@ -912,6 +965,15 @@ impl PipelineRuntimeConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContinuousResponseRuntimeConfig {
+    pub scale: f64,
+    pub gain_floor: f64,
+    pub gain_ceiling: f64,
+    pub curve_width_ratio: f64,
+    pub curve_shape: f64,
+}
+
 pub fn parse_target_class_priority(value: &str) -> Result<Vec<u32>, ConfigValidationError> {
     let mut classes = Vec::new();
     for item in value.split(',') {
@@ -1046,16 +1108,28 @@ const fn default_atan_scale_counts() -> f64 {
     256.0
 }
 
-const fn default_far_kp() -> f64 {
+const fn default_response_curve_width_ratio() -> f64 {
+    0.25
+}
+
+const fn default_response_curve_shape() -> f64 {
+    1.0
+}
+
+const fn default_p_response_scale() -> f64 {
     0.30
+}
+
+const fn default_p_response_gain_floor() -> f64 {
+    0.20 / 0.30
+}
+
+const fn default_p_response_gain_ceiling() -> f64 {
+    1.0
 }
 
 const fn default_far_max_counts_per_update() -> f64 {
     127.0
-}
-
-const fn default_near_kp() -> f64 {
-    0.20
 }
 
 const fn default_near_max_counts_per_update() -> f64 {
@@ -1922,6 +1996,26 @@ mod tests {
             .validate()
             .expect_err("unbounded kalman prediction steps");
         assert_eq!(error.field, "pipeline.tracker_kalman_max_predict_steps");
+    }
+
+    #[test]
+    fn continuous_response_uses_canonical_fields() {
+        let config = PipelineRuntimeConfig {
+            p_response_scale: 0.42,
+            p_response_gain_floor: 0.50,
+            p_response_gain_ceiling: 1.20,
+            p_response_curve_width_ratio: 0.40,
+            p_response_curve_shape: 1.50,
+            ..PipelineRuntimeConfig::default()
+        };
+
+        let response = config.continuous_response();
+
+        assert_eq!(response.scale, 0.42);
+        assert_eq!(response.gain_floor, 0.50);
+        assert_eq!(response.gain_ceiling, 1.20);
+        assert_eq!(response.curve_width_ratio, 0.40);
+        assert_eq!(response.curve_shape, 1.50);
     }
 
     #[test]

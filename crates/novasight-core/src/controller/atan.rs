@@ -1,7 +1,7 @@
-//! Two-phase Atan feedback controller for the selected target.
+//! Continuous Atan feedback controller for the selected target.
 //!
 //! The measured error is projected into device counts and compressed by one
-//! continuously blended FAR/NEAR Atan response. Optional two-axis target
+//! continuously scheduled Atan response. Optional two-axis target
 //! prediction is owned by the dedicated `prediction` module. Integer device
 //! conversion is owned by the dedicated `limiter` module.
 //!
@@ -17,7 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::response_curve::{BlendedAtanConfig, ContinuousDemand, far_weight};
+use super::response_curve::{ContinuousAtanConfig, ContinuousDemand, response_progress};
 use crate::limiter::{DeviceCountLimiter, DeviceCountLimits};
 use crate::prediction::{
     FocusTargetObservation, PredictionMotionState, SingleTargetPredictionConfig,
@@ -72,9 +72,12 @@ pub struct DualPhaseConfig {
     pub projection_fov_x_deg: f64,
     pub projection_counts_per_360: f64,
     pub atan_scale_counts: f64,
-    pub far_kp: f64,
+    pub response_scale: f64,
+    pub response_gain_floor: f64,
+    pub response_gain_ceiling: f64,
+    pub response_curve_width_ratio: f64,
+    pub response_curve_shape: f64,
     pub far_max_counts_per_update: f64,
-    pub near_kp: f64,
     pub near_max_counts_per_update: f64,
     /// Half-size of the per-axis arrival box in projected device counts.
     pub arrival_radius_counts: f64,
@@ -112,9 +115,12 @@ impl Default for DualPhaseConfig {
             projection_fov_x_deg: 105.0,
             projection_counts_per_360: 9_980.0,
             atan_scale_counts: 256.0,
-            far_kp: 0.30,
+            response_scale: 0.30,
+            response_gain_floor: 0.20 / 0.30,
+            response_gain_ceiling: 1.0,
+            response_curve_width_ratio: 0.25,
+            response_curve_shape: 1.0,
             far_max_counts_per_update: 127.0,
-            near_kp: 0.20,
             near_max_counts_per_update: 72.0,
             arrival_radius_counts: 3.0,
             velocity_smoothing_frames: 3.0,
@@ -427,6 +433,16 @@ impl ProjectionModel {
             || config.projection_counts_per_360 <= 0.0
             || !config.atan_scale_counts.is_finite()
             || config.atan_scale_counts <= 0.0
+            || !config.response_scale.is_finite()
+            || config.response_scale < 0.0
+            || !config.response_gain_floor.is_finite()
+            || config.response_gain_floor < 0.0
+            || !config.response_gain_ceiling.is_finite()
+            || config.response_gain_floor > config.response_gain_ceiling
+            || !config.response_curve_width_ratio.is_finite()
+            || config.response_curve_width_ratio <= 0.0
+            || !config.response_curve_shape.is_finite()
+            || !(0.5..=4.0).contains(&config.response_curve_shape)
         {
             return None;
         }
@@ -606,7 +622,12 @@ impl DualPhaseControl {
         let observed_distance = error_x.hypot(error_y);
         // Prediction caps are scheduled from the measured observation so the
         // predictor cannot enlarge its own envelope recursively.
-        let prediction_far_weight = far_weight(observed_distance, self.config.near_threshold_px);
+        let prediction_far_weight = response_progress(
+            observed_distance,
+            self.config.near_threshold_px,
+            self.config.response_curve_width_ratio,
+            self.config.response_curve_shape,
+        );
         let prediction = if capture_timestamp_discontinuity {
             self.prediction
                 .unavailable(error_x, error_y, prediction_far_weight)
@@ -804,13 +825,16 @@ impl DualPhaseControl {
     ) -> Option<(ContinuousDemand, f64, f64)> {
         let config = self.config;
         let (full_x, full_y) = self.projection?.project(error_x, error_y);
-        let response = BlendedAtanConfig {
-            near_threshold_px: config.near_threshold_px,
+        let response = ContinuousAtanConfig {
+            response_curve_center_px: config.near_threshold_px,
+            response_curve_width_ratio: config.response_curve_width_ratio,
+            response_curve_shape: config.response_curve_shape,
             scale_counts: config.atan_scale_counts,
-            far_kp: config.far_kp,
-            far_limit_counts: config.far_max_counts_per_update,
-            near_kp: config.near_kp,
+            response_scale: config.response_scale,
+            response_gain_floor: config.response_gain_floor,
+            response_gain_ceiling: config.response_gain_ceiling,
             near_limit_counts: config.near_max_counts_per_update,
+            far_limit_counts: config.far_max_counts_per_update,
         }
         .evaluate(measured_distance_px, full_x, full_y)?;
         Some((response, full_x, full_y))
