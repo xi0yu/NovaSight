@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 
 import { formatNumberDraft, resolveNumberDraft } from "./numberDraft";
 
@@ -13,6 +13,30 @@ export type ParameterSelectOption = {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function roundToDigits(value: number, digits: number): number {
+  return Number(value.toFixed(digits));
+}
+
+function pointerRangeBoundaryValue(
+  event: ReactPointerEvent<HTMLInputElement>,
+  min: number,
+  max: number,
+  digits: number
+): number | null {
+  const rect = event.currentTarget.getBoundingClientRect();
+  if (!Number.isFinite(rect.width) || rect.width <= 0) {
+    return null;
+  }
+  const edgeTolerancePx = Math.max(4, rect.width * 0.006);
+  if (event.clientX >= rect.right - edgeTolerancePx) {
+    return roundToDigits(max, digits);
+  }
+  if (event.clientX <= rect.left + edgeTolerancePx) {
+    return roundToDigits(min, digits);
+  }
+  return null;
 }
 
 function decimalPlacesForStep(step: number): number {
@@ -139,7 +163,20 @@ function SliderNumberControl({
         }}
         onFocus={() => setIsEditing(true)}
         onPointerDown={() => setIsEditing(true)}
-        onPointerUp={() => commit()}
+        onPointerUp={(event) => {
+          const boundaryValue = pointerRangeBoundaryValue(event, sliderMin, sliderMax, digits);
+          if (boundaryValue === null) {
+            commit();
+            return;
+          }
+          const next = clampNumber(boundaryValue, min, max);
+          const nextText = formatNumberDraft(next, digits);
+          draftTextRef.current = nextText;
+          setDraftValue(next);
+          setDraftText(nextText);
+          onDraftChange?.(next);
+          commit(nextText);
+        }}
         onTouchEnd={() => commit()}
       />
       <input

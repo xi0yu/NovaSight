@@ -192,7 +192,7 @@ const ALGORITHM_SETTINGS_SECTIONS: Array<{
   {
     id: "response",
     label: "连续非线性控制",
-    detail: "响应力度、过渡曲线与 Atan 压缩",
+    detail: "K_base、B、gamma 与 Atan 压缩",
     panelId: "algorithm-settings-response"
   },
   {
@@ -2572,8 +2572,8 @@ export function StudioConsoleView({
     {
       id: "response",
       label: "响应",
-      value: `力度 ${formatNumber(pResponseScale, 3)} · 增强 ${formatNumber(pResponseBoost, 2)}`,
-      detail: `曲线 ${formatNumber(pResponseCurveShape, 2)} · S ${formatNumber(algorithmAtanScaleCounts, 0)} counts`,
+      value: `K_base ${formatNumber(pResponseScale, 3)} · B ${formatNumber(pResponseBoost, 2)}`,
+      detail: `gamma ${formatNumber(pResponseCurveShape, 2)} · S ${formatNumber(algorithmAtanScaleCounts, 0)} counts`,
       icon: "response-curve"
     },
     {
@@ -4073,8 +4073,8 @@ export function StudioConsoleView({
                 <p className="console-section-note">当前控制链路仅使用投影、增益、Atan 响应曲线和单次限幅。</p>
                 <div className="advanced-settings-summary">
                   <div><span>FOVX</span><b>{controlFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
-                  <div><span>响应力度</span><b>{pResponseScale.toFixed(3)}</b></div>
-                  <div><span>力度增强</span><b>{pResponseBoost.toFixed(2)}</b></div>
+                  <div><span>K_base 基础响应</span><b>{pResponseScale.toFixed(3)}</b></div>
+                  <div><span>B 动态增强</span><b>{pResponseBoost.toFixed(2)}</b></div>
                   <div><span>目标速度预测</span><b>{controlPredictionEnabled ? "二维 aim 已启用" : "已关闭"}</b></div>
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("algorithm")} type="button">
@@ -4650,10 +4650,10 @@ export function StudioConsoleView({
             <section aria-labelledby="algorithm-settings-response-tab" className="algorithm-settings-panel" id="algorithm-settings-response" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
                 <span>连续非线性控制</span>
-                <h3 id="algorithm-settings-response-title">响应力度与 Atan 曲线</h3>
-                <p>这里决定控制器想移动多少：u = K_base * R(r) * S * atan(e / S)，S 固定为 256 counts，R(r) = 1 + B * (1 - exp(-(r ^ gamma)))。</p>
+                <h3 id="algorithm-settings-response-title">K_base / B / gamma 响应曲线</h3>
+                <p>这组只调公式里的 K_base、B、gamma：u = K_base * R(r,m) * S * atan(e_pred / S)，S 固定 256 counts；R(r,m) = 1 + B * schedule(m) * (1 - exp(-(r ^ gamma)))。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>建议顺序</b><span>响应力度 → 力度增强 → 响应曲线；S 固定为 256 counts</span></div>
+              <div className="algorithm-tuning-order"><b>慢但稳先看</b><span>K_base 提整体速度，B 提稳定运动时的追赶，gamma 只改增强进入早晚；真正输出被“最大移动量”限住时再看限制页。</span></div>
               <div className="advanced-settings-grid two-column">
                 {responseParameters.map(renderAlgorithmNumberParameter)}
               </div>
