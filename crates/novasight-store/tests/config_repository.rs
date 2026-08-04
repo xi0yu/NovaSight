@@ -98,6 +98,7 @@ limits:
 pipeline:
   prediction_enabled: true
   velocity_change_base_px_ms: 0.42
+  velocity_change_relative: 0.61
 "#,
     )
     .unwrap();
@@ -105,6 +106,7 @@ pipeline:
     let config = YamlConfigRepository::load(&path).unwrap();
 
     assert_eq!(config.pipeline.velocity_spread_base_px_ms, 0.42);
+    assert_eq!(config.pipeline.velocity_spread_relative, 0.61);
     assert!(config.pipeline.extra.is_empty());
 
     YamlConfigRepository::new(&path)
@@ -112,7 +114,9 @@ pipeline:
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(persisted["pipeline"]["velocity_spread_base_px_ms"], 0.42);
+    assert_eq!(persisted["pipeline"]["velocity_spread_relative"], 0.61);
     assert!(persisted["pipeline"]["velocity_change_base_px_ms"].is_null());
+    assert!(persisted["pipeline"]["velocity_change_relative"].is_null());
 }
 
 #[test]
@@ -124,6 +128,7 @@ fn retired_velocity_change_field_migrates_on_replacement() {
         r#"revision: 0
 pipeline:
   velocity_change_base_px_ms: 0.37
+  velocity_change_relative: 0.58
 "#,
     )
     .unwrap();
@@ -133,8 +138,11 @@ pipeline:
         .unwrap();
 
     assert_eq!(config.pipeline.velocity_spread_base_px_ms, 0.37);
+    assert_eq!(config.pipeline.velocity_spread_relative, 0.58);
     assert!(config.pipeline.extra.is_empty());
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(persisted["pipeline"]["velocity_spread_base_px_ms"], 0.37);
+    assert_eq!(persisted["pipeline"]["velocity_spread_relative"], 0.58);
     assert!(persisted["pipeline"]["velocity_change_base_px_ms"].is_null());
+    assert!(persisted["pipeline"]["velocity_change_relative"].is_null());
 }

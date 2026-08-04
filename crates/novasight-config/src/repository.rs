@@ -28,6 +28,21 @@ const CONFIG_LOCK_WAIT: Duration = Duration::from_millis(250);
 const CONFIG_LOCK_RETRY: Duration = Duration::from_millis(2);
 const DEFAULT_RUNTIME_CONFIG: &str = include_str!("bootstrap.yaml");
 const RESPONSIVE_TARGET_TRACK_MAX_AGE: u64 = 5;
+const RETIRED_PIPELINE_NUMERIC_ALIASES: &[(&str, &str)] = &[
+    ("velocity_change_base_px_ms", "velocity_spread_base_px_ms"),
+    ("velocity_change_relative", "velocity_spread_relative"),
+];
+const RETIRED_PIPELINE_FIELDS: &[&str] = &[
+    "projection_invert_y",
+    "atan_scale_counts",
+    "velocity_change_base_px_ms",
+    "velocity_change_relative",
+    "target_selection_class_weight",
+    "target_selection_distance_weight",
+    "target_sticky_bias",
+    "max_command_age_ms",
+    "output_interval_ms",
+];
 
 pub trait ConfigRepository {
     type Error: Error + Send + Sync + 'static;
@@ -451,7 +466,9 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     config.pipeline.extra.remove("max_command_age_ms");
     config.pipeline.extra.remove("output_interval_ms");
     config.pipeline.extra.remove("atan_scale_counts");
-    config.pipeline.extra.remove("velocity_change_base_px_ms");
+    for (retired_key, _) in RETIRED_PIPELINE_NUMERIC_ALIASES {
+        config.pipeline.extra.remove(*retired_key);
+    }
     let mut removed_retired_recoil = false;
     for field in [
         "base_rate_counts_s",
@@ -528,20 +545,7 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         device.extra.remove("reconnect_cooldown_ms");
     }
     remove_section_fields(document, "paths", &["python_executable"]);
-    remove_section_fields(
-        document,
-        "pipeline",
-        &[
-            "projection_invert_y",
-            "atan_scale_counts",
-            "velocity_change_base_px_ms",
-            "target_selection_class_weight",
-            "target_selection_distance_weight",
-            "target_sticky_bias",
-            "max_command_age_ms",
-            "output_interval_ms",
-        ],
-    );
+    remove_section_fields(document, "pipeline", RETIRED_PIPELINE_FIELDS);
     remove_nested_section_fields(
         document,
         "control",
@@ -629,11 +633,9 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
 }
 
 fn migrate_retired_pipeline_aliases(document: &mut Value) {
-    migrate_pipeline_numeric_alias(
-        document,
-        "velocity_change_base_px_ms",
-        "velocity_spread_base_px_ms",
-    );
+    for (retired_key, current_key) in RETIRED_PIPELINE_NUMERIC_ALIASES {
+        migrate_pipeline_numeric_alias(document, retired_key, current_key);
+    }
 }
 
 fn migrate_pipeline_numeric_alias(document: &mut Value, retired_key: &str, current_key: &str) {
