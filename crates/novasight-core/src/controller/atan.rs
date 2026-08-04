@@ -24,6 +24,8 @@ use crate::prediction::{
     SingleTargetPredictor,
 };
 
+pub const DEFAULT_ATAN_SCALE_COUNTS: f64 = 256.0;
+
 /// Integer mouse output cannot represent a correction smaller than one count.
 /// At half a count or less the current integer position is the nearest
 /// representable point, so retaining residual would only create a +/-1 cycle.
@@ -65,11 +67,10 @@ pub enum BlockReason {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DualPhaseConfig {
+pub struct ContinuousControlConfig {
     pub freshness_threshold_ms: f64,
     pub projection_fov_x_deg: f64,
     pub projection_counts_per_360: f64,
-    pub atan_scale_counts: f64,
     pub response_scale: f64,
     pub response_boost: f64,
     pub response_curve_shape: f64,
@@ -94,13 +95,12 @@ pub struct DualPhaseConfig {
     pub residual_cap: f64,
 }
 
-impl Default for DualPhaseConfig {
+impl Default for ContinuousControlConfig {
     fn default() -> Self {
         Self {
             freshness_threshold_ms: 55.0,
             projection_fov_x_deg: 105.0,
             projection_counts_per_360: 9_980.0,
-            atan_scale_counts: 256.0,
             response_scale: 0.20,
             response_boost: 0.50,
             response_curve_shape: 1.0,
@@ -123,7 +123,7 @@ impl Default for DualPhaseConfig {
     }
 }
 
-impl DualPhaseConfig {
+impl ContinuousControlConfig {
     fn prediction_config(self) -> SingleTargetPredictionConfig {
         SingleTargetPredictionConfig {
             enabled: self.prediction_enabled,
@@ -195,7 +195,7 @@ pub struct ControlDecision {
     pub history_position_count: usize,
     pub velocity_samples: [Option<f64>; 3],
     pub mean_velocity: Option<f64>,
-    pub median_velocity: Option<f64>,
+    pub medoid_velocity: Option<f64>,
     pub velocity_spread: Option<f64>,
     pub measurement_dt_ms: Option<f64>,
     pub reference_dt_ms: f64,
@@ -209,7 +209,7 @@ pub struct ControlDecision {
     pub motion_confidence_y: f64,
     pub velocity_samples_y: [Option<f64>; 3],
     pub mean_velocity_y: Option<f64>,
-    pub median_velocity_y: Option<f64>,
+    pub medoid_velocity_y: Option<f64>,
     pub velocity_spread_y: Option<f64>,
     pub measurement_dt_ms_y: Option<f64>,
     pub reference_dt_ms_y: f64,
@@ -272,7 +272,7 @@ impl ControlDecision {
             history_position_count: 0,
             velocity_samples: [None; 3],
             mean_velocity: None,
-            median_velocity: None,
+            medoid_velocity: None,
             velocity_spread: None,
             measurement_dt_ms: None,
             reference_dt_ms: 0.0,
@@ -286,7 +286,7 @@ impl ControlDecision {
             motion_confidence_y: 0.0,
             velocity_samples_y: [None; 3],
             mean_velocity_y: None,
-            median_velocity_y: None,
+            medoid_velocity_y: None,
             velocity_spread_y: None,
             measurement_dt_ms_y: None,
             reference_dt_ms_y: 0.0,
@@ -388,7 +388,7 @@ struct ProjectionModel {
 }
 
 impl ProjectionModel {
-    fn from_config(config: DualPhaseConfig) -> Option<Self> {
+    fn from_config(config: ContinuousControlConfig) -> Option<Self> {
         if config.source_width == 0
             || config.roi_width == 0
             || config.roi_height == 0
@@ -398,8 +398,6 @@ impl ProjectionModel {
             || !(0.0..180.0).contains(&config.projection_fov_x_deg)
             || !config.projection_counts_per_360.is_finite()
             || config.projection_counts_per_360 <= 0.0
-            || !config.atan_scale_counts.is_finite()
-            || config.atan_scale_counts <= 0.0
             || !config.response_scale.is_finite()
             || config.response_scale < 0.0
             || !config.response_boost.is_finite()
@@ -434,8 +432,8 @@ impl ProjectionModel {
 
 /// reach into a stale decision.
 #[derive(Clone, Debug)]
-pub struct DualPhaseControl {
-    config: DualPhaseConfig,
+pub struct ContinuousControl {
+    config: ContinuousControlConfig,
     projection: Option<ProjectionModel>,
     limiter: DeviceCountLimiter,
     last_generation: Option<u64>,
@@ -449,8 +447,8 @@ pub struct DualPhaseControl {
     arrival_y: AxisArrivalState,
 }
 
-impl DualPhaseControl {
-    pub fn new(config: DualPhaseConfig) -> Self {
+impl ContinuousControl {
+    pub fn new(config: ContinuousControlConfig) -> Self {
         Self {
             config,
             projection: ProjectionModel::from_config(config),
@@ -467,7 +465,7 @@ impl DualPhaseControl {
         }
     }
 
-    pub fn set_config(&mut self, config: DualPhaseConfig) {
+    pub fn set_config(&mut self, config: ContinuousControlConfig) {
         self.config = config;
         self.projection = ProjectionModel::from_config(config);
         self.prediction.set_config(config.prediction_config());
@@ -599,9 +597,14 @@ impl DualPhaseControl {
         let predicted_offset_y = prediction.y.safe_offset;
         let filtered_error_x = error_x + predicted_offset_x;
         let filtered_error_y = error_y + predicted_offset_y;
+        let motion_strength = prediction
+            .x
+            .motion_confidence
+            .max(prediction.y.motion_confidence)
+            .clamp(0.0, 1.0);
         let mode = ControlMode::Continuous;
         let Some((mut response, full_x, full_y)) =
-            self.project_demand(filtered_error_x, filtered_error_y)
+            self.project_demand(filtered_error_x, filtered_error_y, motion_strength)
         else {
             self.release_trigger();
             return ControlDecision::blocked(BlockReason::GeometryInvalid);
@@ -719,7 +722,7 @@ impl DualPhaseControl {
             history_position_count: prediction.history_position_count,
             velocity_samples: prediction.x.velocity_samples,
             mean_velocity: prediction.x.mean_velocity,
-            median_velocity: prediction.x.median_velocity,
+            medoid_velocity: prediction.x.medoid_velocity,
             velocity_spread: prediction.x.velocity_spread,
             measurement_dt_ms: prediction.x.measurement_dt_ms,
             reference_dt_ms: prediction.x.reference_dt_ms,
@@ -733,7 +736,7 @@ impl DualPhaseControl {
             motion_confidence_y: prediction.y.motion_confidence,
             velocity_samples_y: prediction.y.velocity_samples,
             mean_velocity_y: prediction.y.mean_velocity,
-            median_velocity_y: prediction.y.median_velocity,
+            medoid_velocity_y: prediction.y.medoid_velocity,
             velocity_spread_y: prediction.y.velocity_spread,
             measurement_dt_ms_y: prediction.y.measurement_dt_ms,
             reference_dt_ms_y: prediction.y.reference_dt_ms,
@@ -760,17 +763,22 @@ impl DualPhaseControl {
         }
     }
 
-    fn project_demand(&self, error_x: f64, error_y: f64) -> Option<(ContinuousDemand, f64, f64)> {
+    fn project_demand(
+        &self,
+        error_x: f64,
+        error_y: f64,
+        motion_strength: f64,
+    ) -> Option<(ContinuousDemand, f64, f64)> {
         let config = self.config;
         let (full_x, full_y) = self.projection?.project(error_x, error_y);
         let response = ContinuousAtanConfig {
-            scale_counts: config.atan_scale_counts,
+            scale_counts: DEFAULT_ATAN_SCALE_COUNTS,
             response_scale: config.response_scale,
             response_boost: config.response_boost,
             response_curve_shape: config.response_curve_shape,
             max_counts_per_update: config.max_counts_per_update,
         }
-        .evaluate(full_x, full_y)?;
+        .evaluate(full_x, full_y, motion_strength)?;
         Some((response, full_x, full_y))
     }
 }
@@ -805,8 +813,8 @@ fn crossed_center(previous: f64, current: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActuationFeedback, AxisArrivalState, BlockReason, ControlMode, ControlObservation,
-        DualPhaseConfig, DualPhaseControl,
+        ActuationFeedback, AxisArrivalState, BlockReason, ContinuousControl,
+        ContinuousControlConfig, ControlMode, ControlObservation,
     };
     use crate::prediction::PredictionMotionState;
 
@@ -837,13 +845,13 @@ mod tests {
 
     #[test]
     fn confidence_weighted_vector_prediction_respects_single_cap() {
-        let config = DualPhaseConfig {
+        let config = ContinuousControlConfig {
             prediction_enabled: true,
             prediction_lead_ms: 2.0,
             prediction_cap_px: 3.0,
-            ..DualPhaseConfig::default()
+            ..ContinuousControlConfig::default()
         };
-        let mut control = DualPhaseControl::new(config);
+        let mut control = ContinuousControl::new(config);
         let mut decision = None;
         for (index, (error_x, error_y)) in [(40.0, 20.0), (44.0, 22.0), (48.0, 24.0), (52.0, 26.0)]
             .into_iter()
@@ -871,7 +879,7 @@ mod tests {
         assert_eq!(decision.history_position_count, 4);
         assert_eq!(decision.velocity_samples, [Some(0.4); 3]);
         assert!((decision.mean_velocity.expect("mean") - 0.4).abs() < 1e-12);
-        assert!((decision.median_velocity.expect("median") - 0.4).abs() < 1e-12);
+        assert!((decision.medoid_velocity.expect("medoid") - 0.4).abs() < 1e-12);
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
         assert_eq!(decision.motion_state, PredictionMotionState::Continuous);
         assert!(decision.trend_consistency > 0.99);
@@ -904,9 +912,9 @@ mod tests {
 
     #[test]
     fn track_confidence_zero_suppresses_prediction_without_hiding_velocity() {
-        let mut control = DualPhaseControl::new(DualPhaseConfig {
+        let mut control = ContinuousControl::new(ContinuousControlConfig {
             prediction_enabled: true,
-            ..DualPhaseConfig::default()
+            ..ContinuousControlConfig::default()
         });
         let mut decision = None;
         for (index, error_x) in [40.0, 44.0, 48.0, 52.0].into_iter().enumerate() {
@@ -937,9 +945,9 @@ mod tests {
 
     #[test]
     fn pending_feedback_holds_stationary_axis_to_avoid_duplicate_correction() {
-        let mut control = DualPhaseControl::new(DualPhaseConfig {
+        let mut control = ContinuousControl::new(ContinuousControlConfig {
             prediction_enabled: false,
-            ..DualPhaseConfig::default()
+            ..ContinuousControlConfig::default()
         });
         let first = ControlObservation {
             generation: 1,
@@ -980,9 +988,9 @@ mod tests {
 
     #[test]
     fn pending_feedback_does_not_freeze_axis_when_error_keeps_growing() {
-        let mut control = DualPhaseControl::new(DualPhaseConfig {
+        let mut control = ContinuousControl::new(ContinuousControlConfig {
             prediction_enabled: false,
-            ..DualPhaseConfig::default()
+            ..ContinuousControlConfig::default()
         });
         let first = ControlObservation {
             generation: 1,
@@ -1024,10 +1032,10 @@ mod tests {
 
     #[test]
     fn prediction_offsets_feed_the_continuous_controller() {
-        let mut control = DualPhaseControl::new(DualPhaseConfig {
+        let mut control = ContinuousControl::new(ContinuousControlConfig {
             prediction_enabled: true,
             prediction_lead_ms: 1.0,
-            ..DualPhaseConfig::default()
+            ..ContinuousControlConfig::default()
         });
         let mut decision = None;
         for (index, error_x) in [5.0, 7.0, 9.0, 11.0].into_iter().enumerate() {
@@ -1057,9 +1065,9 @@ mod tests {
 
     #[test]
     fn trigger_release_clears_output_residual_but_keeps_motion_history_hot() {
-        let mut control = DualPhaseControl::new(DualPhaseConfig {
+        let mut control = ContinuousControl::new(ContinuousControlConfig {
             prediction_enabled: true,
-            ..DualPhaseConfig::default()
+            ..ContinuousControlConfig::default()
         });
         let mut decision = None;
         for (index, error_x) in [40.0, 44.0, 48.0, 52.0].into_iter().enumerate() {

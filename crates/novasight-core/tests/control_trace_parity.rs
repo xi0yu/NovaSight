@@ -1,6 +1,6 @@
-//! Phase 2 dual-phase control parity tests. Reads the
-//! `dual-phase-control.jsonl` fixture, instantiates a fresh
-//! `DualPhaseControl` for each record, and asserts the contract the
+//! Continuous control parity tests. Reads the
+//! `continuous-control-control.jsonl` fixture, instantiates a fresh
+//! `ContinuousControl` for each record, and asserts the contract the
 //! runtime depends on:
 //!
 //! * `block_reason` is `BlockReason::None` only when
@@ -14,8 +14,8 @@
 use std::path::PathBuf;
 
 use novasight_core::controller::{
-    BlockReason, ControlDecision, ControlMode, ControlObservation, DualPhaseConfig,
-    DualPhaseControl,
+    BlockReason, ContinuousControl, ContinuousControlConfig, ControlDecision, ControlMode,
+    ControlObservation,
 };
 use serde_json::Value;
 
@@ -104,13 +104,13 @@ fn assert_invariants(record: &Value, decision: ControlDecision) {
 }
 
 #[test]
-fn dual_phase_control_decision_matches_contract_per_record() {
-    let records = load_records("dual-phase-control.jsonl");
+fn continuous_control_decision_matches_contract_per_record() {
+    let records = load_records("continuous-control-control.jsonl");
     assert!(
         !records.is_empty(),
-        "dual-phase-control.jsonl must contain records"
+        "continuous-control-control.jsonl must contain records"
     );
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     for record in &records {
         let observation = observation_from_value(&record["observation"]);
         let decision = control.calculate(observation);
@@ -120,7 +120,7 @@ fn dual_phase_control_decision_matches_contract_per_record() {
 
 #[test]
 fn first_observation_has_zero_velocity_and_predicted_offset() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let observation = ControlObservation {
         generation: 1,
         target_id: 1,
@@ -145,7 +145,7 @@ fn first_observation_has_zero_velocity_and_predicted_offset() {
 
 #[test]
 fn rust_feedback_matches_the_continuous_projection_and_atan_reference() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let decision = control.calculate(ControlObservation {
         generation: 1,
         target_id: 1,
@@ -161,19 +161,19 @@ fn rust_feedback_matches_the_continuous_projection_and_atan_reference() {
         trigger_active: true,
     });
 
-    assert_eq!((decision.dx, decision.dy), (88, 73));
+    assert_eq!((decision.dx, decision.dy), (70, 58));
     assert!((0.0..1.0).contains(&decision.quantizer_residual_x));
     assert!((0.0..1.0).contains(&decision.quantizer_residual_y));
 }
 
 #[test]
 fn default_feedback_converges_with_two_frames_of_visual_delay() {
-    let config = DualPhaseConfig::default();
+    let config = ContinuousControlConfig::default();
     let focal_x =
         (config.source_width as f64 * 0.5) / (config.projection_fov_x_deg.to_radians() * 0.5).tan();
     let observation_px_per_count =
         focal_x * (std::f64::consts::TAU / config.projection_counts_per_360).tan();
-    let mut control = DualPhaseControl::new(config);
+    let mut control = ContinuousControl::new(config);
     let mut true_error_x = 100.0;
     let mut delayed_errors = [true_error_x; 3];
     let mut tail_error_sum = 0.0;
@@ -218,12 +218,12 @@ fn default_feedback_converges_with_two_frames_of_visual_delay() {
 
 #[test]
 fn sub_count_arrival_becomes_quiet_instead_of_limit_cycling() {
-    let config = DualPhaseConfig::default();
+    let config = ContinuousControlConfig::default();
     let focal_x =
         (config.source_width as f64 * 0.5) / (config.projection_fov_x_deg.to_radians() * 0.5).tan();
     let observation_px_per_count =
         focal_x * (std::f64::consts::TAU / config.projection_counts_per_360).tan();
-    let mut control = DualPhaseControl::new(config);
+    let mut control = ContinuousControl::new(config);
     let mut true_error_x = 100.0;
     let mut delayed_errors = [true_error_x; 3];
     let mut tail_nonzero_commands = 0;
@@ -261,7 +261,7 @@ fn sub_count_arrival_becomes_quiet_instead_of_limit_cycling() {
 
 #[test]
 fn aim_region_rejects_persistent_subpixel_detector_chatter() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let errors = [0.4_f64; 4]
         .into_iter()
         .chain([-0.4_f64; 4])
@@ -299,7 +299,7 @@ fn aim_region_rejects_persistent_subpixel_detector_chatter() {
 
 #[test]
 fn second_observation_waits_for_complete_robust_velocity_window() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let first = ControlObservation {
         generation: 1,
         target_id: 1,
@@ -338,7 +338,7 @@ fn second_observation_waits_for_complete_robust_velocity_window() {
 
 #[test]
 fn invalid_target_returns_target_invalid_block() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let observation = ControlObservation {
         generation: 1,
         target_id: 1,
@@ -360,7 +360,7 @@ fn invalid_target_returns_target_invalid_block() {
 
 #[test]
 fn trigger_inactive_returns_trigger_inactive_block() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let observation = ControlObservation {
         generation: 1,
         target_id: 1,
@@ -382,7 +382,7 @@ fn trigger_inactive_returns_trigger_inactive_block() {
 
 #[test]
 fn non_monotonic_observation_is_rejected() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let first = ControlObservation {
         generation: 1,
         target_id: 1,
@@ -419,7 +419,7 @@ fn non_monotonic_observation_is_rejected() {
 
 #[test]
 fn stale_observation_is_rejected() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let observation = ControlObservation {
         generation: 1,
         target_id: 1,
@@ -441,7 +441,7 @@ fn stale_observation_is_rejected() {
 
 #[test]
 fn reset_clears_state_and_history() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let observation = ControlObservation {
         generation: 1,
         target_id: 1,
@@ -479,7 +479,7 @@ fn reset_clears_state_and_history() {
 
 #[test]
 fn release_trigger_drops_fractional_count_but_keeps_history() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let first = ControlObservation {
         generation: 1,
         target_id: 1,
@@ -518,7 +518,7 @@ fn release_trigger_drops_fractional_count_but_keeps_history() {
 
 #[test]
 fn continuous_mode_is_reported_for_small_error() {
-    let mut control = DualPhaseControl::new(DualPhaseConfig::default());
+    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
     let observation = ControlObservation {
         generation: 1,
         target_id: 1,

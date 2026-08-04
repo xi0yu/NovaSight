@@ -3,7 +3,12 @@
 //! Atan is the response curve: it already supplies a nonlinear proportional
 //! response and a continuously decreasing effective gain as the error grows.
 //! The radial response multiplier owns how strongly that curve is allowed to
-//! act as the normalized target error grows.
+//! act as the normalized target error grows. Motion strength from prediction
+//! schedules the dynamic part of that multiplier; a small acquisition fraction
+//! remains available for large static errors.
+
+const ERROR_ACQUISITION_BOOST_FRACTION: f64 = 0.35;
+const MOTION_BOOST_FRACTION: f64 = 1.0 - ERROR_ACQUISITION_BOOST_FRACTION;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ContinuousAtanConfig {
@@ -26,8 +31,13 @@ impl ContinuousAtanConfig {
         self,
         full_error_counts_x: f64,
         full_error_counts_y: f64,
+        motion_strength: f64,
     ) -> Option<ContinuousDemand> {
-        if !self.valid() || !full_error_counts_x.is_finite() || !full_error_counts_y.is_finite() {
+        if !self.valid()
+            || !full_error_counts_x.is_finite()
+            || !full_error_counts_y.is_finite()
+            || !motion_strength.is_finite()
+        {
             return None;
         }
 
@@ -38,6 +48,7 @@ impl ContinuousAtanConfig {
                 normalized_error,
                 self.response_boost,
                 self.response_curve_shape,
+                motion_strength,
             );
         let limit_counts = self.max_counts_per_update;
         let x = atan_response(full_error_counts_x, response_gain, self.scale_counts);
@@ -69,19 +80,23 @@ fn atan_response(error_counts: f64, kp: f64, scale_counts: f64) -> f64 {
     kp * scale_counts * (error_counts / scale_counts).atan()
 }
 
-fn response_multiplier(normalized_error: f64, boost: f64, shape: f64) -> f64 {
+fn response_multiplier(normalized_error: f64, boost: f64, shape: f64, motion_strength: f64) -> f64 {
     let r = normalized_error.max(0.0);
     let gamma = shape.clamp(0.5, 4.0);
-    1.0 + boost * (1.0 - (-r.powf(gamma)).exp())
+    let scheduled_fraction =
+        ERROR_ACQUISITION_BOOST_FRACTION + MOTION_BOOST_FRACTION * motion_strength.clamp(0.0, 1.0);
+    1.0 + boost * scheduled_fraction * (1.0 - (-r.powf(gamma)).exp())
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::controller::DEFAULT_ATAN_SCALE_COUNTS;
+
     use super::{ContinuousAtanConfig, atan_response, response_multiplier};
 
     fn config() -> ContinuousAtanConfig {
         ContinuousAtanConfig {
-            scale_counts: 256.0,
+            scale_counts: DEFAULT_ATAN_SCALE_COUNTS,
             response_scale: 0.20,
             response_boost: 0.50,
             response_curve_shape: 1.0,
@@ -92,7 +107,7 @@ mod tests {
     #[test]
     fn response_uses_base_gain_at_zero_error_and_single_limit() {
         let config = config();
-        let response = config.evaluate(0.0, 0.0).expect("response");
+        let response = config.evaluate(0.0, 0.0, 1.0).expect("response");
 
         assert_eq!(response.x, atan_response(0.0, 0.20, config.scale_counts));
         assert_eq!(response.y, atan_response(0.0, 0.20, config.scale_counts));
@@ -102,8 +117,8 @@ mod tests {
     #[test]
     fn response_multiplier_is_continuous_and_boosted() {
         let config = config();
-        let small = config.evaluate(32.0, 0.0).expect("small");
-        let large = config.evaluate(2_048.0, 0.0).expect("large");
+        let small = config.evaluate(32.0, 0.0, 1.0).expect("small");
+        let large = config.evaluate(2_048.0, 0.0, 1.0).expect("large");
 
         assert!(small.x > atan_response(32.0, config.response_scale, config.scale_counts));
         assert!(large.x > small.x);
@@ -113,15 +128,21 @@ mod tests {
 
     #[test]
     fn response_multiplier_approaches_configured_boost() {
-        let boosted = response_multiplier(64.0, 0.5, 1.0);
+        let boosted = response_multiplier(64.0, 0.5, 1.0, 1.0);
         assert!((boosted - 1.5).abs() < 1e-12);
     }
 
     #[test]
+    fn response_multiplier_retains_static_acquisition_boost() {
+        let boosted = response_multiplier(64.0, 0.5, 1.0, 0.0);
+        assert!((boosted - 1.175).abs() < 1e-12);
+    }
+
+    #[test]
     fn response_shape_adjusts_transition_without_leaving_bounds() {
-        let early = response_multiplier(0.25, 0.5, 0.5);
-        let neutral = response_multiplier(0.25, 0.5, 1.0);
-        let late = response_multiplier(0.25, 0.5, 2.0);
+        let early = response_multiplier(0.25, 0.5, 0.5, 1.0);
+        let neutral = response_multiplier(0.25, 0.5, 1.0, 1.0);
+        let late = response_multiplier(0.25, 0.5, 2.0, 1.0);
 
         assert!(early > neutral);
         assert!(neutral > late);

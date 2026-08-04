@@ -127,21 +127,23 @@ horizon_ms = frame_age_ms + actuation_delay_ms + prediction_lead_ms
 Then:
 
 ```text
-predicted_offset_x = vx * horizon_ms
-predicted_offset_y = vy * horizon_ms
+motion_profile = classify(v1, v2, v3)
+prediction_velocity = profile_velocity(motion_profile)
+motion_strength = profile_strength(motion_profile)
+predicted_offset = prediction_velocity * horizon_ms * motion_strength
 ```
 
 The offset is then gated and capped:
 
 ```text
-raw velocity-time offset
--> confidence gate
--> measured-error scheduled cap
+profile-aware velocity-time offset
+-> motion strength gate
+-> prediction_cap_px vector cap
 -> safe prediction offset
 ```
 
-The cap is scheduled from the measured error, not from the predicted error. This
-prevents prediction from enlarging its own authority recursively.
+This cap belongs to prediction only: it limits how far the target aim point can
+be advanced. It is separate from the later device-count output limit.
 
 Acceleration is telemetry only in the current model. It does not add a second
 prediction correction path.
@@ -182,10 +184,14 @@ counts_per_360
 The proportional response is a continuous Atan response:
 
 ```text
-progress = response_curve(distance_px)
-gain = response_scale * lerp(gain_floor, gain_ceiling, progress)
-demand = gain * atan_scale_counts * atan(error_counts / atan_scale_counts)
-limit = lerp(near_limit_counts, far_limit_counts, progress)
+rho = hypot(error_counts_x, error_counts_y)
+S = 256 counts
+r = rho / S
+curve = 1 - exp(-(r ^ response_curve_shape))
+R = 1 + response_boost * curve * (0.35 + 0.65 * motion_strength)
+gain = response_scale * R
+demand = gain * S * atan(error_counts / S)
+limit = max_counts_per_update
 ```
 
 This means:

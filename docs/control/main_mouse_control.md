@@ -1,10 +1,9 @@
 # NovaSight Main Mouse Control
 
-Date: 2026-07-26
+Date: 2026-08-04
 
-Status: `dual_phase_atan_robust_predictive_v2` remains the serialized mainline
-ID for compatibility. Its production behavior is single-target prediction plus
-dual-phase Atan control.
+Status: the production behavior is single-target aim prediction plus continuous
+nonlinear Atan control.
 
 For the current end-to-end production flow, start with
 [`core_algorithm_flow.md`](core_algorithm_flow.md). This file keeps the detailed
@@ -20,9 +19,8 @@ latest DetectionBatch
 -> frozen crosshair/geometry reference
 -> current measured ROI error
 -> bounded four-point / three-segment velocity prediction
--> continuous response transition weight
 -> source/FOV/counts projection
--> continuously blended counts-domain Atan response
+-> continuous counts-domain Atan response
 -> device-count limiter and truncating quantizer
 -> capacity-one latest-replace slot
 -> MouseCommandExecutor
@@ -49,26 +47,35 @@ different target point from the controller.
 
 ```text
 e_meas = current measured aim - crosshair
-v = robust_velocity(last three aim-position segments)
+profile = classify_motion(last three aim-position segments)
+v = profile_velocity(profile)
+motion_strength = profile_strength(profile)
 horizon = frame_age + actuation_delay + prediction_lead_ms
-prediction = clamp((v * horizon) * confidence_gate, motion_aware_cap)
+prediction = vector_clamp((v * horizon) * motion_strength, prediction_cap_px)
 e_ctrl = e_meas + prediction
 
 source_error = e_ctrl * roi_size / observation_size
 theta = atan(source_error / focal_length)
 full_counts = theta * counts_per_360 / (2*pi)
 
-w = response_progress(distance, near_threshold, curve_width, curve_shape)
-response_gain = response_scale * lerp(gain_floor, gain_ceiling, w)
-u = response_gain * atan_scale * atan(full_counts / atan_scale)
-limit = lerp(near_limit, far_limit, w)
-u = clamp(u, -limit, limit)
+rho = hypot(full_counts_x, full_counts_y)
+S = 256 counts
+r = rho / S
+curve = 1 - exp(-(r ^ response_curve_shape))
+R = 1 + response_boost * curve * (0.35 + 0.65 * motion_strength)
+response_gain = response_scale * R
+u = response_gain * S * atan(full_counts / S)
+u = clamp_per_axis(u, -max_counts_per_update, max_counts_per_update)
 ```
 
-The configured radial-error threshold is the center of a continuous transition,
-not a hard mode switch. Outside the 75%-125% transition band, the original
-NEAR or FAR response is unchanged. Prediction is bounded before projection;
-the per-update count limit still owns the final device output ceiling.
+`response_scale` is the base response strength. `response_boost` controls how
+much extra strength appears as error grows. `response_curve_shape` controls when
+that extra strength appears. `motion_strength` comes from the same motion profile
+that gates prediction: static acquisition keeps 35% of the boost, stable motion
+can use all of it, and reverse/peek/jittered motion receives little or none.
+`S` is an internal fixed Atan scale and is not a user-facing configuration field.
+Prediction is bounded before projection; the per-update count limit still owns
+the final device output ceiling.
 
 ## Quantization And Latest-Replace Delivery
 
@@ -91,36 +98,31 @@ range. It does not merge pending counts or split one command into a trajectory.
 ## Production Configuration
 
 ```yaml
-schema_version: 11
+schema_version: 12
 pipeline:
-  near_threshold_px: 12.0
-  atan_scale_counts: 256.0
-  p_response_scale: 0.30
-  p_response_gain_floor: 0.6666666666666666
-  p_response_gain_ceiling: 1.0
-  p_response_curve_width_ratio: 0.25
+  p_response_scale: 0.20
+  p_response_boost: 0.50
   p_response_curve_shape: 1.0
-  far_max_counts_per_update: 127.0
-  near_max_counts_per_update: 72.0
+  max_counts_per_update: 127.0
   prediction_enabled: true
   prediction_lead_ms: 16.0
-  prediction_far_absolute_cap_px: 10.0
-  prediction_near_absolute_cap_px: 3.0
+  prediction_cap_px: 10.0
 ```
 
-The Rust root schema is version 11 and uses `pipeline.prediction_enabled: true`.
-Older generated response profiles are migrated to the responsive baseline;
-custom response profiles are left intact.
+The Rust root schema is version 12 and uses `pipeline.prediction_enabled: true`.
+Retired response fields are rejected rather than silently mapped into the new
+control model.
 
 ## User-Facing Telemetry
 
 The useful control display is limited to selected target/class, measured aim,
-crosshair, current control error, dominant FAR/NEAR region, prediction velocity,
+crosshair, current control error, prediction velocity,
 prediction offset, projected full counts, Atan demand, integer command,
 delivery state and block reason.
 
 ## Calibration Boundary
 
-FOV, `counts_per_360`, FAR/NEAR Kp, Atan scale, per-update limits and recoil
-counts need Jetson + kmNet + game trace calibration. These values must be
-evaluated independently from capture/inference latency and transport capacity.
+FOV, `counts_per_360`, response strength, response curve, Atan scale,
+per-update limits and recoil counts need Jetson + kmNet + game trace
+calibration. These values must be evaluated independently from capture/inference
+latency and transport capacity.
