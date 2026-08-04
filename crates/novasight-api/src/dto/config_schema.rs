@@ -267,14 +267,14 @@ impl ConfigSchemaResponse {
                         ),
                         float(
                             "pipeline.velocity_spread_base_px_ms",
-                            "速度离散基础容差",
+                            "二维速度离散基础容差",
                             0.000_001,
                             10_000.0,
                             Some("px/ms"),
                         ),
                         float(
                             "pipeline.velocity_spread_relative",
-                            "速度离散相对容差",
+                            "二维速度离散相对容差",
                             0.0,
                             100.0,
                             None,

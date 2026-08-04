@@ -2542,7 +2542,7 @@ export function StudioConsoleView({
     {
       id: "prediction",
       label: "预测",
-      value: dualPhasePredictionEnabled ? "三段速度" : "关闭",
+      value: dualPhasePredictionEnabled ? "4 点二维速度" : "关闭",
       detail: dualPhasePredictionEnabled
         ? `提前 ${formatNumber(dualPhasePredictionLeadMs, 1)} ms · 断流 ${formatNumber(dualPhasePredictionHistoryResetGapMs, 0)} ms`
         : "当前观测直接进入控制器",
@@ -3838,7 +3838,7 @@ export function StudioConsoleView({
                   <span>原始瞄准点</span><b>{formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
                   <span>目标类别</span><b>{activeRuntimeClassLabel || NO_SAMPLE}</b>
                   <span>控制瞄准点</span><b>{formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                  <span>目标速度预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b>
+                  <span>目标速度预测</span><b>{dualPhasePredictionEnabled ? "4 点二维 aim 预测" : "已关闭"}</b>
                 </div>
               </div>
               <div className="console-card">
@@ -3858,17 +3858,17 @@ export function StudioConsoleView({
                 <SectionTitle title="目标速度预测" />
                 <p className="console-section-note">只展示本次控制样本的 aim 点速度如何进入提前瞄点，不改变控制行为。</p>
                 <div className="console-kv">
-                  <span>运动状态 X / Y</span><b>{`${formatMotionState(controlPipeline.motion_state)} / ${formatMotionState(controlPipeline.motion_state_y)}`}</b>
-                  <span>三段速度 X</span><b>{`${formatOptionalNumber(controlPipeline.velocity_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_3, 3)} px/ms`}</b>
-                  <span>三段速度 Y</span><b>{`${formatOptionalNumber(controlPipeline.velocity_y_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_3, 3)} px/ms`}</b>
-                  <span>均值速度</span><b>{formatPoint(controlPipeline.mean_velocity, controlPipeline.mean_velocity_y, 3, "px/ms")}</b>
-                  <span>预测速度</span><b>{formatPoint(controlPipeline.prediction_velocity, controlPipeline.prediction_velocity_y, 3, "px/ms")}</b>
+                  <span>运动状态</span><b>{formatMotionState(controlPipeline.motion_state)}</b>
+                  <span>速度段 X</span><b>{`${formatOptionalNumber(controlPipeline.velocity_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_3, 3)} px/ms`}</b>
+                  <span>速度段 Y</span><b>{`${formatOptionalNumber(controlPipeline.velocity_y_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_3, 3)} px/ms`}</b>
+                  <span>三段均值速度</span><b>{formatPoint(controlPipeline.mean_velocity, controlPipeline.mean_velocity_y, 3, "px/ms")}</b>
+                  <span>鲁棒预测速度</span><b>{formatPoint(controlPipeline.prediction_velocity, controlPipeline.prediction_velocity_y, 3, "px/ms")}</b>
                   <span>加速度估计</span><b>{formatPoint(controlPipeline.acceleration_px_ms2, controlPipeline.acceleration_y_px_ms2, 4, "px/ms2")}</b>
-                  <span>趋势一致性</span><b>{`${formatPercent(controlPipeline.trend_consistency, 0)} / ${formatPercent(controlPipeline.trend_consistency_y, 0)}`}</b>
-                  <span>运动可信度</span><b>{`${formatPercent(controlPipeline.motion_confidence, 0)} / ${formatPercent(controlPipeline.motion_confidence_y, 0)}`}</b>
+                  <span>方向一致性</span><b>{formatPercent(controlPipeline.trend_consistency, 0)}</b>
+                  <span>运动可信度</span><b>{formatPercent(controlPipeline.motion_confidence, 0)}</b>
                   <span>原始预测</span><b>{formatPoint(controlPipeline.prediction_raw_offset_x, controlPipeline.prediction_raw_offset_y, 2, "px")}</b>
-                  <span>门控后预测</span><b>{formatPoint(controlPipeline.prediction_weighted_offset_x, controlPipeline.prediction_weighted_offset_y, 2, "px")}</b>
-                  <span>预测上限</span><b>{formatPoint(controlPipeline.prediction_allowed_cap_x, controlPipeline.prediction_allowed_cap_y, 2, "px")}</b>
+                  <span>可信度后预测</span><b>{formatPoint(controlPipeline.prediction_weighted_offset_x, controlPipeline.prediction_weighted_offset_y, 2, "px")}</b>
+                  <span>预测位移上限</span><b>{formatOptionalNumber(controlPipeline.prediction_allowed_cap_x, 2, "px")}</b>
                   <span>截断后预测</span><b>{formatPoint(controlPipeline.prediction_safe_offset_x, controlPipeline.prediction_safe_offset_y, 2, "px")}</b>
                   <span>真实性窗口</span><b>{formatPredictionTruthWindow(controlPipeline.prediction_truth)}</b>
                   <span>预测 MAE</span><b>{formatPredictionTruthMetric(controlPipeline.prediction_truth, "mae_px")}</b>
@@ -4030,7 +4030,7 @@ export function StudioConsoleView({
                   <div><span>FOVX</span><b>{dualPhaseFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
                   <div><span>响应力度</span><b>{pResponseScale.toFixed(3)}</b></div>
                   <div><span>微调保持</span><b>{pResponseGainFloor.toFixed(2)}</b></div>
-                  <div><span>目标速度预测</span><b>{dualPhasePredictionEnabled ? "X / Y 已启用" : "已关闭"}</b></div>
+                  <div><span>目标速度预测</span><b>{dualPhasePredictionEnabled ? "二维 aim 已启用" : "已关闭"}</b></div>
                 </div>
                 <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("algorithm")} type="button">
                   <NovaIcon name="settings" size={15} />
@@ -4635,7 +4635,7 @@ export function StudioConsoleView({
                       .map(renderAlgorithmNumberParameter)}
                   </div>
                   <details className="algorithm-settings-disclosure">
-                    <summary><span><b>预测可信度保护</b><small>检测速度异常时降低或取消预测，一般不需要修改</small></span><i>4 项</i></summary>
+                    <summary><span><b>预测可信度保护</b><small>检测速度异常时降低或取消预测，一般不需要修改</small></span><i>2 项</i></summary>
                     <div className="advanced-settings-grid two-column">
                       {predictionConfidenceParameters.map(renderAlgorithmNumberParameter)}
                     </div>

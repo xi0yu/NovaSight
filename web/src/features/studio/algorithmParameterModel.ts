@@ -260,8 +260,8 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
     predictionConfidenceParameters: [
       {
         key: "velocity_spread_base_px_ms",
-        label: "速度离散基础容差",
-        detail: "3 段速度离散程度超过基础值加相对值后，预测可信度会降低。",
+        label: "二维速度离散基础容差",
+        detail: "3 段二维 aim 速度的幅度离散超过基础值加相对值后，预测可信度会降低。",
         value: values.velocitySpreadBasePxMs,
         min: 0.000001,
         max: 10000,
@@ -273,8 +273,8 @@ export function buildAlgorithmParameterGroups(values: AlgorithmParameterValues):
       },
       {
         key: "velocity_spread_relative",
-        label: "速度离散相对容差",
-        detail: "按当前速度幅度放宽离散容差，避免高速目标被固定阈值误判。",
+        label: "二维速度离散相对容差",
+        detail: "按当前二维速度幅度放宽离散容差，避免高速目标被固定阈值误判。",
         value: values.velocitySpreadRelative,
         min: 0,
         max: 100,
