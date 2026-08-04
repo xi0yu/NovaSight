@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::controller::ControlDecision;
-use crate::prediction::{PredictionMotionState, prediction_gate_strength};
+use crate::prediction::PredictionMotionState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AlgorithmScoreConfig {
@@ -557,75 +557,72 @@ fn prediction_truth_offset(
     horizon_ms: f64,
     config: &PredictionTruthConfig,
 ) -> Option<(f64, f64)> {
-    let offset_x = prediction_truth_axis_offset(
-        PredictionTruthAxisSample {
-            velocity_px_ms: sample.velocity_x_px_ms,
-            motion_state: sample.motion_state_x,
-            trend_consistency: sample.trend_consistency_x,
-            confidence: sample.motion_confidence_x,
-            cap_px: sample.prediction_cap_x_px,
-            allowed: sample.prediction_allowed_x,
-        },
-        horizon_ms,
-        config.projection,
-    )?;
-    let offset_y = prediction_truth_axis_offset(
-        PredictionTruthAxisSample {
-            velocity_px_ms: sample.velocity_y_px_ms,
-            motion_state: sample.motion_state_y,
-            trend_consistency: sample.trend_consistency_y,
-            confidence: sample.motion_confidence_y,
-            cap_px: sample.prediction_cap_y_px,
-            allowed: sample.prediction_allowed_y,
-        },
-        horizon_ms,
-        config.projection,
-    )?;
-    Some((offset_x, offset_y))
-}
-
-#[derive(Clone, Copy, Debug)]
-struct PredictionTruthAxisSample {
-    velocity_px_ms: f64,
-    motion_state: PredictionMotionState,
-    trend_consistency: f64,
-    confidence: f64,
-    cap_px: f64,
-    allowed: bool,
-}
-
-fn prediction_truth_axis_offset(
-    sample: PredictionTruthAxisSample,
-    horizon_ms: f64,
-    projection: PredictionTruthProjection,
-) -> Option<f64> {
-    if !sample.allowed
-        || !sample.velocity_px_ms.is_finite()
+    if !sample.prediction_allowed_x
+        || !sample.prediction_allowed_y
+        || !sample.velocity_x_px_ms.is_finite()
+        || !sample.velocity_y_px_ms.is_finite()
         || !horizon_ms.is_finite()
         || horizon_ms <= 0.0
     {
         return None;
     }
-    let raw = sample.velocity_px_ms * horizon_ms;
-    if !raw.is_finite() {
+    let raw_x = sample.velocity_x_px_ms * horizon_ms;
+    let raw_y = sample.velocity_y_px_ms * horizon_ms;
+    if !raw_x.is_finite() || !raw_y.is_finite() {
         return None;
     }
-    let strength = prediction_gate_strength(
-        sample.motion_state,
-        sample.trend_consistency,
-        sample.confidence,
-    );
-    let weighted = raw * strength;
-    match projection {
-        PredictionTruthProjection::Raw => Some(raw),
-        PredictionTruthProjection::ConfidenceWeighted => weighted.is_finite().then_some(weighted),
+
+    match config.projection {
+        PredictionTruthProjection::Raw => Some((raw_x, raw_y)),
+        PredictionTruthProjection::ConfidenceWeighted => {
+            let confidence = prediction_truth_confidence(sample)?;
+            let weighted_x = raw_x * confidence;
+            let weighted_y = raw_y * confidence;
+            (weighted_x.is_finite() && weighted_y.is_finite()).then_some((weighted_x, weighted_y))
+        }
         PredictionTruthProjection::Capped => {
-            if !weighted.is_finite() || !sample.cap_px.is_finite() || sample.cap_px < 0.0 {
-                return None;
-            }
-            Some(weighted.clamp(-sample.cap_px, sample.cap_px))
+            let confidence = prediction_truth_confidence(sample)?;
+            let cap_px = prediction_truth_vector_cap(sample)?;
+            let weighted_x = raw_x * confidence;
+            let weighted_y = raw_y * confidence;
+            clamp_prediction_vector(weighted_x, weighted_y, cap_px)
         }
     }
+}
+
+fn prediction_truth_confidence(sample: PredictionTruthSample) -> Option<f64> {
+    if !sample.motion_confidence_x.is_finite() || !sample.motion_confidence_y.is_finite() {
+        return None;
+    }
+    Some(
+        sample
+            .motion_confidence_x
+            .min(sample.motion_confidence_y)
+            .clamp(0.0, 1.0),
+    )
+}
+
+fn prediction_truth_vector_cap(sample: PredictionTruthSample) -> Option<f64> {
+    if !sample.prediction_cap_x_px.is_finite()
+        || !sample.prediction_cap_y_px.is_finite()
+        || sample.prediction_cap_x_px < 0.0
+        || sample.prediction_cap_y_px < 0.0
+    {
+        return None;
+    }
+    Some(sample.prediction_cap_x_px.min(sample.prediction_cap_y_px))
+}
+
+fn clamp_prediction_vector(x: f64, y: f64, cap_px: f64) -> Option<(f64, f64)> {
+    if !x.is_finite() || !y.is_finite() || !cap_px.is_finite() || cap_px < 0.0 {
+        return None;
+    }
+    let magnitude = x.hypot(y);
+    if magnitude <= cap_px || magnitude <= f64::EPSILON {
+        return Some((x, y));
+    }
+    let scale = cap_px / magnitude;
+    Some((x * scale, y * scale))
 }
 
 fn future_prediction_truth_position(
@@ -1007,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn prediction_truth_projection_separates_raw_strength_gate_and_cap_error() {
+    fn prediction_truth_projection_separates_raw_confidence_and_vector_cap_error() {
         let mut samples = (0..5)
             .map(|index| {
                 prediction_truth_sample(
@@ -1053,10 +1050,45 @@ mod tests {
         );
 
         assert!(raw.horizons[0].mae_px < 1e-12);
-        assert!((confidence_weighted.horizons[0].mae_px - 7.5).abs() < 1e-12);
-        assert!((confidence_weighted.horizons[0].bias_x_px + 7.5).abs() < 1e-12);
+        assert!((confidence_weighted.horizons[0].mae_px - 8.0).abs() < 1e-12);
+        assert!((confidence_weighted.horizons[0].bias_x_px + 8.0).abs() < 1e-12);
         assert!((capped.horizons[0].mae_px - 8.0).abs() < 1e-12);
         assert!((capped.horizons[0].bias_x_px + 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn prediction_truth_capped_projection_uses_vector_cap() {
+        let mut samples = (0..5)
+            .map(|index| {
+                prediction_truth_sample(
+                    index + 1,
+                    100.0 + index as f64 * 10.0,
+                    80.0 + index as f64 * 5.0,
+                    1.0,
+                    0.5,
+                    PredictionMotionState::Continuous,
+                    PredictionMotionState::Continuous,
+                )
+            })
+            .collect::<Vec<_>>();
+        for sample in &mut samples {
+            sample.prediction_cap_x_px = 5.0;
+            sample.prediction_cap_y_px = 5.0;
+        }
+
+        let capped = score_prediction_truth(
+            &samples,
+            PredictionTruthConfig {
+                horizons_ms: vec![10.0],
+                projection: PredictionTruthProjection::Capped,
+                ..PredictionTruthConfig::default()
+            },
+        );
+
+        assert_eq!(capped.horizons[0].sample_pairs, 4);
+        assert!((capped.horizons[0].mae_px - (10.0_f64.hypot(5.0) - 5.0)).abs() < 1e-12);
+        assert!(capped.horizons[0].bias_x_px < -5.0);
+        assert!(capped.horizons[0].bias_y_px < -2.0);
     }
 
     #[test]

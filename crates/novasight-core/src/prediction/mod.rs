@@ -9,10 +9,6 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 
 const VELOCITY_POSITION_COUNT: usize = 4;
-const PREDICTION_FULL_STRENGTH_CONFIDENCE: f64 = 0.55;
-const PREDICTION_STABLE_MEAN_CONFIDENCE: f64 = 0.35;
-const PREDICTION_REACTIVE_CONFIDENCE: f64 = 0.25;
-const PREDICTION_PEEK_MAX_STRENGTH: f64 = 0.35;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -277,45 +273,6 @@ impl SingleTargetPredictor {
             .min(base_cap + relative_cap * measured_error_radius.max(0.0))
             .max(0.0)
     }
-}
-
-pub(crate) fn prediction_gate_strength(
-    motion_state: PredictionMotionState,
-    trend_consistency: f64,
-    confidence: f64,
-) -> f64 {
-    let confidence = confidence.clamp(0.0, 1.0);
-    if confidence <= f64::EPSILON {
-        return 0.0;
-    }
-    let trend_consistency = trend_consistency.clamp(0.0, 1.0);
-    let (open_at, max_strength) = match motion_state {
-        PredictionMotionState::Unavailable | PredictionMotionState::Stationary => {
-            return 0.0;
-        }
-        PredictionMotionState::Continuous => {
-            let threshold = PREDICTION_FULL_STRENGTH_CONFIDENCE - 0.15 * trend_consistency;
-            (threshold.max(PREDICTION_STABLE_MEAN_CONFIDENCE), 1.0)
-        }
-        PredictionMotionState::Mean => {
-            let threshold = if trend_consistency >= 0.70 {
-                PREDICTION_STABLE_MEAN_CONFIDENCE
-            } else {
-                PREDICTION_FULL_STRENGTH_CONFIDENCE
-            };
-            (threshold, 1.0)
-        }
-        PredictionMotionState::AbruptStopOrReverse => (PREDICTION_REACTIVE_CONFIDENCE, 0.80),
-        PredictionMotionState::AlternatingPeek => (
-            PREDICTION_FULL_STRENGTH_CONFIDENCE,
-            PREDICTION_PEEK_MAX_STRENGTH,
-        ),
-    };
-    if confidence >= open_at {
-        return max_strength;
-    }
-    let ratio = (confidence / open_at.max(1e-9)).clamp(0.0, 1.0);
-    max_strength * ratio * ratio
 }
 
 fn lerp(start: f64, end: f64, weight: f64) -> f64 {
