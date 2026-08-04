@@ -602,7 +602,7 @@ fn resolve_model_nvinfer_config(
         classes: manifest.output.class_names.clone(),
         parser: PerceptionParserContract {
             requested_preset,
-            compatibility: if manifest.output.has_objectness {
+            output_family: if manifest.output.has_objectness {
                 "yolov5".to_owned()
             } else {
                 "yolov8_yolo11".to_owned()
