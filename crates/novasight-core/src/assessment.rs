@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::controller::ControlDecision;
+use crate::controller::AimResult;
 use crate::prediction::PredictionMotionState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -47,7 +47,8 @@ pub struct AlgorithmTraceSample {
 }
 
 impl AlgorithmTraceSample {
-    pub fn from_control_decision(decision: &ControlDecision) -> Self {
+    pub fn from_aim_result(result: &AimResult) -> Self {
+        let decision = result;
         let target_id =
             (decision.sample_available && decision.target_id != 0).then_some(decision.target_id);
         Self {
@@ -194,7 +195,8 @@ pub struct PredictionTruthSample {
 }
 
 impl PredictionTruthSample {
-    pub fn from_control_decision(decision: &ControlDecision) -> Self {
+    pub fn from_aim_result(result: &AimResult) -> Self {
+        let decision = result;
         let target_id =
             (decision.sample_available && decision.target_id != 0).then_some(decision.target_id);
         Self {

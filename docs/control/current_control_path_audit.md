@@ -94,17 +94,25 @@ The Atan scale `S` is fixed internally at 256 counts and is not part of the
 user-facing configuration contract.
 
 Runtime config and Studio edits use the same `pipeline.*` fields that are
-composed into `ContinuousControlConfig`.
+composed into `AimAlgorithmConfig`.
 
 ## Direct Evidence
 
 Implementation owners:
 
-- `crates/novasight-core/src/controller/atan.rs`
+- `crates/novasight-core/src/controller/algorithm.rs`
+- `crates/novasight-core/src/controller/control_law.rs`
 - `crates/novasight-core/src/prediction/mod.rs`
 - `crates/novasight-pipeline/src/runtime.rs`
 - `crates/novasight-runtime/src/supervisor.rs`
 - `crates/novasight-api/src/dto/runtime_status.rs`
+
+`control_law.rs` is the only owner of the numeric formula from measured pixel
+error and predicted displacement through projection, radial response scheduling,
+and Atan demand. `algorithm.rs` owns bounded temporal state and calls that law
+through `AimControlLaw::evaluate`. Pipeline code adapts selected targets into
+`AimSample`, applies live configuration, records `AimResult`, and delivers the
+resulting device command.
 
 Focused integration tests prove that consecutive DetectionBatch results replace the pending command, one control tick sends only the newest frame, and a newer observation also supersedes an older command that has left the slot but has not acquired the device lock. Prediction-disabled feedback remains the no-prediction baseline; `prediction_lead_ms=0` still compensates measured frame age and actuation delay, but adds no extra user lead.
 

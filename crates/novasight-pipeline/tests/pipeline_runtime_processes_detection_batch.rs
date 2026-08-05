@@ -625,7 +625,7 @@ fn due_recoil_emits_at_the_predicted_aim_point_when_tracking_is_settled() {
     let daemon_clock: Arc<dyn Clock> = clock.clone();
     let device = Arc::new(RecordingPointerDevice::default());
     let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
-    let mut control = novasight_core::controller::ContinuousControlConfig {
+    let mut control = novasight_core::controller::AimAlgorithmConfig {
         prediction_enabled: true,
         ..Default::default()
     };
@@ -859,7 +859,7 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
     let (mut runtime, ingress) = PipelineRuntime::start_suspended(
         PipelineConfig {
             epoch,
-            control: novasight_core::controller::ContinuousControlConfig {
+            control: novasight_core::controller::AimAlgorithmConfig {
                 prediction_enabled: true,
                 ..Default::default()
             },

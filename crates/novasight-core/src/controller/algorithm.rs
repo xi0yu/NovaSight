@@ -1,9 +1,9 @@
-//! Continuous Atan feedback controller for the selected target.
+//! Stateful aim algorithm for one selected target trajectory.
 //!
-//! The measured error is projected into device counts and compressed by one
-//! continuously scheduled Atan response. Optional two-axis target
-//! prediction is owned by the dedicated `prediction` module. Integer device
-//! conversion is owned by the dedicated `limiter` module.
+//! This module owns sequencing, bounded temporal state, and output policy.
+//! Target prediction is delegated to `prediction`, pure projection and
+//! nonlinear response math to `control_law`, and integer conversion to
+//! `limiter`.
 //!
 //! * `dx`/`dy` are integer mouse counts the device should emit.
 //! * `emit_allowed` is `true` only when the algorithm produced an
@@ -17,14 +17,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::response_curve::{ContinuousAtanConfig, ContinuousDemand};
+use super::control_law::{AimControlInput, AimControlLaw, AimControlParameters, AxisPair};
 use crate::limiter::{DeviceCountLimiter, DeviceCountLimits};
 use crate::prediction::{
     FocusTargetObservation, PredictionMotionState, SingleTargetPredictionConfig,
     SingleTargetPredictor,
 };
-
-pub const DEFAULT_ATAN_SCALE_COUNTS: f64 = 256.0;
 
 /// Integer mouse output cannot represent a correction smaller than one count.
 /// At half a count or less the current integer position is the nearest
@@ -46,8 +44,6 @@ pub enum BlockReason {
     StaleObservation,
     /// Observation generation is not strictly increasing.
     NonMonotonicObservation,
-    /// Capture timestamp went backwards.
-    CaptureTimestampDiscontinuity,
     /// Target no longer valid (lost track).
     TargetInvalid,
     /// Runtime projection geometry or controller constants are invalid.
@@ -67,7 +63,7 @@ pub enum BlockReason {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ContinuousControlConfig {
+pub struct AimAlgorithmConfig {
     pub freshness_threshold_ms: f64,
     pub projection_fov_x_deg: f64,
     pub projection_counts_per_360: f64,
@@ -95,7 +91,7 @@ pub struct ContinuousControlConfig {
     pub residual_cap: f64,
 }
 
-impl Default for ContinuousControlConfig {
+impl Default for AimAlgorithmConfig {
     fn default() -> Self {
         Self {
             freshness_threshold_ms: 55.0,
@@ -123,7 +119,23 @@ impl Default for ContinuousControlConfig {
     }
 }
 
-impl ContinuousControlConfig {
+impl AimAlgorithmConfig {
+    fn control_parameters(self) -> AimControlParameters {
+        AimControlParameters {
+            source_width: self.source_width,
+            roi_width: self.roi_width,
+            roi_height: self.roi_height,
+            observation_width: self.observation_width,
+            observation_height: self.observation_height,
+            projection_fov_x_deg: self.projection_fov_x_deg,
+            projection_counts_per_360: self.projection_counts_per_360,
+            response_scale: self.response_scale,
+            response_boost: self.response_boost,
+            response_curve_shape: self.response_curve_shape,
+            max_counts_per_update: self.max_counts_per_update,
+        }
+    }
+
     fn prediction_config(self) -> SingleTargetPredictionConfig {
         SingleTargetPredictionConfig {
             enabled: self.prediction_enabled,
@@ -138,7 +150,7 @@ impl ContinuousControlConfig {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ControlObservation {
+pub struct AimSample {
     pub generation: u64,
     pub target_id: u64,
     pub capture_ts_ns: u64,
@@ -154,13 +166,13 @@ pub struct ControlObservation {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ActuationFeedback {
+pub struct AimFeedback {
     pub pending_x: bool,
     pub pending_y: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ControlDecision {
+pub struct AimResult {
     pub sample_available: bool,
     pub generation: u64,
     pub target_id: u64,
@@ -235,7 +247,7 @@ pub struct ControlDecision {
     pub actuation_pending_y: bool,
 }
 
-impl ControlDecision {
+impl AimResult {
     pub fn blocked(reason: BlockReason) -> Self {
         Self {
             sample_available: false,
@@ -314,7 +326,7 @@ impl ControlDecision {
     }
 }
 
-impl Default for ControlDecision {
+impl Default for AimResult {
     fn default() -> Self {
         Self::blocked(BlockReason::TriggerInactive)
     }
@@ -380,61 +392,11 @@ impl AxisArrivalState {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ProjectionModel {
-    source_error_scale_x: f64,
-    source_error_scale_y: f64,
-    counts_per_rad: f64,
-}
-
-impl ProjectionModel {
-    fn from_config(config: ContinuousControlConfig) -> Option<Self> {
-        if config.source_width == 0
-            || config.roi_width == 0
-            || config.roi_height == 0
-            || config.observation_width == 0
-            || config.observation_height == 0
-            || !config.projection_fov_x_deg.is_finite()
-            || !(0.0..180.0).contains(&config.projection_fov_x_deg)
-            || !config.projection_counts_per_360.is_finite()
-            || config.projection_counts_per_360 <= 0.0
-            || !config.response_scale.is_finite()
-            || config.response_scale < 0.0
-            || !config.response_boost.is_finite()
-            || config.response_boost < 0.0
-            || !config.response_curve_shape.is_finite()
-            || !(0.5..=4.0).contains(&config.response_curve_shape)
-        {
-            return None;
-        }
-        let fov_x_rad = config.projection_fov_x_deg.to_radians();
-        let focal_px = (f64::from(config.source_width) * 0.5) / (fov_x_rad * 0.5).tan();
-        if !focal_px.is_finite() || focal_px <= 0.0 {
-            return None;
-        }
-        Some(Self {
-            source_error_scale_x: f64::from(config.roi_width)
-                / f64::from(config.observation_width)
-                / focal_px,
-            source_error_scale_y: f64::from(config.roi_height)
-                / f64::from(config.observation_height)
-                / focal_px,
-            counts_per_rad: config.projection_counts_per_360 / std::f64::consts::TAU,
-        })
-    }
-
-    fn project(self, error_x: f64, error_y: f64) -> (f64, f64) {
-        let full_x = (error_x * self.source_error_scale_x).atan() * self.counts_per_rad;
-        let full_y = (error_y * self.source_error_scale_y).atan() * self.counts_per_rad;
-        (full_x, full_y)
-    }
-}
-
-/// reach into a stale decision.
+/// Deep stateful interface for one target trajectory.
 #[derive(Clone, Debug)]
-pub struct ContinuousControl {
-    config: ContinuousControlConfig,
-    projection: Option<ProjectionModel>,
+pub struct AimAlgorithm {
+    config: AimAlgorithmConfig,
+    control_law: Option<AimControlLaw>,
     limiter: DeviceCountLimiter,
     last_generation: Option<u64>,
     last_capture_ts_ns: Option<u64>,
@@ -447,11 +409,11 @@ pub struct ContinuousControl {
     arrival_y: AxisArrivalState,
 }
 
-impl ContinuousControl {
-    pub fn new(config: ContinuousControlConfig) -> Self {
+impl AimAlgorithm {
+    pub fn new(config: AimAlgorithmConfig) -> Self {
         Self {
             config,
-            projection: ProjectionModel::from_config(config),
+            control_law: AimControlLaw::new(config.control_parameters()),
             limiter: DeviceCountLimiter::new(),
             last_generation: None,
             last_capture_ts_ns: None,
@@ -465,9 +427,9 @@ impl ContinuousControl {
         }
     }
 
-    pub fn set_config(&mut self, config: ContinuousControlConfig) {
+    pub fn set_config(&mut self, config: AimAlgorithmConfig) {
         self.config = config;
-        self.projection = ProjectionModel::from_config(config);
+        self.control_law = AimControlLaw::new(config.control_parameters());
         self.prediction.set_config(config.prediction_config());
         self.limiter.reset();
         self.arrival_x.reset();
@@ -504,38 +466,30 @@ impl ContinuousControl {
         self.measured_error_history_valid = false;
     }
 
-    pub fn calculate(&mut self, observation: ControlObservation) -> ControlDecision {
-        self.calculate_with_feedback(observation, ActuationFeedback::default())
+    pub fn step(&mut self, sample: AimSample) -> AimResult {
+        self.step_with_feedback(sample, AimFeedback::default())
     }
 
-    pub fn calculate_with_feedback(
-        &mut self,
-        observation: ControlObservation,
-        feedback: ActuationFeedback,
-    ) -> ControlDecision {
-        self.calculate_internal(observation, feedback)
+    pub fn step_with_feedback(&mut self, sample: AimSample, feedback: AimFeedback) -> AimResult {
+        self.step_internal(sample, feedback)
     }
 
-    fn calculate_internal(
-        &mut self,
-        observation: ControlObservation,
-        feedback: ActuationFeedback,
-    ) -> ControlDecision {
+    fn step_internal(&mut self, observation: AimSample, feedback: AimFeedback) -> AimResult {
         let frame_age_ns = observation.control_now_ns as i128 - observation.capture_ts_ns as i128;
         if frame_age_ns < 0 {
             self.release_trigger();
-            return ControlDecision::blocked(BlockReason::TimestampDomainInvalid);
+            return AimResult::blocked(BlockReason::TimestampDomainInvalid);
         }
         let frame_age_ms = frame_age_ns as f64 / 1_000_000.0;
         if frame_age_ms > self.config.freshness_threshold_ms {
             self.release_trigger();
-            return ControlDecision::blocked(BlockReason::StaleObservation);
+            return AimResult::blocked(BlockReason::StaleObservation);
         }
         if let Some(prev_gen) = self.last_generation
             && observation.generation <= prev_gen
         {
             self.release_trigger();
-            return ControlDecision::blocked(BlockReason::NonMonotonicObservation);
+            return AimResult::blocked(BlockReason::NonMonotonicObservation);
         }
         let capture_timestamp_discontinuity = self
             .last_capture_ts_ns
@@ -559,14 +513,14 @@ impl ContinuousControl {
             self.measured_error_history_valid = false;
             self.prediction.reset(None);
             self.release_trigger();
-            return ControlDecision::blocked(BlockReason::TargetInvalid);
+            return AimResult::blocked(BlockReason::TargetInvalid);
         }
         if !self.config.arrival_radius_counts.is_finite()
             || self.config.arrival_radius_counts < HALF_DEVICE_COUNT
             || !self.prediction.config_valid()
         {
             self.release_trigger();
-            return ControlDecision::blocked(BlockReason::GeometryInvalid);
+            return AimResult::blocked(BlockReason::GeometryInvalid);
         }
         let aim_x = observation.aim_x;
         let aim_y = observation.aim_y;
@@ -595,20 +549,28 @@ impl ContinuousControl {
         };
         let predicted_offset_x = prediction.x.safe_offset;
         let predicted_offset_y = prediction.y.safe_offset;
-        let filtered_error_x = error_x + predicted_offset_x;
-        let filtered_error_y = error_y + predicted_offset_y;
         let motion_strength = prediction
             .x
             .motion_confidence
             .max(prediction.y.motion_confidence)
             .clamp(0.0, 1.0);
         let mode = ControlMode::Continuous;
-        let Some((mut response, full_x, full_y)) =
-            self.project_demand(filtered_error_x, filtered_error_y, motion_strength)
-        else {
+        let Some(control_result) = self.control_law.and_then(|law| {
+            law.evaluate(AimControlInput {
+                measured_error_px: AxisPair::new(error_x, error_y),
+                predicted_offset_px: AxisPair::new(predicted_offset_x, predicted_offset_y),
+                motion_strength,
+            })
+        }) else {
             self.release_trigger();
-            return ControlDecision::blocked(BlockReason::GeometryInvalid);
+            return AimResult::blocked(BlockReason::GeometryInvalid);
         };
+        let filtered_error_x = control_result.predicted_error_px.x;
+        let filtered_error_y = control_result.predicted_error_px.y;
+        let full_x = control_result.projected_error_counts.x;
+        let full_y = control_result.projected_error_counts.y;
+        let mut demand_x = control_result.demand_counts.x;
+        let mut demand_y = control_result.demand_counts.y;
 
         let arrival_enter_counts = self.config.arrival_radius_counts.max(HALF_DEVICE_COUNT);
         let arrival_exit_counts =
@@ -640,17 +602,15 @@ impl ContinuousControl {
 
         if arrival_hold_x || full_x.abs() <= HALF_DEVICE_COUNT {
             self.limiter.reset_x();
-            response.x = 0.0;
+            demand_x = 0.0;
         }
         if arrival_hold_y || full_y.abs() <= HALF_DEVICE_COUNT {
             self.limiter.reset_y();
-            response.y = 0.0;
+            demand_y = 0.0;
         }
 
-        let demand_x = response.x;
-        let demand_y = response.y;
         let limits = DeviceCountLimits {
-            max_counts_per_axis: response.limit_counts,
+            max_counts_per_axis: control_result.max_counts_per_update,
             residual_cap: self.config.residual_cap,
         };
 
@@ -659,7 +619,7 @@ impl ContinuousControl {
                 Ok(value) => value,
                 Err(_) => {
                     self.release_trigger();
-                    return ControlDecision::blocked(BlockReason::DemandOutOfRange);
+                    return AimResult::blocked(BlockReason::DemandOutOfRange);
                 }
             };
             let dx = limited.dx;
@@ -687,7 +647,7 @@ impl ContinuousControl {
         self.measured_error_history_valid = true;
 
         let (quantizer_residual_x, quantizer_residual_y) = self.limiter.residuals();
-        ControlDecision {
+        AimResult {
             sample_available: true,
             generation: observation.generation,
             target_id: observation.target_id,
@@ -762,25 +722,6 @@ impl ContinuousControl {
             actuation_pending_y: feedback.pending_y,
         }
     }
-
-    fn project_demand(
-        &self,
-        error_x: f64,
-        error_y: f64,
-        motion_strength: f64,
-    ) -> Option<(ContinuousDemand, f64, f64)> {
-        let config = self.config;
-        let (full_x, full_y) = self.projection?.project(error_x, error_y);
-        let response = ContinuousAtanConfig {
-            scale_counts: DEFAULT_ATAN_SCALE_COUNTS,
-            response_scale: config.response_scale,
-            response_boost: config.response_boost,
-            response_curve_shape: config.response_curve_shape,
-            max_counts_per_update: config.max_counts_per_update,
-        }
-        .evaluate(full_x, full_y, motion_strength)?;
-        Some((response, full_x, full_y))
-    }
 }
 
 fn actuation_feedback_should_hold(
@@ -813,8 +754,8 @@ fn crossed_center(previous: f64, current: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActuationFeedback, AxisArrivalState, BlockReason, ContinuousControl,
-        ContinuousControlConfig, ControlMode, ControlObservation,
+        AimAlgorithm, AimAlgorithmConfig, AimFeedback, AimSample, AxisArrivalState, BlockReason,
+        ControlMode,
     };
     use crate::prediction::PredictionMotionState;
 
@@ -845,13 +786,13 @@ mod tests {
 
     #[test]
     fn confidence_weighted_vector_prediction_respects_single_cap() {
-        let config = ContinuousControlConfig {
+        let config = AimAlgorithmConfig {
             prediction_enabled: true,
             prediction_lead_ms: 2.0,
             prediction_cap_px: 3.0,
-            ..ContinuousControlConfig::default()
+            ..AimAlgorithmConfig::default()
         };
-        let mut control = ContinuousControl::new(config);
+        let mut control = AimAlgorithm::new(config);
         let mut decision = None;
         for (index, (error_x, error_y)) in [(40.0, 20.0), (44.0, 22.0), (48.0, 24.0), (52.0, 26.0)]
             .into_iter()
@@ -859,7 +800,7 @@ mod tests {
         {
             let generation = index as u64 + 1;
             let capture_ts_ns = 1_000_000_000 + generation * 10_000_000;
-            decision = Some(control.calculate(ControlObservation {
+            decision = Some(control.step(AimSample {
                 generation,
                 target_id: 7,
                 capture_ts_ns,
@@ -912,15 +853,15 @@ mod tests {
 
     #[test]
     fn track_confidence_zero_suppresses_prediction_without_hiding_velocity() {
-        let mut control = ContinuousControl::new(ContinuousControlConfig {
+        let mut control = AimAlgorithm::new(AimAlgorithmConfig {
             prediction_enabled: true,
-            ..ContinuousControlConfig::default()
+            ..AimAlgorithmConfig::default()
         });
         let mut decision = None;
         for (index, error_x) in [40.0, 44.0, 48.0, 52.0].into_iter().enumerate() {
             let generation = index as u64 + 1;
             let capture_ts_ns = 1_000_000_000 + generation * 10_000_000;
-            decision = Some(control.calculate(ControlObservation {
+            decision = Some(control.step(AimSample {
                 generation,
                 target_id: 7,
                 capture_ts_ns,
@@ -945,11 +886,11 @@ mod tests {
 
     #[test]
     fn pending_feedback_holds_stationary_axis_to_avoid_duplicate_correction() {
-        let mut control = ContinuousControl::new(ContinuousControlConfig {
+        let mut control = AimAlgorithm::new(AimAlgorithmConfig {
             prediction_enabled: false,
-            ..ContinuousControlConfig::default()
+            ..AimAlgorithmConfig::default()
         });
-        let first = ControlObservation {
+        let first = AimSample {
             generation: 1,
             target_id: 7,
             capture_ts_ns: 1_000_000_000,
@@ -963,17 +904,17 @@ mod tests {
             target_valid: true,
             trigger_active: true,
         };
-        assert!(control.calculate(first).emit_allowed);
+        assert!(control.step(first).emit_allowed);
 
-        let second = ControlObservation {
+        let second = AimSample {
             generation: 2,
             capture_ts_ns: 1_010_000_000,
             control_now_ns: 1_018_000_000,
             ..first
         };
-        let decision = control.calculate_with_feedback(
+        let decision = control.step_with_feedback(
             second,
-            ActuationFeedback {
+            AimFeedback {
                 pending_x: true,
                 pending_y: false,
             },
@@ -988,11 +929,11 @@ mod tests {
 
     #[test]
     fn pending_feedback_does_not_freeze_axis_when_error_keeps_growing() {
-        let mut control = ContinuousControl::new(ContinuousControlConfig {
+        let mut control = AimAlgorithm::new(AimAlgorithmConfig {
             prediction_enabled: false,
-            ..ContinuousControlConfig::default()
+            ..AimAlgorithmConfig::default()
         });
-        let first = ControlObservation {
+        let first = AimSample {
             generation: 1,
             target_id: 7,
             capture_ts_ns: 1_000_000_000,
@@ -1006,18 +947,18 @@ mod tests {
             target_valid: true,
             trigger_active: true,
         };
-        assert!(control.calculate(first).emit_allowed);
+        assert!(control.step(first).emit_allowed);
 
-        let second = ControlObservation {
+        let second = AimSample {
             generation: 2,
             capture_ts_ns: 1_010_000_000,
             control_now_ns: 1_018_000_000,
             aim_x: 260.0,
             ..first
         };
-        let decision = control.calculate_with_feedback(
+        let decision = control.step_with_feedback(
             second,
-            ActuationFeedback {
+            AimFeedback {
                 pending_x: true,
                 pending_y: false,
             },
@@ -1032,16 +973,16 @@ mod tests {
 
     #[test]
     fn prediction_offsets_feed_the_continuous_controller() {
-        let mut control = ContinuousControl::new(ContinuousControlConfig {
+        let mut control = AimAlgorithm::new(AimAlgorithmConfig {
             prediction_enabled: true,
             prediction_lead_ms: 1.0,
-            ..ContinuousControlConfig::default()
+            ..AimAlgorithmConfig::default()
         });
         let mut decision = None;
         for (index, error_x) in [5.0, 7.0, 9.0, 11.0].into_iter().enumerate() {
             let generation = index as u64 + 1;
             let capture_ts_ns = 1_000_000_000 + generation * 10_000_000;
-            decision = Some(control.calculate(ControlObservation {
+            decision = Some(control.step(AimSample {
                 generation,
                 target_id: 7,
                 capture_ts_ns,
@@ -1065,15 +1006,15 @@ mod tests {
 
     #[test]
     fn trigger_release_clears_output_residual_but_keeps_motion_history_hot() {
-        let mut control = ContinuousControl::new(ContinuousControlConfig {
+        let mut control = AimAlgorithm::new(AimAlgorithmConfig {
             prediction_enabled: true,
-            ..ContinuousControlConfig::default()
+            ..AimAlgorithmConfig::default()
         });
         let mut decision = None;
         for (index, error_x) in [40.0, 44.0, 48.0, 52.0].into_iter().enumerate() {
             let generation = index as u64 + 1;
             let capture_ts_ns = 1_000_000_000 + generation * 10_000_000;
-            decision = Some(control.calculate(ControlObservation {
+            decision = Some(control.step(AimSample {
                 generation,
                 target_id: 7,
                 capture_ts_ns,

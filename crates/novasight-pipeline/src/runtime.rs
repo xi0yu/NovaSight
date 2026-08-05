@@ -11,8 +11,7 @@ use novasight_core::controller::recoil::{
     IntervalRecoilController, RecoilConfig, RecoilDecision, RecoilInput, mix_tracking_and_recoil,
 };
 use novasight_core::controller::{
-    ActuationFeedback, ContinuousControl, ContinuousControlConfig, ControlDecision,
-    ControlObservation,
+    AimAlgorithm, AimAlgorithmConfig, AimFeedback, AimResult, AimSample,
 };
 use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore, TrackState};
 use novasight_core::{
@@ -80,7 +79,7 @@ pub enum TriggerMode {
 pub struct PipelineConfig {
     pub epoch: RuntimeEpoch,
     pub targeting: TargetingConfig,
-    pub control: ContinuousControlConfig,
+    pub control: AimAlgorithmConfig,
     /// Hardware trigger polling cadence. `None` leaves trigger ownership with
     /// the control plane (recording/replay); production devices set this.
     pub trigger_poll_interval_ms: Option<u64>,
@@ -101,7 +100,7 @@ pub struct PipelineConfig {
 #[derive(Clone, Debug)]
 pub struct PipelineLiveConfig {
     pub targeting: TargetingConfig,
-    pub control: ContinuousControlConfig,
+    pub control: AimAlgorithmConfig,
     pub actuation_feedback_delay_ns: u64,
 }
 
@@ -124,7 +123,7 @@ struct DeviceWorkerConfig {
 #[derive(Clone, Copy, Debug)]
 struct ControlWorkerConfig {
     epoch: RuntimeEpoch,
-    control: ContinuousControlConfig,
+    control: AimAlgorithmConfig,
 }
 
 impl Default for PipelineConfig {
@@ -132,7 +131,7 @@ impl Default for PipelineConfig {
         Self {
             epoch: RuntimeEpoch(1),
             targeting: TargetingConfig::default(),
-            control: ContinuousControlConfig::default(),
+            control: AimAlgorithmConfig::default(),
             trigger_poll_interval_ms: None,
             trigger_mode: TriggerMode::Always,
             actuation_feedback_delay_ns: 4_000_000,
@@ -174,7 +173,7 @@ pub struct PipelineMetrics {
     pub last_fault: Option<String>,
     pub detections: DetectionTelemetry,
     pub target_selection: TargetSelection,
-    pub control: ControlDecision,
+    pub control: AimResult,
     #[serde(default)]
     pub prediction_truth: PredictionTruthReport,
     pub recoil: RecoilDecision,
@@ -245,7 +244,7 @@ struct AtomicMetrics {
     last_device_error: Mutex<Option<String>>,
     vision: Mutex<VisionTelemetry>,
     last_device_receipt: AtomicDeviceReceipt,
-    control: Mutex<ControlDecision>,
+    control: Mutex<AimResult>,
     prediction_truth: Mutex<VecDeque<PredictionTruthSample>>,
     recoil: Mutex<RecoilDecision>,
 }
@@ -372,7 +371,7 @@ struct SharedState {
     event_tx: SyncSender<PipelineEvent>,
     metrics: AtomicMetrics,
     targeting_config: Mutex<TargetingConfig>,
-    control_config: Mutex<ContinuousControlConfig>,
+    control_config: Mutex<AimAlgorithmConfig>,
     recoil_config: Mutex<RecoilConfig>,
 }
 
@@ -455,7 +454,7 @@ impl SharedState {
 
     /// Telemetry must never stall the realtime control lane. A concurrent
     /// status snapshot may keep the previous complete sample for one poll.
-    fn record_control_decision(&self, value: ControlDecision) {
+    fn record_control_decision(&self, value: AimResult) {
         match self.metrics.control.try_lock() {
             Ok(mut telemetry) => *telemetry = value,
             Err(TryLockError::WouldBlock) => {}
@@ -463,8 +462,8 @@ impl SharedState {
         }
     }
 
-    fn record_prediction_truth(&self, value: ControlDecision) {
-        let sample = PredictionTruthSample::from_control_decision(&value);
+    fn record_prediction_truth(&self, value: AimResult) {
+        let sample = PredictionTruthSample::from_aim_result(&value);
         match self.metrics.prediction_truth.try_lock() {
             Ok(mut samples) => {
                 if samples.len() == PREDICTION_TRUTH_SAMPLE_CAPACITY {
@@ -559,7 +558,7 @@ impl SharedState {
     }
 
     fn clear_control_telemetry(&self) {
-        self.record_control_decision(ControlDecision::default());
+        self.record_control_decision(AimResult::default());
         self.record_recoil(RecoilDecision::default());
         self.metrics
             .prediction_truth
@@ -1536,7 +1535,7 @@ fn spawn_control_worker(
         .spawn(move || {
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "control", || {
-                let mut control = ContinuousControl::new(config.control);
+                let mut algorithm = AimAlgorithm::new(config.control);
                 let mut config_version = shared.control_config_version.load(Ordering::Acquire);
                 let mut previous_capture_ts_ns = None;
                 let mut next_telemetry_at_ns = 0;
@@ -1551,14 +1550,14 @@ fn spawn_control_worker(
                             .control_config
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        control.set_config(config);
+                        algorithm.set_config(config);
                         config_version = latest_config_version;
                     }
                     let control_now_ns = clock.now().0;
                     let target_id = target.target_id.unwrap_or(0);
                     let trigger_active = !shared.hardware_trigger_required.load(Ordering::Acquire)
                         || shared.trigger_active.load(Ordering::Acquire);
-                    let observation = ControlObservation {
+                    let observation = AimSample {
                         generation: target.stamp.generation.0,
                         target_id,
                         capture_ts_ns: target.stamp.captured_at.0,
@@ -1573,7 +1572,7 @@ fn spawn_control_worker(
                         trigger_active,
                     };
                     if target.track_rebuilt {
-                        control.reset_target_state();
+                        algorithm.reset_target_state();
                         previous_capture_ts_ns = None;
                     }
                     let measurement_guard_ns = previous_capture_ts_ns
@@ -1596,7 +1595,7 @@ fn spawn_control_worker(
                             && target.stamp.captured_at.0
                                 <= accepted_at_ns.saturating_add(visible_after_delay_ns)
                     };
-                    let feedback = ActuationFeedback {
+                    let feedback = AimFeedback {
                         pending_x: pending_for_axis(
                             shared
                                 .latest_successful_send_x_ts_ns
@@ -1608,7 +1607,7 @@ fn spawn_control_worker(
                                 .load(Ordering::Acquire),
                         ),
                     };
-                    let decision = control.calculate_with_feedback(observation, feedback);
+                    let decision = algorithm.step_with_feedback(observation, feedback);
                     shared.record_prediction_truth(decision);
                     if control_now_ns >= next_telemetry_at_ns {
                         shared.record_control_decision(decision);

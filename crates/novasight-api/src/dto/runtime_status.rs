@@ -1420,7 +1420,6 @@ const fn block_reason_label(reason: BlockReason) -> &'static str {
         BlockReason::TimestampDomainInvalid => "TIMESTAMP_DOMAIN_INVALID",
         BlockReason::StaleObservation => "STALE_OBSERVATION",
         BlockReason::NonMonotonicObservation => "NON_MONOTONIC_OBSERVATION",
-        BlockReason::CaptureTimestampDiscontinuity => "CAPTURE_TIMESTAMP_DISCONTINUITY",
         BlockReason::TargetInvalid => "TARGET_INVALID",
         BlockReason::GeometryInvalid => "GEOMETRY_INVALID",
         BlockReason::TriggerInactive => "TRIGGER_INACTIVE",
@@ -1468,7 +1467,7 @@ fn serialized_label(value: &impl Serialize) -> String {
 #[cfg(test)]
 mod tests {
     use novasight_core::controller::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
-    use novasight_core::controller::{BlockReason, ControlDecision, ControlMode};
+    use novasight_core::controller::{AimResult, BlockReason, ControlMode};
     use novasight_core::prediction::PredictionMotionState;
     use novasight_core::tracking::{LockReason, TargetSelection, TrackId};
     use novasight_core::{
@@ -1517,7 +1516,7 @@ mod tests {
     #[test]
     fn projects_daemon_owned_control_telemetry_into_studio_shape() {
         let mut snapshot = RuntimeSnapshot::default();
-        snapshot.pipeline_metrics.control = ControlDecision {
+        snapshot.pipeline_metrics.control = AimResult {
             sample_available: true,
             aim_x: 330.0,
             aim_y: 317.0,
@@ -1578,7 +1577,7 @@ mod tests {
             arrival_enter_counts: 3.0,
             arrival_exit_counts: 4.5,
             actuation_pending_y: true,
-            ..ControlDecision::default()
+            ..AimResult::default()
         };
         snapshot.pipeline_metrics.recoil = RecoilDecision {
             state: RecoilState::Applied,

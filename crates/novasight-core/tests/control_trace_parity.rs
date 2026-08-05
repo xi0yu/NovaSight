@@ -1,6 +1,6 @@
 //! Continuous control parity tests. Reads the
 //! `continuous-control-control.jsonl` fixture, instantiates a fresh
-//! `ContinuousControl` for each record, and asserts the contract the
+//! `AimAlgorithm` for each record, and asserts the contract the
 //! runtime depends on:
 //!
 //! * `block_reason` is `BlockReason::None` only when
@@ -14,8 +14,7 @@
 use std::path::PathBuf;
 
 use novasight_core::controller::{
-    BlockReason, ContinuousControl, ContinuousControlConfig, ControlDecision, ControlMode,
-    ControlObservation,
+    AimAlgorithm, AimAlgorithmConfig, AimResult, AimSample, BlockReason, ControlMode,
 };
 use serde_json::Value;
 
@@ -33,8 +32,8 @@ fn load_records(name: &str) -> Vec<Value> {
         .collect()
 }
 
-fn observation_from_value(value: &Value) -> ControlObservation {
-    ControlObservation {
+fn observation_from_value(value: &Value) -> AimSample {
+    AimSample {
         generation: value["generation"].as_u64().expect("generation"),
         target_id: value["target_id"].as_u64().expect("target_id"),
         capture_ts_ns: value["capture_ts_ns"].as_u64().expect("capture_ts_ns"),
@@ -50,7 +49,7 @@ fn observation_from_value(value: &Value) -> ControlObservation {
     }
 }
 
-fn assert_invariants(record: &Value, decision: ControlDecision) {
+fn assert_invariants(record: &Value, decision: AimResult) {
     let expected_emit = record["decision"]["emit_allowed"]
         .as_bool()
         .expect("emit_allowed");
@@ -110,18 +109,18 @@ fn continuous_control_decision_matches_contract_per_record() {
         !records.is_empty(),
         "continuous-control-control.jsonl must contain records"
     );
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
     for record in &records {
         let observation = observation_from_value(&record["observation"]);
-        let decision = control.calculate(observation);
+        let decision = control.step(observation);
         assert_invariants(record, decision);
     }
 }
 
 #[test]
 fn first_observation_has_zero_velocity_and_predicted_offset() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let observation = ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let observation = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -135,7 +134,7 @@ fn first_observation_has_zero_velocity_and_predicted_offset() {
         target_valid: true,
         trigger_active: true,
     };
-    let decision = control.calculate(observation);
+    let decision = control.step(observation);
     assert!(decision.emit_allowed);
     assert_eq!(decision.velocity_x, 0.0);
     assert_eq!(decision.velocity_y, 0.0);
@@ -145,8 +144,8 @@ fn first_observation_has_zero_velocity_and_predicted_offset() {
 
 #[test]
 fn rust_feedback_matches_the_continuous_projection_and_atan_reference() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let decision = control.calculate(ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let decision = control.step(AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -168,12 +167,12 @@ fn rust_feedback_matches_the_continuous_projection_and_atan_reference() {
 
 #[test]
 fn default_feedback_converges_with_two_frames_of_visual_delay() {
-    let config = ContinuousControlConfig::default();
+    let config = AimAlgorithmConfig::default();
     let focal_x =
         (config.source_width as f64 * 0.5) / (config.projection_fov_x_deg.to_radians() * 0.5).tan();
     let observation_px_per_count =
         focal_x * (std::f64::consts::TAU / config.projection_counts_per_360).tan();
-    let mut control = ContinuousControl::new(config);
+    let mut control = AimAlgorithm::new(config);
     let mut true_error_x = 100.0;
     let mut delayed_errors = [true_error_x; 3];
     let mut tail_error_sum = 0.0;
@@ -183,7 +182,7 @@ fn default_feedback_converges_with_two_frames_of_visual_delay() {
         let observed_error_x = delayed_errors[0];
         delayed_errors.rotate_left(1);
         let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
-        let decision = control.calculate(ControlObservation {
+        let decision = control.step(AimSample {
             generation,
             target_id: 1,
             capture_ts_ns,
@@ -218,12 +217,12 @@ fn default_feedback_converges_with_two_frames_of_visual_delay() {
 
 #[test]
 fn sub_count_arrival_becomes_quiet_instead_of_limit_cycling() {
-    let config = ContinuousControlConfig::default();
+    let config = AimAlgorithmConfig::default();
     let focal_x =
         (config.source_width as f64 * 0.5) / (config.projection_fov_x_deg.to_radians() * 0.5).tan();
     let observation_px_per_count =
         focal_x * (std::f64::consts::TAU / config.projection_counts_per_360).tan();
-    let mut control = ContinuousControl::new(config);
+    let mut control = AimAlgorithm::new(config);
     let mut true_error_x = 100.0;
     let mut delayed_errors = [true_error_x; 3];
     let mut tail_nonzero_commands = 0;
@@ -232,7 +231,7 @@ fn sub_count_arrival_becomes_quiet_instead_of_limit_cycling() {
         let observed_error_x = delayed_errors[0];
         delayed_errors.rotate_left(1);
         let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
-        let decision = control.calculate(ControlObservation {
+        let decision = control.step(AimSample {
             generation,
             target_id: 1,
             capture_ts_ns,
@@ -261,7 +260,7 @@ fn sub_count_arrival_becomes_quiet_instead_of_limit_cycling() {
 
 #[test]
 fn aim_region_rejects_persistent_subpixel_detector_chatter() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
     let errors = [0.4_f64; 4]
         .into_iter()
         .chain([-0.4_f64; 4])
@@ -272,7 +271,7 @@ fn aim_region_rejects_persistent_subpixel_detector_chatter() {
     for (index, error_x) in errors.enumerate() {
         let generation = index as u64 + 1;
         let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
-        let decision = control.calculate(ControlObservation {
+        let decision = control.step(AimSample {
             generation,
             target_id: 1,
             capture_ts_ns,
@@ -299,8 +298,8 @@ fn aim_region_rejects_persistent_subpixel_detector_chatter() {
 
 #[test]
 fn second_observation_waits_for_complete_robust_velocity_window() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let first = ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let first = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -314,8 +313,8 @@ fn second_observation_waits_for_complete_robust_velocity_window() {
         target_valid: true,
         trigger_active: true,
     };
-    let _ = control.calculate(first);
-    let second = ControlObservation {
+    let _ = control.step(first);
+    let second = AimSample {
         generation: 2,
         target_id: 1,
         capture_ts_ns: 1_016_666_666,
@@ -329,7 +328,7 @@ fn second_observation_waits_for_complete_robust_velocity_window() {
         target_valid: true,
         trigger_active: true,
     };
-    let decision = control.calculate(second);
+    let decision = control.step(second);
     assert_eq!(decision.velocity_x, 0.0);
     assert_eq!(decision.velocity_y, 0.0);
     assert_eq!(decision.predicted_offset_x, 0.0);
@@ -338,8 +337,8 @@ fn second_observation_waits_for_complete_robust_velocity_window() {
 
 #[test]
 fn invalid_target_returns_target_invalid_block() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let observation = ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let observation = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -353,15 +352,15 @@ fn invalid_target_returns_target_invalid_block() {
         target_valid: false,
         trigger_active: true,
     };
-    let decision = control.calculate(observation);
+    let decision = control.step(observation);
     assert!(!decision.emit_allowed);
     assert_eq!(decision.block_reason, BlockReason::TargetInvalid);
 }
 
 #[test]
 fn trigger_inactive_returns_trigger_inactive_block() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let observation = ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let observation = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -375,15 +374,15 @@ fn trigger_inactive_returns_trigger_inactive_block() {
         target_valid: true,
         trigger_active: false,
     };
-    let decision = control.calculate(observation);
+    let decision = control.step(observation);
     assert!(!decision.emit_allowed);
     assert_eq!(decision.block_reason, BlockReason::TriggerInactive);
 }
 
 #[test]
 fn non_monotonic_observation_is_rejected() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let first = ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let first = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -397,8 +396,8 @@ fn non_monotonic_observation_is_rejected() {
         target_valid: true,
         trigger_active: true,
     };
-    let _ = control.calculate(first);
-    let stale = ControlObservation {
+    let _ = control.step(first);
+    let stale = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_016_666_666,
@@ -412,15 +411,15 @@ fn non_monotonic_observation_is_rejected() {
         target_valid: true,
         trigger_active: true,
     };
-    let decision = control.calculate(stale);
+    let decision = control.step(stale);
     assert!(!decision.emit_allowed);
     assert_eq!(decision.block_reason, BlockReason::NonMonotonicObservation);
 }
 
 #[test]
 fn stale_observation_is_rejected() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let observation = ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let observation = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 0,
@@ -434,15 +433,15 @@ fn stale_observation_is_rejected() {
         target_valid: true,
         trigger_active: true,
     };
-    let decision = control.calculate(observation);
+    let decision = control.step(observation);
     assert!(!decision.emit_allowed);
     assert_eq!(decision.block_reason, BlockReason::StaleObservation);
 }
 
 #[test]
 fn reset_clears_state_and_history() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let observation = ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let observation = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -456,9 +455,9 @@ fn reset_clears_state_and_history() {
         target_valid: true,
         trigger_active: true,
     };
-    let _ = control.calculate(observation);
+    let _ = control.step(observation);
     control.reset();
-    let second = ControlObservation {
+    let second = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -472,15 +471,15 @@ fn reset_clears_state_and_history() {
         target_valid: true,
         trigger_active: true,
     };
-    let decision = control.calculate(second);
+    let decision = control.step(second);
     assert_eq!(decision.velocity_x, 0.0);
     assert_eq!(decision.velocity_y, 0.0);
 }
 
 #[test]
 fn release_trigger_drops_fractional_count_but_keeps_history() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let first = ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let first = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -494,9 +493,9 @@ fn release_trigger_drops_fractional_count_but_keeps_history() {
         target_valid: true,
         trigger_active: true,
     };
-    let _ = control.calculate(first);
+    let _ = control.step(first);
     control.release_trigger();
-    let last = ControlObservation {
+    let last = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -510,7 +509,7 @@ fn release_trigger_drops_fractional_count_but_keeps_history() {
         target_valid: true,
         trigger_active: true,
     };
-    let decision = control.calculate(last);
+    let decision = control.step(last);
     assert_eq!(decision.velocity_x, 0.0);
     assert_eq!(decision.velocity_y, 0.0);
     // public surface (next emit) by re-running an observation.
@@ -518,8 +517,8 @@ fn release_trigger_drops_fractional_count_but_keeps_history() {
 
 #[test]
 fn continuous_mode_is_reported_for_small_error() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let observation = ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let observation = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -533,6 +532,6 @@ fn continuous_mode_is_reported_for_small_error() {
         target_valid: true,
         trigger_active: true,
     };
-    let decision = control.calculate(observation);
+    let decision = control.step(observation);
     assert_eq!(decision.mode, ControlMode::Continuous);
 }

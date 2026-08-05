@@ -1,5 +1,5 @@
 //! Algorithm-slice end-to-end test. Drives the full pipeline
-//! `FreshnessGate -> Tracker -> TargetingCore -> ContinuousControl` against the
+//! `FreshnessGate -> Tracker -> TargetingCore -> AimAlgorithm` against the
 //! captured regression fixtures. The runtime session is *not* the
 //! subject of this test; we instantiate each algorithm directly
 //! so the Phase 1 contract tests are not disturbed.
@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use novasight_core::controller::{
-    BlockReason, ContinuousControl, ContinuousControlConfig, ControlMode, ControlObservation,
+    AimAlgorithm, AimAlgorithmConfig, AimSample, BlockReason, ControlMode,
 };
 use novasight_core::freshness::{FreshnessPolicy, evaluate as freshness_evaluate};
 use novasight_core::perception::types::Detection;
@@ -86,8 +86,8 @@ fn static_target_pipeline_drives_freshness_targeting_and_control() {
             .iter()
             .find(|det| det.object_id() == target && det.class_id() == target_class)
             .expect("matched detection");
-        let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-        let observation = ControlObservation {
+        let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+        let observation = AimSample {
             generation: frame["generation"].as_u64().expect("generation"),
             target_id: target,
             capture_ts_ns: capture.0,
@@ -103,7 +103,7 @@ fn static_target_pipeline_drives_freshness_targeting_and_control() {
             target_valid: true,
             trigger_active: true,
         };
-        let decision = control.calculate(observation);
+        let decision = control.step(observation);
         assert_eq!(decision.emit_allowed, decision.dx != 0 || decision.dy != 0);
     }
 }
@@ -113,7 +113,7 @@ fn moving_target_records_emit_typed_decisions() {
     let records = load_records("moving-target.jsonl");
     assert!(!records.is_empty());
     let mut tracking = TargetingCore::new(TargetingConfig::default());
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
     for record in &records {
         let frame = &record["frame"];
         let detections: Vec<Detection> = record["detections"]
@@ -129,7 +129,7 @@ fn moving_target_records_emit_typed_decisions() {
                 .iter()
                 .find(|det| det.object_id() == target && det.class_id() == target_class)
                 .expect("matched detection");
-            let observation = ControlObservation {
+            let observation = AimSample {
                 generation: frame["generation"].as_u64().expect("generation"),
                 target_id: target,
                 capture_ts_ns: frame["captured_at_ns"].as_u64().expect("captured_at_ns"),
@@ -145,7 +145,7 @@ fn moving_target_records_emit_typed_decisions() {
                 target_valid: true,
                 trigger_active: true,
             };
-            let decision = control.calculate(observation);
+            let decision = control.step(observation);
             assert_eq!(decision.mode, ControlMode::Continuous);
         }
     }
@@ -153,8 +153,8 @@ fn moving_target_records_emit_typed_decisions() {
 
 #[test]
 fn control_first_observation_emits_first_decision() {
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
-    let observation = ControlObservation {
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let observation = AimSample {
         generation: 1,
         target_id: 1,
         capture_ts_ns: 1_000_000_000,
@@ -168,7 +168,7 @@ fn control_first_observation_emits_first_decision() {
         target_valid: true,
         trigger_active: true,
     };
-    let decision = control.calculate(observation);
+    let decision = control.step(observation);
     assert!(decision.emit_allowed);
     assert_eq!(decision.block_reason, BlockReason::None);
     assert_eq!(decision.mode, ControlMode::Continuous);
@@ -176,13 +176,13 @@ fn control_first_observation_emits_first_decision() {
 
 #[test]
 fn closed_loop_algorithm_score_tracks_visual_convergence() {
-    let control_config = ContinuousControlConfig::default();
+    let control_config = AimAlgorithmConfig::default();
     let focal_x = (control_config.source_width as f64 * 0.5)
         / (control_config.projection_fov_x_deg.to_radians() * 0.5).tan();
     let observation_px_per_count =
         focal_x * (std::f64::consts::TAU / control_config.projection_counts_per_360).tan();
     let mut targeting = TargetingCore::new(TargetingConfig::default());
-    let mut control = ContinuousControl::new(control_config);
+    let mut control = AimAlgorithm::new(control_config);
     let mut true_error_x = 100.0;
     let mut delayed_errors = [true_error_x; 3];
     let mut trace = Vec::new();
@@ -204,7 +204,7 @@ fn closed_loop_algorithm_score_tracks_visual_convergence() {
         )
         .expect("valid detection");
         let selection = targeting.select_at(&[detection], (320.0, 320.0), capture_ts_ns);
-        let decision = control.calculate(ControlObservation {
+        let decision = control.step(AimSample {
             generation,
             target_id: selection.target_track_id.map_or(0, |track_id| track_id.0),
             capture_ts_ns,
@@ -220,8 +220,8 @@ fn closed_loop_algorithm_score_tracks_visual_convergence() {
         });
         true_error_x -= f64::from(decision.dx) * observation_px_per_count;
         delayed_errors[2] = true_error_x;
-        trace.push(AlgorithmTraceSample::from_control_decision(&decision));
-        prediction_truth_trace.push(PredictionTruthSample::from_control_decision(&decision));
+        trace.push(AlgorithmTraceSample::from_aim_result(&decision));
+        prediction_truth_trace.push(PredictionTruthSample::from_aim_result(&decision));
     }
 
     let score = score_algorithm_trace(&trace, AlgorithmScoreConfig::default());

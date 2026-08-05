@@ -1,5 +1,5 @@
 //! Runtime algorithm microbench. Runs the full runtime algorithm path
-//! (FreshnessGate -> Tracker -> TargetingCore -> ContinuousControl) for a fixed
+//! (FreshnessGate -> Tracker -> TargetingCore -> AimAlgorithm) for a fixed
 //! number of frames and prints a
 //! compact P50/P95/P99 latency table plus allocations per emit.
 //! Invoked via ``cargo bench -p novasight-core --bench
@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use novasight_core::controller::{ContinuousControl, ContinuousControlConfig, ControlObservation};
+use novasight_core::controller::{AimAlgorithm, AimAlgorithmConfig, AimSample};
 use novasight_core::freshness::{FreshnessPolicy, evaluate as freshness_evaluate};
 use novasight_core::perception::types::Detection;
 use novasight_core::tracking::{TargetingConfig, TargetingCore};
@@ -55,7 +55,7 @@ fn main() {
     let records = load_records("static-target.jsonl");
     let policy = FreshnessPolicy::new(55.0).expect("policy");
     let mut tracking = TargetingCore::new(TargetingConfig::default());
-    let mut control = ContinuousControl::new(ContinuousControlConfig::default());
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
 
     let mut samples: Vec<u128> = Vec::with_capacity(ITERATIONS);
     for _ in 0..ITERATIONS {
@@ -80,7 +80,7 @@ fn main() {
                         .any(|det| det.object_id() == target && det.class_id() == target_class),
                     "selected target must belong to the frame"
                 );
-                let observation = ControlObservation {
+                let observation = AimSample {
                     generation: frame["generation"].as_u64().expect("generation"),
                     target_id: target,
                     capture_ts_ns: capture.0,
@@ -94,7 +94,7 @@ fn main() {
                     target_valid: true,
                     trigger_active: true,
                 };
-                let _decision = control.calculate(observation);
+                let _decision = control.step(observation);
             }
             samples.push(start.elapsed().as_nanos());
         }
