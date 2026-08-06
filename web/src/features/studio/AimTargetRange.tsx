@@ -40,7 +40,10 @@ export const AimTargetRange = memo(function AimTargetRange({ disabled = false, r
 
   useEffect(() => {
     if (draggingRef.current === null) {
-      setDraft(ratios);
+      // Keep the ref in sync so the keyboard handler can read fresh values
+      // without re-rendering — displayRatio already pulls the visible value
+      // straight from the prop, so the parent re-render is enough to redraw.
+      draftRef.current = ratios;
     }
   }, [ratios]);
 
