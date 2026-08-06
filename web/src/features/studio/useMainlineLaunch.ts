@@ -716,6 +716,7 @@ export function useMainlineLaunch({
       if (cancelController.signal.aborted) {
         return;
       }
+      setProgressDetail("紧急停止未完成；后端可能仍在运行，请进入错误中心确认状态。");
       setLocalError(formatLaunchError({
         stage: "取消启动",
         action: "调用紧急停止以终止运行态",
