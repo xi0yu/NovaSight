@@ -114,7 +114,13 @@ impl KmNetNativeSession {
 
         let buttons = Arc::new(AtomicU8::new(0));
         let monitor_healthy = Arc::new(AtomicBool::new(true));
-        let last_monitor_update = Arc::new(Mutex::new(None));
+        // Seed the monitor timestamp with the spawn time so the first poll —
+        // which always races the very first hardware report — sees a fresh
+        // timestamp instead of `None`. The `monitor_stale` check is then
+        // bounded by `monitor_timeout` from spawn, not from the first real
+        // report, so a slow first report does not surface as
+        // "设备连接异常，正在自动恢复" on every startup.
+        let last_monitor_update = Arc::new(Mutex::new(Some(Instant::now())));
         let stop = Arc::new(AtomicBool::new(false));
         let monitor = spawn_monitor(
             monitor_socket,
