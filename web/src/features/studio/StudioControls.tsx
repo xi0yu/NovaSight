@@ -128,10 +128,13 @@ function SliderNumberControl({
   }, [digits, isEditing, value]);
 
   const beginEdit = useCallback(() => {
+    if (disabled) {
+      return;
+    }
     editStartMinRef.current = null;
     editStartMaxRef.current = null;
     emitEditing(true);
-  }, [emitEditing]);
+  }, [disabled, emitEditing]);
 
   const commit = useCallback((candidateText = draftTextRef.current) => {
     if (disabled) {
@@ -382,7 +385,11 @@ function StepperNumberControl({
         type="text"
         value={draftText}
         onBlur={() => commit()}
-        onFocus={() => emitEditing(true)}
+        onFocus={() => {
+          if (!disabled) {
+            emitEditing(true);
+          }
+        }}
         onChange={(event) => {
           draftTextRef.current = event.target.value;
           setDraftText(event.target.value);
@@ -653,7 +660,11 @@ export function TextControl({
           emitEditing(true);
           onDraftChange?.(event.target.value);
         }}
-        onFocus={() => emitEditing(true)}
+        onFocus={() => {
+          if (!disabled) {
+            emitEditing(true);
+          }
+        }}
         onKeyDown={(event) => {
           if (event.key !== "Enter") {
             return;
@@ -779,11 +790,15 @@ export function InlineNumberControl({
       type="text"
       value={draft}
       onBlur={commit}
+      onFocus={() => {
+        if (!disabled) {
+          emitEditing(true);
+        }
+      }}
       onChange={(event) => {
         setDraft(event.target.value);
         emitEditing(true);
       }}
-      onFocus={() => emitEditing(true)}
       onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
     />
   );
