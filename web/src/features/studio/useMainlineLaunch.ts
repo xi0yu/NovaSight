@@ -220,6 +220,17 @@ export function useMainlineLaunch({
   // during this window so the new start's startRuntimePipeline doesn't race
   // with the old cancel's emergency stop.
   const cancelInFlightRef = useRef(false);
+  // Mirror of the ref so the launch dialog's "重新启动" button can show a
+  // disabled state while a previous cancel is still round-tripping. The
+  // ref is the source of truth; the state is just for rendering.
+  const [cancelInFlight, setCancelInFlight] = useState(false);
+  useEffect(() => {
+    if (cancelInFlightRef.current && !cancelInFlight) {
+      setCancelInFlight(true);
+    } else if (!cancelInFlightRef.current && cancelInFlight) {
+      setCancelInFlight(false);
+    }
+  });
 
   const clearAccepted = useCallback(() => {
     setAccepted(false);
@@ -740,6 +751,7 @@ export function useMainlineLaunch({
   return {
     accepted,
     cancel,
+    cancelInFlight,
     clearAccepted,
     closeDialog,
     completedStages,

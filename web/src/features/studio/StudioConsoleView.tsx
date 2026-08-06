@@ -2241,6 +2241,7 @@ export function StudioConsoleView({
   const {
     accepted: mainlineLaunchAccepted,
     cancel: cancelMainlineLaunch,
+    cancelInFlight: launchCancelInFlight,
     clearAccepted: clearMainlineLaunchAccepted,
     closeDialog: closeLaunchDialog,
     completedStages: launchCompletedStages,
@@ -5484,7 +5485,7 @@ export function StudioConsoleView({
               </button>
               <button type="button"
                 className="console-button primary"
-                disabled={launchStatus === "running"}
+                disabled={launchStatus === "running" || launchCancelInFlight}
                 onClick={launchStatus === "success" ? closeLaunchDialog : () => void startMainlineLaunch()}
               >
                 <NovaIcon name={launchStatus === "running" ? "activity-pulse" : launchStatus === "success" ? "dashboard" : "start"} size={16} />
