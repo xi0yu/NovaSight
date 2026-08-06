@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import { NovaIcon } from "../../components/visual";
-import { trapDialogTabKey } from "../studio/dialogFocus";
+import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "../studio/dialogFocus";
 import { ModelSelectionPanel, type ModelSelectionPanelProps } from "./ModelSelectionPanel";
 
 export function ModelManagerDialog({
@@ -21,9 +21,8 @@ export function ModelManagerDialog({
 
   useEffect(() => {
     if (!open) return undefined;
-    const previousOverflow = document.body.style.overflow;
+    acquireBodyScrollLock();
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    document.body.style.overflow = "hidden";
     const frame = window.requestAnimationFrame(() => {
       dialogRef.current?.focus();
       dialogRef.current
@@ -40,7 +39,7 @@ export function ModelManagerDialog({
     document.addEventListener("keydown", onKeyDown);
     return () => {
       window.cancelAnimationFrame(frame);
-      document.body.style.overflow = previousOverflow;
+      releaseBodyScrollLock();
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };

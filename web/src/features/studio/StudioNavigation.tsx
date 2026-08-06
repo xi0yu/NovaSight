@@ -116,11 +116,10 @@ export function StudioNavigation({
             {group.items.map((item) => {
               const active = activePage === item.id;
               return (
-                <button
+                <button type="button"
                   className={active ? "console-nav active" : "console-nav"}
                   key={item.id}
                   onClick={() => onNavigate(item.id)}
-                  type="button"
                   aria-current={active ? "page" : undefined}
                 >
                   <span className="console-nav-icon" aria-hidden="true">

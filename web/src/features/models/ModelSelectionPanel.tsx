@@ -167,12 +167,11 @@ export function ModelSelectionPanel({
             ["unrated", "待整理"],
             ["not_recommended", "不推荐"]
           ] as const).map(([value, label]) => (
-            <button
+            <button type="button"
               aria-pressed={recommendationFilter === value}
               className={recommendationFilter === value ? "active" : ""}
               key={value}
               onClick={() => setRecommendationFilter(value)}
-              type="button"
             >
               {label}
             </button>
@@ -181,7 +180,7 @@ export function ModelSelectionPanel({
         <div className="model-vault-tag-filter" aria-label="标签筛选">
           <span>标签筛选</span>
           {availableTags.length > 0 ? availableTags.map((tag) => (
-            <button
+            <button type="button"
               aria-pressed={tagFilters.has(tag)}
               className={tagFilters.has(tag) ? "active" : ""}
               key={tag}
@@ -190,13 +189,12 @@ export function ModelSelectionPanel({
                 if (next.has(tag)) next.delete(tag); else next.add(tag);
                 return next;
               })}
-              type="button"
             >
               {tag}
             </button>
           )) : <small>保存标签后可在这里筛选</small>}
           {tagFilters.size > 0 ? (
-            <button className="clear" onClick={() => setTagFilters(new Set())} type="button">清除</button>
+            <button type="button" className="clear" onClick={() => setTagFilters(new Set())}>清除</button>
           ) : null}
         </div>
       </section>
@@ -300,13 +298,12 @@ export function ModelSelectionPanel({
             </div>
             <div className="model-recommendation-control" role="group" aria-label="模型推荐状态">
               {RECOMMENDATION_OPTIONS.map((option) => (
-                <button
+                <button type="button"
                   aria-pressed={draftRecommendation === option.value}
                   className={draftRecommendation === option.value ? "active" : ""}
                   disabled={busy !== null || selectedModel === null}
                   key={option.value}
                   onClick={() => setDraftRecommendation(option.value)}
-                  type="button"
                 >
                   {option.label}
                 </button>
@@ -315,12 +312,11 @@ export function ModelSelectionPanel({
             <div className="model-tag-editor">
               <div className="model-tag-list">
                 {draftTags.map((tag) => (
-                  <button
+                  <button type="button"
                     aria-label={`移除标签 ${tag}`}
                     disabled={busy !== null}
                     key={tag}
                     onClick={() => setDraftTags((current) => current.filter((item) => item !== tag))}
-                    type="button"
                   >
                     {tag}<span aria-hidden="true">×</span>
                   </button>
@@ -342,28 +338,26 @@ export function ModelSelectionPanel({
                   placeholder="输入自定义标签"
                   value={newTag}
                 />
-                <button
+                <button type="button"
                   className="console-button secondary"
                   disabled={busy !== null || selectedModel === null || newTag.trim() === ""}
                   onClick={() => addTag(newTag)}
-                  type="button"
                 >
                   添加
                 </button>
               </div>
               <div className="model-tag-suggestions" aria-label="常用标签">
                 {SUGGESTED_MODEL_TAGS.filter((tag) => !draftTags.includes(tag)).map((tag) => (
-                  <button disabled={busy !== null || selectedModel === null} key={tag} onClick={() => addTag(tag)} type="button">
+                  <button type="button" disabled={busy !== null || selectedModel === null} key={tag} onClick={() => addTag(tag)}>
                     + {tag}
                   </button>
                 ))}
               </div>
             </div>
-            <button
+            <button type="button"
               className="console-button secondary model-metadata-save"
               disabled={busy !== null || !metadataDirty || selectedModel?.kind !== "engine"}
               onClick={() => onSaveMetadata(draftRecommendation, draftTags)}
-              type="button"
             >
               {busy === "model.metadata" ? "保存中..." : "保存整理结果"}
             </button>

@@ -100,13 +100,12 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
                 />
               ))}
               {visibleModels.length < modelsForShelf.length ? (
-                <button
+                <button type="button"
                   className="console-button secondary model-vault-load-more"
                   onClick={() => setVisibleRows((current) => ({
                     ...current,
                     [shelf.recommendation]: current[shelf.recommendation] + INITIAL_SHELF_ROWS
                   }))}
-                  type="button"
                 >
                   再显示 {Math.min(INITIAL_SHELF_ROWS, modelsForShelf.length - visibleModels.length)} 个
                 </button>
@@ -139,13 +138,12 @@ function ModelCatalogRow({
       ? "不推荐"
       : "待整理";
   return (
-    <button
+    <button type="button"
       aria-label={`${model.name}，${recommendationLabel}，${formatModelSize(model.size_bytes)}，${modelStatusLabel(status)}`}
       aria-pressed={selected}
       className={`model-catalog-row model ${selected ? "selected" : ""}`}
       data-active={active ? "true" : undefined}
       onClick={() => onSelectModel(model)}
-      type="button"
     >
       <NovaIcon name="models" size={17} />
       <div className="model-catalog-copy">

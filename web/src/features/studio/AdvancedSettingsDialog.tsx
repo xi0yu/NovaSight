@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 
 import { NovaIcon } from "../../components/visual";
-import { trapDialogTabKey } from "./dialogFocus";
+import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
 
 export function AdvancedSettingsDialog({
   open,
@@ -45,9 +45,8 @@ export function AdvancedSettingsDialog({
     if (!open) {
       return undefined;
     }
-    const previousOverflow = document.body.style.overflow;
+    acquireBodyScrollLock();
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    document.body.style.overflow = "hidden";
     window.requestAnimationFrame(() => dialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -60,7 +59,7 @@ export function AdvancedSettingsDialog({
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.body.style.overflow = previousOverflow;
+      releaseBodyScrollLock();
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };

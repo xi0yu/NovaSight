@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
 
 import { StatusIndicator } from "./components/ui";
 import {
@@ -134,7 +134,86 @@ function mergeRuntimePatch(current: RuntimeState, patch: Partial<RuntimeState>):
   };
 }
 
+// Structural deep-equal for RuntimeState. Duplicate of the studio feature's
+// `runtimeConfigValuesEqual` (kept here to avoid a hard import of the studio
+// chunk from App.tsx's status-stream hot path). Used to short-circuit
+// setState when a partial/full frame carries no observable change — this is
+// the single biggest remaining source of per-frame paint churn in the
+// Studio console.
+function runtimePayloadEqual(left: RuntimeState, right: RuntimeState): boolean {
+  if (Object.is(left, right)) {
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left)
+      && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => runtimePayloadEqual(value as RuntimeState, right[index] as RuntimeState));
+  }
+  if (
+    left === null
+    || right === null
+    || typeof left !== "object"
+    || typeof right !== "object"
+  ) {
+    return false;
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  const rightKeys = Object.keys(rightRecord);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  for (const key of leftKeys) {
+    if (!Object.prototype.hasOwnProperty.call(rightRecord, key)) {
+      return false;
+    }
+    const l = leftRecord[key];
+    const r = rightRecord[key];
+    if (typeof l === "object" && typeof r === "object" && l !== null && r !== null) {
+      if (!runtimePayloadEqual(l as RuntimeState, r as RuntimeState)) {
+        return false;
+      }
+    } else if (!Object.is(l, r)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const visualSystemMode = new URLSearchParams(window.location.search).get("visual-system") === "1";
+
+// Throttles the "更新于 HH:MM:SS" text node to ≤1Hz. The parent re-renders
+// on every WebSocket partial frame; without throttling the timestamp paints
+// N times per second even when the formatted string is unchanged. The
+// component only commits a new `displayed` value once per 1000ms.
+const LastUpdatedText = memo(function LastUpdatedText({ date }: { date: Date | null }) {
+  const [displayed, setDisplayed] = useState<Date | null>(date);
+  const lastShownRef = useRef<number>(date?.getTime() ?? 0);
+  useEffect(() => {
+    if (!date) {
+      if (displayed !== null) {
+        setDisplayed(null);
+      }
+      return;
+    }
+    const now = date.getTime();
+    const elapsed = now - lastShownRef.current;
+    if (elapsed >= 1000) {
+      lastShownRef.current = now;
+      setDisplayed(date);
+      return;
+    }
+    const remaining = 1000 - elapsed;
+    const timer = window.setTimeout(() => {
+      lastShownRef.current = date.getTime();
+      setDisplayed(date);
+    }, remaining);
+    return () => window.clearTimeout(timer);
+  }, [date, displayed]);
+  return <span className="last-updated">更新于 {formatTime(displayed)}</span>;
+});
 
 const StudioConsoleView = lazy(() =>
   import("./features/studio/StudioConsoleView").then((module) => ({
@@ -189,13 +268,23 @@ function StudioApp() {
 
   const applyRuntimeState = useCallback((runtime: RuntimeState) => {
     const receivedAt = Date.now();
-    runtimeRevisionRef.current += 1;
-    setState((current) => ({
-      ...current,
-      errors: withoutError(current.errors, "runtime"),
-      runtime,
-      lastUpdated: new Date(receivedAt)
-    }));
+    setState((current) => {
+      // Short-circuit when the new full frame is structurally equal to the
+      // current one. The status heartbeat and idle partial frames are a
+      // major source of paint churn; skipping them keeps `lastUpdated` and
+      // the per-frame setState call stable, which downstream memos/effects
+      // key off of.
+      if (current.runtime !== null && runtimePayloadEqual(current.runtime, runtime)) {
+        return current;
+      }
+      runtimeRevisionRef.current += 1;
+      return {
+        ...current,
+        errors: withoutError(current.errors, "runtime"),
+        runtime,
+        lastUpdated: new Date(receivedAt)
+      };
+    });
   }, []);
 
   const applyRuntimeFrame = useCallback((frame: RuntimeStatusFrame) => {
@@ -210,10 +299,16 @@ function StudioApp() {
         // A partial frame may arrive first on a fast local WebSocket.
         return current;
       }
+      const merged = mergeRuntimePatch(current.runtime, frame.state);
+      if (runtimePayloadEqual(current.runtime, merged)) {
+        // No real change — preserve `lastUpdated` so the top-of-page timestamp
+        // doesn't tick on idle frames.
+        return current;
+      }
       return {
         ...current,
         errors: withoutError(current.errors, "runtime"),
-        runtime: mergeRuntimePatch(current.runtime, frame.state),
+        runtime: merged,
         lastUpdated: new Date(receivedAt)
       };
     });
@@ -724,7 +819,7 @@ function StudioApp() {
       <StatusIndicator tone={runtimeDeliveryTone(realtimeStatus)}>
         {runtimeDeliveryLabel(realtimeStatus)}
       </StatusIndicator>
-      <span className="last-updated">更新于 {formatTime(state.lastUpdated)}</span>
+      <LastUpdatedText date={state.lastUpdated} />
     </>
   );
 

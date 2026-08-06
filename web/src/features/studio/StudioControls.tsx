@@ -70,7 +70,9 @@ function SliderNumberControl({
   ariaLabel,
   disabled = false,
   onDraftChange,
-  onCommit
+  onCommit,
+  onEditingChange,
+  controlId
 }: {
   value: number;
   min: number;
@@ -85,21 +87,51 @@ function SliderNumberControl({
   disabled?: boolean;
   onDraftChange?: (value: number) => void;
   onCommit: (value: number) => Promise<void> | void;
+  onEditingChange?: (editing: boolean) => void;
+  controlId?: string;
 }) {
   const [draftValue, setDraftValue] = useState(value);
   const [draftText, setDraftText] = useState(() => formatNumberDraft(value, digits));
   const [isEditing, setIsEditing] = useState(false);
   const committingRef = useRef(false);
   const draftTextRef = useRef(formatNumberDraft(value, digits));
+  const lastExternalValueRef = useRef(value);
+  // Snapshots of sliderMin / sliderMax taken at edit-start so the visual
+  // range doesn't reflow when the parent re-renders with a new `value`.
+  const editStartMinRef = useRef<number | null>(null);
+  const editStartMaxRef = useRef<number | null>(null);
+  const emitEditing = useCallback(
+    (next: boolean) => {
+      if (isEditing !== next) {
+        setIsEditing(next);
+        onEditingChange?.(next);
+      }
+    },
+    [isEditing, onEditingChange]
+  );
 
   useEffect(() => {
-    if (!isEditing) {
-      const nextText = formatNumberDraft(value, digits);
-      draftTextRef.current = nextText;
-      setDraftValue(value);
-      setDraftText(nextText);
+    const externalChanged = !Object.is(lastExternalValueRef.current, value);
+    if (!externalChanged) {
+      return;
     }
+    lastExternalValueRef.current = value;
+    if (isEditing) {
+      // Parent pushed a new value mid-edit: defer the sync so the slider
+      // doesn't snap to the server value while the user is still dragging.
+      return;
+    }
+    const nextText = formatNumberDraft(value, digits);
+    draftTextRef.current = nextText;
+    setDraftValue(value);
+    setDraftText(nextText);
   }, [digits, isEditing, value]);
+
+  const beginEdit = useCallback(() => {
+    editStartMinRef.current = null;
+    editStartMaxRef.current = null;
+    emitEditing(true);
+  }, [emitEditing]);
 
   const commit = useCallback((candidateText = draftTextRef.current) => {
     if (disabled) {
@@ -117,37 +149,63 @@ function SliderNumberControl({
       committingRef.current = true;
       void Promise.resolve(onCommit(next)).finally(() => {
         committingRef.current = false;
+        // Re-align draft to the latest external value to avoid races where
+        // the server pushed a different number while we were committing.
+        const finalValue = lastExternalValueRef.current;
+        const finalText = formatNumberDraft(finalValue, digits);
+        draftTextRef.current = finalText;
+        setDraftValue(finalValue);
+        setDraftText(finalText);
         setIsEditing(false);
+        onEditingChange?.(false);
+        editStartMinRef.current = null;
+        editStartMaxRef.current = null;
       });
     } else {
       const valueText = formatNumberDraft(value, digits);
       draftTextRef.current = valueText;
       setDraftValue(value);
       setDraftText(valueText);
-      setIsEditing(false);
+      emitEditing(false);
+      editStartMinRef.current = null;
+      editStartMaxRef.current = null;
     }
-  }, [digits, disabled, max, min, onCommit, value]);
+  }, [digits, disabled, emitEditing, max, min, onCommit, value]);
 
   const preferredMin = clampNumber(Math.min(rangeMin, rangeMax), min, max);
   const preferredMax = clampNumber(Math.max(rangeMin, rangeMax), preferredMin, max);
   const sliderMin = clampNumber(Math.min(preferredMin, value), min, max);
   const sliderMax = clampNumber(Math.max(preferredMax, value, sliderMin), sliderMin, max);
-  const sliderValue = clampNumber(draftValue, sliderMin, sliderMax);
+  // Freeze the displayed range while editing so the thumb doesn't jump when
+  // the parent re-derives sliderMin/sliderMax from a new `value`.
+  if (isEditing && editStartMinRef.current === null) {
+    editStartMinRef.current = sliderMin;
+    editStartMaxRef.current = sliderMax;
+  }
+  const displayMin = isEditing && editStartMinRef.current !== null
+    ? editStartMinRef.current
+    : sliderMin;
+  const displayMax = isEditing && editStartMaxRef.current !== null
+    ? editStartMaxRef.current
+    : sliderMax;
+  const sliderValue = isEditing
+    ? clampNumber(draftValue, displayMin, displayMax)
+    : clampNumber(value, displayMin, displayMax);
   const rangeStyle = {
-    "--parameter-range-value": `${percentWithin(sliderValue, sliderMin, sliderMax)}%`,
-    "--parameter-range-recommended-start": `${percentWithin(preferredMin, sliderMin, sliderMax)}%`,
-    "--parameter-range-recommended-end": `${percentWithin(preferredMax, sliderMin, sliderMax)}%`
+    "--parameter-range-value": `${percentWithin(sliderValue, displayMin, displayMax)}%`,
+    "--parameter-range-recommended-start": `${percentWithin(preferredMin, displayMin, displayMax)}%`,
+    "--parameter-range-recommended-end": `${percentWithin(preferredMax, displayMin, displayMax)}%`
   } as CSSProperties;
 
   return (
-    <div className="console-row">
+    <div className="console-row" data-control-id={controlId}>
       <input
         aria-label={ariaLabel ? `${ariaLabel} 滑块` : undefined}
         disabled={disabled}
         id={rangeInputId}
         type="range"
-        min={sliderMin}
-        max={sliderMax}
+        min={displayMin}
+        max={displayMax}
         step={step}
         style={rangeStyle}
         value={sliderValue}
@@ -155,16 +213,15 @@ function SliderNumberControl({
         onChange={(event) => {
           const next = clampNumber(Number(event.target.value), min, max);
           const nextText = formatNumberDraft(next, digits);
-          setIsEditing(true);
           draftTextRef.current = nextText;
           setDraftValue(next);
           setDraftText(nextText);
           onDraftChange?.(next);
         }}
-        onFocus={() => setIsEditing(true)}
-        onPointerDown={() => setIsEditing(true)}
+        onFocus={beginEdit}
+        onPointerDown={beginEdit}
         onPointerUp={(event) => {
-          const boundaryValue = pointerRangeBoundaryValue(event, sliderMin, sliderMax, digits);
+          const boundaryValue = pointerRangeBoundaryValue(event, displayMin, displayMax, digits);
           if (boundaryValue === null) {
             commit();
             return;
@@ -187,11 +244,10 @@ function SliderNumberControl({
         type="text"
         value={draftText}
         onBlur={() => commit()}
-        onFocus={() => setIsEditing(true)}
+        onFocus={beginEdit}
         onChange={(event) => {
           const nextText = event.target.value;
           const parsed = Number(nextText);
-          setIsEditing(true);
           draftTextRef.current = nextText;
           setDraftText(nextText);
           if (nextText.trim() !== "" && Number.isFinite(parsed)) {
@@ -220,7 +276,9 @@ function StepperNumberControl({
   ariaLabel,
   disabled = false,
   onDraftChange,
-  onCommit
+  onCommit,
+  onEditingChange,
+  controlId
 }: {
   value: number;
   min: number;
@@ -232,18 +290,38 @@ function StepperNumberControl({
   disabled?: boolean;
   onDraftChange?: (value: number) => void;
   onCommit: (value: number) => Promise<void> | void;
+  onEditingChange?: (editing: boolean) => void;
+  controlId?: string;
 }) {
   const [draftText, setDraftText] = useState(() => formatNumberDraft(value, digits));
   const [isEditing, setIsEditing] = useState(false);
   const committingRef = useRef(false);
   const draftTextRef = useRef(formatNumberDraft(value, digits));
+  const lastExternalValueRef = useRef(value);
+  const emitEditing = useCallback(
+    (next: boolean) => {
+      if (isEditing !== next) {
+        setIsEditing(next);
+        onEditingChange?.(next);
+      }
+    },
+    [isEditing, onEditingChange]
+  );
 
   useEffect(() => {
-    if (!isEditing) {
-      const nextText = formatNumberDraft(value, digits);
-      draftTextRef.current = nextText;
-      setDraftText(nextText);
+    const externalChanged = !Object.is(lastExternalValueRef.current, value);
+    if (!externalChanged) {
+      return;
     }
+    lastExternalValueRef.current = value;
+    if (isEditing) {
+      // Parent pushed a new value mid-edit: defer the sync so the input
+      // text doesn't snap to the server value while the user is typing.
+      return;
+    }
+    const nextText = formatNumberDraft(value, digits);
+    draftTextRef.current = nextText;
+    setDraftText(nextText);
   }, [digits, isEditing, value]);
 
   const commit = useCallback((candidateText = draftTextRef.current) => {
@@ -261,12 +339,18 @@ function StepperNumberControl({
       committingRef.current = true;
       void Promise.resolve(onCommit(next)).finally(() => {
         committingRef.current = false;
-        setIsEditing(false);
+        // Re-align with the latest external value to avoid races where
+        // the server pushed a different number while we were committing.
+        const finalValue = lastExternalValueRef.current;
+        const finalText = formatNumberDraft(finalValue, digits);
+        draftTextRef.current = finalText;
+        setDraftText(finalText);
+        emitEditing(false);
       });
     } else {
-      setIsEditing(false);
+      emitEditing(false);
     }
-  }, [digits, disabled, max, min, onCommit, value]);
+  }, [digits, disabled, emitEditing, max, min, onCommit, value]);
 
   const stepBy = useCallback((direction: -1 | 1) => {
     if (disabled) {
@@ -280,13 +364,13 @@ function StepperNumberControl({
   }, [commit, digits, disabled, max, min, onDraftChange, step, value]);
 
   return (
-    <div className="parameter-stepper-control">
+    <div className="parameter-stepper-control" data-control-id={controlId}>
       <button
         aria-label="减少数值"
         className="parameter-stepper-button"
         disabled={disabled || value <= min}
-        onClick={() => stepBy(-1)}
         type="button"
+        onClick={() => stepBy(-1)}
       >
         -
       </button>
@@ -298,11 +382,11 @@ function StepperNumberControl({
         type="text"
         value={draftText}
         onBlur={() => commit()}
-        onFocus={() => setIsEditing(true)}
+        onFocus={() => emitEditing(true)}
         onChange={(event) => {
           draftTextRef.current = event.target.value;
           setDraftText(event.target.value);
-          setIsEditing(true);
+          emitEditing(true);
           const parsed = Number(event.target.value);
           if (event.target.value.trim() !== "" && Number.isFinite(parsed)) {
             onDraftChange?.(clampNumber(parsed, min, max));
@@ -314,12 +398,11 @@ function StepperNumberControl({
           }
         }}
       />
-      <button
+      <button type="button"
         aria-label="增加数值"
         className="parameter-stepper-button"
         disabled={disabled || value >= max}
         onClick={() => stepBy(1)}
-        type="button"
       >
         +
       </button>
@@ -361,7 +444,8 @@ export function ParameterNumberControl({
   applyMode = "save",
   riskLevel = "normal",
   onDraftChange,
-  onCommit
+  onCommit,
+  onEditingChange
 }: {
   label: string;
   detail?: string;
@@ -379,6 +463,7 @@ export function ParameterNumberControl({
   riskLevel?: ParameterRiskLevel;
   onDraftChange?: (value: number) => void;
   onCommit: (value: number) => Promise<void> | void;
+  onEditingChange?: (editing: boolean) => void;
 }) {
   const controlId = useId();
   const digits = decimalPlacesForStep(step);
@@ -412,6 +497,8 @@ export function ParameterNumberControl({
           disabled={disabled}
           onDraftChange={onDraftChange}
           onCommit={onCommit}
+          onEditingChange={onEditingChange}
+          controlId={controlId}
         />
       ) : (
         <SliderNumberControl
@@ -428,6 +515,8 @@ export function ParameterNumberControl({
           disabled={disabled}
           onDraftChange={onDraftChange}
           onCommit={onCommit}
+          onEditingChange={onEditingChange}
+          controlId={controlId}
         />
       )}
       {hasRecommendedRange ? (
@@ -471,8 +560,8 @@ export function ParameterPresetControl({
             className={option.active ? "parameter-preset-option active" : "parameter-preset-option"}
             disabled={option.disabled}
             key={option.id}
-            onClick={() => void option.onSelect()}
             type="button"
+            onClick={() => void option.onSelect()}
           >
             <b>{option.label}</b>
             <small>{option.detail}</small>
@@ -493,7 +582,8 @@ export function TextControl({
   riskLevel = "normal",
   onDraftChange,
   onEnter,
-  onCommit
+  onCommit,
+  onEditingChange
 }: {
   label: string;
   detail?: string;
@@ -505,16 +595,42 @@ export function TextControl({
   onDraftChange?: (value: string) => void;
   onEnter?: () => Promise<void> | void;
   onCommit: (value: string) => Promise<void> | void;
+  onEditingChange?: (editing: boolean) => void;
 }) {
   const controlId = useId();
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  const [isEditing, setIsEditing] = useState(false);
+  const lastExternalValueRef = useRef(value);
+  const emitEditing = useCallback(
+    (next: boolean) => {
+      if (isEditing !== next) {
+        setIsEditing(next);
+        onEditingChange?.(next);
+      }
+    },
+    [isEditing, onEditingChange]
+  );
+  useEffect(() => {
+    const externalChanged = !Object.is(lastExternalValueRef.current, value);
+    if (!externalChanged) {
+      return;
+    }
+    lastExternalValueRef.current = value;
+    if (isEditing) {
+      // Defer external sync so partial frames don't clobber an in-flight text edit.
+      return;
+    }
+    setDraft(value);
+  }, [isEditing, value]);
   const commit = useCallback(() => {
     const next = draft.trim();
     if (next !== value) {
       void onCommit(next);
     }
-  }, [draft, onCommit, value]);
+    // Re-align with latest external value (mirrors StepperNumberControl).
+    setDraft(lastExternalValueRef.current);
+    emitEditing(false);
+  }, [draft, emitEditing, onCommit, value]);
 
   return (
     <div className={`parameter-control-field parameter-control-text parameter-risk-${riskLevel}`}>
@@ -534,8 +650,10 @@ export function TextControl({
         onBlur={commit}
         onChange={(event) => {
           setDraft(event.target.value);
+          emitEditing(true);
           onDraftChange?.(event.target.value);
         }}
+        onFocus={() => emitEditing(true)}
         onKeyDown={(event) => {
           if (event.key !== "Enter") {
             return;
@@ -603,20 +721,44 @@ export function InlineNumberControl({
   ariaLabel,
   disabled = false,
   digits = 0,
-  onCommit
+  onCommit,
+  onEditingChange
 }: {
   value: number;
   ariaLabel: string;
   disabled?: boolean;
   digits?: number;
   onCommit: (value: number) => Promise<void> | void;
+  onEditingChange?: (editing: boolean) => void;
 }) {
   const [draft, setDraft] = useState(() => formatNumberDraft(value, digits));
-  useEffect(() => setDraft(formatNumberDraft(value, digits)), [digits, value]);
+  const [isEditing, setIsEditing] = useState(false);
+  const lastExternalValueRef = useRef(value);
+  const emitEditing = useCallback(
+    (next: boolean) => {
+      if (isEditing !== next) {
+        setIsEditing(next);
+        onEditingChange?.(next);
+      }
+    },
+    [isEditing, onEditingChange]
+  );
+  useEffect(() => {
+    const externalChanged = !Object.is(lastExternalValueRef.current, value);
+    if (!externalChanged) {
+      return;
+    }
+    lastExternalValueRef.current = value;
+    if (isEditing) {
+      return;
+    }
+    setDraft(formatNumberDraft(value, digits));
+  }, [digits, isEditing, value]);
   const commit = useCallback(() => {
     const parsed = Number(draft);
     if (!Number.isFinite(parsed)) {
-      setDraft(formatNumberDraft(value, digits));
+      setDraft(formatNumberDraft(lastExternalValueRef.current, digits));
+      emitEditing(false);
       return;
     }
     const next = digits === 0 ? Math.round(parsed) : Number(parsed.toFixed(digits));
@@ -624,7 +766,9 @@ export function InlineNumberControl({
     if (next !== value) {
       void onCommit(next);
     }
-  }, [digits, draft, onCommit, value]);
+    setDraft(formatNumberDraft(lastExternalValueRef.current, digits));
+    emitEditing(false);
+  }, [digits, draft, emitEditing, onCommit, value]);
 
   return (
     <input
@@ -635,7 +779,11 @@ export function InlineNumberControl({
       type="text"
       value={draft}
       onBlur={commit}
-      onChange={(event) => setDraft(event.target.value)}
+      onChange={(event) => {
+        setDraft(event.target.value);
+        emitEditing(true);
+      }}
+      onFocus={() => emitEditing(true)}
       onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
     />
   );
@@ -645,21 +793,46 @@ export function InlineTextControl({
   value,
   placeholder,
   ariaLabel,
-  onCommit
+  onCommit,
+  onEditingChange
 }: {
   value: string;
   placeholder: string;
   ariaLabel: string;
   onCommit: (value: string) => Promise<void> | void;
+  onEditingChange?: (editing: boolean) => void;
 }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+  const [isEditing, setIsEditing] = useState(false);
+  const lastExternalValueRef = useRef(value);
+  const emitEditing = useCallback(
+    (next: boolean) => {
+      if (isEditing !== next) {
+        setIsEditing(next);
+        onEditingChange?.(next);
+      }
+    },
+    [isEditing, onEditingChange]
+  );
+  useEffect(() => {
+    const externalChanged = !Object.is(lastExternalValueRef.current, value);
+    if (!externalChanged) {
+      return;
+    }
+    lastExternalValueRef.current = value;
+    if (isEditing) {
+      return;
+    }
+    setDraft(value);
+  }, [isEditing, value]);
   const commit = useCallback(() => {
     const next = draft.trim();
     if (next !== value) {
       void onCommit(next);
     }
-  }, [draft, onCommit, value]);
+    setDraft(lastExternalValueRef.current);
+    emitEditing(false);
+  }, [draft, emitEditing, onCommit, value]);
 
   return (
     <input
@@ -667,7 +840,11 @@ export function InlineTextControl({
       value={draft}
       placeholder={placeholder}
       onBlur={commit}
-      onChange={(event) => setDraft(event.target.value)}
+      onChange={(event) => {
+        setDraft(event.target.value);
+        emitEditing(true);
+      }}
+      onFocus={() => emitEditing(true)}
       onKeyDown={(event) => event.key === "Enter" && event.currentTarget.blur()}
     />
   );

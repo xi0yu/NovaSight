@@ -1,18 +1,32 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { NovaIcon } from "../../components/visual";
-import { trapDialogTabKey } from "./dialogFocus";
+import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
+
+export type ActionConfirmationField = {
+  key: string;
+  label: string;
+  current: string;
+  recommended: string;
+  selected: boolean;
+};
 
 export type ActionConfirmationRequest = {
   eyebrow: string;
   title: string;
   description: string;
   details?: string[];
+  // Optional field-level diff. When present the dialog renders one row per
+  // field with a checkbox; the user picks which to apply. Used for bulk
+  // recommendations (e.g. kmNet defaults) where a blanket apply forces the
+  // user to accept all-or-nothing. `onConfirm` receives the current set of
+  // selected field keys (empty array if none are ticked).
+  fields?: ActionConfirmationField[];
   confirmLabel: string;
   cancelLabel?: string;
   danger?: boolean;
   handoffOnConfirm?: boolean;
-  onConfirm: () => void | boolean | Promise<void | boolean>;
+  onConfirm: (selectedKeys?: string[]) => void | boolean | Promise<void | boolean>;
 };
 
 export function ActionConfirmationDialog({
@@ -26,7 +40,7 @@ export function ActionConfirmationDialog({
   busy: boolean;
   error?: string | null;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: (selectedKeys?: string[]) => void;
 }) {
   const titleId = useId();
   const dialogRef = useRef<HTMLElement | null>(null);
@@ -37,9 +51,8 @@ export function ActionConfirmationDialog({
 
   useEffect(() => {
     if (!request) return undefined;
+    acquireBodyScrollLock();
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
     const frame = window.requestAnimationFrame(() => dialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !busyRef.current) {
@@ -54,11 +67,44 @@ export function ActionConfirmationDialog({
     document.addEventListener("keydown", onKeyDown, { capture: true });
     return () => {
       window.cancelAnimationFrame(frame);
-      document.body.style.overflow = previousOverflow;
+      releaseBodyScrollLock();
       document.removeEventListener("keydown", onKeyDown, { capture: true });
       previousFocus?.focus();
     };
   }, [request]);
+
+  // Local toggle state for the optional field picker. The parent provides
+  // the initial `selected` value; the dialog owns the live state so toggles
+  // don't round-trip through React state and re-create the request.
+  // `fields` is hoisted so the early-return `if (!request) return null`
+  // doesn't lose the reference; we re-read `request?.fields` when needed.
+  const [fieldSelection, setFieldSelection] = useState<Record<string, boolean>>(() => {
+    const initial: Record<string, boolean> = {};
+    for (const field of request?.fields ?? []) {
+      initial[field.key] = field.selected;
+    }
+    return initial;
+  });
+  useEffect(() => {
+    // Resync when a new request replaces the previous one (e.g. user opens
+    // the dialog again with different defaults).
+    const next: Record<string, boolean> = {};
+    for (const field of request?.fields ?? []) {
+      next[field.key] = field.selected;
+    }
+    setFieldSelection(next);
+  }, [request]);
+
+  // When the request has no `fields`, the selectedKeys argument is irrelevant.
+  // When `fields` is present, pass the current selection to the parent so the
+  // parent can decide which subset of the bulk apply to execute.
+  const getSelectedKeys = (): string[] => {
+    const currentFields = request?.fields;
+    if (!currentFields?.length) return [];
+    return currentFields
+      .map((item) => item.key)
+      .filter((key) => fieldSelection[key] ?? request?.fields?.find((f) => f.key === key)?.selected ?? false);
+  };
 
   if (!request) return null;
 
@@ -93,16 +139,45 @@ export function ActionConfirmationDialog({
             {request.details.map((detail) => <li key={detail}>{detail}</li>)}
           </ul>
         ) : null}
+        {request.fields?.length ? (
+          <ul className="action-confirmation-fields" role="group" aria-label="可选应用字段">
+            {request.fields.map((field) => {
+              const checked = fieldSelection[field.key] ?? field.selected;
+              return (
+                <li key={field.key}>
+                  <label className={checked ? "selected" : ""}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={busy}
+                      onChange={() => {
+                        setFieldSelection((prev) => ({
+                          ...prev,
+                          [field.key]: !checked
+                        }));
+                      }}
+                    />
+                    <span className="action-confirmation-field-label">{field.label}</span>
+                    <span className="action-confirmation-field-diff">
+                      <s>{field.current}</s>
+                      <span aria-hidden="true">→</span>
+                      <b>{field.recommended}</b>
+                    </span>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
         {error ? <p className="action-confirmation-error" role="alert">{error}</p> : null}
         <footer>
           <button className="console-button" disabled={busy} onClick={onCancel} type="button">
             {request.cancelLabel ?? "取消"}
           </button>
-          <button
+          <button type="button"
             className={`console-button ${request.danger ? "danger" : "primary"}`}
             disabled={busy}
-            onClick={onConfirm}
-            type="button"
+            onClick={() => onConfirm(getSelectedKeys())}
           >
             {busy ? "正在处理…" : request.confirmLabel}
           </button>

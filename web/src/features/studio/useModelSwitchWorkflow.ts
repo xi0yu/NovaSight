@@ -21,7 +21,7 @@ import type { ModelSwitchDialogStatus } from "../models/ModelSwitchDialog";
 import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import type { ActionConfirmationRequest } from "./ActionConfirmationDialog";
-import { trapDialogTabKey } from "./dialogFocus";
+import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
 
 const MODEL_SWITCH_STAGE_COUNT = 5;
 
@@ -87,9 +87,8 @@ export function useModelSwitchWorkflow({
     if (!dialogOpen) {
       return undefined;
     }
-    const previousOverflow = document.body.style.overflow;
+    acquireBodyScrollLock();
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    document.body.style.overflow = "hidden";
     window.requestAnimationFrame(() => dialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && dialogStatus !== "running") {
@@ -100,7 +99,7 @@ export function useModelSwitchWorkflow({
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.body.style.overflow = previousOverflow;
+      releaseBodyScrollLock();
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };

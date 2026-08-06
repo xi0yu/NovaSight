@@ -21,7 +21,8 @@ const STATE_ICONS: Record<ProductConfigState, NovaIconName> = {
   saved: "save",
   restart: "restart",
   missing: "triangle-alert",
-  paused: "pause-output"
+  paused: "pause-output",
+  applying: "restart"
 };
 
 const STATE_LABELS: Record<ProductConfigState, string> = {
@@ -29,7 +30,8 @@ const STATE_LABELS: Record<ProductConfigState, string> = {
   saved: "已保存",
   restart: "待重启",
   missing: "缺失",
-  paused: "暂停"
+  paused: "暂停",
+  applying: "正在应用"
 };
 
 const TONE_CLASSES: Record<ProductConfigState, "ready" | "waiting" | "blocked"> = {
@@ -37,7 +39,11 @@ const TONE_CLASSES: Record<ProductConfigState, "ready" | "waiting" | "blocked"> 
   saved: "waiting",
   restart: "blocked",
   missing: "blocked",
-  paused: "waiting"
+  paused: "waiting",
+  // Transient state while a write is in flight; same tone as "waiting"
+  // (informational) rather than "blocked" (action required) so users
+  // don't read it as a hard error.
+  applying: "waiting"
 };
 
 function ProductConfigItemCard({
@@ -68,11 +74,10 @@ function ProductConfigItemCard({
         <small>{item.evidence}</small>
       </div>
       {item.action ? (
-        <button
+        <button type="button"
           className="product-config-profile-action"
           disabled={busy}
           onClick={() => onAction(item.action as ProductConfigAction)}
-          type="button"
         >
           {item.actionLabel}
         </button>

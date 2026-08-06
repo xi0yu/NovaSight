@@ -56,22 +56,20 @@ export function LaunchReadinessPanel({
 
         <div className="launch-readiness-actions">
           {readiness.primaryAction ? (
-            <button
+            <button type="button"
               className="console-button primary"
               disabled={busy}
               onClick={() => onAction(readiness.primaryAction as LaunchReadinessAction)}
-              type="button"
             >
               <NovaIcon name={readiness.primaryAction === "start-mainline" ? "start" : "forward"} size={16} />
               {readiness.primaryActionLabel}
             </button>
           ) : null}
           {readiness.secondaryAction ? (
-            <button
+            <button type="button"
               className="console-button"
               disabled={busy}
               onClick={() => onAction(readiness.secondaryAction as LaunchReadinessAction)}
-              type="button"
             >
               <NovaIcon name="settings" size={16} />
               {readiness.secondaryActionLabel}
@@ -97,11 +95,10 @@ export function LaunchReadinessPanel({
                 <small>{item.evidence}</small>
               </div>
               {item.action ? (
-                <button
+                <button type="button"
                   className="launch-readiness-step-action"
                   disabled={busy}
                   onClick={() => onAction(item.action as LaunchReadinessAction)}
-                  type="button"
                 >
                   {item.actionLabel}
                 </button>

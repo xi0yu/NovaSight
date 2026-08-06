@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import { memo, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
 import mannequinTarget from "../../assets/aim-target/mannequin-target-v2.webp";
 import { ParameterNumberControl } from "./StudioControls";
@@ -27,10 +27,16 @@ type AimTargetRangeProps = {
   onCommit: (role: AimRole, ratio: number) => void | Promise<void>;
 };
 
-export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTargetRangeProps) {
+export const AimTargetRange = memo(function AimTargetRange({ disabled = false, ratios, onCommit }: AimTargetRangeProps) {
   const roleRangeRefs = useRef<Partial<Record<AimRole, HTMLDivElement | null>>>({});
   const draggingRef = useRef<AimRole | null>(null);
   const [draft, setDraft] = useState(ratios);
+  // Mirror of the latest draft so the keyDown handler can read fresh values
+  // on rapid keypresses without waiting for React to commit a re-render.
+  // Without this, holding Arrow reads `draft[role]` from a stale closure
+  // and the slider visibly jumps back to the previous value between presses.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
 
   useEffect(() => {
     if (draggingRef.current === null) {
@@ -41,13 +47,17 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
   const ratioFromPointer = (role: AimRole, clientY: number): number => {
     const rect = roleRangeRefs.current[role]?.getBoundingClientRect();
     if (!rect || rect.height <= 0) {
-      return draft[role];
+      return draftRef.current[role];
     }
     return clampRatio((clientY - rect.top) / rect.height);
   };
 
   const updateDraft = (role: AimRole, ratio: number) => {
-    setDraft((current) => ({ ...current, [role]: clampRatio(ratio) }));
+    setDraft((current) => {
+      const next = { ...current, [role]: clampRatio(ratio) };
+      draftRef.current = next;
+      return next;
+    });
   };
 
   const commit = (role: AimRole, ratio: number) => {
@@ -70,9 +80,12 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
       return;
     }
     const step = event.shiftKey ? 0.05 : 0.01;
+    // Read the current value from the ref, not the closure-captured `draft`,
+    // so rapid Arrow presses always advance from the latest committed value.
+    const current = draftRef.current[role];
     let next: number | null = null;
-    if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = draft[role] - step;
-    if (event.key === "ArrowDown" || event.key === "ArrowRight") next = draft[role] + step;
+    if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = current - step;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") next = current + step;
     if (event.key === "Home") next = 0;
     if (event.key === "End") next = 1;
     if (next === null) {
@@ -133,11 +146,18 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
                     aria-valuenow={Math.round(draft[role] * 100)}
                     className="aim-role-guide-handle"
                     disabled={disabled}
+                    type="button"
                     onKeyDown={(event) => handleKey(role, event)}
                     onPointerCancel={(event) => {
+                      // Don't reset to `ratios` here: the user has already
+                      // moved the handle to a new visual position. Snap-back
+                      // on cancel was the source of a flicker that fought
+                      // the parent's same-value short-circuit and the
+                      // P0-B drag guard. If a server value is needed the
+                      // outer useEffect will resync once the drag fully
+                      // ends (draggingRef.current === null).
                       draggingRef.current = null;
                       event.currentTarget.releasePointerCapture(event.pointerId);
-                      setDraft(ratios);
                     }}
                     onPointerDown={(event) => beginDrag(role, event)}
                     onPointerMove={(event) => {
@@ -154,7 +174,6 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
                       }
                     }}
                     role="slider"
-                    type="button"
                   />
                   <span className="aim-role-guide-line after" aria-hidden="true" />
                 </div>
@@ -195,4 +214,4 @@ export function AimTargetRange({ disabled = false, ratios, onCommit }: AimTarget
       </div>
     </section>
   );
-}
+});

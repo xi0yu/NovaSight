@@ -56,12 +56,11 @@ export function ThemeToggle() {
         {THEME_OPTIONS.map((option) => {
           const selected = option.id === theme;
           return (
-            <button
+            <button type="button"
               aria-pressed={selected}
               className="theme-option"
               key={option.id}
               onClick={() => selectTheme(option.id)}
-              type="button"
             >
               <span className={`theme-option-art theme-option-art-${option.id}`} aria-hidden="true" />
               <span className="theme-option-copy">

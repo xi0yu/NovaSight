@@ -50,7 +50,7 @@ import {
   streamUrl,
   updateRuntimeConfig,
 } from "../../api";
-import { reportError, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
+import { reportError, reportInfo, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { NovaIcon, StatusBadge, ThemeGallery, ThemeToggle } from "../../components/visual";
@@ -94,7 +94,7 @@ import {
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
 import { StudioPageHeader } from "./StudioPageHeader";
 import { KvCard, Metric, SectionTitle } from "./StudioPresentation";
-import { trapDialogTabKey } from "./dialogFocus";
+import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
 import {
   buildLaunchReadiness,
   type LaunchReadinessAction
@@ -738,6 +738,14 @@ export function StudioConsoleView({
   const [previewActiveOverride, setPreviewActiveOverride] = useState<boolean | null>(null);
   const [previewTogglePending, setPreviewTogglePending] = useState(false);
   const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtimeConfig));
+  // Tracks the id of a control currently in an interactive edit (slider drag,
+  // stepper spin, text input). When non-null, the runtimeConfig -> configDraft
+  // sync effect short-circuits to avoid stealing the user's draft value during
+  // high-frequency WebSocket partial frames.
+  const [draggingControlId, setDraggingControlId] = useState<string | null>(null);
+  const handleParameterEditingChange = useCallback((editing: boolean) => {
+    setDraggingControlId(editing ? "__editing__" : null);
+  }, []);
   const [configSchema, setConfigSchema] = useState<ConfigSchemaResponse | null>(null);
   const [configDialogDirty, setConfigDialogDirty] = useState(false);
   const [configDialogSaving, setConfigDialogSaving] = useState(false);
@@ -749,12 +757,37 @@ export function StudioConsoleView({
   const runtimeConfigLatestRef = useRef<RuntimeConfig | null>(runtimeConfig);
   const activeConfigDialogRef = useRef<ConfigDialogId | null>(null);
   const configDialogBaselineRef = useRef<RuntimeConfig | null>(null);
+  const confirmationBusyRef = useRef(false);
+  // Per-call AbortController for kmNet connect/disconnect. If the user
+  // rapidly toggles "连接" / "断开", the previous in-flight call is
+  // aborted so the backend doesn't apply a stale request.
+  const kmnetAbortControllerRef = useRef<AbortController | null>(null);
   const loadedModelProjectIdRef = useRef<number | "">("");
   const loadedModelVersionIdRef = useRef<number | "">("");
-  const preferLatestModelVersionRef = useRef(false);
   const pendingConfigWritesRef = useRef(0);
   const configWriteSeqRef = useRef(0);
   const configWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // Monotonic sequence for any client-initiated runtime-config write attempt
+  // (field edit, section save, dialog save, kmNet gate flip, config import,
+  // revision-conflict recovery). Used by `finalizeRuntimeConfigWrite` to
+  // guarantee that a slow response from one path cannot overwrite a fresher
+  // response from a newer write. The server-pushed config effect (line
+  // ~1361) bypasses this guard because it's already the canonical state.
+  const runtimeConfigWriteSeqRef = useRef(0);
+  const beginRuntimeConfigWrite = useCallback(() => ++runtimeConfigWriteSeqRef.current, []);
+  const finalizeRuntimeConfigWrite = useCallback(
+    (seq: number, config: RuntimeConfig) => {
+      if (seq !== runtimeConfigWriteSeqRef.current) {
+        // A newer write attempt has started; drop this stale response.
+        return;
+      }
+      runtimeConfigLatestRef.current = config;
+      configDraftRef.current = config;
+      setConfigDraft(config);
+      onRuntimeConfigChange(config);
+    },
+    [onRuntimeConfigChange]
+  );
   const classConfigDialogRef = useRef<HTMLElement | null>(null);
   const targetWeightsDialogRef = useRef<HTMLElement | null>(null);
   const errorCenterDialogRef = useRef<HTMLElement | null>(null);
@@ -883,20 +916,19 @@ export function StudioConsoleView({
     }
 
     dialogSavingRef.current = true;
+    pendingConfigWritesRef.current += 1;
     setConfigDialogSaving(true);
     setBusy("config-dialog.save");
     setDialogSaveError(null);
     setLocalError(null);
     try {
+      const seq = beginRuntimeConfigWrite();
       const result = await updateRuntimeConfig(draft);
       const applied = normalizeRuntimeConfig(result.config);
       if (result.schema) {
         applyConfigSchema(result.schema);
       }
-      runtimeConfigLatestRef.current = applied;
-      configDraftRef.current = applied;
-      setConfigDraft(applied);
-      onRuntimeConfigChange(applied);
+      finalizeRuntimeConfigWrite(seq, applied);
       reportSuccess(
         "配置已保存",
         result.restart_required
@@ -914,8 +946,9 @@ export function StudioConsoleView({
       dialogSavingRef.current = false;
       setConfigDialogSaving(false);
       setBusy(null);
+      pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
     }
-  }, [applyConfigSchema, finishConfigDialog, onRuntimeConfigChange]);
+  }, [applyConfigSchema, beginRuntimeConfigWrite, finalizeRuntimeConfigWrite, finishConfigDialog]);
 
   const requestDismissConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
     if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
@@ -937,29 +970,24 @@ export function StudioConsoleView({
       return;
     }
 
-    setConfirmationRequest({
-      eyebrow: "未保存修改",
-      title: "放弃这次参数修改？",
-      description: "关闭或按 Esc 不再隐式保存。只有点击“保存并关闭”才会把草稿写入 NovaSight 服务。",
-      details: [
-        "放弃后，本次弹窗内的修改会恢复为打开前的配置。",
-        "运行中的采集、推理和控制主链不会因此改变。"
-      ],
-      confirmLabel: "放弃修改",
-      cancelLabel: "继续编辑",
-      danger: true,
-      onConfirm: () => {
-        const restored = structuredClone(baseline) as RuntimeConfig;
-        configDraftRef.current = restored;
-        setConfigDraft(restored);
-        finishConfigDialog(dialog);
-      }
-    });
+    // The user already chose to close the dialog. Don't ask again — the
+    // explicit "保存并关闭" button is the safe path; closing via Esc/backdrop
+    // is the explicit "放弃" path. Surface a non-blocking info toast so the
+    // user can immediately reopen if they change their mind.
+    configDraftRef.current = baseline;
+    setConfigDraft(baseline);
+    finishConfigDialog(dialog);
+    reportInfo("已放弃修改", "本弹窗内的草稿已丢弃，可重新打开继续编辑。", "config-dialog");
+    return;
   }, [finishConfigDialog]);
 
   const confirmPendingAction = useCallback(async () => {
     const request = confirmationRequest;
-    if (!request || confirmationBusy) return;
+    // Synchronous mutex: state-based `confirmationBusy` only updates on the
+    // next React commit, so a double-tap inside the same event loop tick can
+    // see `false` both times. The ref gives us a true pre-commit guard.
+    if (!request || confirmationBusyRef.current) return;
+    confirmationBusyRef.current = true;
     setConfirmationError(null);
     setConfirmationBusy(true);
     try {
@@ -975,9 +1003,10 @@ export function StudioConsoleView({
       setConfirmationError(message);
       setLocalError((current) => current ?? `当前操作未完成：${message}`);
     } finally {
+      confirmationBusyRef.current = false;
       setConfirmationBusy(false);
     }
-  }, [confirmationBusy, confirmationRequest]);
+  }, [confirmationRequest]);
 
   useEffect(() => {
     setConfirmationError(null);
@@ -1028,10 +1057,12 @@ export function StudioConsoleView({
     if (!errorCenterOpen) {
       return undefined;
     }
-    const previousOverflow = document.body.style.overflow;
+    acquireBodyScrollLock();
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    document.body.style.overflow = "hidden";
-    window.requestAnimationFrame(() => errorCenterDialogRef.current?.focus());
+    // Save the frame id and cancel on cleanup so a fast close (Escape or
+    // backdrop click immediately after open) doesn't yank focus back into the
+    // just-closed dialog on the next frame.
+    const focusFrame = window.requestAnimationFrame(() => errorCenterDialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setErrorCenterOpen(false);
@@ -1041,7 +1072,8 @@ export function StudioConsoleView({
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.body.style.overflow = previousOverflow;
+      window.cancelAnimationFrame(focusFrame);
+      releaseBodyScrollLock();
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };
@@ -1051,10 +1083,9 @@ export function StudioConsoleView({
     if (!classConfigDialogOpen) {
       return undefined;
     }
-    const previousOverflow = document.body.style.overflow;
+    acquireBodyScrollLock();
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    document.body.style.overflow = "hidden";
-    window.requestAnimationFrame(() => classConfigDialogRef.current?.focus());
+    const focusFrame = window.requestAnimationFrame(() => classConfigDialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (!dialogSavingRef.current) {
@@ -1066,20 +1097,29 @@ export function StudioConsoleView({
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.body.style.overflow = previousOverflow;
+      window.cancelAnimationFrame(focusFrame);
+      releaseBodyScrollLock();
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };
   }, [classConfigDialogOpen, requestDismissConfigDialog]);
 
   useEffect(() => {
+    return () => {
+      // Abort any in-flight kmNet connect/disconnect on unmount so a
+      // navigated-away component doesn't keep hitting the backend.
+      kmnetAbortControllerRef.current?.abort();
+      kmnetAbortControllerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!targetWeightsDialogOpen) {
       return undefined;
     }
-    const previousOverflow = document.body.style.overflow;
+    acquireBodyScrollLock();
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    document.body.style.overflow = "hidden";
-    window.requestAnimationFrame(() => targetWeightsDialogRef.current?.focus());
+    const focusFrame = window.requestAnimationFrame(() => targetWeightsDialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (!dialogSavingRef.current) {
@@ -1091,7 +1131,8 @@ export function StudioConsoleView({
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
-      document.body.style.overflow = previousOverflow;
+      window.cancelAnimationFrame(focusFrame);
+      releaseBodyScrollLock();
       document.removeEventListener("keydown", onKeyDown);
       previousFocus?.focus();
     };
@@ -1248,20 +1289,27 @@ export function StudioConsoleView({
   }, [activeDetectionProfile]);
   const aimConfig = nestedRecord(controlConfig, "aim");
   const rawAimRoleRatios = nestedRecord(aimConfig, "role_y_ratios");
-  const aimRoleRatios: AimRoleRatios = {
-    head: clampNumber(readNumber(rawAimRoleRatios.head, 0.22), 0, 1),
-    body: clampNumber(readNumber(rawAimRoleRatios.body, 0.22), 0, 1),
-    other: clampNumber(
-      readNumber(
+  const rustOtherAimRatio = readNumber(
+    rustControlPlane ? rustPipelineConfig.target_aim_y_ratio : undefined,
+    0.22
+  );
+  // Memoize so downstream `===` checks (e.g. onEditingChange guards, the
+  // P0-A short-circuit, the Slider draftValue external-change detection) stay
+  // stable across partial WebSocket frames that don't actually change aim.
+  const aimRoleRatios: AimRoleRatios = useMemo(
+    () => ({
+      head: clampNumber(readNumber(rawAimRoleRatios.head, 0.22), 0, 1),
+      body: clampNumber(readNumber(rawAimRoleRatios.body, 0.22), 0, 1),
+      other: clampNumber(
         rustControlPlane
-          ? rustPipelineConfig.target_aim_y_ratio
-          : rawAimRoleRatios.other,
-        0.22
-      ),
-      0,
-      1
-    )
-  };
+          ? rustOtherAimRatio
+          : readNumber(rawAimRoleRatios.other, 0.22),
+        0,
+        1
+      )
+    }),
+    [rawAimRoleRatios, rustControlPlane, rustOtherAimRatio]
+  );
   const classRoleProfiles = profileRoleRecords(aimConfig.class_roles);
   const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? {};
   const targetFovRadiusPx = readNumber(rustPipelineConfig.target_fov_radius_px, 180);
@@ -1335,10 +1383,18 @@ export function StudioConsoleView({
     if (!runtimeConfig || pendingConfigWritesRef.current > 0 || activeConfigDialogRef.current !== null) {
       return;
     }
+    // Skip syncing while the user is actively editing a parameter; the
+    // per-frame partial WebSocket frames would otherwise overwrite the draft.
+    if (draggingControlId !== null) {
+      return;
+    }
     const next = normalizeRuntimeConfig(runtimeConfig);
     configDraftRef.current = next;
-    setConfigDraft(next);
-  }, [runtimeConfig]);
+    // Same-value short-circuit: when the partial frame carries no real
+    // configuration change, keep the existing reference so downstream
+    // controlled components and memos stay stable.
+    setConfigDraft((prev) => (runtimeConfigValuesEqual(prev, next) ? prev : next));
+  }, [runtimeConfig, draggingControlId]);
   const kmnetConnected = kmnetStatus.connected === true;
   const kmnetRuntimeConnected = kmnetStatus.runtime_connected === true;
   const kmnetConnecting = kmnetStatus.connecting === true;
@@ -1356,6 +1412,23 @@ export function StudioConsoleView({
   const effectiveConfigRevision = readNumber(runtime?.config?.effective_version, desiredConfigRevision);
   const configRestartRequired = runtime?.config?.restart_required === true
     || desiredConfigRevision !== effectiveConfigRevision;
+  // `pendingConfigWritesRef.current` is bumped while a client-initiated
+  // runtime config write is in flight (field edit, dialog save, section
+  // save, kmNet gate flip, config import). Surfacing this as a derived
+  // signal lets the profile panel show "正在应用" instead of flickering
+  // between "等待重启" and "已生效" during the desired→effective window.
+  const configApplyPending = pendingConfigWritesRef.current > 0;
+  // Mirror of the ref for React-driven re-renders. The ref remains the
+  // synchronous guard in the setConfigDraft effect; this state exists only
+  // so the profile panel and inline apply labels pick up the change.
+  const [pendingApplyTick, setPendingApplyTick] = useState(0);
+  useEffect(() => {
+    if (pendingConfigWritesRef.current > 0 && pendingApplyTick === 0) {
+      setPendingApplyTick(1);
+    } else if (pendingConfigWritesRef.current === 0 && pendingApplyTick !== 0) {
+      setPendingApplyTick(0);
+    }
+  });
   const kmnetRestartRequired = kmnetStatus.restart_required === true;
   const kmnetConfigurationState = readString(
     kmnetStatus.configuration_state,
@@ -1420,9 +1493,11 @@ export function StudioConsoleView({
     ? "等待真实帧"
     : roiSettingsApplied
       ? "已生效"
-      : configRestartRequired
-        ? "已保存 · 等待重启"
-        : "运行区域不同";
+      : configApplyPending
+        ? "正在应用…"
+        : configRestartRequired
+          ? "已保存 · 等待重启"
+          : "运行区域不同";
   const runtimePostprocessAvailable = runtimeMainlineRunning
     && runtimeInference.loaded === true
     && Number.isFinite(runtimePostprocessConfidence)
@@ -1434,9 +1509,11 @@ export function StudioConsoleView({
     ? "主链未装载"
     : postprocessSettingsApplied
       ? "已生效"
-      : configRestartRequired
-        ? "已保存 · 等待重启"
-        : "运行值不同";
+      : configApplyPending
+        ? "正在应用…"
+        : configRestartRequired
+          ? "已保存 · 等待重启"
+          : "运行值不同";
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.kind === "engine" &&
@@ -1722,10 +1799,22 @@ export function StudioConsoleView({
     roiInputWidth > 0 && roiInputHeight > 0 && modelInputWidth > 0 && modelInputHeight > 0
       ? (modelInputWidth * modelInputHeight) / (roiInputWidth * roiInputHeight)
       : null;
+  // Split `artifact` (rebuilt wholesale on every supervisor publish — see
+  // crates/novasight-runtime/src/supervisor.rs:2037-2043) into its identity
+  // fields so the memo can stay stable across partial frames that don't
+  // actually change the active deployment. Authoritative schema:
+  // web/src/api.ts:73-81 + crates/novasight-store/src/model_catalog.rs:40-49.
+  const activeArtifact = activeModelPublished ? artifact ?? null : null;
+  const activeArtifactId = activeArtifact?.id ?? null;
+  const activeArtifactVersionId = activeArtifact?.version_id ?? null;
+  const activeArtifactKind = activeArtifact?.kind ?? null;
+  const activeArtifactPath = activeArtifact?.path ?? null;
+  const activeArtifactStatus = activeArtifact?.status ?? null;
   const productConfigProfile = useMemo(
     () => buildProductConfigProfile({
       runtimeRunning: runtimeMainlineRunning,
       configRestartRequired,
+      configApplyPending,
       desiredRevision: desiredConfigRevision,
       effectiveRevision: effectiveConfigRevision,
       captureConfigured: displayCaptureProfile !== null
@@ -1740,7 +1829,7 @@ export function StudioConsoleView({
       modelPublished: activeModelPublished,
       modelRuntimeLoaded: runtimeInference.loaded === true,
       modelName: activeModelName,
-      artifactLabel: artifact ? `${artifact.kind} · ${artifact.status}` : "",
+      artifactLabel: activeArtifact ? `${activeArtifact.kind} · ${activeArtifact.status}` : "",
       backendLabel: selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream 推理" : selectedRuntimeBackend,
       configuredBackendLabel: configuredInferenceBackend === "deepstream_nvinfer" ? "DeepStream 推理" : configuredInferenceBackend,
       modelInputLabel: modelInputWidth > 0 && modelInputHeight > 0
@@ -1765,8 +1854,13 @@ export function StudioConsoleView({
     [
       activeModelName,
       activeModelPublished,
-      artifact,
+      activeArtifactId,
+      activeArtifactVersionId,
+      activeArtifactKind,
+      activeArtifactPath,
+      activeArtifactStatus,
       capture?.device,
+      configApplyPending,
       configRestartRequired,
       configuredCaptureDevice,
       configuredInferenceBackend,
@@ -1956,7 +2050,6 @@ export function StudioConsoleView({
     const projectChanged = loadedModelProjectIdRef.current !== selectedModelProjectId;
     loadedModelProjectIdRef.current = selectedModelProjectId;
     if (projectChanged) {
-      preferLatestModelVersionRef.current = false;
       setModelVersions([]);
       setSelectedModelVersionId("");
       setModelArtifacts([]);
@@ -1968,12 +2061,10 @@ export function StudioConsoleView({
           return;
         }
         setModelVersions(items);
-        const preferLatest = preferLatestModelVersionRef.current;
-        preferLatestModelVersionRef.current = false;
         setSelectedModelVersionId((current) => {
-          if (preferLatest) {
-            return items[items.length - 1]?.id ?? "";
-          }
+          // Preserve the user's current version if it's still in the
+          // refreshed list; otherwise fall back to the active model
+          // version (if any) or the first available version.
           if (typeof current === "number" && items.some((item) => item.id === current)) {
             return current;
           }
@@ -2305,6 +2396,7 @@ export function StudioConsoleView({
       }
       const optimistic = options?.optimistic !== false;
       const writeSeq = ++configWriteSeqRef.current;
+      const runtimeSeq = beginRuntimeConfigWrite();
       pendingConfigWritesRef.current += 1;
       setDialogSaveError(null);
       const keepsEditorInteractive = section === "control" && key === "aim";
@@ -2329,11 +2421,16 @@ export function StudioConsoleView({
         if (result.schema) {
           applyConfigSchema(result.schema);
         }
-        // Always advance the canonical persisted revision. A newer optimistic
-        // edit may still own the visible draft, but the next queued transaction
-        // must never be built from an older revision.
-        runtimeConfigLatestRef.current = applied;
+        // Always advance the canonical persisted revision (guarded by the
+        // unified runtime write seq). A newer optimistic edit may still own
+        // the visible draft, but the next queued transaction must never be
+        // built from an older revision.
+        finalizeRuntimeConfigWrite(runtimeSeq, applied);
         if (writeSeq === configWriteSeqRef.current) {
+          // The optimistic seq still owns the visible draft; mirror the
+          // canonical value into the local refs/state without touching the
+          // runtime write seq again (the canonical update above is the one
+          // that bumps the visible draft for non-optimistic paths).
           configDraftRef.current = applied;
           setConfigDraft(applied);
           onRuntimeConfigChange(applied);
@@ -2345,8 +2442,12 @@ export function StudioConsoleView({
 
         reportError(err, { source: 'studio', title: '操作失败' });
         if (optimistic && writeSeq === configWriteSeqRef.current) {
-          configDraftRef.current = null;
-          setConfigDraft(null);
+          // Revert the visible draft to the canonical (pre-edit) state so the
+          // user doesn't see the whole form blank. If a newer optimistic
+          // edit has already taken over, leave its draft alone.
+          const revertTo = runtimeConfigLatestRef.current ?? cloneRuntimeConfig(runtimeConfig);
+          configDraftRef.current = revertTo;
+          setConfigDraft(revertTo);
         }
         if (options?.rethrow) {
           throw err;
@@ -2358,7 +2459,7 @@ export function StudioConsoleView({
         }
       }
     },
-    [applyConfigSchema, onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
+    [applyConfigSchema, beginRuntimeConfigWrite, finalizeRuntimeConfigWrite, onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
   );
 
   const requestOutputGateChange = useCallback((enabled: boolean) => {
@@ -2411,6 +2512,7 @@ export function StudioConsoleView({
         current[section] = nextSection as RuntimeConfig[string];
         return updateRuntimeConfig(current);
       };
+      const seq = beginRuntimeConfigWrite();
       const request = configWriteQueueRef.current.then(async () => {
         const current = cloneRuntimeConfig(runtimeConfigLatestRef.current);
         if (!current) {
@@ -2427,10 +2529,7 @@ export function StudioConsoleView({
           // canonical document and replay only this section's intended keys;
           // never resend an entire stale configuration.
           const latest = normalizeRuntimeConfig(await getRuntimeConfig());
-          runtimeConfigLatestRef.current = latest;
-          configDraftRef.current = latest;
-          setConfigDraft(latest);
-          onRuntimeConfigChange(latest);
+          finalizeRuntimeConfigWrite(seq, latest);
           return persistSection(latest);
         }
       });
@@ -2446,13 +2545,10 @@ export function StudioConsoleView({
       if (result.schema) {
         applyConfigSchema(result.schema);
       }
-      runtimeConfigLatestRef.current = applied;
-      configDraftRef.current = applied;
-      setConfigDraft(applied);
-      onRuntimeConfigChange(applied);
+      finalizeRuntimeConfigWrite(seq, applied);
       return result;
     },
-    [applyConfigSchema, onRuntimeConfigChange]
+    [applyConfigSchema, beginRuntimeConfigWrite, finalizeRuntimeConfigWrite, onRuntimeConfigChange]
   );
 
   const handleCenteredRoiSizeChange = useCallback(
@@ -2618,6 +2714,7 @@ export function StudioConsoleView({
       applyMode={parameter.applyMode ?? "live"}
       riskLevel={parameter.riskLevel}
       onCommit={(value) => updateControlPipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
+      onEditingChange={handleParameterEditingChange}
     />
   );
 
@@ -2668,6 +2765,7 @@ export function StudioConsoleView({
       applyMode={parameter.applyMode ?? "live"}
       riskLevel={parameter.riskLevel}
       onCommit={(value) => updatePipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
+      onEditingChange={handleParameterEditingChange}
     />
   );
 
@@ -2698,6 +2796,11 @@ export function StudioConsoleView({
       await clearCrosshairTemplate();
       setCrosshairPreviewKey(Date.now());
       setCrosshairMessage("准星模板已清除，控制基准已回退到几何中心。");
+      reportInfo(
+        "准星模板已清除",
+        "按 F8 重新采样并学习模板，可恢复固定 HUD 准星控制。",
+        "crosshair"
+      );
       await onRefresh();
     } catch (error) {
       const message = getErrorMessage(error);
@@ -2709,15 +2812,10 @@ export function StudioConsoleView({
   }, [onRefresh]);
 
   const requestClearCrosshair = useCallback(() => {
-    setConfirmationRequest({
-      eyebrow: "准星学习",
-      title: "清除当前准星模板？",
-      description: "清除后，控制基准会立即回退到 ROI 几何中心；以后需要重新采样并学习模板。",
-      details: ["采集、推理与目标跟踪不会停止。", "已学习的模板内容无法从 NovaSight 服务恢复。"],
-      confirmLabel: "确认清除模板",
-      danger: true,
-      onConfirm: performClearCrosshair
-    });
+    // No confirmation dialog: clearing the template is reversible by pressing
+    // F8 to re-learn, which is the same path the user would take after a
+    // confirm anyway. The success toast surfaces the F8 hint.
+    void performClearCrosshair();
   }, [performClearCrosshair]);
 
   useEffect(() => {
@@ -3033,51 +3131,98 @@ export function StudioConsoleView({
     persistClassProfiles
   ]);
 
-  const applyKmNetRecommended = useCallback(async () => {
-    setBusy("kmnet.defaults");
-    setLocalError(null);
-    try {
-      const result = await updateConfigSection("hardware", KMNET_RECOMMENDED);
-      const needsRestart = result?.restart_required;
-      setKmnetTestMessageTone(needsRestart ? "warning" : "success");
-      setKmnetTestMessage(
-        needsRestart
-          ? "kmNet 参数已保存；请重启 novasightd，使新的物理设备适配器生效。"
-          : "kmNet 参数已经是推荐值。"
-      );
-      await onRefresh();
-    } catch (err) {
-      setLocalError(`kmNet 推荐参数应用失败：${getErrorMessage(err)}`);
-
-      reportError(err, { source: 'studio', title: '操作失败' });
-      // An external writer may still win the optimistic revision check.
-      // Re-read the canonical revision instead of leaving the editor on its
-      // pre-transaction snapshot.
-      await onRefresh();
-    } finally {
-      setBusy(null);
-    }
-  }, [onRefresh, updateConfigSection]);
+  // Per-field apply: writes only the selected hardware keys. Used by the
+  // field-level confirmation picker so the user can keep some values
+  // unchanged instead of accepting a blanket "apply all recommended".
+  const applyKmNetSelected = useCallback(
+    async (selectedKeys: string[]) => {
+      setBusy("kmnet.defaults");
+      setLocalError(null);
+      const payload: Record<string, RuntimeConfigValue> = {};
+      for (const key of selectedKeys) {
+        const value = (KMNET_RECOMMENDED as Record<string, RuntimeConfigValue>)[key];
+        if (value !== undefined) {
+          payload[key] = value;
+        }
+      }
+      if (Object.keys(payload).length === 0) {
+        setBusy(null);
+        return;
+      }
+      try {
+        const result = await updateConfigSection("hardware", payload);
+        const needsRestart = result?.restart_required;
+        setKmnetTestMessageTone(needsRestart ? "warning" : "success");
+        setKmnetTestMessage(
+          needsRestart
+            ? `kmNet ${selectedKeys.length} 个字段已保存；请重启 novasightd，使新的物理设备适配器生效。`
+            : "kmNet 参数已经是推荐值。"
+        );
+        await onRefresh();
+      } catch (err) {
+        setLocalError(`kmNet 推荐参数应用失败：${getErrorMessage(err)}`);
+        reportError(err, { source: "studio", title: "操作失败" });
+        await onRefresh();
+      } finally {
+        setBusy(null);
+      }
+    },
+    [onRefresh, updateConfigSection]
+  );
 
   const requestApplyKmNetRecommended = useCallback(() => {
+    // Field-level picker: default-tick only the fields that actually differ
+    // from the current values, so the user can accept a partial diff without
+    // being forced into a blanket apply. The dialog owns the live selection
+    // state and reports the chosen keys back via the confirm callback.
+    const current: Record<string, unknown> = {
+      host: kmnetHost || "",
+      port: kmnetPort,
+      uuid: kmnetUuid || "",
+      monitor_port: kmnetMonitorPort,
+      auto_connect: kmnetAutoConnect
+    };
+    const fieldOrder: Array<{ key: string; label: string; recommended: unknown; format: (value: unknown) => string }> = [
+      { key: "host", label: "地址 host", recommended: KMNET_RECOMMENDED.host, format: (v) => String(v) },
+      { key: "port", label: "主控制端口 port", recommended: KMNET_RECOMMENDED.port, format: (v) => String(v) },
+      { key: "uuid", label: "UUID", recommended: KMNET_RECOMMENDED.uuid, format: (v) => String(v) },
+      { key: "monitor_port", label: "监听端口 monitor_port", recommended: KMNET_RECOMMENDED.monitor_port, format: (v) => String(v) },
+      { key: "auto_connect", label: "主链启动时连接设备 auto_connect", recommended: KMNET_RECOMMENDED.auto_connect, format: (v) => v ? "开启" : "关闭" }
+    ];
     setConfirmationRequest({
       eyebrow: "kmNet 配置",
-      title: "覆盖当前 kmNet 参数？",
-      description: "推荐参数会替换当前地址、端口、UUID、监听端口和自动连接设置。保存后通常需要重启 novasightd。",
-      details: [
-        `当前：${kmnetHost || "未填写"}:${kmnetPort || "未填写"} · UUID ${kmnetUuid || "未填写"}`,
-        `将改为：${KMNET_RECOMMENDED.host}:${KMNET_RECOMMENDED.port} · UUID ${KMNET_RECOMMENDED.uuid}`
-      ],
-      confirmLabel: "确认覆盖参数",
+      title: "应用 kmNet 推荐参数",
+      description: "勾选要替换的字段。保存后通常需要重启 novasightd；未勾选的字段保持原值。",
+      fields: fieldOrder.map((item) => ({
+        key: item.key,
+        label: item.label,
+        current: item.format(current[item.key]),
+        recommended: item.format(item.recommended),
+        selected: current[item.key] !== item.recommended
+      })),
+      confirmLabel: "应用勾选项",
       danger: true,
-      onConfirm: applyKmNetRecommended
+      onConfirm: (selectedKeys?: string[]) => {
+        const keys = selectedKeys ?? [];
+        if (keys.length === 0) {
+          reportInfo("未选择字段", "没有字段被勾选，未做修改。", "kmnet-defaults");
+          return;
+        }
+        void applyKmNetSelected(keys);
+      }
     });
-  }, [applyKmNetRecommended, kmnetHost, kmnetPort, kmnetUuid]);
+  }, [applyKmNetSelected, kmnetAutoConnect, kmnetHost, kmnetMonitorPort, kmnetPort, kmnetUuid]);
 
   const setKmNetConnection = useCallback(async (connect: boolean) => {
     setBusy(connect ? "kmnet.connect" : "kmnet.disconnect");
     setLocalError(null);
     setKmnetTestMessage("");
+    // Cancel any previous kmNet call still in flight so a rapid toggle
+    // doesn't leave the backend applying a stale request.
+    kmnetAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    kmnetAbortControllerRef.current = controller;
+    const signal = controller.signal;
     let physicalDisconnectCompleted = false;
     try {
       if (connect && !kmnetAutoConnect) {
@@ -3086,22 +3231,20 @@ export function StudioConsoleView({
         // Physical stop comes first. Persisting the fail-closed output gate is
         // still attempted afterwards, but a storage error cannot keep an
         // already requested device session alive.
-        await disconnectKmNet();
+        await disconnectKmNet(signal);
         physicalDisconnectCompleted = true;
         if (outputEnabled) {
+          const seq = beginRuntimeConfigWrite();
           const gateResult = await setRuntimeOutputGate(false);
           const applied = normalizeRuntimeConfig(gateResult.config);
-          runtimeConfigLatestRef.current = applied;
-          configDraftRef.current = applied;
-          setConfigDraft(applied);
-          onRuntimeConfigChange(applied);
+          finalizeRuntimeConfigWrite(seq, applied);
         }
         setKmnetTestMessageTone("success");
         setKmnetTestMessage(
           "kmNet 已断开；采集、推理与目标计算继续运行，物理偏移输出已关闭。"
         );
       } else {
-        await connectKmNet();
+        await connectKmNet(signal);
         setKmnetTestMessageTone("success");
         setKmnetTestMessage("kmNet 连接成功；若偏移输出已允许，新的实时命令现在可以发送。");
       }
@@ -3122,7 +3265,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [kmnetAutoConnect, onRefresh, onRuntimeConfigChange, outputEnabled]);
+  }, [beginRuntimeConfigWrite, finalizeRuntimeConfigWrite, kmnetAutoConnect, onRefresh, outputEnabled]);
 
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
@@ -3193,14 +3336,12 @@ export function StudioConsoleView({
       danger: true,
       onConfirm: async () => {
         setBusy("import");
+        const seq = beginRuntimeConfigWrite();
         const executeImport = async (): Promise<boolean> => {
           try {
             const canonical = normalizeRuntimeConfig(await getRuntimeConfig());
             if (!runtimeConfigValuesEqual(canonical.revision, baseline.revision)) {
-              runtimeConfigLatestRef.current = canonical;
-              configDraftRef.current = canonical;
-              setConfigDraft(canonical);
-              onRuntimeConfigChange(canonical);
+              finalizeRuntimeConfigWrite(seq, canonical);
               if (changedRuntimeConfigSections(canonical, imported).length === 0) {
                 reportSuccess("无需导入配置", "当前配置已经与导入文件一致。", "config-import");
                 return true;
@@ -3215,10 +3356,7 @@ export function StudioConsoleView({
             if (result.schema) {
               applyConfigSchema(result.schema);
             }
-            runtimeConfigLatestRef.current = applied;
-            configDraftRef.current = applied;
-            setConfigDraft(applied);
-            onRuntimeConfigChange(applied);
+            finalizeRuntimeConfigWrite(seq, applied);
             reportSuccess(
               "配置导入成功",
               result.restart_required ? "配置已保存；重启 novasightd 后全部生效。" : "配置已经进入当前运行状态。",
@@ -3228,10 +3366,7 @@ export function StudioConsoleView({
           } catch (error) {
             if (getApiErrorCode(error) === "CONFIG_REVISION_CONFLICT") {
               const canonical = normalizeRuntimeConfig(await getRuntimeConfig());
-              runtimeConfigLatestRef.current = canonical;
-              configDraftRef.current = canonical;
-              setConfigDraft(canonical);
-              onRuntimeConfigChange(canonical);
+              finalizeRuntimeConfigWrite(seq, canonical);
               if (changedRuntimeConfigSections(canonical, imported).length === 0) {
                 reportSuccess("无需导入配置", "当前配置已经与导入文件一致。", "config-import");
                 return true;
@@ -3311,7 +3446,6 @@ export function StudioConsoleView({
     setBusy("model.refresh");
     setLocalError(null);
     setModelCatalogMessage("");
-    preferLatestModelVersionRef.current = true;
     try {
       const result = await getModelCatalog(true);
       applyModelCatalogResult(result);
@@ -3321,7 +3455,6 @@ export function StudioConsoleView({
         `刷新完成：发现 ${result.model_count} 个模型文件；仅刷新目录与元数据，未读取 Engine 内容。`
       );
     } catch (err) {
-      preferLatestModelVersionRef.current = false;
       setLocalError(`模型列表刷新失败：${getErrorMessage(err)}`);
 
       reportError(err, { source: 'studio', title: '操作失败' });
@@ -3407,6 +3540,10 @@ export function StudioConsoleView({
       navigatePage("control-test");
       return;
     }
+    if (action === "advanced") {
+      openConfigDialog("target-advanced");
+      return;
+    }
     openConfigDialog("algorithm");
   }, [navigatePage, openConfigDialog, openModelManager]);
 
@@ -3439,16 +3576,26 @@ export function StudioConsoleView({
               label={backendStatusLabel}
               size="sm"
             />
-            <button
+            <button type="button"
               className={currentErrorDetails.length > 0 ? "error-center-trigger has-errors" : "error-center-trigger"}
               onClick={() => setErrorCenterOpen(true)}
-              type="button"
             >
               <NovaIcon name={currentErrorDetails.length > 0 ? "triangle-alert" : "shield-check"} size={15} />
               <span>异常信息</span>
               {currentErrorDetails.length > 0 ? <b>{currentErrorDetails.length}</b> : null}
             </button>
             <ThemeToggle />
+            {pendingApplyTick > 0 ? (
+              <div
+                aria-label="正在写入运行配置"
+                className="console-toolbar-pending"
+                role="status"
+                title="至少有一项配置写入尚未被运行态确认"
+              >
+                <NovaIcon name="restart" size={13} />
+                <span>写入中…</span>
+              </div>
+            ) : null}
             <div
               aria-label={`${realtimeStatusText}。${realtimeStatusDescription}运行态 ${formatDate(lastUpdated)}`}
               className={realtimeStatusClass}
@@ -3478,21 +3625,19 @@ export function StudioConsoleView({
               ? `主链：${captureStatusText} · 推理：${inferenceStatusText}`
               : `采集：${captureStatusText} · 推理：${inferenceStatusText}`}
           </div>
-          <button
+          <button type="button"
             className={runtimeControlRequested ? "console-button danger" : "console-button primary"}
             disabled={busy === "capture" || busy === "stop" || busy === "runtime.start"}
             onClick={() => void toggleCapture()}
-            type="button"
           >
             <NovaIcon name={runtimeControlRequested ? "stop" : "start"} size={16} />
             {runtimeControlRequested ? (runtimeMainlineSelected ? "停止主链" : "停止采集") : runtimeMainlineSelected ? "启动主链" : "启动采集"}
           </button>
           {!runtimeMainlineSelected && !runtime?.running && capture?.available ? (
-            <button
+            <button type="button"
               className="console-button"
               disabled={busy === "runtime.start"}
               onClick={() => void startInferenceThread()}
-              type="button"
             >
               恢复推理线程
             </button>
@@ -3503,7 +3648,7 @@ export function StudioConsoleView({
                 <NovaIcon name="export" size={16} />
                 导出全部参数
               </button>
-              <button className="console-button" onClick={() => fileInputRef.current?.click()} type="button">
+              <button type="button" className="console-button" onClick={() => fileInputRef.current?.click()}              >
                 <NovaIcon name="import" size={16} />
                 导入全部参数
               </button>
@@ -3600,6 +3745,7 @@ export function StudioConsoleView({
                   step={16}
                   unit="px"
                   onCommit={handleCenteredRoiSizeChange}
+                  onEditingChange={handleParameterEditingChange}
                 />
                 <ParameterPresetControl
                   label="ROI 快捷尺寸"
@@ -3687,6 +3833,7 @@ export function StudioConsoleView({
                 recommendedMax={0.9}
                 step={0.01}
                 onCommit={(value) => updateConfigField("inference", "confidence_threshold", value)}
+                onEditingChange={handleParameterEditingChange}
               />
               <ParameterNumberControl
                 label="配置 NMS"
@@ -3698,6 +3845,7 @@ export function StudioConsoleView({
                 recommendedMax={0.9}
                 step={0.01}
                 onCommit={(value) => updateConfigField("inference", "nms_threshold", value)}
+                onEditingChange={handleParameterEditingChange}
               />
               <div className="console-kv compact-kv">
                 <span>运行置信度</span><b>{runtimePostprocessAvailable ? formatOptionalNumber(runtimePostprocessConfidence, 2) : NO_SAMPLE}</b>
@@ -3860,11 +4008,10 @@ export function StudioConsoleView({
                 </div>
                 {targetPipelineCode === "BASIC_CANDIDATE_REJECTED" && targetPipelineRejections.includes("class_filter") && detectedClassFilterValue ? (
                   <div className="control-filter-recovery">
-                    <button
+                    <button type="button"
                       className="console-button primary"
                       disabled={busy !== null}
                       onClick={() => void updateDetectionClassFilter(detectedClassFilterValue)}
-                      type="button"
                     >
                       允许当前检测类别
                     </button>
@@ -4027,11 +4174,10 @@ export function StudioConsoleView({
                 <div><dt>已映射</dt><dd>{Object.keys(activeClassRoles).length}</dd></div>
                 <div><dt>目标筛选</dt><dd>{selectedDetectionClassIds.size}/{classEditorIds.length} 类</dd></div>
               </dl>
-              <button
+              <button type="button"
                 className="console-button primary"
-                disabled={busy !== null}
+                disabled={configDialogSaving}
                 onClick={() => openConfigDialog("class-config")}
-                type="button"
               >
                 <NovaIcon name="settings" size={16} />
                 管理类别配置
@@ -4077,7 +4223,7 @@ export function StudioConsoleView({
                   <div><span>B 动态增强</span><b>{pResponseBoost.toFixed(2)}</b></div>
                   <div><span>目标速度预测</span><b>{controlPredictionEnabled ? "二维 aim 已启用" : "已关闭"}</b></div>
                 </div>
-                <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("algorithm")} type="button">
+                <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("algorithm")}              >
                   <NovaIcon name="settings" size={15} />
                   调整控制算法
                 </button>
@@ -4125,11 +4271,10 @@ export function StudioConsoleView({
                   </div>
                 </div>
                 <div className="crosshair-learn-actions">
-                  <button
+                  <button type="button"
                     className="console-button primary"
                     disabled={!crosshairEnabled || !runtimeMainlineRunning || crosshairRecentSamples < crosshairRequiredSamples || busy === "crosshair.learn"}
                     onClick={() => void handleLearnCrosshair()}
-                    type="button"
                   >
                     <NovaIcon name="target" size={15} />
                     {busy === "crosshair.learn" ? "正在学习…" : "学习当前准星 · F8"}
@@ -4250,6 +4395,7 @@ export function StudioConsoleView({
                   step={1}
                   unit="px"
                   onCommit={(value) => updatePipelineField("target_fov_radius_px", value)}
+                  onEditingChange={handleParameterEditingChange}
                 />
                 <div className="target-weight-summary">
                   <div>
@@ -4261,7 +4407,7 @@ export function StudioConsoleView({
                     </strong>
                     <small>类别偏好与准星距离由此处调整；候选准入由实时识别结果自动处理。</small>
                   </div>
-                  <button className="console-button" disabled={busy !== null} onClick={() => openConfigDialog("target-weights")} type="button">
+                  <button type="button" className="console-button" disabled={configDialogSaving} onClick={() => openConfigDialog("target-weights")}              >
                     <NovaIcon name="settings" size={15} />
                     调整权重
                   </button>
@@ -4271,7 +4417,7 @@ export function StudioConsoleView({
                   <div><span>切换门槛</span><b>{targetSwitchPreferenceAdvantage.toFixed(2)}</b></div>
                   <div><span>确认延迟</span><b>{targetSwitchDelayMs.toFixed(0)} ms</b></div>
                 </div>
-                <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("target-advanced")} type="button">
+                <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("target-advanced")}              >
                   <NovaIcon name="settings" size={15} />
                   目标切换参数
                 </button>
@@ -4286,7 +4432,7 @@ export function StudioConsoleView({
                   <div><span>NIS 可信 / 拒绝</span><b>{trackerKalmanNisThreshold.toFixed(2)} / {trackerKalmanNisHardReject.toFixed(2)}</b></div>
                   <div><span>丢失保持</span><b>{targetLostGraceMs.toFixed(0)} ms</b></div>
                 </div>
-                <button className="console-button console-full-button" disabled={busy !== null} onClick={() => openConfigDialog("tracker")} type="button">
+                <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("tracker")}              >
                   <NovaIcon name="settings" size={15} />
                   管理 Tracker
                 </button>
@@ -4360,7 +4506,7 @@ export function StudioConsoleView({
                 </div>
               ) : null}
               <div className="console-action-row kmnet-connection-actions">
-                <button
+                <button type="button"
                   className="console-button"
                   aria-pressed={kmnetConnected}
                   disabled={
@@ -4370,7 +4516,6 @@ export function StudioConsoleView({
                     !kmnetCanConnect
                   }
                   onClick={() => void setKmNetConnection(true)}
-                  type="button"
                 >
                   {kmnetRestartRequired
                     ? "等待 novasightd 重启"
@@ -4384,11 +4529,10 @@ export function StudioConsoleView({
                             ? "连接 kmNet"
                             : "请先启用自动连接"}
                 </button>
-                <button
+                <button type="button"
                   className="console-button danger"
                   disabled={busy !== null || !kmnetCanDisconnect}
                   onClick={() => void setKmNetConnection(false)}
-                  type="button"
                 >
                   断开 kmNet
                 </button>
@@ -4520,11 +4664,10 @@ export function StudioConsoleView({
                   <h3>设备单步测试</h3>
                   <p>仅在主链停止时单独发送一次受控移动，不会与实时输出竞争。</p>
                   <div className="console-action-row">
-                    <button
+                    <button type="button"
                       className="console-button"
                       disabled={kmnetDiagnosticDisabled}
                       onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy)}
-                      type="button"
                     >
                       发送单步移动
                     </button>
@@ -4595,12 +4738,11 @@ export function StudioConsoleView({
           {algorithmTuningBrief.map((item) => {
             const selected = algorithmSettingsSection === item.id;
             return (
-              <button
+              <button type="button"
                 aria-pressed={selected}
                 className={selected ? "algorithm-settings-brief-card active" : "algorithm-settings-brief-card"}
                 key={item.id}
                 onClick={() => focusAlgorithmSettingsSection(item.id)}
-                type="button"
               >
                 <span className="algorithm-settings-brief-icon" aria-hidden="true">
                   <NovaIcon name={item.icon} size={16} strokeWidth={1.9} />
@@ -4627,7 +4769,7 @@ export function StudioConsoleView({
             {ALGORITHM_SETTINGS_SECTIONS.map((section) => {
               const selected = algorithmSettingsSection === section.id;
               return (
-                <button
+                <button type="button"
                   aria-controls={section.panelId}
                   aria-selected={selected}
                   className={selected ? "active" : ""}
@@ -4637,7 +4779,6 @@ export function StudioConsoleView({
                   onKeyDown={handleAlgorithmSettingsTabKeyDown}
                   role="tab"
                   tabIndex={selected ? 0 : -1}
-                  type="button"
                 >
                   <b>{section.label}</b>
                   <small>{section.detail}</small>
@@ -4796,13 +4937,12 @@ export function StudioConsoleView({
                 <h2 id="target-weight-dialog-title">调整目标选择权重</h2>
                 <p>比例决定多个候选同时出现时，类别顺序与准星距离各自占多大影响；置信度只负责候选准入，不参与排序。</p>
               </div>
-              <button
+              <button type="button"
                 aria-label="关闭权重调整"
                 className="launch-dialog-close"
                 disabled={dialogSaving}
                 onClick={() => void requestDismissConfigDialog("target-weights")}
                 title={configDialogDirty ? "关闭；未保存修改会先请求确认" : "关闭"}
-                type="button"
               >
                 <NovaIcon name="x-circle" size={18} />
               </button>
@@ -4837,6 +4977,7 @@ export function StudioConsoleView({
                     max={1}
                     step={0.01}
                     onCommit={(value) => updatePipelineField("target_selection_class_ratio", value)}
+                    onEditingChange={handleParameterEditingChange}
                   />
                 </div>
               </section>
@@ -4853,11 +4994,10 @@ export function StudioConsoleView({
                       ? "有未保存修改 · 保存后才会同步到运行配置。"
                       : "未修改 · 关闭不会请求服务。"}
               </span>
-              <button
+              <button type="button"
                 className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}
                 disabled={dialogSaving}
                 onClick={() => void saveConfigDialog("target-weights")}
-                type="button"
               >
                 {configDialogDirty ? "保存并关闭" : "关闭"}
               </button>
@@ -4890,13 +5030,12 @@ export function StudioConsoleView({
                 <h2 id="class-config-dialog-title">管理类别配置</h2>
                 <p>把模型类别归入头部、身体或其他瞄点类型，再在人物靶上统一标定三条垂直瞄点线。</p>
               </div>
-              <button
+              <button type="button"
                 aria-label="关闭类别配置"
                 className="launch-dialog-close"
                 disabled={dialogSaving}
                 onClick={() => void requestDismissConfigDialog("class-config")}
                 title={configDialogDirty ? "关闭；未保存修改会先请求确认" : "关闭"}
-                type="button"
               >
                 <NovaIcon name="x-circle" size={18} />
               </button>
@@ -4913,12 +5052,11 @@ export function StudioConsoleView({
                 </div>
                 <div className="class-profile-list">
                   {(detectionProfileNames.length > 0 ? detectionProfileNames : ["default"]).map((name) => (
-                    <button
+                    <button type="button"
                       aria-current={name === activeDetectionProfile ? "page" : undefined}
                       className={name === activeDetectionProfile ? "active" : ""}
                       key={name}
                       onClick={() => void updateConfigField("inference", "detection_class_profile", name)}
-                      type="button"
                     >
                       <span>{name}</span>
                       <small>{(detectionProfiles[name] ?? []).filter(Boolean).length} 类</small>
@@ -4931,25 +5069,23 @@ export function StudioConsoleView({
                     detail="输入新配置名后创建空白配置，或复制当前配置作为起点。"
                     placeholder="例如 valorant"
                     value={newClassProfileName}
-                    disabled={busy !== null}
+                    disabled={configDialogSaving}
                     onDraftChange={setNewClassProfileName}
                     onCommit={setNewClassProfileName}
                     onEnter={() => createClassProfile(false)}
                   />
                   <div className="class-profile-create-actions">
-                    <button
+                    <button type="button"
                       className="console-button primary"
                       disabled={busy !== null || newClassProfileName.trim() === ""}
                       onClick={() => void createClassProfile(false)}
-                      type="button"
                     >
                       新建空白
                     </button>
-                    <button
+                    <button type="button"
                       className="console-button"
                       disabled={busy !== null || newClassProfileName.trim() === ""}
                       onClick={() => void createClassProfile(true)}
-                      type="button"
                     >
                       <NovaIcon name="copy" size={15} />
                       复制当前
@@ -4964,21 +5100,20 @@ export function StudioConsoleView({
                     label="当前配置名称"
                     detail="重命名会同步迁移该配置对应的类别瞄点类型映射。"
                     value={renamedClassProfileName}
-                    disabled={busy !== null}
+                    disabled={configDialogSaving}
                     onDraftChange={setRenamedClassProfileName}
                     onCommit={setRenamedClassProfileName}
                     onEnter={renameClassProfile}
                   />
-                  <button
+                  <button type="button"
                     className="console-button"
                     disabled={busy !== null || renamedClassProfileName.trim() === "" || renamedClassProfileName.trim() === activeDetectionProfile}
                     onClick={() => void renameClassProfile()}
-                    type="button"
                   >
                     <NovaIcon name="edit" size={15} />
                     重命名
                   </button>
-                  <button
+                  <button type="button"
                     aria-label={`删除类别配置 ${activeDetectionProfile}`}
                     className="console-button danger"
                     disabled={busy !== null || detectionProfileNames.length <= 1}
@@ -4989,7 +5124,6 @@ export function StudioConsoleView({
                         setClassProfileDeleteArmed(true);
                       }
                     }}
-                    type="button"
                   >
                     <NovaIcon name="delete" size={15} />
                     {classProfileDeleteArmed ? "确认删除" : "删除"}
@@ -4997,7 +5131,7 @@ export function StudioConsoleView({
                 </div>
 
                 <AimTargetRange
-                  disabled={busy !== null}
+                  disabled={configDialogSaving}
                   ratios={aimRoleRatios}
                   onCommit={updateAimRoleRatio}
                 />
@@ -5010,19 +5144,17 @@ export function StudioConsoleView({
                     </span>
                     <div className="class-filter-actions">
                       <span>{selectedDetectionClassIds.size}/{classEditorIds.length} 已选择</span>
-                      <button
+                      <button type="button"
                         className="console-button secondary"
                         disabled={busy !== null || selectedDetectionClassIds.size === classEditorIds.length}
                         onClick={() => void updateDetectionClassFilter("all")}
-                        type="button"
                       >
                         全部选择
                       </button>
-                      <button
+                      <button type="button"
                         className="console-button"
                         disabled={busy !== null || selectedDetectionClassIds.size === 0}
                         onClick={() => void updateDetectionClassFilter("none")}
-                        type="button"
                       >
                         全部取消
                       </button>
@@ -5033,13 +5165,12 @@ export function StudioConsoleView({
                       const selected = selectedDetectionClassIds.has(classId);
                       const configuredName = detectionClasses[classId] ?? "";
                       return (
-                        <button
+                        <button type="button"
                           aria-pressed={selected}
                           className={selected ? "selected" : ""}
                           disabled={busy !== null}
                           key={`class-filter-${classId}`}
                           onClick={() => void toggleDetectionClass(classId)}
-                          type="button"
                         >
                           <span className="class-filter-check" aria-hidden="true">{selected ? "✓" : ""}</span>
                           <b>cls {classId}</b>
@@ -5060,13 +5191,12 @@ export function StudioConsoleView({
                     const priorityIndex = orderedClassEditorIds.indexOf(classId);
                     return (
                       <div className="class-editor-row" role="row" key={`class-editor-${classId}`}>
-                        <button
+                        <button type="button"
                           aria-label={`${selectedDetectionClassIds.has(classId) ? "取消" : "允许"} cls ${classId} 参与目标选择`}
                           aria-pressed={selectedDetectionClassIds.has(classId)}
                           className={`class-role-select ${selectedDetectionClassIds.has(classId) ? "selected" : ""}`}
                           disabled={busy !== null}
                           onClick={() => void toggleDetectionClass(classId)}
-                          type="button"
                         >
                           <i aria-hidden="true">{selectedDetectionClassIds.has(classId) ? "✓" : ""}</i>
                           <b>cls {classId}</b>
@@ -5079,36 +5209,33 @@ export function StudioConsoleView({
                         />
                         <div className="class-priority-control" aria-label={`cls ${classId} 目标优先级，第 ${priorityIndex + 1} 位`}>
                           <span className="class-priority-rank">#{priorityIndex + 1}</span>
-                          <button
+                          <button type="button"
                             aria-label={`提高 cls ${classId} 目标优先级`}
                             className="class-priority-button up"
                             disabled={busy !== null || priorityIndex <= 0}
                             onClick={() => void setClassPriorityPosition(classId, priorityIndex - 1)}
                             title="上移"
-                            type="button"
                           >
                             <NovaIcon name="expand" size={14} />
                           </button>
-                          <button
+                          <button type="button"
                             aria-label={`降低 cls ${classId} 目标优先级`}
                             className="class-priority-button down"
                             disabled={busy !== null || priorityIndex >= orderedClassEditorIds.length - 1}
                             onClick={() => void setClassPriorityPosition(classId, priorityIndex + 1)}
                             title="下移"
-                            type="button"
                           >
                             <NovaIcon name="expand" size={14} />
                           </button>
                         </div>
                         <div className="class-role-segmented" role="group" aria-label={`cls ${classId} 瞄点类型`}>
                           {(["head", "body", "other"] as AimRole[]).map((role) => (
-                            <button
+                            <button type="button"
                               aria-pressed={(activeClassRoles[String(classId)] ?? "other") === role}
                               className={`${role} ${(activeClassRoles[String(classId)] ?? "other") === role ? "active" : ""}`}
                               disabled={busy !== null}
                               key={role}
                               onClick={() => void updateClassAimRole(classId, role)}
-                              type="button"
                             >
                               {role === "head" ? "头部" : role === "body" ? "身体" : "其他"}
                             </button>
@@ -5134,11 +5261,10 @@ export function StudioConsoleView({
                       ? "有未保存修改 · 保存后才会同步整份类别配置。"
                       : `未修改 · 当前配置：${activeDetectionProfile}`}
               </span>
-              <button
+              <button type="button"
                 className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}
                 disabled={dialogSaving}
                 onClick={() => void saveConfigDialog("class-config")}
-                type="button"
               >
                 {configDialogDirty ? "保存并关闭" : "关闭"}
               </button>
@@ -5168,7 +5294,7 @@ export function StudioConsoleView({
                 <h2 id="error-center-title">异常信息</h2>
                 <p>页面保持安静；网络、服务与操作错误统一收拢在这里。</p>
               </div>
-              <button aria-label="关闭异常信息" onClick={() => setErrorCenterOpen(false)} type="button">
+              <button type="button" aria-label="关闭异常信息" onClick={() => setErrorCenterOpen(false)}              >
                 <NovaIcon name="x-circle" size={18} />
               </button>
             </header>
@@ -5199,7 +5325,7 @@ export function StudioConsoleView({
               >
                 清除历史记录
               </button>
-              <button className="console-button primary" onClick={() => setErrorCenterOpen(false)} type="button">完成</button>
+              <button type="button" className="console-button primary" onClick={() => setErrorCenterOpen(false)}              >完成</button>
             </footer>
           </section>
         </div>
@@ -5352,15 +5478,14 @@ export function StudioConsoleView({
             </div>
 
             <footer className="launch-dialog-footer">
-              <button className="console-button" onClick={() => void cancelMainlineLaunch()} type="button">
+              <button type="button" className="console-button" onClick={() => void cancelMainlineLaunch()}              >
                 <NovaIcon name={launchStatus === "running" ? "pause-output" : "x-circle"} size={16} />
                 {launchStatus === "running" ? "取消启动" : "关闭"}
               </button>
-              <button
+              <button type="button"
                 className="console-button primary"
                 disabled={launchStatus === "running"}
                 onClick={launchStatus === "success" ? closeLaunchDialog : () => void startMainlineLaunch()}
-                type="button"
               >
                 <NovaIcon name={launchStatus === "running" ? "activity-pulse" : launchStatus === "success" ? "dashboard" : "start"} size={16} />
                 {launchStatus === "running" ? "正在启动" : launchStatus === "success" ? "完成" : launchStatus === "failed" || launchStatus === "cancelled" ? "重新启动" : "开始启动"}
@@ -5463,13 +5588,12 @@ function ModuleSwitch({
   }, [disabled, enabled, onToggle, optimistic, pending, visualEnabled]);
 
   return (
-    <button
+    <button type="button"
       aria-busy={pending}
       aria-pressed={visualEnabled}
       className={visualEnabled ? "module-switch on" : "module-switch"}
       onClick={() => void toggle()}
       disabled={pending || disabled}
-      type="button"
     >
       <span>
         <b>{label}</b>
@@ -5709,7 +5833,7 @@ function PreviewFrame({
               onSelect: () => setTransportFps(fps)
             }))}
           />
-          <button disabled={togglePending} onClick={() => onToggle(false)} type="button">
+          <button type="button" disabled={togglePending} onClick={() => onToggle(false)}              >
             {togglePending ? "正在关闭…" : "关闭预览"}
           </button>
         </div>
@@ -5744,7 +5868,7 @@ function PreviewFrame({
             <span className="console-preview-gate-kicker">性能保护已启用</span>
             <strong>实时预览已暂停</strong>
             <p>推理、跟踪与控制继续运行。开启画面会占用图像编码与内存带宽。</p>
-            <button disabled={togglePending} onClick={() => onToggle(true)} type="button">
+            <button type="button" disabled={togglePending} onClick={() => onToggle(true)}              >
               {togglePending ? "正在开启…" : "开启实时预览"}
             </button>
           </div>

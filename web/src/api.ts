@@ -851,9 +851,10 @@ export function getRuntimeState(
   );
 }
 
-export function startRuntimePipeline(): Promise<Record<string, RuntimeConfigValue>> {
+export function startRuntimePipeline(signal?: AbortSignal): Promise<Record<string, RuntimeConfigValue>> {
   return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.runtimeStart, {
-    method: "POST"
+    method: "POST",
+    signal
   });
 }
 
@@ -863,9 +864,10 @@ export function stopRuntimePipeline(): Promise<RuntimeState> {
   });
 }
 
-export function emergencyStopRuntimePipeline(): Promise<Record<string, RuntimeConfigValue>> {
+export function emergencyStopRuntimePipeline(signal?: AbortSignal): Promise<Record<string, RuntimeConfigValue>> {
   return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.runtimeEmergencyStop, {
-    method: "POST"
+    method: "POST",
+    signal
   });
 }
 
@@ -908,15 +910,17 @@ export function diagnosticMoveKmNet(
   });
 }
 
-export function connectKmNet(): Promise<Record<string, RuntimeConfigValue>> {
+export function connectKmNet(signal?: AbortSignal): Promise<Record<string, RuntimeConfigValue>> {
   return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetConnect, {
-    method: "POST"
+    method: "POST",
+    signal
   });
 }
 
-export function disconnectKmNet(): Promise<Record<string, RuntimeConfigValue>> {
+export function disconnectKmNet(signal?: AbortSignal): Promise<Record<string, RuntimeConfigValue>> {
   return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDisconnect, {
-    method: "POST"
+    method: "POST",
+    signal
   });
 }
 
@@ -1002,13 +1006,14 @@ export function getCaptureCapabilities(
   });
 }
 
-export function selectCaptureProfile(payload: CaptureSelectPayload): Promise<CaptureState> {
+export function selectCaptureProfile(payload: CaptureSelectPayload, signal?: AbortSignal): Promise<CaptureState> {
   return requestJson<CaptureState>(API_PATHS.captureSelect, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    signal
   });
 }
 

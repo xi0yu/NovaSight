@@ -1,4 +1,4 @@
-export type ProductConfigState = "live" | "saved" | "restart" | "missing" | "paused";
+export type ProductConfigState = "live" | "saved" | "restart" | "missing" | "paused" | "applying";
 
 export type ProductConfigAction = "capture" | "models" | "control" | "kmnet" | "advanced";
 
@@ -41,6 +41,10 @@ export type ProductConfigProfile = {
 export type BuildProductConfigProfileInput = {
   runtimeRunning: boolean;
   configRestartRequired: boolean;
+  // True while at least one client-initiated runtime config write is in
+  // flight (pendingConfigWritesRef > 0). Used to short-circuit the
+  // "saved → restart → live" flicker during the desired→effective window.
+  configApplyPending: boolean;
   desiredRevision: number;
   effectiveRevision: number;
   captureConfigured: boolean;
@@ -135,7 +139,7 @@ function buildCaptureItem(input: BuildProductConfigProfileInput): ProductConfigI
 }
 
 function buildModelItem(input: BuildProductConfigProfileInput): ProductConfigItem {
-  if (!input.modelPublished || !present(input.artifactLabel)) {
+  if (!input.modelPublished) {
     return {
       id: "model",
       label: "模型与推理",
@@ -312,6 +316,19 @@ function buildKmnetItem(input: BuildProductConfigProfileInput): ProductConfigIte
 }
 
 function buildReloadItem(input: BuildProductConfigProfileInput): ProductConfigItem {
+  // During the desired→effective transaction window the panel previously
+  // flipped between "等待重启" and "已生效" every frame. Show "正在应用"
+  // instead so the user sees a single transition.
+  if (input.configApplyPending) {
+    return {
+      id: "reload",
+      label: "重载边界",
+      state: "applying",
+      value: "正在应用",
+      detail: "配置写入已发送，等待运行态接收并更新有效版本。",
+      evidence: `effective/desired=${revisionLabel(input.desiredRevision, input.effectiveRevision)}`
+    };
+  }
   if (input.configRestartRequired) {
     return {
       id: "reload",
@@ -339,6 +356,7 @@ function profileTitle(state: ProductConfigState): string {
   if (state === "restart") return "配置已保存，等待运行态重载";
   if (state === "paused") return "配置可运行，但输出处于暂停";
   if (state === "live") return "配置正在生效";
+  if (state === "applying") return "正在写入配置";
   return "配置已保存";
 }
 
@@ -355,12 +373,18 @@ function profileDetail(state: ProductConfigState, attentionCount: number): strin
   if (state === "live") {
     return "采集、模型、控制、设备和配置版本形成了同一条有效链路。";
   }
+  if (state === "applying") {
+    return "配置写入已发送，等待运行态接收并更新有效版本。";
+  }
   return attentionCount > 0
     ? "配置已经落盘，部分项目需要启动主链后才能转为生效。"
     : "这些配置会在下一次主链启动时作为默认运行参数使用。";
 }
 
 function deriveProfileState(items: ProductConfigItem[]): ProductConfigState {
+  // `applying` wins over `restart`/`saved` because a write in flight is a
+  // single transient state, not an actionable issue.
+  if (items.some((item) => item.state === "applying")) return "applying";
   if (items.some((item) => item.state === "missing")) return "missing";
   if (items.some((item) => item.state === "restart")) return "restart";
   if (items.some((item) => item.state === "paused")) return "paused";
