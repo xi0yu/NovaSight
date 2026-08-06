@@ -548,15 +548,19 @@ export function useMainlineLaunch({
       ensureNotCancelled();
       setCompletedStages(index + 1);
     };
+    const stageLabel = (index: number): string =>
+      MAINLINE_LAUNCH_STAGES[index]?.title ?? `阶段 ${index + 1}`;
 
     try {
       await runStage(0, async () => {
+        setProgressDetail(`正在确认模型：${stageLabel(0)}`);
         const modelReady = await ensurePublishedModelBeforeMainline();
         if (!modelReady) {
           throw new Error(MODEL_GUIDANCE_OPENED_ERROR);
         }
       });
       await runStage(1, async () => {
+        setProgressDetail(`正在采集运行态：${stageLabel(1)}`);
         if (signal.aborted) {
           throw new Error("launch cancelled");
         }
@@ -567,10 +571,12 @@ export function useMainlineLaunch({
         }
       });
       await runStage(2, async () => {
+        setProgressDetail(`正在选择采集规格：${stageLabel(2)}`);
         const captureState = await selectCaptureProfile(buildCapturePayload(), signal);
         assertCaptureLaunchState(captureState);
       });
       await runStage(3, async () => {
+        setProgressDetail(`正在启动主链：${stageLabel(3)}`);
         const runtimeStart = asRecord(await startRuntimePipeline(signal));
         const accepted = readBoolean(runtimeStart.running, true);
         if (!accepted) {
