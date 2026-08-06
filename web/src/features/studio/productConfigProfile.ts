@@ -151,6 +151,16 @@ function buildModelItem(input: BuildProductConfigProfileInput): ProductConfigIte
       actionLabel: "配置模型"
     };
   }
+  if (input.configApplyPending && !input.postprocessApplied) {
+    return {
+      id: "model",
+      label: "模型与推理",
+      state: "applying",
+      value: "正在应用…",
+      detail: "模型或后处理参数已发送，等待运行态确认。",
+      evidence: `${input.artifactLabel} · ${input.postprocessLabel}`
+    };
+  }
   if (input.configRestartRequired && !input.postprocessApplied) {
     return {
       id: "model",
