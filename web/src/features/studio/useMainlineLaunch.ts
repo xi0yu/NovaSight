@@ -343,7 +343,10 @@ export function useMainlineLaunch({
       clearAccepted();
       return;
     }
-    if (runtimeMainlineRunning) {
+    // Only clear `accepted` when the runtime is healthy. If the runtime
+    // reports `failed` after a successful stage 3, keep `accepted` so the
+    // post-start error branch below can surface the failure to the user.
+    if (runtimeMainlineRunning && !runtimeMainlineStatus.failed) {
       clearAccepted();
       return;
     }
