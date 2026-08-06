@@ -515,6 +515,7 @@ export function useMainlineLaunch({
     setLocalError(null);
     setStatus("running");
     setError("");
+    setMessage("");
     setProgressDetail("正在提交启动请求，等待启动阶段反馈。");
     setStageIndex(0);
     setCompletedStages(0);

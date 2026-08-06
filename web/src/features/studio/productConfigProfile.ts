@@ -269,18 +269,6 @@ function buildKmnetItem(input: BuildProductConfigProfileInput): ProductConfigIte
       actionLabel: "配置设备"
     };
   }
-  if (!input.kmnetAutoConnect) {
-    return {
-      id: "kmnet",
-      label: "kmNet 设备",
-      state: "paused",
-      value: "未启用",
-      detail: "自动连接已关闭，主链不会主动接入 kmNet。",
-      evidence: `${input.kmnetHost}:${input.kmnetPort}`,
-      action: "kmnet",
-      actionLabel: "启用连接"
-    };
-  }
   if (input.kmnetRestartRequired) {
     return {
       id: "kmnet",
@@ -291,6 +279,18 @@ function buildKmnetItem(input: BuildProductConfigProfileInput): ProductConfigIte
       evidence: `${input.kmnetHost}:${input.kmnetPort} · ${input.kmnetUuid}`,
       action: "kmnet",
       actionLabel: "测试设备"
+    };
+  }
+  if (!input.kmnetAutoConnect) {
+    return {
+      id: "kmnet",
+      label: "kmNet 设备",
+      state: "paused",
+      value: "未启用",
+      detail: "自动连接已关闭，主链不会主动接入 kmNet。",
+      evidence: `${input.kmnetHost}:${input.kmnetPort}`,
+      action: "kmnet",
+      actionLabel: "启用连接"
     };
   }
   if (input.runtimeRunning && input.kmnetRuntimeConnected) {
