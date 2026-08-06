@@ -52,6 +52,14 @@ export const AimTargetRange = memo(function AimTargetRange({ disabled = false, r
     return clampRatio((clientY - rect.top) / rect.height);
   };
 
+  // Per-role display value. While editing (dragging or focused) the local
+  // draft wins; otherwise the prop value wins so a partial frame updates
+  // the visual immediately, without waiting for the setDraft effect to
+  // re-sync `draft` from the new prop. Keeps the guide and slider thumb
+  // in lockstep during the brief render between prop change and effect run.
+  const displayRatio = (role: AimRole): number =>
+    draggingRef.current === role ? draft[role] : ratios[role];
+
   const updateDraft = (role: AimRole, ratio: number) => {
     setDraft((current) => {
       const next = { ...current, [role]: clampRatio(ratio) };
@@ -130,20 +138,20 @@ export const AimTargetRange = memo(function AimTargetRange({ disabled = false, r
                 }}
                 style={{ top: `${meta.zoneTop}%`, height: `${meta.zoneHeight}%` }}
               >
-                <div className={`aim-role-guide aim-role-guide-${role}`} style={{ top: `${draft[role] * 100}%` }}>
+                <div className={`aim-role-guide aim-role-guide-${role}`} style={{ top: `${displayRatio(role) * 100}%` }}>
                   <span className="aim-role-guide-leading">
                     <span className="aim-role-guide-label">
                       <b>{meta.label}</b>
-                      <small>{Math.round(draft[role] * 100)}%</small>
+                      <small>{Math.round(displayRatio(role) * 100)}%</small>
                     </span>
                     <span className="aim-role-guide-line before" aria-hidden="true" />
                   </span>
                   <button
-                    aria-label={`${meta.label}瞄点，当前为框内 ${Math.round(draft[role] * 100)}%`}
+                    aria-label={`${meta.label}瞄点，当前为框内 ${Math.round(displayRatio(role) * 100)}%`}
                     aria-orientation="vertical"
                     aria-valuemax={100}
                     aria-valuemin={0}
-                    aria-valuenow={Math.round(draft[role] * 100)}
+                    aria-valuenow={Math.round(displayRatio(role) * 100)}
                     className="aim-role-guide-handle"
                     disabled={disabled}
                     type="button"
