@@ -95,6 +95,7 @@ pub fn compose_pipeline_config(
             enabled: config.control.recoil.enabled,
             require_target: config.control.recoil.require_target,
             interval_ms: config.control.recoil.interval_ms,
+            fire_delay_ms: config.control.recoil.fire_delay_ms,
             y_counts: config.control.recoil.y_counts,
         },
         ..PipelineConfig::default()

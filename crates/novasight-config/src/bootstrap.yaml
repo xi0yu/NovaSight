@@ -70,6 +70,8 @@ control:
     # true: 要求当前有效目标或仍在 Tracker 丢失保持期；false: 无目标时也允许压枪量组成当轮 move。
     require_target: true
     # 开火后先等待一个完整间隔；之后在下一张安全新画面中合成一次 +Y，不补发旧间隔。
+    # 同时额外等待该时间后再触发第一次叠加。
+    fire_delay_ms: 0
     interval_ms: 16
     y_counts: 1
 capture:

@@ -205,6 +205,13 @@ impl ConfigSchemaResponse {
                             Some("ms"),
                         ),
                         integer(
+                            "control.recoil.fire_delay_ms",
+                            "首次压枪延迟",
+                            0.0,
+                            5_000.0,
+                            Some("ms"),
+                        ),
+                        integer(
                             "control.recoil.y_counts",
                             "每次叠加 +Y",
                             1.0,
@@ -825,6 +832,15 @@ mod tests {
                 && section["fields"].as_array().unwrap().iter().any(|field| {
                     field["path"] == "control.recoil.interval_ms"
                         && field["min"] == 1.0
+                        && field["max"] == 5_000.0
+                        && field["restart_required"] == false
+                })
+        }));
+        assert!(value["sections"].as_array().unwrap().iter().any(|section| {
+            section["id"] == "control.recoil"
+                && section["fields"].as_array().unwrap().iter().any(|field| {
+                    field["path"] == "control.recoil.fire_delay_ms"
+                        && field["min"] == 0.0
                         && field["max"] == 5_000.0
                         && field["restart_required"] == false
                 })

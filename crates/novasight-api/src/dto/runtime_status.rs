@@ -523,6 +523,7 @@ pub(crate) struct ControlPipelineState {
     pub recoil_active: bool,
     pub recoil_state: RecoilState,
     pub recoil_interval_ms: u64,
+    pub recoil_configured_fire_delay_ms: u64,
     pub recoil_y_counts: i32,
     pub recoil_elapsed_since_output_ms: Option<f64>,
     pub recoil_remaining_ms: f64,
@@ -1143,6 +1144,10 @@ impl RuntimeStatusState {
                         recoil_active: snapshot.pipeline_metrics.recoil.engaged(),
                         recoil_state: snapshot.pipeline_metrics.recoil.state,
                         recoil_interval_ms: snapshot.pipeline_metrics.recoil.interval_ms,
+                        recoil_configured_fire_delay_ms: snapshot
+                            .pipeline_metrics
+                            .recoil
+                            .configured_fire_delay_ms,
                         recoil_y_counts: snapshot.pipeline_metrics.recoil.configured_y_counts,
                         recoil_elapsed_since_output_ms: snapshot
                             .pipeline_metrics
@@ -1582,6 +1587,7 @@ mod tests {
         snapshot.pipeline_metrics.recoil = RecoilDecision {
             state: RecoilState::Applied,
             interval_ms: 16,
+            configured_fire_delay_ms: 8,
             configured_y_counts: 2,
             elapsed_since_output_ms: Some(17.0),
             remaining_ms: 0.0,
@@ -1714,6 +1720,7 @@ mod tests {
         assert_eq!(pipeline["recoil_state"], "APPLIED");
         assert_eq!(pipeline["recoil_active"], true);
         assert_eq!(pipeline["recoil_interval_ms"], 16);
+        assert_eq!(pipeline["recoil_configured_fire_delay_ms"], 8);
         assert_eq!(pipeline["recoil_y_counts"], 2);
         assert_eq!(pipeline["recoil_emitted_counts_y"], 2);
         assert_eq!(pipeline["recoil_source_generation"], 9);

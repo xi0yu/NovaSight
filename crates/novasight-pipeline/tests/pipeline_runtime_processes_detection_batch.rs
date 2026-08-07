@@ -561,6 +561,7 @@ fn recoil_is_added_to_an_existing_tracking_command_after_its_interval() {
                 enabled: true,
                 require_target: true,
                 interval_ms: 8,
+                fire_delay_ms: 0,
                 y_counts: 2,
             },
             ..PipelineConfig::default()
@@ -638,6 +639,7 @@ fn due_recoil_emits_at_the_predicted_aim_point_when_tracking_is_settled() {
                 enabled: true,
                 require_target: true,
                 interval_ms: 8,
+                fire_delay_ms: 0,
                 y_counts: 2,
             },
             ..PipelineConfig::default()
@@ -717,6 +719,7 @@ fn recoil_without_target_uses_fresh_observations_when_target_guard_is_disabled()
                 enabled: true,
                 require_target: false,
                 interval_ms: 8,
+                fire_delay_ms: 0,
                 y_counts: 2,
             },
             ..PipelineConfig::default()
@@ -772,6 +775,7 @@ fn target_guard_uses_the_existing_tracker_loss_grace_without_predicted_control()
                 enabled: true,
                 require_target: true,
                 interval_ms: 8,
+                fire_delay_ms: 0,
                 y_counts: 2,
             },
             ..PipelineConfig::default()
@@ -867,6 +871,7 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
                 enabled: true,
                 require_target: true,
                 interval_ms: 8,
+                fire_delay_ms: 0,
                 y_counts: 2,
             },
             ..PipelineConfig::default()

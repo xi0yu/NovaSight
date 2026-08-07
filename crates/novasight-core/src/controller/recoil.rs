@@ -12,6 +12,7 @@ pub struct RecoilConfig {
     pub require_target: bool,
     pub interval_ms: u64,
     pub y_counts: i32,
+    pub fire_delay_ms: u64,
 }
 
 impl Default for RecoilConfig {
@@ -21,6 +22,7 @@ impl Default for RecoilConfig {
             require_target: true,
             interval_ms: 16,
             y_counts: 1,
+            fire_delay_ms: 0,
         }
     }
 }
@@ -32,6 +34,9 @@ impl RecoilConfig {
         }
         if !(1..=i16::MAX as i32).contains(&self.y_counts) {
             return Err("recoil positive-Y contribution must be within 1..=32767 counts");
+        }
+        if self.fire_delay_ms > 5_000 {
+            return Err("recoil fire delay must be within 0..=5000 ms");
         }
         Ok(())
     }
@@ -55,6 +60,7 @@ pub enum RecoilBlockReason {
     FiringInactive,
     TargetRequired,
     IntervalPending,
+    FireDelay,
     OutputSaturated,
     #[serde(rename = "")]
     None,
@@ -72,6 +78,7 @@ pub struct RecoilInput {
 pub struct RecoilDecision {
     pub state: RecoilState,
     pub interval_ms: u64,
+    pub configured_fire_delay_ms: u64,
     pub configured_y_counts: i32,
     pub elapsed_since_output_ms: Option<f64>,
     pub remaining_ms: f64,
@@ -149,13 +156,21 @@ impl IntervalRecoilController {
         let baseline = self.last_output_ns.unwrap_or(cadence_start);
         let elapsed_ns = input.now_ns.saturating_sub(baseline);
         let elapsed_ms = elapsed_ns as f64 / 1_000_000.0;
-        let interval_ns = config.interval_ms.saturating_mul(1_000_000);
-        let remaining_ms = interval_ns.saturating_sub(elapsed_ns) as f64 / 1_000_000.0;
+        let required_interval_ns = if self.last_output_ns.is_none() {
+            config
+                .interval_ms
+                .saturating_add(config.fire_delay_ms)
+                .saturating_mul(1_000_000)
+        } else {
+            config.interval_ms.saturating_mul(1_000_000)
+        };
+        let remaining_ms = required_interval_ns.saturating_sub(elapsed_ns) as f64 / 1_000_000.0;
 
         if config.require_target && !input.target_valid {
             return RecoilDecision {
                 state: RecoilState::Waiting,
                 interval_ms: config.interval_ms,
+                configured_fire_delay_ms: config.fire_delay_ms,
                 configured_y_counts: config.y_counts,
                 elapsed_since_output_ms: Some(elapsed_ms),
                 remaining_ms,
@@ -164,15 +179,20 @@ impl IntervalRecoilController {
                 ..RecoilDecision::default()
             };
         }
-        if elapsed_ns < interval_ns {
+        if elapsed_ns < required_interval_ns {
             return RecoilDecision {
                 state: RecoilState::Waiting,
                 interval_ms: config.interval_ms,
+                configured_fire_delay_ms: config.fire_delay_ms,
                 configured_y_counts: config.y_counts,
                 elapsed_since_output_ms: Some(elapsed_ms),
                 remaining_ms,
                 source_generation: input.source_generation,
-                block_reason: RecoilBlockReason::IntervalPending,
+                block_reason: if self.last_output_ns.is_none() && config.fire_delay_ms > 0 {
+                    RecoilBlockReason::FireDelay
+                } else {
+                    RecoilBlockReason::IntervalPending
+                },
                 ..RecoilDecision::default()
             };
         }
@@ -180,6 +200,7 @@ impl IntervalRecoilController {
         RecoilDecision {
             state: RecoilState::Ready,
             interval_ms: config.interval_ms,
+            configured_fire_delay_ms: config.fire_delay_ms,
             configured_y_counts: config.y_counts,
             elapsed_since_output_ms: Some(elapsed_ms),
             remaining_ms: 0.0,
@@ -197,6 +218,7 @@ impl IntervalRecoilController {
     fn blocked(&self, reason: RecoilBlockReason, input: RecoilInput) -> RecoilDecision {
         RecoilDecision {
             interval_ms: self.config.interval_ms,
+            configured_fire_delay_ms: self.config.fire_delay_ms,
             configured_y_counts: self.config.y_counts,
             source_generation: input.source_generation,
             block_reason: reason,
@@ -271,6 +293,32 @@ mod tests {
 
         let late = controller.calculate(input(1_035_000_000));
         assert_eq!(late.requested_counts_y, 3);
+    }
+
+    #[test]
+    fn waits_fire_delay_before_first_shot() {
+        let mut config = enabled();
+        config.fire_delay_ms = 25;
+        let mut controller = IntervalRecoilController::new(config).unwrap();
+
+        let first = controller.calculate(input(1_000_000_000));
+        assert_eq!(first.state, RecoilState::Waiting);
+        assert_eq!(first.block_reason, RecoilBlockReason::FireDelay);
+        assert_eq!(first.remaining_ms, 35.0);
+
+        let before_delay = controller.calculate(input(1_025_000_000));
+        assert_eq!(before_delay.state, RecoilState::Waiting);
+        assert_eq!(before_delay.block_reason, RecoilBlockReason::FireDelay);
+
+        let ready = controller.calculate(input(1_036_000_000));
+        assert!(ready.should_add());
+        controller.mark_output_sent(1_036_000_000);
+
+        let too_soon = controller.calculate(input(1_042_000_000));
+        assert_eq!(too_soon.block_reason, RecoilBlockReason::IntervalPending);
+
+        let next = controller.calculate(input(1_048_000_000));
+        assert!(next.should_add());
     }
 
     #[test]

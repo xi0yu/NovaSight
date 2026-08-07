@@ -236,6 +236,8 @@ pub struct RecoilConfig {
     pub require_target: bool,
     #[serde(default = "default_recoil_interval_ms")]
     pub interval_ms: u64,
+    #[serde(default = "default_recoil_fire_delay_ms")]
+    pub fire_delay_ms: u64,
     #[serde(default = "default_recoil_y_counts")]
     pub y_counts: i32,
     #[serde(default, flatten)]
@@ -248,6 +250,7 @@ impl Default for RecoilConfig {
             enabled: false,
             require_target: default_recoil_require_target(),
             interval_ms: default_recoil_interval_ms(),
+            fire_delay_ms: default_recoil_fire_delay_ms(),
             y_counts: default_recoil_y_counts(),
             extra: BTreeMap::new(),
         }
@@ -260,6 +263,12 @@ impl RecoilConfig {
             return Err(ConfigValidationError::new(
                 "control.recoil.interval_ms",
                 "must be within 1..=5000 ms",
+            ));
+        }
+        if self.fire_delay_ms > 5_000 {
+            return Err(ConfigValidationError::new(
+                "control.recoil.fire_delay_ms",
+                "must be within 0..=5000 ms",
             ));
         }
         if !(1..=i16::MAX as i32).contains(&self.y_counts) {
@@ -277,6 +286,9 @@ const fn default_recoil_require_target() -> bool {
 }
 const fn default_recoil_interval_ms() -> u64 {
     16
+}
+const fn default_recoil_fire_delay_ms() -> u64 {
+    0
 }
 const fn default_recoil_y_counts() -> i32 {
     1
@@ -1933,11 +1945,12 @@ mod tests {
     #[test]
     fn recoil_configuration_is_typed_and_bounded() {
         let mut config: AppConfig = serde_yaml::from_str(
-            "control:\n  recoil:\n    enabled: true\n    interval_ms: 20\n    y_counts: 3\n",
+            "control:\n  recoil:\n    enabled: true\n    interval_ms: 20\n    fire_delay_ms: 40\n    y_counts: 3\n",
         )
         .unwrap();
         assert!(config.control.recoil.enabled);
         assert_eq!(config.control.recoil.interval_ms, 20);
+        assert_eq!(config.control.recoil.fire_delay_ms, 40);
         assert_eq!(config.control.recoil.y_counts, 3);
         config.validate_configured_adapters().unwrap();
 

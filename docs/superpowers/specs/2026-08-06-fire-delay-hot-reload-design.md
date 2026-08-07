@@ -116,16 +116,18 @@ Studio 控件
 触发状态的读写遵守以下规则：
 
 1. 硬件触发从 false 变 true 时，在 device worker 观察到上升沿的当前单调时钟上记录开始时间，并以当前 `fire_delay_ns` 计算固定 deadline。
-2. 在 deadline 之前跳过发送，同时丢弃/不消费会在延迟后过期的旧 command。
-3. deadline 到期后，继续执行现有发送前检查；只发送最新 generation。
-4. false 状态优先级最高：清空周期状态、清空 command slot、清除控制遥测。
+2. 在 deadline 之前保留 command slot 中最新的 `OutputPlan`，不发送也不丢弃；设备 worker 使用 `LatestSlot::wait_take_or_timeout` 等待新 plan 或 deadline 到期。新 plan 到达时替换旧待发 plan，避免积累多个 move。
+3. deadline 到期后，取当前最新 plan，继续执行现有发送前检查；只发送最新 generation。若 deadline 到期时没有 plan，继续等待下一条最新 plan，不创建独立补发任务。
+4. false 状态优先级最高：清空周期状态、清空 command slot、清除控制遥测和当前待发 plan。
 5. 非硬件模式不建立等待周期。
 6. `fire_delay_ns = 0` 立即通过现有输出检查，不增加等待。
 7. 配置热更新不修改已有周期 deadline；下一次上升沿读取新值。
 
-这里的等待只限制设备副作用，不阻塞上游实时链。不会调用 `stop_state`、不会关闭 DeepStream、不会清理 tracker，也不会创建独立定时器补发命令。
+这里的等待只限制设备副作用，不阻塞上游实时链。不会调用 `stop_state`、不会关闭 DeepStream、不会清理 tracker，也不会创建独立定时器补发命令；`wait_take_or_timeout` 只是设备 worker 已有 slot 消费循环的超时等待。
 
 ### 5.4 运行时状态与 trace
+
+`fire_delay_pending` 与剩余时间是设备 worker 产生的运行时事实，需要通过 `PipelineMetrics`/`RuntimeSnapshot` 发布；不能仅由 API 根据 `trigger_active` 和配置值推断。为避免 status 读取阻塞设备 worker，发布使用已有轻量原子/快照机制。
 
 为验证端到端生效，在 runtime control/prediction 状态中增加：
 

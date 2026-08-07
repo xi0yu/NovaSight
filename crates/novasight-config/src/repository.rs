@@ -626,6 +626,9 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
                 .entry(Value::String("interval_ms".to_owned()))
                 .or_insert_with(|| Value::Number(config.control.recoil.interval_ms.into()));
             recoil
+                .entry(Value::String("fire_delay_ms".to_owned()))
+                .or_insert_with(|| Value::Number(config.control.recoil.fire_delay_ms.into()));
+            recoil
                 .entry(Value::String("y_counts".to_owned()))
                 .or_insert_with(|| Value::Number(config.control.recoil.y_counts.into()));
         }

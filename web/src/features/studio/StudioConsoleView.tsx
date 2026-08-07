@@ -359,6 +359,7 @@ function formatRecoilBlockReason(value: unknown): string {
   const labels: Record<string, string> = {
     RECOIL_DISABLED: "关闭",
     FIRING_INACTIVE: "等待真实左键",
+    FIRE_DELAY: "等待左键压枪延迟",
     DT_INVALID: "控制周期无效",
     OBSERVATION_AGE_INVALID: "观测时间无效",
     TARGET_STALE: "目标观测已过期",
@@ -1360,6 +1361,7 @@ export function StudioConsoleView({
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
   const recoilRequireTarget = readBoolean(recoilConfig.require_target, true);
   const recoilIntervalMs = readNumber(recoilConfig.interval_ms, 16);
+  const recoilFireDelayMs = readNumber(recoilConfig.fire_delay_ms, 0);
   const recoilYCounts = readNumber(recoilConfig.y_counts, 1);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
   const triggerModeApplyMode = configFieldIndex?.get("control.trigger_mode")?.restart_required ? "restart" : "live";
@@ -4081,7 +4083,7 @@ export function StudioConsoleView({
                   <span>每轴到位</span><b>{formatAxisSettlement(controlPipeline.arrival_settled_x, controlPipeline.arrival_settled_y)}</b>
                   <span>视觉反馈门控</span><b>{formatFeedbackGate(controlPipeline.actuation_pending_x, controlPipeline.actuation_pending_y)}</b>
                   <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
-                  <span>叠加间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_y_counts, 0)} counts`}</b>
+                  <span>首发延迟 / 间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline.recoil_configured_fire_delay_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_y_counts, 0)} counts`}</b>
                   <span>已等待 / 剩余</span><b>{`${formatOptionalNumber(controlPipeline.recoil_elapsed_since_output_ms, 2)} / ${formatOptionalNumber(controlPipeline.recoil_remaining_ms, 2)} ms`}</b>
                   <span>本轮请求 / 已发送</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 0)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 0)} counts`}</b>
                   <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
@@ -4346,10 +4348,26 @@ export function StudioConsoleView({
                 <ModuleSwitch label="启用压枪" detail="真实左键按下后按设定间隔，把 +Y 与最新安全画面的跟踪量合并；每张画面最多发送一条 move。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
                 <ModuleSwitch label="只在存在目标时压枪" detail="开启后要求当前有效目标；单帧漏检时沿用“目标丢失保持”窗口，但不会用预测框继续跟踪。关闭后，无目标时到期压枪量也能组成当轮唯一 move。" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
                 {recoilEnabled ? (
-                  <details className="crosshair-advanced-settings">
+                <details className="crosshair-advanced-settings">
                     <summary>间隔叠加参数</summary>
                     <p className="console-section-note">首次开火先等待一个完整间隔；达到间隔后只叠加一次，不补发错过的次数。发送失败也不会提前消耗本次压枪机会。</p>
                     <div className="advanced-settings-grid">
+                      <ParameterNumberControl
+                        label="左键开火延迟"
+                        detail="第一次有效左键压枪前额外等待该时长，后续仍按叠加间隔发第二次及之后。"
+                        value={recoilFireDelayMs}
+                        min={0}
+                        max={5000}
+                        recommendedMin={0}
+                        recommendedMax={250}
+                        step={1}
+                        unit="ms"
+                        kind="stepper"
+                        riskLevel="advanced"
+                        onCommit={(value) =>
+                          updateControlGroupField("recoil", "fire_delay_ms", Math.round(value))
+                        }
+                      />
                       <ParameterNumberControl
                         label="压枪叠加间隔"
                         detail="距离上一次成功包含压枪量的 move 达到该时长后，在下一张安全新画面中再次叠加；不会用独立定时器补发。"
