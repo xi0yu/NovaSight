@@ -119,6 +119,30 @@ const CONTROL_ALGORITHM_DESCRIPTION = "当前链路：选择主要目标、目�
 const CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX = "配置 schema 与 Studio 参数不一致";
 type KmnetTestMessageTone = "success" | "warning";
 const loadModelManagerDialog = () => import("../models/ModelManagerDialog");
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [stableValue, setStableValue] = useState(value);
+
+  useEffect(() => {
+    if (Object.is(stableValue, value)) {
+      return;
+    }
+
+    if (delayMs <= 0) {
+      setStableValue(value);
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setStableValue(value);
+    }, delayMs);
+
+    return () => window.clearTimeout(timeout);
+  }, [value, stableValue, delayMs]);
+
+  return stableValue;
+}
+
 const ModelManagerDialog = lazy(() =>
   loadModelManagerDialog().then((module) => ({
     default: module.ModelManagerDialog
@@ -1397,17 +1421,21 @@ export function StudioConsoleView({
     // controlled components and memos stay stable.
     setConfigDraft((prev) => (runtimeConfigValuesEqual(prev, next) ? prev : next));
   }, [runtimeConfig, draggingControlId]);
-  const kmnetConnected = kmnetStatus.connected === true;
-  const kmnetRuntimeConnected = kmnetStatus.runtime_connected === true;
-  const kmnetConnecting = kmnetStatus.connecting === true;
+  const kmnetConnectedRaw = kmnetStatus.connected === true;
+  const kmnetRuntimeConnectedRaw = kmnetStatus.runtime_connected === true;
+  const kmnetConnectingRaw = kmnetStatus.connecting === true;
   const kmnetExecutorAvailable = kmnetStatus.available === true;
-  const kmnetConnectionState = readString(
+  const kmnetConnectionStateRaw = readString(
     kmnetStatus.connection_state,
-    kmnetConnected ? "connected" : kmnetConnecting ? "connecting" : "disconnected"
+    kmnetConnectedRaw ? "connected" : kmnetConnectingRaw ? "connecting" : "disconnected"
   );
+  const kmnetConnectionState = useDebouncedValue(kmnetConnectionStateRaw, 280);
+  const kmnetConnected = kmnetConnectionState === "connected";
+  const kmnetRuntimeConnected = useDebouncedValue(kmnetRuntimeConnectedRaw, 280);
+  const kmnetConnecting = kmnetConnectionState === "connecting";
   const kmnetConnectionFailed = kmnetConnectionState === "failed";
   const kmnetConnectionDegraded = kmnetConnectionState === "degraded";
-  const kmnetRetryable = kmnetStatus.retryable === true;
+  const kmnetRetryable = useDebouncedValue(kmnetStatus.retryable === true, 280);
   const kmnetLastError = readString(kmnetStatus.last_error, "");
   const kmnetLastDeviceError = readString(kmnetStatus.last_device_error, "");
   const desiredConfigRevision = readNumber(runtime?.config?.version, 0);
@@ -4494,7 +4522,7 @@ export function StudioConsoleView({
                 </div>
                 <div className="kmnet-status-tile">
                   <span>连接阶段</span>
-                  <b>{readString(kmnetStatus.connection_state, NO_SAMPLE)}</b>
+                  <b>{kmnetConnectionState}</b>
                 </div>
                 <div className={kmnetConfigurationReady ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>配置装载</span>

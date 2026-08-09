@@ -36,6 +36,7 @@ const MAX_TELEMETRY_DETECTIONS: usize = 64;
 const DETECTION_TELEMETRY_MIN_INTERVAL_NS: u64 = 200_000_000;
 const CONTROL_TELEMETRY_MIN_INTERVAL_NS: u64 = 50_000_000;
 const PREDICTION_TRUTH_SAMPLE_CAPACITY: usize = 240;
+const KMNET_MONITOR_ERROR_TOLERANCE_COUNT: usize = 2;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PipelineStatus {
@@ -355,6 +356,7 @@ struct SharedState {
     button_left_epoch: AtomicU64,
     button_right: AtomicBool,
     device_connected: AtomicBool,
+    monitor_error_streak: AtomicUsize,
     device_connection_enabled: AtomicBool,
     external_stop: Arc<AtomicUsize>,
     last_vision_telemetry_at_ns: AtomicU64,
@@ -411,6 +413,7 @@ impl SharedState {
             button_left_epoch: AtomicU64::new(1),
             button_right: AtomicBool::new(false),
             device_connected: AtomicBool::new(device_connected),
+            monitor_error_streak: AtomicUsize::new(0),
             device_connection_enabled: AtomicBool::new(true),
             external_stop,
             last_vision_telemetry_at_ns: AtomicU64::new(0),
@@ -575,6 +578,7 @@ impl SharedState {
         self.set_button_left(false);
         self.button_right.store(false, Ordering::Release);
         self.device_connected.store(false, Ordering::Release);
+        self.monitor_error_streak.store(0, Ordering::Release);
         self.clear_control_telemetry();
         *self
             .metrics
@@ -598,10 +602,12 @@ impl SharedState {
         self.set_button_left(false);
         self.button_right.store(false, Ordering::Release);
         self.device_connected.store(false, Ordering::Release);
+        self.monitor_error_streak.store(0, Ordering::Release);
         self.clear_control_telemetry();
     }
 
     fn record_device_success(&self) {
+        self.monitor_error_streak.store(0, Ordering::Release);
         if !self.device_connected.swap(true, Ordering::AcqRel) {
             self.metrics
                 .device_recovery_count
@@ -618,7 +624,35 @@ impl SharedState {
             }
         ) {
             self.device_connected.store(false, Ordering::Release);
+            self.monitor_error_streak.store(0, Ordering::Release);
             return;
+        }
+
+        if matches!(
+            error,
+            novasight_core::AppError::PointerDevice {
+                code: "monitor_stale" | "monitor_failed",
+                ..
+            }
+        ) && self.device_connected.load(Ordering::Acquire)
+        {
+            if self
+                .monitor_error_streak
+                .fetch_add(1, Ordering::AcqRel)
+                .saturating_add(1)
+                < KMNET_MONITOR_ERROR_TOLERANCE_COUNT
+            {
+                self.metrics
+                    .device_error_count
+                    .fetch_add(1, Ordering::Relaxed);
+                *self
+                    .metrics
+                    .last_device_error
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(error.to_string());
+                return;
+            }
+            self.monitor_error_streak.store(0, Ordering::Release);
         }
         self.metrics
             .device_error_count
@@ -635,6 +669,7 @@ impl SharedState {
     }
 
     fn record_device_error_message(&self, message: impl Into<String>) {
+        self.monitor_error_streak.store(0, Ordering::Release);
         self.metrics
             .device_error_count
             .fetch_add(1, Ordering::Relaxed);
@@ -648,6 +683,7 @@ impl SharedState {
 
     fn record_manual_device_disconnect(&self) {
         self.device_connected.store(false, Ordering::Release);
+        self.monitor_error_streak.store(0, Ordering::Release);
         self.trigger_active.store(false, Ordering::Release);
         self.buttons_available.store(false, Ordering::Release);
         self.set_button_left(false);
@@ -1943,5 +1979,62 @@ fn snapshot_metrics(
             .recoil
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc::sync_channel,
+    };
+
+    use novasight_core::AppError;
+    use novasight_core::controller::recoil::RecoilConfig;
+
+    use super::{PipelineConfig, PipelineLiveConfig, SharedState, TriggerMode};
+
+    fn test_shared_state() -> SharedState {
+        let (event_tx, _event_rx) = sync_channel(4);
+        SharedState::new(
+            event_tx,
+            Arc::new(AtomicUsize::new(0)),
+            true,
+            TriggerMode::Always,
+            PipelineLiveConfig::from(&PipelineConfig::default()),
+            RecoilConfig::default(),
+        )
+    }
+
+    #[test]
+    fn monitor_errors_are_tolerated_short_term() {
+        let shared = test_shared_state();
+
+        shared.record_device_error(&AppError::PointerDevice {
+            code: "monitor_stale",
+            message: "monitor timed out once".to_owned(),
+        });
+        assert!(shared.device_connected.load(Ordering::Acquire));
+        assert_eq!(shared.metrics.device_error_count.load(Ordering::Acquire), 1);
+
+        shared.record_device_error(&AppError::PointerDevice {
+            code: "monitor_stale",
+            message: "monitor timed out twice".to_owned(),
+        });
+        assert!(!shared.device_connected.load(Ordering::Acquire));
+        assert_eq!(shared.metrics.device_error_count.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn driver_errors_disconnect_immediately() {
+        let shared = test_shared_state();
+
+        shared.record_device_error(&AppError::PointerDevice {
+            code: "driver_send_failed",
+            message: "udp send failed".to_owned(),
+        });
+        assert!(!shared.device_connected.load(Ordering::Acquire));
+        assert_eq!(shared.metrics.device_error_count.load(Ordering::Acquire), 1);
     }
 }
