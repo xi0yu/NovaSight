@@ -200,27 +200,19 @@ impl SingleTargetPredictor {
         let allowed_cap = self.allowed_cap();
         let safe_offset = clamp_vector_magnitude(weighted_offset, allowed_cap);
 
+        let projection = AxisPredictionProjection {
+            estimate,
+            horizon_ms,
+            raw_offset,
+            weighted_offset,
+            safe_offset,
+            allowed_cap,
+            allowed,
+        };
+
         SingleTargetPrediction {
-            x: axis_prediction(
-                estimate,
-                Axis::X,
-                horizon_ms,
-                raw_offset,
-                weighted_offset,
-                safe_offset,
-                allowed_cap,
-                allowed,
-            ),
-            y: axis_prediction(
-                estimate,
-                Axis::Y,
-                horizon_ms,
-                raw_offset,
-                weighted_offset,
-                safe_offset,
-                allowed_cap,
-                allowed,
-            ),
+            x: projection.for_axis(Axis::X),
+            y: projection.for_axis(Axis::Y),
             history_position_count: self.velocity.history_position_count(),
             actuation_delay_ms: self.config.actuation_delay_ms,
             lead_ms: self.config.lead_ms,
@@ -363,7 +355,7 @@ impl RobustAimVelocityEstimator {
         );
         let motion_consistency =
             (straightness.min(direction_consistency) * speed_stability).clamp(0.0, 1.0);
-        let profile = classify_motion_profile(
+        let profile = classify_motion_profile(MotionProfileInputs {
             velocities,
             mean_velocity,
             medoid_velocity,
@@ -372,8 +364,8 @@ impl RobustAimVelocityEstimator {
             straightness,
             direction_consistency,
             motion_consistency,
-            self.config.spread_base_px_ms,
-        );
+            base_deadband: self.config.spread_base_px_ms,
+        });
         let motion_state = profile.motion_state();
 
         self.complete_window_updates += 1;
@@ -404,36 +396,41 @@ impl RobustAimVelocityEstimator {
     }
 }
 
-fn axis_prediction(
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct AxisPredictionProjection {
     estimate: VectorVelocityEstimate,
-    axis: Axis,
     horizon_ms: f64,
     raw_offset: Vector2,
     weighted_offset: Vector2,
     safe_offset: Vector2,
     allowed_cap: f64,
     allowed: bool,
-) -> AxisPrediction {
-    AxisPrediction {
-        velocity: axis.component(estimate.velocity),
-        motion_state: estimate.motion_state,
-        trend_consistency: estimate.trend_consistency,
-        acceleration_px_ms2: axis.component(estimate.acceleration_px_ms2),
-        motion_confidence: estimate.motion_confidence,
-        velocity_samples: estimate
-            .raw_velocities
-            .map(|velocity| Some(axis.component(velocity))),
-        mean_velocity: Some(axis.component(estimate.mean_velocity)),
-        medoid_velocity: Some(axis.component(estimate.medoid_velocity)),
-        velocity_spread: Some(estimate.speed_spread),
-        measurement_dt_ms: Some(estimate.measurement_dt_ms),
-        reference_dt_ms: estimate.reference_dt_ms,
-        horizon_ms,
-        raw_offset: axis.component(raw_offset),
-        weighted_offset: axis.component(weighted_offset),
-        allowed_cap,
-        safe_offset: axis.component(safe_offset),
-        allowed,
+}
+
+impl AxisPredictionProjection {
+    fn for_axis(self, axis: Axis) -> AxisPrediction {
+        AxisPrediction {
+            velocity: axis.component(self.estimate.velocity),
+            motion_state: self.estimate.motion_state,
+            trend_consistency: self.estimate.trend_consistency,
+            acceleration_px_ms2: axis.component(self.estimate.acceleration_px_ms2),
+            motion_confidence: self.estimate.motion_confidence,
+            velocity_samples: self
+                .estimate
+                .raw_velocities
+                .map(|velocity| Some(axis.component(velocity))),
+            mean_velocity: Some(axis.component(self.estimate.mean_velocity)),
+            medoid_velocity: Some(axis.component(self.estimate.medoid_velocity)),
+            velocity_spread: Some(self.estimate.speed_spread),
+            measurement_dt_ms: Some(self.estimate.measurement_dt_ms),
+            reference_dt_ms: self.estimate.reference_dt_ms,
+            horizon_ms: self.horizon_ms,
+            raw_offset: axis.component(self.raw_offset),
+            weighted_offset: axis.component(self.weighted_offset),
+            allowed_cap: self.allowed_cap,
+            safe_offset: axis.component(self.safe_offset),
+            allowed: self.allowed,
+        }
     }
 }
 
@@ -529,7 +526,8 @@ fn mean_acceleration(velocities: [Vector2; 3], intervals_ms: [f64; 3]) -> Vector
     acceleration_1.add(acceleration_2).scale(0.5)
 }
 
-fn classify_motion_profile(
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MotionProfileInputs {
     velocities: [Vector2; 3],
     mean_velocity: Vector2,
     medoid_velocity: Vector2,
@@ -539,7 +537,20 @@ fn classify_motion_profile(
     direction_consistency: f64,
     motion_consistency: f64,
     base_deadband: f64,
-) -> MotionProfileEstimate {
+}
+
+fn classify_motion_profile(inputs: MotionProfileInputs) -> MotionProfileEstimate {
+    let MotionProfileInputs {
+        velocities,
+        mean_velocity,
+        medoid_velocity,
+        mean_speed,
+        speed_stability,
+        straightness,
+        direction_consistency,
+        motion_consistency,
+        base_deadband,
+    } = inputs;
     let deadband = (base_deadband.abs() * 0.25).max(1e-9);
     let jitter_band = base_deadband.abs().max(deadband);
     let speeds = velocities.map(Vector2::magnitude);

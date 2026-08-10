@@ -1,0 +1,127 @@
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - develop-alpha
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-host:
+    name: Rust host contracts
+    runs-on: macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Show pinned toolchain
+        run: rustc --version && cargo --version
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+      - name: Configure latest-only native contracts
+        run: cmake -S native/latest-frame-exchange -B out/ci/latest-frame -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build latest-only native contracts
+        run: cmake --build out/ci/latest-frame --parallel
+
+      - name: Run latest-only native contracts
+        run: ctest --test-dir out/ci/latest-frame --output-on-failure
+
+      - name: Configure TensorRT reference ABI
+        run: cmake -S native/tensorrt-runtime -B out/ci/tensorrt-reference -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build TensorRT reference ABI
+        run: cmake --build out/ci/tensorrt-reference --parallel
+
+      - name: Run TensorRT reference ABI
+        run: ctest --test-dir out/ci/tensorrt-reference --output-on-failure
+
+      - name: Configure preprocess reference ABI
+        run: cmake -S novasight_jetson_preprocess_native/native -B out/ci/preprocess-reference -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build preprocess reference ABI
+        run: cmake --build out/ci/preprocess-reference --parallel
+
+      - name: Run preprocess reference ABI
+        run: ctest --test-dir out/ci/preprocess-reference --output-on-failure
+
+  studio:
+    name: Studio static quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install locked dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Check Studio types
+        run: pnpm --dir web typecheck
+
+      - name: Audit visual-system contracts
+        run: pnpm --dir web visual:audit
+
+      - name: Build Studio assets
+        run: pnpm --dir web build
+
+      - name: Audit production dependencies
+        run: pnpm --dir web audit --prod
+
+  rust-security:
+    name: RustSec advisory audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit Cargo lockfile
+        run: cargo audit --file Cargo.lock
+
+  jetson-production:
+    name: Jetson production preflight
+    if: vars.NOVASIGHT_JETSON_CI_ENABLED == 'true'
+    runs-on: [self-hosted, Linux, ARM64, jetson]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Show Jetson toolchain
+        run: rustc --version && cargo --version && uname -a
+
+      - name: Build release package
+        run: cargo run -p novasight-packager -- --profile release
+
+      - name: Validate production composition
+        working-directory: out/package/NovaSight
+        run: bin/novasightd --check

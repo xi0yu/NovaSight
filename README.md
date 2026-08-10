@@ -4,6 +4,10 @@ NovaSight is a Jetson-first realtime vision application. The maintained product
 path is the Rust backend plus the React Web UI; DeepStream, TensorRT, target
 selection, prediction, control, and kmNet output are owned by the Rust process.
 
+Current engineering health, active risks, and verification boundaries are kept
+in [PROJECT_HEALTH_AUDIT.md](PROJECT_HEALTH_AUDIT.md). Historical plans under
+`docs/superpowers/` are not current implementation authority.
+
 ## Repository layout
 
 ```text
@@ -154,8 +158,17 @@ daemon when the original launcher terminal is no longer available.
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+pnpm --dir web typecheck
+pnpm --dir web visual:audit
+pnpm --dir web build
 cargo run -p novasight-packager
 ```
+
+The pinned Rust toolchain is declared in `rust-toolchain.toml`. The tracked
+`quality` workflow repeats portable Rust/native and Studio gates on hosted
+runners. Its Jetson production job remains disabled until a self-hosted runner
+is registered and the repository variable `NOVASIGHT_JETSON_CI_ENABLED` is set
+to `true`.
 
 Local runtime databases, models, logs, generated native artifacts, Cargo
 outputs, and Web build output are ignored and must not be committed.

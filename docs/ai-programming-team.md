@@ -87,7 +87,8 @@ Owns the Jetson capture and tensor-meta path.
 
 Responsibilities:
 
-- Keep DeepStream opt-in until Jetson evidence proves it is stable.
+- Treat default-feature DeepStream as the production path while keeping every
+  production-readiness claim gated by Jetson evidence.
 - Keep `gst-launch-1.0` as diagnostics only, not the production backend.
 - Ensure runtime owns the in-process GStreamer lifecycle.
 - Preserve the intended path through NVMM, `nvstreammux`, `nvinfer`, tensor
@@ -180,7 +181,7 @@ Common checks:
 cargo test -p <crate>
 cargo clippy -p <crate> --all-targets -- -D warnings
 git diff --check
-cd web && npm run build
+pnpm --dir web build
 ```
 
 Jetson-only smoke gate:
@@ -188,7 +189,7 @@ Jetson-only smoke gate:
 ```bash
 cd out/package/NovaSight
 bin/novasightd --check
-novasightctl status
+bin/novasightctl status
 ```
 
 ### 8. Workspace Steward
