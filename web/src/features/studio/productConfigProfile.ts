@@ -237,7 +237,7 @@ function buildOutputItem(input: BuildProductConfigProfileInput): ProductConfigIt
       label: "物理输出",
       state: "restart",
       value: "等待硬件重载",
-      detail: "输出门已开启，但 kmNet 新配置需要重启 novasightd。",
+      detail: "输出门已开启，但 kmNet 新配置仍在等待当前进程重载。",
       evidence: input.kmnetConnectionLabel,
       action: "kmnet",
       actionLabel: "检查 kmNet"
@@ -284,8 +284,8 @@ function buildKmnetItem(input: BuildProductConfigProfileInput): ProductConfigIte
       id: "kmnet",
       label: "kmNet 设备",
       state: "restart",
-      value: "等待重启",
-      detail: "设备参数已保存，novasightd 需要重启后装载。",
+      value: "等待重载",
+      detail: "设备参数已保存，当前进程正在重新装载适配器。",
       evidence: `${input.kmnetHost}:${input.kmnetPort} · ${input.kmnetUuid}`,
       action: "kmnet",
       actionLabel: "测试设备"

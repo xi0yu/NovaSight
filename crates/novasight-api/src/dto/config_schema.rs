@@ -96,7 +96,7 @@ impl ConfigSchemaResponse {
                         string("server.control_socket", "本地控制套接字"),
                     ],
                 ),
-                section(
+                runtime_section(
                     "replay",
                     "安全回放",
                     vec![
@@ -111,12 +111,12 @@ impl ConfigSchemaResponse {
                         boolean("replay.output_gate_open", "允许回放输出"),
                     ],
                 ),
-                section(
+                runtime_section(
                     "consumers",
                     "预览消费者",
                     vec![boolean("consumers.preview", "启用硬件 JPEG 预览")],
                 ),
-                section(
+                runtime_section(
                     "limits",
                     "流量限制",
                     vec![integer(
@@ -127,7 +127,7 @@ impl ConfigSchemaResponse {
                         Some("Hz"),
                     )],
                 ),
-                section(
+                runtime_section(
                     "crosshair",
                     "视觉准星",
                     vec![
@@ -262,7 +262,7 @@ impl ConfigSchemaResponse {
                         ),
                         float(
                             "pipeline.max_counts_per_update",
-                            "单次计数上限",
+                            "跟踪单次计数上限",
                             1.0,
                             i16::MAX as f64,
                             Some("count"),
@@ -507,7 +507,7 @@ impl ConfigSchemaResponse {
                         string("paths.license", "许可证路径"),
                     ],
                 ),
-                section(
+                runtime_section(
                     "capture",
                     "Jetson 采集",
                     vec![
@@ -579,7 +579,7 @@ impl ConfigSchemaResponse {
                         ),
                     ],
                 ),
-                section(
+                runtime_section(
                     "inference",
                     "GPU 推理",
                     vec![
@@ -619,7 +619,7 @@ impl ConfigSchemaResponse {
                         ),
                     ],
                 ),
-                section(
+                runtime_section(
                     "hardware",
                     "kmNet 输出",
                     vec![

@@ -2,18 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   emergencyStopRuntimePipeline,
-  getApiErrorCode,
-  getModelCatalog,
   getRuntimeState,
   selectCaptureProfile,
   startRuntimePipeline,
   stopRuntimePipeline,
   type CaptureSelectPayload,
   type CaptureState,
-  type ModelCatalogDirectory,
-  type ModelCatalogModel,
-  type ModelCatalogResponse,
-  type ModelProject,
   type RuntimeState
 } from "../../api";
 import { reportError } from "../../lib/toast";
@@ -35,17 +29,10 @@ export type MainlineLaunchStage = {
 type UseMainlineLaunchInput = {
   activeModelPublished: boolean;
   buildCapturePayload: () => CaptureSelectPayload;
-  navigateToInference: () => void;
-  onEnsureProjects: (force?: boolean) => Promise<ModelProject[]>;
   onRefresh: () => Promise<void>;
   onRuntimeStateChange: (runtime: RuntimeState) => void;
-  applyModelCatalogResult: (result: ModelCatalogResponse) => void;
   setBusy: (busy: string | null) => void;
   setLocalError: (message: string | null) => void;
-  setModelCatalogLoading: (loading: boolean) => void;
-  setModelCatalogMessage: (message: string) => void;
-  setModelManagerDialogOpen: (open: boolean) => void;
-  setSelectedModelCatalogPath: (path: string) => void;
   runtimeFatalError: boolean;
   runtimeInferenceDetail: string;
   runtimeInferenceReason: string;
@@ -55,15 +42,14 @@ type UseMainlineLaunchInput = {
 };
 
 const LAUNCH_STATUS_REQUEST_TIMEOUT_MS = 15000;
-const MODEL_GUIDANCE_OPENED_ERROR = "MODEL_GUIDANCE_OPENED";
-const MODEL_UNAVAILABLE_ERROR_CODE = "model_unavailable";
 
-// Output delivery is configured and connected independently. Mainline launch
-// only proves capture, inference and mouse-algorithm consumption are ready.
+// Output delivery is configured independently. Mainline launch proves the
+// runtime owner is active; capture/inference evidence is required only when
+// an active model exists.
 export const MAINLINE_LAUNCH_STAGES: MainlineLaunchStage[] = [
   {
-    title: "检查模型配置",
-    caption: "没有已发布 Engine 时转入模型管理，配置完成后再继续启动。"
+    title: "检查模型状态",
+    caption: "没有已发布 Engine 时主链仍会启动，并保持等待模型。"
   },
   {
     title: "检查运行环境",
@@ -79,7 +65,7 @@ export const MAINLINE_LAUNCH_STAGES: MainlineLaunchStage[] = [
   },
   {
     title: "激活鼠标算法",
-    caption: "确认目标选择、目标速度预测与连续非线性控制已开始读取识别结果；输出设备不影响本步骤。"
+    caption: "有模型时确认算法读取识别结果；无模型时确认主链已进入等待状态。"
   }
 ];
 
@@ -95,32 +81,6 @@ function readBoolean(value: unknown, fallback = false): boolean {
 
 function readString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
-}
-
-function modelLaunchCandidateRank(model: ModelCatalogModel): number {
-  const recommendationRank = model.recommendation === "recommended"
-    ? 0
-    : model.recommendation === "unrated"
-      ? 10
-      : 20;
-  const status = model.artifact_status ?? model.scan_status;
-  const statusRank = status === "ready"
-    ? 0
-    : status === "pending" || status === "need_confirm"
-      ? 1
-      : status === "failed"
-        ? 4
-        : 8;
-  return recommendationRank + statusRank;
-}
-
-function flattenLaunchCatalogModels(root: ModelCatalogDirectory | null): ModelCatalogModel[] {
-  if (!root) {
-    return [];
-  }
-  return root.children.flatMap((node) =>
-    node.type === "model" ? [node] : flattenLaunchCatalogModels(node)
-  );
 }
 
 export function resolveMainlineLaunchStepState(
@@ -176,10 +136,7 @@ function formatLaunchError(envelope: LaunchErrorEnvelope): string {
 
 export function useMainlineLaunch({
   activeModelPublished,
-  applyModelCatalogResult,
   buildCapturePayload,
-  navigateToInference,
-  onEnsureProjects,
   onRefresh,
   onRuntimeStateChange,
   runtimeFatalError,
@@ -189,11 +146,7 @@ export function useMainlineLaunch({
   runtimeMainlineSelected,
   runtimeMainlineStatus,
   setBusy,
-  setLocalError,
-  setModelCatalogLoading,
-  setModelCatalogMessage,
-  setModelManagerDialogOpen,
-  setSelectedModelCatalogPath
+  setLocalError
 }: UseMainlineLaunchInput) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [status, setStatus] = useState<MainlineLaunchStatus>("idle");
@@ -371,70 +324,7 @@ export function useMainlineLaunch({
     setLocalError
   ]);
 
-  const ensurePublishedModelBeforeMainline = useCallback(async (options?: { force?: boolean }) => {
-    if (activeModelPublished && options?.force !== true) {
-      return true;
-    }
-    const openingMessage = options?.force === true
-      ? "NovaSight 服务报告当前模型不可用，已转入模型管理。"
-      : "启动前没有已发布 TensorRT Engine，已转入模型管理。";
-    setLocalError(openingMessage);
-    setModelCatalogMessage(openingMessage);
-    setProgressDetail("未找到当前模型，正在读取模型目录并打开模型管理。");
-    navigateToInference();
-    setDialogOpen(false);
-    setModelManagerDialogOpen(true);
-    setModelCatalogLoading(true);
-    try {
-      await onEnsureProjects(false).catch(() => undefined);
-      const result = await getModelCatalog(true);
-      applyModelCatalogResult(result);
-      const engineCandidates = flattenLaunchCatalogModels(result.root)
-        .filter((model) => model.kind === "engine")
-        .sort((left, right) =>
-          modelLaunchCandidateRank(left) - modelLaunchCandidateRank(right) ||
-          left.relative_path.localeCompare(right.relative_path)
-        );
-      const selectedCandidate = engineCandidates[0];
-      if (!selectedCandidate) {
-        const noModelMessage = "启动前没有找到 .engine 模型。请把 TensorRT engine 放入 models 目录，刷新模型后再切换。";
-        setLocalError(noModelMessage);
-        setModelCatalogMessage(noModelMessage);
-        return false;
-      }
-      setSelectedModelCatalogPath(selectedCandidate.relative_path);
-      const selectedMessage = `已预选 ${selectedCandidate.relative_path}。请点击“验证并切换到所选模型”，完成后再次启动主链。`;
-      setLocalError(selectedMessage);
-      setModelCatalogMessage(selectedMessage);
-      if (result.updated_files > 0) {
-        await onRefresh();
-      }
-    } catch (err) {
-      const failureMessage = `模型管理打开失败：${getErrorMessage(err)}`;
-      setLocalError(failureMessage);
-      setModelCatalogMessage(failureMessage);
-      reportError(err, { source: "mainline-model-guide", title: "模型管理打开失败" });
-    } finally {
-      setModelCatalogLoading(false);
-    }
-    return false;
-  }, [
-    activeModelPublished,
-    applyModelCatalogResult,
-    navigateToInference,
-    onEnsureProjects,
-    onRefresh,
-    setLocalError,
-    setModelCatalogLoading,
-    setModelCatalogMessage,
-    setModelManagerDialogOpen,
-    setSelectedModelCatalogPath
-  ]);
-
   const startInferenceThread = useCallback(async () => {
-    if (!(await ensurePublishedModelBeforeMainline())) {
-      return;
-    }
     setBusy("runtime.start");
     setLocalError(null);
     try {
@@ -444,10 +334,6 @@ export function useMainlineLaunch({
       }
       await onRefresh();
     } catch (err) {
-      if (getApiErrorCode(err) === MODEL_UNAVAILABLE_ERROR_CODE) {
-        await ensurePublishedModelBeforeMainline({ force: true });
-        return;
-      }
       setLocalError(formatLaunchError({
         stage: "启动推理",
         action: "请求 nova 控制链进入运行态",
@@ -459,7 +345,7 @@ export function useMainlineLaunch({
     } finally {
       setBusy(null);
     }
-  }, [ensurePublishedModelBeforeMainline, onRefresh, setBusy, setLocalError]);
+  }, [onRefresh, setBusy, setLocalError]);
 
   const waitForRuntimeEvidence = useCallback(async (
     stageTitle: string,
@@ -553,11 +439,10 @@ export function useMainlineLaunch({
 
     try {
       await runStage(0, async () => {
-        setProgressDetail(`正在确认模型：${stageLabel(0)}`);
-        const modelReady = await ensurePublishedModelBeforeMainline();
-        if (!modelReady) {
-          throw new Error(MODEL_GUIDANCE_OPENED_ERROR);
-        }
+        setProgressDetail(activeModelPublished
+          ? `已确认活动模型：${stageLabel(0)}`
+          : "当前没有活动模型；主链将先启动并等待模型发布。"
+        );
       });
       await runStage(1, async () => {
         setProgressDetail(`正在采集运行态：${stageLabel(1)}`);
@@ -587,6 +472,19 @@ export function useMainlineLaunch({
         setMessage("NovaSight 已确认主链运行，正在确认识别结果已进入控制链路。");
       });
       await runStage(4, async () => {
+        if (!activeModelPublished) {
+          const state = await waitForRuntimeEvidence(
+            "进入模型等待状态",
+            (state) => getRuntimeMainlineStatus(state).running,
+            "控制主链尚未进入运行态。",
+            6000,
+            600,
+            signal
+          );
+          const runtimeStatus = getRuntimeMainlineStatus(state);
+          setProgressDetail(`主链已运行，等待模型发布。${runtimeStatus.progressSummary ? ` ${runtimeStatus.progressSummary}` : ""}`);
+          return;
+        }
         const state = await waitForRuntimeEvidence(
           "激活鼠标算法",
           (state) => getRuntimeMainlineStatus(state).hasRuntimeConsumption,
@@ -621,21 +519,6 @@ export function useMainlineLaunch({
       if (launchAbortControllerRef.current?.signal.aborted || cancelledRef.current) {
         return;
       }
-      if (errorMessage === MODEL_GUIDANCE_OPENED_ERROR) {
-        setStatus("idle");
-        setError("");
-        setProgressDetail("已转入模型管理，请完成模型切换后重新启动。");
-        clearAccepted();
-        return;
-      }
-      if (getApiErrorCode(err) === MODEL_UNAVAILABLE_ERROR_CODE) {
-        await ensurePublishedModelBeforeMainline({ force: true });
-        setStatus("idle");
-        setError("");
-        setProgressDetail("已转入模型管理，请完成模型切换后重新启动。");
-        clearAccepted();
-        return;
-      }
       if (cancelledRef.current) {
         setStatus("cancelled");
         setError("");
@@ -666,7 +549,7 @@ export function useMainlineLaunch({
   }, [
     buildCapturePayload,
     clearAccepted,
-    ensurePublishedModelBeforeMainline,
+    activeModelPublished,
     onRefresh,
     onRuntimeStateChange,
     setBusy,
@@ -693,11 +576,6 @@ export function useMainlineLaunch({
     setProgressDetail("正在请求立即停止输出并中止启动，不再等待普通生命周期锁。");
     clearAccepted();
     setBusy(null);
-    // If the model manager is open (we got there via a missing-model error
-    // during stage 0), close it too so the user has clear visual feedback
-    // that the launch was cancelled — otherwise the dialog stays open and
-    // the user has to dismiss it manually.
-    setModelManagerDialogOpen(false);
     // The post-cancel confirmation fetch uses its own controller so the
     // launch abort above doesn't tear it down — we still want to confirm
     // that the backend accepted the emergency stop.
@@ -735,7 +613,6 @@ export function useMainlineLaunch({
     onRuntimeStateChange,
     setBusy,
     setLocalError,
-    setModelManagerDialogOpen,
     status
   ]);
 

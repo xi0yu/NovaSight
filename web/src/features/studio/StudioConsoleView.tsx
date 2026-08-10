@@ -53,6 +53,7 @@ import {
 import { reportError, reportInfo, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
+import { useStableSemanticValue } from "../shared/useStableSemanticValue";
 import { NovaIcon, StatusBadge, ThemeGallery, ThemeToggle } from "../../components/visual";
 import { CurrentModelSummary } from "../models/CurrentModelSummary";
 import { ModelSwitchDialog } from "../models/ModelSwitchDialog";
@@ -115,7 +116,7 @@ import "./studio-settings.css";
 
 const DEFAULT_CONTROL_ALGORITHM = "continuous_atan_predictive_v1";
 const CONTROL_ALGORITHM_LABEL = "连续 Atan 控制";
-const CONTROL_ALGORITHM_DESCRIPTION = "当前链路：选择主要目标、目标速度预测、连续非线性控制、输出限幅、命令输出。";
+const CONTROL_ALGORITHM_DESCRIPTION = "当前链路：选择主要目标、目标速度预测、连续非线性控制、跟踪限幅、输出门控、压枪叠加、命令输出。";
 const CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX = "配置 schema 与 Studio 参数不一致";
 type KmnetTestMessageTone = "success" | "warning";
 const loadModelManagerDialog = () => import("../models/ModelManagerDialog");
@@ -227,8 +228,8 @@ const ALGORITHM_SETTINGS_SECTIONS: Array<{
   },
   {
     id: "stability",
-    label: "输出限幅",
-    detail: "单次 counts 上限、到位与反馈等待",
+    label: "跟踪输出限幅",
+    detail: "跟踪 counts 上限、到位与反馈等待",
     panelId: "algorithm-settings-stability"
   },
   {
@@ -383,29 +384,28 @@ function formatRecoilBlockReason(value: unknown): string {
   const labels: Record<string, string> = {
     RECOIL_DISABLED: "关闭",
     FIRING_INACTIVE: "等待真实左键",
+    TARGET_REQUIRED: "等待有效目标",
+    INTERVAL_PENDING: "等待压枪间隔",
     FIRE_DELAY: "等待左键压枪延迟",
-    DT_INVALID: "控制周期无效",
-    OBSERVATION_AGE_INVALID: "观测时间无效",
-    TARGET_STALE: "目标观测已过期",
-    TARGET_INVALID: "等待有效目标",
-    ERROR_INVALID: "垂直误差无效",
-    POSITION_BRAKE: "位置保护刹车",
-    RECOIL_RATE_ZERO: "压枪速率为零",
+    OUTPUT_SATURATED: "设备范围已饱和"
   };
   return labels[reason] ?? (reason || "等待真实左键或有效目标");
 }
 
 function formatRecoilState(stateValue: unknown, reasonValue: unknown): string {
   const state = readString(stateValue);
-  const labels: Record<string, string> = {
-    IDLE: "待机",
-    STARTUP: "启动渐入",
-    ACTIVE: "即时追加",
-    HOLD: "稳定保持",
-    BRAKE: "位置刹车",
-    STALE: "观测过期",
+  const completedLabels: Record<string, string> = {
+    READY: "本轮压枪已就绪",
+    APPLIED: "本轮压枪已叠加"
   };
-  return labels[state] ?? formatRecoilBlockReason(reasonValue);
+  if (completedLabels[state]) {
+    return completedLabels[state];
+  }
+  const reason = readString(reasonValue);
+  if (reason) {
+    return formatRecoilBlockReason(reason);
+  }
+  return state === "IDLE" ? "待机" : state || NO_SAMPLE;
 }
 
 function crosshairStateLabel(value: string): string {
@@ -1202,6 +1202,16 @@ export function StudioConsoleView({
   const mainlineRuntimeSelected = RUNTIME_MAINLINE_BACKENDS.has(selectedRuntimeBackend);
   const runtimeMainlineSelected = mainlineRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
+  const runtimeMainlinePresentation = useStableSemanticValue(
+    runtimeMainlineStatus,
+    runtimeMainlineStatus.readinessCode,
+    360
+  );
+  const runtimeOutputTrace = useStableSemanticValue(
+    runtimeMainlineStatus.outputTrace,
+    runtimeMainlineStatus.outputTrace?.code ?? "none",
+    280
+  );
   const runtimeInferenceConfigured = runtimeInference.configured === true;
   const runtimeInferenceReason = readString(runtimeInference.reason, "");
   const runtimeInferenceDetail = readString(runtimeInference.detail, "");
@@ -1422,7 +1432,6 @@ export function StudioConsoleView({
     setConfigDraft((prev) => (runtimeConfigValuesEqual(prev, next) ? prev : next));
   }, [runtimeConfig, draggingControlId]);
   const kmnetConnectedRaw = kmnetStatus.connected === true;
-  const kmnetRuntimeConnectedRaw = kmnetStatus.runtime_connected === true;
   const kmnetConnectingRaw = kmnetStatus.connecting === true;
   const kmnetExecutorAvailable = kmnetStatus.available === true;
   const kmnetConnectionStateRaw = readString(
@@ -1431,11 +1440,11 @@ export function StudioConsoleView({
   );
   const kmnetConnectionState = useDebouncedValue(kmnetConnectionStateRaw, 280);
   const kmnetConnected = kmnetConnectionState === "connected";
-  const kmnetRuntimeConnected = useDebouncedValue(kmnetRuntimeConnectedRaw, 280);
+  const kmnetRuntimeConnected = kmnetConnected;
   const kmnetConnecting = kmnetConnectionState === "connecting";
   const kmnetConnectionFailed = kmnetConnectionState === "failed";
   const kmnetConnectionDegraded = kmnetConnectionState === "degraded";
-  const kmnetRetryable = useDebouncedValue(kmnetStatus.retryable === true, 280);
+  const kmnetRetryable = kmnetConnectionFailed || kmnetConnectionDegraded;
   const kmnetLastError = readString(kmnetStatus.last_error, "");
   const kmnetLastDeviceError = readString(kmnetStatus.last_device_error, "");
   const desiredConfigRevision = readNumber(runtime?.config?.version, 0);
@@ -1475,19 +1484,41 @@ export function StudioConsoleView({
     || (runtime?.running === true && kmnetRuntimeConnected);
   const kmnetBlockedReason = readString(kmnetStatus.blocked_reason, "");
   const kmnetConnectionLabel = kmnetRestartRequired
-    ? "配置等待重启"
+    ? "配置等待当前进程重载"
     : kmnetConnected
-    ? kmnetConnectionDegraded ? "已连接，监听异常" : "已连接"
+    ? "已连接"
     : kmnetConnecting
       ? "连接中"
-      : kmnetConnectionFailed
-        ? "连接失败"
-        : "未连接";
+      : kmnetConnectionDegraded
+        ? "连接异常，重试中"
+        : kmnetConnectionFailed
+          ? "连接失败"
+          : "未连接";
   const kmnetRuntimeConnectionLabel = runtime?.running === true
     ? kmnetRestartRequired
-      ? kmnetRuntimeConnected ? "运行配置仍连接" : "等待重启"
+      ? kmnetRuntimeConnected ? "旧会话仍连接" : "等待重载"
       : kmnetRuntimeConnected ? "已连接" : "未连接"
     : "主链未运行";
+  const kmnetNoticeCode = kmnetRestartRequired
+    ? "restart_required"
+    : kmnetConnectionFailed
+      ? "failed"
+      : kmnetConnectionDegraded
+        ? "degraded"
+        : kmnetLastDeviceError || kmnetLastError
+          ? "recent_error"
+          : "none";
+  const kmnetNotice = useStableSemanticValue(
+    {
+      code: kmnetNoticeCode,
+      lastError: kmnetLastError,
+      lastDeviceError: kmnetLastDeviceError,
+      desiredRevision: desiredConfigRevision,
+      effectiveRevision: effectiveConfigRevision
+    },
+    kmnetNoticeCode,
+    280
+  );
   const kmnetDiagnosticDisabled = kmnetRestartRequired
     || !kmnetExecutorAvailable
     || runtime?.running === true
@@ -1526,7 +1557,7 @@ export function StudioConsoleView({
       : configApplyPending
         ? "正在应用…"
         : configRestartRequired
-          ? "已保存 · 等待重启"
+          ? "已保存 · 等待进程级配置接管"
           : "运行区域不同";
   const runtimePostprocessAvailable = runtimeMainlineRunning
     && runtimeInference.loaded === true
@@ -1542,7 +1573,7 @@ export function StudioConsoleView({
       : configApplyPending
         ? "正在应用…"
         : configRestartRequired
-          ? "已保存 · 等待重启"
+          ? "已保存 · 等待进程级配置接管"
           : "运行值不同";
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
@@ -1630,6 +1661,8 @@ export function StudioConsoleView({
     .filter((classId) => recoveryClassIdSet.has(classId))
     .join(",");
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
+  const runtimeRecoilEnabled = readNullableBoolean(controlPipeline.recoil_enabled);
+  const effectiveRecoilEnabled = runtimeRecoilEnabled ?? recoilEnabled;
   const mouseObservation = asRecord(control.mouse_observation);
   const controlHasSample = readString(control.global_state, "IDLE") !== "IDLE";
   const controlHasTarget = Object.keys(target).length > 0;
@@ -1662,16 +1695,26 @@ export function StudioConsoleView({
     0,
     "counts"
   );
+  const controlWillEmitRaw = readNullableBoolean(control.will_emit);
+  const controlWillEmit = useStableSemanticValue(
+    controlWillEmitRaw,
+    controlWillEmitRaw === null ? "unknown" : String(controlWillEmitRaw),
+    180
+  );
+  const controlTriggerActiveRaw = readNullableBoolean(control.trigger_active);
+  const controlTriggerActive = useStableSemanticValue(
+    controlTriggerActiveRaw,
+    controlTriggerActiveRaw === null ? "unknown" : String(controlTriggerActiveRaw),
+    180
+  );
   const controlNoSendReason = !controlHasTarget
       ? targetPipelineMessage || readString(control.selection_reason, "无目标")
-      : control.will_emit !== true
+      : controlWillEmit !== true
         ? readString(control.no_send_reason, readString(control.reason, "控制门控未通过"))
         : !kmnetRuntimeConnected
           ? "主链设备通道未连接"
           : "命令已获准进入设备通道";
   const runtimeOutputEnabled = readNullableBoolean(control.output_enabled);
-  const controlWillEmit = readNullableBoolean(control.will_emit);
-  const controlTriggerActive = readNullableBoolean(control.trigger_active);
   const deepstreamInputFrames = runtimeMainlineStatus.nvinferInputFrames;
   const deepstreamOutputBuffers = readNullableNumber(runtimeInference.output_buffers);
   const deepstreamMetadataExtractions = runtimeMainlineStatus.metadataExtractions;
@@ -1691,19 +1734,28 @@ export function StudioConsoleView({
     runtimeInference.loaded === true &&
     runtimeInference.terminal_error !== true;
   const runtimePreviewActive = runtimeInference.preview_active === true;
-  const previewActive = previewActiveOverride ?? runtimePreviewActive;
+  const previewRuntimePresentation = useStableSemanticValue(
+    {
+      streamReady: deepstreamPreviewStreamReady,
+      active: runtimePreviewActive,
+      reason: readString(runtimeInference.preview_reason, "等待 DeepStream 硬件预览帧")
+    },
+    `${String(deepstreamPreviewStreamReady)}:${String(runtimePreviewActive)}`,
+    280
+  );
+  const previewActive = previewActiveOverride ?? previewRuntimePresentation.active;
   const previewImageAvailable = deepstreamNvinferSelected
-    ? deepstreamPreviewStreamReady && previewActive
+    ? previewRuntimePresentation.streamReady && previewActive
     : runtime?.capture?.available === true;
   const previewUnavailableReason = deepstreamNvinferSelected
-    ? readString(runtimeInference.preview_reason, "等待 DeepStream 硬件预览帧")
+    ? previewRuntimePresentation.reason
     : "预览帧尚不可用";
 
   useEffect(() => {
-    if (previewActiveOverride === runtimePreviewActive) {
+    if (previewActiveOverride === previewRuntimePresentation.active) {
       setPreviewActiveOverride(null);
     }
-  }, [previewActiveOverride, runtimePreviewActive]);
+  }, [previewActiveOverride, previewRuntimePresentation.active]);
 
   const updatePreviewActive = useCallback(async (
     enabled: boolean,
@@ -1762,7 +1814,7 @@ export function StudioConsoleView({
     detectionDataAgeMs,
     detectionFreshnessThresholdMs
   );
-  const controlTrace = buildControlTrace({
+  const rawControlTrace = buildControlTrace({
     runtimeRunning: runtimeMainlineRunning,
     detectionBatchFps,
     publishedBatches: runtimeMainlineStatus.publishedBatches,
@@ -1790,13 +1842,30 @@ export function StudioConsoleView({
     controlFrameAgeMs,
     measurementDtMs: controlMeasurementDtMs,
     predictionEnabled: controlPredictionEnabled,
+    predictionAllowedX: readNullableBoolean(controlPipeline.prediction_allowed),
+    predictionAllowedY: readNullableBoolean(controlPipeline.prediction_allowed_y),
+    predictionSafeOffset: formatPoint(
+      controlPipeline.prediction_safe_offset_x,
+      controlPipeline.prediction_safe_offset_y,
+      2,
+      "px"
+    ),
     controllerActive: controlHasSample,
     controllerMode: controlModeLabel,
     movementStrategy: readString(controlPipeline.movement_strategy, ""),
     fullError: formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2, "counts"),
     floatDemand: formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2, "counts"),
+    floatDemandX: readNullableNumber(controlPipeline.float_demand_x),
+    floatDemandY: readNullableNumber(controlPipeline.float_demand_y),
+    maxCountsPerUpdate: controlMaxCounts,
     integerCommand: formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts"),
     residual: formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts"),
+    recoilEnabled: effectiveRecoilEnabled,
+    recoilState: readString(controlPipeline.recoil_state, ""),
+    recoilStatus: formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason),
+    recoilRemainingMs: readNullableNumber(controlPipeline.recoil_remaining_ms),
+    recoilRequestedY: readNullableNumber(controlPipeline.recoil_requested_counts_y),
+    recoilEmittedY: readNullableNumber(controlPipeline.recoil_emitted_counts_y),
     outputEnabled: runtimeOutputEnabled ?? outputEnabled,
     willEmit: controlWillEmit,
     triggerActive: controlTriggerActive,
@@ -1806,8 +1875,13 @@ export function StudioConsoleView({
     acceptedCommandCount,
     lastAcceptedCommand,
     deviceLastError: kmnetLastError || kmnetLastDeviceError,
-    outputTrace: runtimeMainlineStatus.outputTrace
+    outputTrace: runtimeOutputTrace
   });
+  const controlTrace = useStableSemanticValue(
+    rawControlTrace,
+    rawControlTrace.steps.map((step) => `${step.id}:${step.state}`).join("|"),
+    220
+  );
   const captureReason = capture?.last_error || (
     capture?.running !== true
       ? "采集尚未启动"
@@ -2264,10 +2338,6 @@ export function StudioConsoleView({
     }
   }, [buildCapturePayload, onRefresh]);
 
-  const navigateToInference = useCallback(() => {
-    navigatePage("infer");
-  }, [navigatePage]);
-
   const {
     accepted: mainlineLaunchAccepted,
     cancel: cancelMainlineLaunch,
@@ -2290,10 +2360,7 @@ export function StudioConsoleView({
     toastVisible: launchToastVisible
   } = useMainlineLaunch({
     activeModelPublished,
-    applyModelCatalogResult,
     buildCapturePayload,
-    navigateToInference,
-    onEnsureProjects,
     onRefresh,
     onRuntimeStateChange,
     runtimeFatalError: runtime?.fatal_error !== null,
@@ -2303,11 +2370,7 @@ export function StudioConsoleView({
     runtimeMainlineSelected,
     runtimeMainlineStatus,
     setBusy,
-    setLocalError,
-    setModelCatalogLoading,
-    setModelCatalogMessage,
-    setModelManagerDialogOpen,
-    setSelectedModelCatalogPath
+    setLocalError
   });
 
   useEffect(() => {
@@ -2352,7 +2415,9 @@ export function StudioConsoleView({
     ? runtimeMainlineStatus.failed
       ? "管线故障"
       : runtimeMainlineRunning
-        ? runtimeMainlineStatus.hasRuntimeConsumption
+        ? !activeModelPublished
+          ? "主链运行 · 等待模型"
+          : runtimeMainlineStatus.hasRuntimeConsumption
           ? "控制链路已读取"
           : runtimeMainlineStatus.hasInferenceSignal
             ? "识别结果已产出"
@@ -2715,7 +2780,7 @@ export function StudioConsoleView({
     {
       id: "stability",
       label: "限制",
-      value: `最大移动 ${formatNumber(controlMaxCounts, 0)} counts`,
+      value: `跟踪上限 ${formatNumber(controlMaxCounts, 0)} counts`,
       detail: `到位 ${formatNumber(controlArrivalRadiusCounts, 1)} counts · 残差 ${formatNumber(residualCap, 2)}`,
       icon: "control"
     },
@@ -3182,12 +3247,10 @@ export function StudioConsoleView({
       }
       try {
         const result = await updateConfigSection("hardware", payload);
-        const needsRestart = result?.restart_required;
-        setKmnetTestMessageTone(needsRestart ? "warning" : "success");
-        setKmnetTestMessage(
-          needsRestart
-            ? `kmNet ${selectedKeys.length} 个字段已保存；请重启 novasightd，使新的物理设备适配器生效。`
-            : "kmNet 参数已经是推荐值。"
+        setKmnetTestMessageTone(result?.applied === false ? "warning" : "success");
+        setKmnetTestMessage(result?.applied === false
+          ? "kmNet 参数已保存，但当前进程未确认应用；请查看错误中心。"
+          : `kmNet ${selectedKeys.length} 个字段已保存，并已在当前进程重新装载。`
         );
         await onRefresh();
       } catch (err) {
@@ -3223,7 +3286,7 @@ export function StudioConsoleView({
     setConfirmationRequest({
       eyebrow: "kmNet 配置",
       title: "应用 kmNet 推荐参数",
-      description: "勾选要替换的字段。保存后通常需要重启 novasightd；未勾选的字段保持原值。",
+      description: "勾选要替换的字段。保存后会在当前进程立即重载设备适配器；未勾选的字段保持原值。",
       fields: fieldOrder.map((item) => ({
         key: item.key,
         label: item.label,
@@ -3361,7 +3424,7 @@ export function StudioConsoleView({
         : "导入会在确认时重新读取当前配置版本，再以该事务基线替换整份运行配置。",
       details: [
         `将修改：${changedSections.join("、") || "没有差异"}`,
-        "保存成功后，NovaSight 会明确返回是否需要重启 novasightd。"
+        "运行参数会立即应用；监听地址或存储根目录等进程级配置会单独提示。"
       ],
       confirmLabel: canonicalChanged ? "按最新配置导入" : "确认导入配置",
       danger: true,
@@ -3390,7 +3453,7 @@ export function StudioConsoleView({
             finalizeRuntimeConfigWrite(seq, applied);
             reportSuccess(
               "配置导入成功",
-              result.restart_required ? "配置已保存；重启 novasightd 后全部生效。" : "配置已经进入当前运行状态。",
+              result.restart_required ? "运行参数已生效；仍有进程级基础配置待服务重新启动后接管。" : "配置已经进入当前运行状态。",
               "config-import"
             );
             return true;
@@ -3692,9 +3755,9 @@ export function StudioConsoleView({
           <div className="console-info">
             {mainlineLaunchMessage || "主链启动请求已提交，正在等待运行状态确认。"}
           </div>
-        ) : runtimeMainlineSelected && runtimeMainlineRunning && runtimeMainlineStatus.readinessCode !== "ready" ? (
+        ) : runtimeMainlineSelected && runtimeMainlineRunning && runtimeMainlinePresentation.readinessCode !== "ready" ? (
           <div className="console-info" role="status">
-            {runtimeMainlineStatus.readinessLabel}：{runtimeMainlineStatus.readinessDetail}
+            {runtimeMainlinePresentation.readinessLabel}：{runtimeMainlinePresentation.readinessDetail}
           </div>
         ) : null}
 
@@ -3901,7 +3964,7 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="ROI 输入预览" />
               <PreviewFrame
-                supported={activePage === "infer" && previewEnabled && deepstreamPreviewStreamReady}
+                supported={activePage === "infer" && previewEnabled && previewRuntimePresentation.streamReady}
                 active={previewActive}
                 togglePending={previewTogglePending}
                 onToggle={(enabled) => void updatePreviewActive(enabled)}
@@ -4092,6 +4155,7 @@ export function StudioConsoleView({
                   <span>可信度后预测</span><b>{formatPoint(controlPipeline.prediction_weighted_offset_x, controlPipeline.prediction_weighted_offset_y, 2, "px")}</b>
                   <span>预测位移上限</span><b>{formatOptionalNumber(controlPipeline.prediction_allowed_cap_x, 2, "px")}</b>
                   <span>截断后预测</span><b>{formatPoint(controlPipeline.prediction_safe_offset_x, controlPipeline.prediction_safe_offset_y, 2, "px")}</b>
+                  <span>本轮预测准入 X / Y</span><b>{`${controlPipeline.prediction_allowed === true ? "是" : controlPipeline.prediction_allowed === false ? "否" : NO_SAMPLE} / ${controlPipeline.prediction_allowed_y === true ? "是" : controlPipeline.prediction_allowed_y === false ? "否" : NO_SAMPLE}`}</b>
                   <span>真实性窗口</span><b>{formatPredictionTruthWindow(controlPipeline.prediction_truth)}</b>
                   <span>预测 MAE</span><b>{formatPredictionTruthMetric(controlPipeline.prediction_truth, "mae_px")}</b>
                   <span>预测 P95</span><b>{formatPredictionTruthMetric(controlPipeline.prediction_truth, "p95_error_px")}</b>
@@ -4105,12 +4169,13 @@ export function StudioConsoleView({
                   <span>响应阶段</span><b>{formatResponseStage(controlPipeline.mode)}</b>
                   <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
                   <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
+                  <span>跟踪单轴限幅</span><b>{formatOptionalNumber(controlMaxCounts, 0, "counts")}</b>
                   <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
                   <span>量化余量</span><b>{formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts")}</b>
                   <span>到位区（进入 / 退出）</span><b>{formatPoint(controlPipeline.arrival_enter_counts, controlPipeline.arrival_exit_counts, 2, "counts")}</b>
                   <span>每轴到位</span><b>{formatAxisSettlement(controlPipeline.arrival_settled_x, controlPipeline.arrival_settled_y)}</b>
                   <span>视觉反馈门控</span><b>{formatFeedbackGate(controlPipeline.actuation_pending_x, controlPipeline.actuation_pending_y)}</b>
-                  <span>独立压枪状态</span><b>{recoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
+                  <span>独立压枪状态</span><b>{effectiveRecoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
                   <span>首发延迟 / 间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline.recoil_configured_fire_delay_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_y_counts, 0)} counts`}</b>
                   <span>已等待 / 剩余</span><b>{`${formatOptionalNumber(controlPipeline.recoil_elapsed_since_output_ms, 2)} / ${formatOptionalNumber(controlPipeline.recoil_remaining_ms, 2)} ms`}</b>
                   <span>本轮请求 / 已发送</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 0)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 0)} counts`}</b>
@@ -4121,8 +4186,8 @@ export function StudioConsoleView({
                 <SectionTitle title="最新观测与设备发送" />
                 <p className="console-section-note">控制样本与设备回执分别展示；最近回执不冒充为当前观测的同步发送结果。</p>
                 <div className="console-kv">
-                  <span>触发状态</span><b>{control.trigger_active === true ? "按下" : control.trigger_active === false ? "未按下" : NO_SAMPLE}</b>
-                  <span>是否允许发包</span><b>{control.will_emit === true ? "是" : control.will_emit === false ? "否" : NO_SAMPLE}</b>
+                  <span>触发状态</span><b>{controlTriggerActive === true ? "按下" : controlTriggerActive === false ? "未按下" : NO_SAMPLE}</b>
+                  <span>是否允许发包</span><b>{controlWillEmit === true ? "是" : controlWillEmit === false ? "否" : NO_SAMPLE}</b>
                   <span>运行输出门</span><b>{control.output_enabled === true ? "已打开" : control.output_enabled === false ? "已关闭" : NO_SAMPLE}</b>
                   <span>不发包原因</span><b>{controlNoSendReason || NO_SAMPLE}</b>
                   <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
@@ -4158,12 +4223,12 @@ export function StudioConsoleView({
                 label="发送偏移控制量"
                 detail={outputEnabled
                   ? kmnetRestartRequired
-                    ? "kmNet 新配置等待 novasightd 重启；需要立即停发时请断开 kmNet"
+                    ? "kmNet 新配置等待当前进程重载；需要立即停发时请断开 kmNet"
                     : "关闭后立即清空被取代命令"
                   : kmnetRestartRequired
-                    ? "重启 novasightd 装载 kmNet 新配置后才能打开输出"
+                    ? "等待当前进程完成 kmNet 适配器重载后才能打开输出"
                     : !kmnetAutoConnect
-                    ? "请先保存 kmNet 配置，并按提示重启 novasightd"
+                    ? "请先启用并保存 kmNet 自动连接配置"
                     : !kmnetExecutorAvailable
                       ? "当前没有可用的硬件输出适配器"
                       : !kmnetRuntimeConnected
@@ -4247,7 +4312,7 @@ export function StudioConsoleView({
 
               <div className="console-card">
                 <SectionTitle title={`控制算法 · ${controlModeLabel}`} />
-                <p className="console-section-note">当前控制链路仅使用投影、增益、Atan 响应曲线和单次限幅。</p>
+                <p className="console-section-note">当前跟踪控制链路使用投影、增益、Atan 响应曲线和单次限幅；压枪 +Y 在设备边界另行叠加。</p>
                 <div className="advanced-settings-summary">
                   <div><span>FOVX</span><b>{controlFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
                   <div><span>K_base 基础响应</span><b>{pResponseScale.toFixed(3)}</b></div>
@@ -4381,7 +4446,7 @@ export function StudioConsoleView({
                     <p className="console-section-note">首次开火先等待一个完整间隔；达到间隔后只叠加一次，不补发错过的次数。发送失败也不会提前消耗本次压枪机会。</p>
                     <div className="advanced-settings-grid">
                       <ParameterNumberControl
-                        label="左键开火延迟"
+                        label="首次压枪额外延迟"
                         detail="第一次有效左键压枪前额外等待该时长，后续仍按叠加间隔发第二次及之后。"
                         value={recoilFireDelayMs}
                         min={0}
@@ -4494,7 +4559,7 @@ export function StudioConsoleView({
             <Metric title="按键数据" value={kmnetStatus.buttons_available === true ? "可用" : "不可用"} small="最近轮询" />
             <Metric title="自动连接" value={kmnetAutoConnect ? kmnetRestartRequired ? "重启后启用" : "已启用" : "已关闭"} small="startup" />
             <Metric title="设备通道" value={kmnetRuntimeConnectionLabel} small={kmnetRuntimeConnected ? "运行中" : "等待设备"} />
-            <Metric title="命令门控" value={control.will_emit === true ? "允许" : control.will_emit === false ? "阻止" : NO_SAMPLE} small={controlNoSendReason || "当前控制样本"} />
+            <Metric title="命令门控" value={controlWillEmit === true ? "允许" : controlWillEmit === false ? "阻止" : NO_SAMPLE} small={controlNoSendReason || "当前控制样本"} />
           </div>
           <div className="console-grid2 control-test-grid">
             <div className="console-card">
@@ -4512,9 +4577,9 @@ export function StudioConsoleView({
                   <span>执行器</span>
                   <b>{kmnetExecutorAvailable ? "可用" : "不可用"}</b>
                 </div>
-                <div className={control.will_emit === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
+                <div className={controlWillEmit === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>当前命令门控</span>
-                  <b>{control.will_emit === true ? "允许" : control.will_emit === false ? "阻止" : NO_SAMPLE}</b>
+                  <b>{controlWillEmit === true ? "允许" : controlWillEmit === false ? "阻止" : NO_SAMPLE}</b>
                 </div>
                 <div className={kmnetRuntimeConnected ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>设备通道</span>
@@ -4533,16 +4598,16 @@ export function StudioConsoleView({
                   <b>{kmnetLastDeviceError || kmnetLastError || "无"}</b>
                 </div>
               </div>
-              {kmnetRestartRequired || kmnetLastError || kmnetConnectionFailed || kmnetConnectionDegraded ? (
-                <div className={!kmnetRestartRequired && kmnetConnectionFailed ? "kmnet-connection-notice failed" : "kmnet-connection-notice warn"} role="status">
+              {kmnetNotice.code !== "none" ? (
+                <div className={kmnetNotice.code === "failed" ? "kmnet-connection-notice failed" : "kmnet-connection-notice warn"} role="status">
                   <div>
-                    <strong>{kmnetRestartRequired ? "kmNet 配置已保存，等待重新装载" : kmnetConnectionFailed ? "输出设备未连接" : kmnetConnectionDegraded ? "设备连接异常，正在自动恢复" : "最近一次输出失败"}</strong>
-                    <span>{kmnetRestartRequired
-                      ? `novasightd 当前使用 revision ${effectiveConfigRevision}，已保存 revision ${desiredConfigRevision}。重启进程后才会使用新的地址和 UUID。`
-                      : kmnetLastError || (kmnetConnectionFailed ? "请检查地址、端口、UUID 和网络连通性。" : "视觉主链继续运行，物理偏移输出保持关闭。")}</span>
+                    <strong>{kmnetNotice.code === "restart_required" ? "kmNet 配置已保存，等待当前进程重新装载" : kmnetNotice.code === "failed" ? "输出设备未连接" : kmnetNotice.code === "degraded" ? "设备连接异常，正在自动恢复" : "最近一次输出失败"}</strong>
+                    <span>{kmnetNotice.code === "restart_required"
+                      ? `当前进程使用 revision ${kmnetNotice.effectiveRevision}，已保存 revision ${kmnetNotice.desiredRevision}；正在等待设备适配器重载确认。`
+                      : kmnetNotice.lastError || kmnetNotice.lastDeviceError || (kmnetNotice.code === "failed" ? "请检查地址、端口、UUID 和网络连通性。" : "视觉主链继续运行，物理偏移输出保持关闭。")}</span>
                   </div>
-                  {kmnetRestartRequired ? (
-                    <small>这是配置生效等待，不是 kmNet 网络连接失败；重启前不会尝试用当前设备对象连接新配置。</small>
+                  {kmnetNotice.code === "restart_required" ? (
+                    <small>这是进程内配置重载等待，不是 kmNet 网络连接失败；可以刷新状态或再次保存以重试。</small>
                   ) : kmnetRetryable ? (
                     <small>
                       {rustControlPlane
@@ -4597,9 +4662,9 @@ export function StudioConsoleView({
               </div>
               <TextControl
                 label="kmNet 地址"
-                detail="设备控制器的局域网 IP 或主机名；NovaSight 会在启动时装载硬件会话。"
+                detail="设备控制器的局域网 IP 或主机名；提交后会在当前进程重新装载硬件会话。"
                 value={kmnetHost}
-                applyMode="restart"
+                applyMode="live"
                 riskLevel="advanced"
                 onCommit={(value) => updateConfigField("hardware", "host", value)}
               />
@@ -4611,7 +4676,7 @@ export function StudioConsoleView({
                 max={65535}
                 step={1}
                 kind="stepper"
-                applyMode="restart"
+                applyMode="live"
                 riskLevel="advanced"
                 onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))}
               />
@@ -4619,7 +4684,7 @@ export function StudioConsoleView({
                 label="kmNet UUID"
                 detail="硬件授权标识；与设备地址一起组成当前进程内的输出会话。"
                 value={kmnetUuid}
-                applyMode="restart"
+                applyMode="live"
                 riskLevel="advanced"
                 onCommit={(value) => updateConfigField("hardware", "uuid", value)}
               />
@@ -4631,14 +4696,14 @@ export function StudioConsoleView({
                 max={rustControlPlane ? 49151 : 65535}
                 step={1}
                 kind="stepper"
-                applyMode="restart"
+                applyMode="live"
                 riskLevel="advanced"
                 onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))}
               />
               <ModuleSwitch
                 label={rustControlPlane ? "主链启动时连接设备" : "NovaSight 启动时自动连接"}
                 detail={rustControlPlane
-                  ? "修改后需要重启 novasightd；连接失败时视觉主链继续运行，并由低频设备线程自动重连"
+                  ? "修改后立即重建当前进程内的设备适配器；连接失败时视觉主链继续运行，并由低频设备线程自动重连"
                   : "独立于主链启动；连接失败不会阻止采集、推理和鼠标算法运行"}
                 enabled={kmnetAutoConnect}
                 onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
@@ -4841,7 +4906,7 @@ export function StudioConsoleView({
                 <h3 id="algorithm-settings-response-title">K_base / B / gamma 响应曲线</h3>
                 <p>这组只调公式里的 K_base、B、gamma：u = K_base * R(r,m) * S * atan(e_pred / S)，S 固定 256 counts；R(r,m) = 1 + B * schedule(m) * (1 - exp(-(r ^ gamma)))。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>慢但稳先看</b><span>K_base 提整体速度，B 提稳定运动时的追赶，gamma 只改增强进入早晚；真正输出被“最大移动量”限住时再看限制页。</span></div>
+              <div className="algorithm-tuning-order"><b>慢但稳先看</b><span>K_base 提整体速度，B 提稳定运动时的追赶，gamma 只改增强进入早晚；跟踪输出被“跟踪最大移动量”限住时再看限制页。</span></div>
               <div className="advanced-settings-grid two-column">
                 {responseParameters.map(renderAlgorithmNumberParameter)}
               </div>
@@ -4889,11 +4954,11 @@ export function StudioConsoleView({
           {algorithmSettingsSection === "stability" ? (
             <section aria-labelledby="algorithm-settings-stability-tab" className="algorithm-settings-panel" id="algorithm-settings-stability" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
-                <span>输出限幅</span>
-                <h3 id="algorithm-settings-stability-title">单次输出与到位保持</h3>
-                <p>这些参数不改变目标位置。M 限制单次 counts 输出，D 决定到位停止，Q_res 只保留不足 1 count 的小数余量。</p>
+                <span>跟踪输出限幅</span>
+                <h3 id="algorithm-settings-stability-title">跟踪输出与到位保持</h3>
+                <p>这些参数不改变目标位置。M 限制每轮跟踪控制的 counts，压枪 +Y 在设备边界另行叠加；D 决定到位停止，Q_res 只保留不足 1 count 的小数余量。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低单次输出上限，再检查到位半径；执行反馈延迟在“目标速度预测”中统一管理</span></div>
+              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低跟踪单次限幅，再检查到位半径；压枪叠加量在“Y 轴压枪”中单独调整</span></div>
               <div className="advanced-settings-grid two-column">
                 {stabilityParameters.map(renderAlgorithmNumberParameter)}
               </div>

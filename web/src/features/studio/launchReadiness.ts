@@ -223,9 +223,9 @@ function buildModelItem(runtime: RuntimeState | null, status: RuntimeMainlineSta
     state: failedBecauseModel ? "blocked" : "action",
     detail: failedBecauseModel
       ? "当前模型加载失败，需要重新验证或切换 TensorRT Engine。"
-      : "启动前需要发布一个可加载的 TensorRT Engine。",
+      : "当前没有活动模型；主链可以先启动，感知链会等待模型发布。",
     evidence: runtime?.model_catalog_error || modelName,
-    blocking: true,
+    blocking: failedBecauseModel,
     action: "open-model-manager",
     actionLabel: failedBecauseModel ? "修复模型" : "配置模型"
   };
@@ -426,7 +426,7 @@ function buildKmNetItem(
       id: "kmnet",
       label: "kmNet 输出",
       state: "action",
-      detail: "kmNet 新配置需要重启 novasightd 才会接管输出。",
+      detail: "kmNet 新配置尚未完成当前进程内的适配器重载。",
       evidence: kmnet?.blocked_reason || `${host}:${port}`,
       blocking: false,
       action: "open-kmnet-test",

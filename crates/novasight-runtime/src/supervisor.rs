@@ -97,7 +97,8 @@ impl Drop for UrgentStopToken {
 /// Concrete resources used to create each runtime epoch.
 pub struct RuntimeDependencies {
     clock: Arc<dyn Clock>,
-    device: Arc<dyn PointerDevice>,
+    device: std::sync::RwLock<Arc<dyn PointerDevice>>,
+    device_factory: Option<Arc<PointerDeviceFactory>>,
     pipeline: std::sync::RwLock<PipelineConfig>,
     hardware_trigger_required: AtomicBool,
     recoil_config: std::sync::RwLock<RecoilConfig>,
@@ -109,6 +110,26 @@ pub struct RuntimeDependencies {
     crosshair: Option<CrosshairHub>,
     output_enabled: bool,
     urgent_stop: Arc<UrgentStopSignal>,
+}
+
+type PointerDeviceFactory =
+    dyn Fn(&AppConfig) -> Result<PointerDeviceInstallation, RuntimeError> + Send + Sync;
+
+/// One process-local pointer adapter installation. Production composition
+/// supplies a factory so hardware parameter edits can replace the adapter
+/// between runtime epochs without restarting the daemon.
+pub struct PointerDeviceInstallation {
+    pub device: Arc<dyn PointerDevice>,
+    pub trigger_poll_interval_ms: Option<u64>,
+}
+
+impl PointerDeviceInstallation {
+    pub fn new(device: Arc<dyn PointerDevice>, trigger_poll_interval_ms: Option<u64>) -> Self {
+        Self {
+            device,
+            trigger_poll_interval_ms,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -147,7 +168,8 @@ impl RuntimeDependencies {
         let recoil_config = pipeline.recoil;
         Self {
             clock,
-            device,
+            device: std::sync::RwLock::new(device),
+            device_factory: None,
             pipeline: std::sync::RwLock::new(pipeline),
             hardware_trigger_required: AtomicBool::new(hardware_trigger_required),
             recoil_config: std::sync::RwLock::new(recoil_config),
@@ -164,6 +186,17 @@ impl RuntimeDependencies {
 
     pub fn with_perception(mut self, perception: Arc<dyn PerceptionAdapter>) -> Self {
         self.perception = Some(perception);
+        self
+    }
+
+    pub fn with_device_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(&AppConfig) -> Result<PointerDeviceInstallation, RuntimeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.device_factory = Some(Arc::new(factory));
         self
     }
 
@@ -231,8 +264,13 @@ impl RuntimeDependencies {
         pipeline
     }
 
-    fn install_app_config(&self, config: &AppConfig) -> Result<(), RuntimeError> {
-        let (trigger_poll_interval_ms, crosshair) = {
+    fn install_app_config(&self, config: &AppConfig) -> Result<PointerDeviceMode, RuntimeError> {
+        let installation = self
+            .device_factory
+            .as_ref()
+            .map(|factory| factory(config))
+            .transpose()?;
+        let (current_trigger_poll_interval_ms, crosshair) = {
             let pipeline = self
                 .pipeline
                 .read()
@@ -242,6 +280,10 @@ impl RuntimeDependencies {
                 pipeline.crosshair.clone(),
             )
         };
+        let trigger_poll_interval_ms = installation
+            .as_ref()
+            .map(|installation| installation.trigger_poll_interval_ms)
+            .unwrap_or(current_trigger_poll_interval_ms);
         let mut pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
             .map_err(RuntimeError::pipeline_rejected)?;
         pipeline.crosshair = crosshair;
@@ -256,7 +298,22 @@ impl RuntimeDependencies {
             .pipeline
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = pipeline;
-        Ok(())
+        if let Some(installation) = installation {
+            *self
+                .device
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = installation.device;
+        }
+        Ok(self.device().mode())
+    }
+
+    fn device(&self) -> Arc<dyn PointerDevice> {
+        Arc::clone(
+            &self
+                .device
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
     }
 
     fn live_pipeline_config(&self, config: &AppConfig) -> Result<PipelineLiveConfig, RuntimeError> {
@@ -769,7 +826,7 @@ impl RuntimeSupervisor {
     /// Spawn the sole lifecycle actor with production-selected adapters.
     pub fn spawn(dependencies: RuntimeDependencies) -> (Self, RuntimeHandle) {
         let model = initial_model_snapshot(dependencies.model_catalog.as_ref());
-        let device_mode = dependencies.device.mode();
+        let device_mode = dependencies.device().mode();
         let mut state = SupervisorState {
             daemon: DaemonState::Ready,
             model,
@@ -1132,6 +1189,14 @@ impl RuntimeHandle {
         .await
     }
 
+    pub async fn apply_config(&self, config: AppConfig) -> Result<RuntimeSnapshot, RuntimeError> {
+        self.send_command(|reply| RuntimeCommand::ApplyConfig {
+            config: Box::new(config),
+            reply,
+        })
+        .await
+    }
+
     pub async fn preflight_perception(&self) -> Result<(), RuntimeError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx
@@ -1403,11 +1468,71 @@ async fn handle_command(
                     "configuration reload requires a stopped runtime",
                 ))
             } else {
-                dependencies.install_app_config(&config).map(|()| {
-                    state.output_enabled = config.control.output_enabled;
+                dependencies.install_app_config(&config).map(|device_mode| {
+                    state.device_mode = device_mode;
+                    state.output_enabled = config.control.output_enabled
+                        && device_mode == PointerDeviceMode::Commissioned;
+                    if device_mode == PointerDeviceMode::Commissioned {
+                        state.subsystems.device.state = SubsystemState::Stopped;
+                        state.subsystems.device.last_error = None;
+                    } else {
+                        state.mark_device_uncommissioned();
+                    }
                     publish(snapshot_tx, state, now_ms());
                 })
             };
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::ApplyConfig { config, reply } => {
+            let was_running = matches!(
+                state.pipeline,
+                PipelineState::Running | PipelineState::Standby
+            );
+            let result = async {
+                if was_running {
+                    stop_state(snapshot_tx, ingress_tx, state, active).await?;
+                }
+                let device_mode = match dependencies.install_app_config(&config) {
+                    Ok(device_mode) => device_mode,
+                    Err(error) => {
+                        if was_running {
+                            let _ = start_state(
+                                snapshot_tx,
+                                ingress_tx,
+                                notice_tx,
+                                state,
+                                active,
+                                dependencies,
+                            )
+                            .await;
+                        }
+                        return Err(error);
+                    }
+                };
+                state.device_mode = device_mode;
+                state.output_enabled =
+                    config.control.output_enabled && device_mode == PointerDeviceMode::Commissioned;
+                if device_mode == PointerDeviceMode::Uncommissioned {
+                    state.mark_device_uncommissioned();
+                } else if !was_running {
+                    state.subsystems.device.state = SubsystemState::Stopped;
+                    state.subsystems.device.last_error = None;
+                }
+                if was_running {
+                    start_state(
+                        snapshot_tx,
+                        ingress_tx,
+                        notice_tx,
+                        state,
+                        active,
+                        dependencies,
+                    )
+                    .await
+                } else {
+                    Ok(publish_with_result(snapshot_tx, state, now_ms()))
+                }
+            }
+            .await;
             let _ = reply.send(result);
         }
         RuntimeCommand::PreflightPerception { reply } => {
@@ -2340,7 +2465,7 @@ async fn diagnose_device_move(
     };
     state.subsystems.device.state = SubsystemState::Starting;
     publish(snapshot_tx, state, now_ms());
-    let device = Arc::clone(&dependencies.device);
+    let device = dependencies.device();
     let result = tokio::task::spawn_blocking(move || {
         device.connect()?;
         let send = device.send(command);
@@ -2393,37 +2518,57 @@ async fn start_state(
             "runtime start cancelled by a pending stop request",
         ));
     }
-    if let Some(adapter) = dependencies.perception.clone() {
+    let perception_ready = if let Some(adapter) = dependencies.perception.clone() {
         let runtime_contract = tokio::task::spawn_blocking(move || adapter.runtime_contract())
             .await
             .map_err(|error| {
                 RuntimeError::pipeline_rejected(format!(
                     "perception runtime-contract task failed: {error}"
                 ))
-            })?
-            .map_err(runtime_contract_error)?;
-        if let Some(runtime_contract) = runtime_contract {
-            dependencies.install_runtime_contract(&runtime_contract);
-            state.model.input_width = Some(runtime_contract.model.input_width);
-            state.model.input_height = Some(runtime_contract.model.input_height);
+            })?;
+        match runtime_contract {
+            Ok(Some(runtime_contract)) => {
+                dependencies.install_runtime_contract(&runtime_contract);
+                state.model.input_width = Some(runtime_contract.model.input_width);
+                state.model.input_height = Some(runtime_contract.model.input_height);
+                true
+            }
+            Ok(None) => false,
+            Err(error) if error.kind() == PerceptionErrorKind::ActiveModelMissing => {
+                // A model is an input to perception, not a prerequisite for
+                // owning the runtime lifecycle. Keep the control mainline
+                // alive in a model-waiting state; publishing a model already
+                // performs an epoch-scoped stop/start and attaches perception.
+                state.model.input_width = None;
+                state.model.input_height = None;
+                false
+            }
+            Err(error) => return Err(runtime_contract_error(error)),
         }
-    }
+    } else {
+        false
+    };
     let Some(epoch) = state.begin_start()? else {
         return Ok(publish_with_result(snapshot_tx, state, now_ms()));
     };
-    let has_perception = dependencies.perception.is_some();
+    let has_perception = perception_ready;
     if has_perception {
         state.subsystems.capture.state = SubsystemState::Starting;
         state.subsystems.inference.state = SubsystemState::Starting;
+    } else {
+        state.subsystems.capture.state = SubsystemState::Stopped;
+        state.subsystems.inference.state = SubsystemState::Stopped;
     }
     publish(snapshot_tx, state, now_ms());
 
     let config = dependencies.pipeline_config(epoch);
     let clock = Arc::clone(&dependencies.clock);
     let perception_clock = Arc::clone(&clock);
-    let device = Arc::clone(&dependencies.device);
+    let device = dependencies.device();
     let urgent_stop = Arc::clone(&dependencies.urgent_stop.pending);
-    let perception_adapter = dependencies.perception.clone();
+    let perception_adapter = perception_ready
+        .then(|| dependencies.perception.clone())
+        .flatten();
     let started = tokio::task::spawn_blocking(move || {
         PipelineRuntime::start_suspended_with_cancel(config, clock, device, urgent_stop)
     })
@@ -3030,7 +3175,7 @@ mod tests {
     impl PerceptionAdapter for MissingActiveModelAdapter {
         fn runtime_contract(&self) -> Result<Option<PerceptionRuntimeContract>, PerceptionError> {
             Err(PerceptionError::active_model_missing(
-                "no active model deployment; publish a ready engine before starting perception",
+                "no active model deployment; perception is waiting for a ready engine",
             ))
         }
 
@@ -3079,18 +3224,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_active_model_reports_stable_model_unavailable_error() {
+    async fn missing_active_model_keeps_the_control_mainline_running() {
         let dependencies =
             RuntimeDependencies::recording().with_perception(Arc::new(MissingActiveModelAdapter));
         let (supervisor, runtime) = RuntimeSupervisor::spawn(dependencies);
 
-        let error = runtime
+        let snapshot = runtime
             .start()
             .await
-            .expect_err("missing active model must block runtime startup");
-        assert_eq!(error.kind, RuntimeErrorKind::ModelUnavailable);
-        assert_eq!(error.kind.code(), "model_unavailable");
-        assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
+            .expect("missing active model must enter the waiting state");
+        assert_eq!(snapshot.pipeline.state, PipelineState::Running);
+        assert_eq!(snapshot.subsystems.capture.state, SubsystemState::Stopped);
+        assert_eq!(snapshot.subsystems.inference.state, SubsystemState::Stopped);
+        assert_eq!(snapshot.subsystems.control.state, SubsystemState::Running);
 
         runtime.shutdown_daemon().await.unwrap();
         supervisor.join().await.unwrap();

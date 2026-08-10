@@ -47,4 +47,6 @@ pub use snapshot::{
     RuntimeTelemetrySnapshot, SubsystemSnapshot, SubsystemSnapshots,
 };
 pub use state::{DaemonState, PipelineState};
-pub use supervisor::{RuntimeDependencies, RuntimeHandle, RuntimeSupervisor};
+pub use supervisor::{
+    PointerDeviceInstallation, RuntimeDependencies, RuntimeHandle, RuntimeSupervisor,
+};

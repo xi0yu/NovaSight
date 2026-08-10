@@ -931,6 +931,13 @@ fn runtime_reloadable_config_update(update: &ConfigFieldUpdate) -> bool {
     update.section == "pipeline"
 }
 
+fn runtime_reconfigurable_config_update(update: &ConfigFieldUpdate) -> bool {
+    matches!(
+        update.section.as_str(),
+        "replay" | "consumers" | "limits" | "crosshair" | "capture" | "inference" | "hardware"
+    )
+}
+
 async fn apply_pipeline_config_update(
     state: &ControlState,
     service: &ConfigService,
@@ -959,6 +966,8 @@ async fn apply_config_field_update(
         service.update_recoil(&state.runtime, update).await?
     } else if runtime_reloadable {
         apply_pipeline_config_update(state, service, update).await?
+    } else if runtime_reconfigurable_config_update(&update) {
+        service.update_runtime_field(&state.runtime, update).await?
     } else {
         service.update_field(update).await?
     };
@@ -1143,7 +1152,10 @@ async fn select_capture(
     // mainline. Load any saved epoch-scoped settings first so this preflight
     // step cannot dead-end on a harmless desired/effective revision split.
     service.prepare_runtime_start(&state.runtime).await?;
-    service.apply_capture_profile(&selected).await?;
+    let persisted = service.apply_capture_profile(&selected).await?;
+    service
+        .install_persisted_runtime_config(&state.runtime, persisted.config)
+        .await?;
 
     let snapshot = state.runtime.snapshot();
     let status = runtime_state(&state, &snapshot).await;
@@ -1231,7 +1243,7 @@ async fn update_config_document(
             serde_json::from_value(payload).map_err(ControlApiError::InvalidFieldUpdate)?;
         apply_config_field_update(&state, service, field_update).await?
     } else {
-        service.replace(payload).await?
+        service.replace_runtime(&state.runtime, payload).await?
     };
     Ok(Json(update))
 }

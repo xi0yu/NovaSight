@@ -37,6 +37,7 @@ import {
   runtimeDeliveryTone,
   type RuntimeDeliveryStatus
 } from "./features/shared/runtimeDelivery";
+import { useStableSemanticValue } from "./features/shared/useStableSemanticValue";
 
 type ErrorKey = "health" | "runtime" | "config" | "projects" | "capture";
 type LoadState = {
@@ -299,6 +300,10 @@ function StudioApp() {
         // A partial frame may arrive first on a fast local WebSocket.
         return current;
       }
+      // Once a complete runtime exists, every partial WebSocket frame is an
+      // authoritative revision. Invalidate any slower REST fallback before
+      // deciding whether this frame changes an observable field.
+      runtimeRevisionRef.current += 1;
       const merged = mergeRuntimePatch(current.runtime, frame.state);
       if (runtimePayloadEqual(current.runtime, merged)) {
         // No real change — preserve `lastUpdated` so the top-of-page timestamp
@@ -771,6 +776,10 @@ function StudioApp() {
   }, [applyRuntimeFrame, applyRuntimeState, license?.valid, loadLicense, networkOnline, pageVisible, refreshHealth, statusTopic]);
 
   const realtimeConnected = realtimeStatus === "connected";
+  const stableRealtimeStatus = useStableSemanticValue(realtimeStatus, realtimeStatus, 280);
+  const displayedRealtimeStatus = realtimeStatus === "offline" || realtimeStatus === "paused"
+    ? realtimeStatus
+    : stableRealtimeStatus;
 
   useEffect(() => {
     if (!license?.valid || !networkOnline || !pageVisible || realtimeConnected) {
@@ -816,8 +825,8 @@ function StudioApp() {
       <StatusIndicator tone={hasErrors ? "bad" : state.health?.ok ? "good" : "warn"}>
         {hasErrors ? "后端 部分异常" : state.health?.ok ? "后端 已连接" : "后端 检查中"}
       </StatusIndicator>
-      <StatusIndicator tone={runtimeDeliveryTone(realtimeStatus)}>
-        {runtimeDeliveryLabel(realtimeStatus)}
+      <StatusIndicator tone={runtimeDeliveryTone(displayedRealtimeStatus)}>
+        {runtimeDeliveryLabel(displayedRealtimeStatus)}
       </StatusIndicator>
       <LastUpdatedText date={state.lastUpdated} />
     </>
@@ -834,7 +843,7 @@ function StudioApp() {
           projects={state.projects}
           errors={state.errors}
           lastUpdated={state.lastUpdated}
-          realtimeStatus={realtimeStatus}
+          realtimeStatus={displayedRealtimeStatus}
           onEnsureProjects={loadProjects}
           onRefresh={load}
           onRuntimeConfigChange={applyRuntimeConfig}

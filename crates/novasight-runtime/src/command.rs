@@ -39,6 +39,10 @@ pub(crate) enum RuntimeCommand {
         config: Box<AppConfig>,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
+    ApplyConfig {
+        config: Box<AppConfig>,
+        reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
+    },
     PreflightPerception {
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },

@@ -29,7 +29,10 @@ use novasight_platform_jetson::deepstream::{
 };
 use novasight_platform_jetson::kmnet::{KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError};
 use novasight_platform_jetson::v4l2::V4l2CapabilityProbe;
-use novasight_runtime::{ConfigService, RuntimeDependencies, compose_pipeline_config};
+use novasight_runtime::{
+    ConfigService, PointerDeviceInstallation, RuntimeDependencies, RuntimeError,
+    compose_pipeline_config,
+};
 use novasight_store::config::{
     AppConfig, CaptureConfig, CapturePreference, ConfigValidationError, DeviceBackend, DeviceConfig,
 };
@@ -49,30 +52,36 @@ pub(super) fn build_live_production_dependencies(
     model_catalog: SqliteModelCatalog,
     parser_library: PathBuf,
 ) -> Result<RuntimeDependencies, LivePerceptionError> {
-    let adapters = config
-        .require_production_adapters()
-        .map_err(LivePerceptionError::Config)?;
-    if let Some(selected) = select_uncommissioned_pointer_adapter(adapters.device) {
-        return build_live_dependencies(
-            config,
-            config_service,
-            model_catalog,
-            selected.device,
-            selected.trigger_poll_interval_ms,
-            parser_library,
-        );
-    }
-    let device: Arc<dyn PointerDevice> = match adapters.device.backend {
-        DeviceBackend::NativeUdp => Arc::new(build_native_kmnet(adapters.device)?),
-    };
+    let pointer = build_pointer_installation(config)?;
     build_live_dependencies(
         config,
         config_service,
         model_catalog,
-        device,
-        Some(adapters.device.trigger_poll_interval_ms),
+        pointer.device,
+        pointer.trigger_poll_interval_ms,
         parser_library,
     )
+}
+
+fn build_pointer_installation(
+    config: &AppConfig,
+) -> Result<PointerDeviceInstallation, LivePerceptionError> {
+    let adapters = config
+        .require_production_adapters()
+        .map_err(LivePerceptionError::Config)?;
+    if let Some(selected) = select_uncommissioned_pointer_adapter(adapters.device) {
+        return Ok(PointerDeviceInstallation::new(
+            selected.device,
+            selected.trigger_poll_interval_ms,
+        ));
+    }
+    let device: Arc<dyn PointerDevice> = match adapters.device.backend {
+        DeviceBackend::NativeUdp => Arc::new(build_native_kmnet(adapters.device)?),
+    };
+    Ok(PointerDeviceInstallation::new(
+        device,
+        Some(adapters.device.trigger_poll_interval_ms),
+    ))
 }
 
 /// Validate the production vision contract and linked native runtime without
@@ -235,6 +244,10 @@ fn build_live_dependencies(
     let pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
         .map_err(LivePerceptionError::Pipeline)?;
     let mut dependencies = RuntimeDependencies::new(clock, device, pipeline)
+        .with_device_factory(|config| {
+            build_pointer_installation(config)
+                .map_err(|error| RuntimeError::device_unavailable(error.to_string()))
+        })
         .with_model_catalog(model_catalog.clone())
         .with_preview(preview.clone())
         .with_perception(Arc::new(CatalogDeepStreamAdapter {
@@ -1008,7 +1021,7 @@ pub(super) enum LivePerceptionError {
     Config(ConfigValidationError),
     #[error("model catalog failed: {0}")]
     ModelCatalog(novasight_store::model_catalog::ModelCatalogError),
-    #[error("no active model deployment; publish a ready engine before starting perception")]
+    #[error("no active model deployment; perception is waiting for a ready engine")]
     ActiveModelMissing,
     #[error("active model artifact {artifact_id} must be an engine, got {kind}")]
     ActiveArtifactKind { artifact_id: i64, kind: String },

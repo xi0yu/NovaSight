@@ -11,6 +11,8 @@ const STEP_ICONS: Record<ControlTraceStepId, NovaIconName> = {
   target: "target-lock",
   aim: "target-center",
   controller: "response-curve",
+  limiter: "control",
+  recoil: "activity-pulse",
   gate: "command-queue",
   device: "hid"
 };

@@ -393,9 +393,9 @@ export function buildAlgorithmParameterGroups(
     stabilityParameters: [
       {
         key: "max_counts_per_update",
-        label: "最大移动量",
+        label: "跟踪最大移动量",
         formula: "M",
-        detail: "控制器每轮最多输出多少设备 counts。它限制命令输出，不改变预测 aim 点。",
+        detail: "控制器每轮最多输出多少跟踪设备 counts。压枪 +Y 会在设备边界另行叠加；该参数不改变预测 aim 点。",
         value: values.controlMaxCounts,
         min: 1,
         max: 32767,

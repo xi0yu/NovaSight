@@ -506,6 +506,83 @@ impl ConfigService {
         })
     }
 
+    /// Persist a runtime-owned field and immediately install that exact
+    /// revision. Fields that require capture/inference/device reconstruction
+    /// are applied by an epoch reload inside the current daemon process.
+    pub async fn update_runtime_field(
+        &self,
+        runtime: &RuntimeHandle,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let persisted = self.update_field(update).await?;
+        self.apply_persisted_runtime_config(runtime, persisted.config)
+            .await
+    }
+
+    async fn apply_persisted_runtime_config(
+        &self,
+        runtime: &RuntimeHandle,
+        config: AppConfig,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let previous_effective = self
+            .inner
+            .effective_config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let pending = process_restart_sections(&previous_effective, &config)?;
+        let mut installed = config.clone();
+        if !pending.is_empty() {
+            installed.schema_version = previous_effective.schema_version;
+            installed.server = previous_effective.server.clone();
+            installed.paths = previous_effective.paths.clone();
+            installed.extra = previous_effective.extra.clone();
+        }
+        // Perception and platform adapters resolve configuration from the
+        // effective snapshot while the supervisor constructs the new epoch.
+        *self
+            .inner
+            .effective_config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = installed.clone();
+
+        if let Err(error) = runtime.apply_config(installed).await {
+            *self
+                .inner
+                .effective_config
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = previous_effective;
+            return Err(ConfigServiceError::Runtime(error));
+        }
+        if pending.is_empty() {
+            self.inner
+                .effective_revision
+                .store(config.revision, Ordering::Release);
+        }
+        Ok(ConfigUpdate {
+            config,
+            restart_required: !pending.is_empty(),
+            applied: true,
+            rolled_back: false,
+            message: if pending.is_empty() {
+                "configuration persisted and applied in the current novasightd process".to_owned()
+            } else {
+                format!(
+                    "runtime parameter applied immediately; process-owned sections remain pending [{}]",
+                    pending.join(", ")
+                )
+            },
+        })
+    }
+
+    pub async fn install_persisted_runtime_config(
+        &self,
+        runtime: &RuntimeHandle,
+        config: AppConfig,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        self.apply_persisted_runtime_config(runtime, config).await
+    }
+
     /// Submit a hot output update to the sole runtime actor.
     ///
     /// Once the command enters the actor queue it owns the transaction even if
@@ -854,6 +931,61 @@ impl ConfigService {
             message: "configuration persisted; restart novasightd to apply it".to_owned(),
         })
     }
+
+    /// Replace the document, immediately installing all runtime-owned
+    /// sections. Listener and storage-root changes remain explicitly
+    /// process-owned; they do not prevent the parameter portion of the same
+    /// document from taking effect now.
+    pub async fn replace_runtime(
+        &self,
+        runtime: &RuntimeHandle,
+        replacement: Value,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let previous_effective = self.blocking_effective_snapshot();
+        let persisted = self.replace(replacement).await?;
+        let pending = process_restart_sections(&previous_effective, &persisted.config)?;
+        let mut installed = persisted.config.clone();
+        if !pending.is_empty() {
+            installed.schema_version = previous_effective.schema_version;
+            installed.server = previous_effective.server.clone();
+            installed.paths = previous_effective.paths.clone();
+            installed.extra = previous_effective.extra.clone();
+        }
+
+        *self
+            .inner
+            .effective_config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = installed.clone();
+        if let Err(error) = runtime.apply_config(installed).await {
+            *self
+                .inner
+                .effective_config
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = previous_effective;
+            return Err(ConfigServiceError::Runtime(error));
+        }
+
+        if pending.is_empty() {
+            self.inner
+                .effective_revision
+                .store(persisted.config.revision, Ordering::Release);
+        }
+        Ok(ConfigUpdate {
+            config: persisted.config,
+            restart_required: !pending.is_empty(),
+            applied: true,
+            rolled_back: false,
+            message: if pending.is_empty() {
+                "configuration persisted and applied in the current novasightd process".to_owned()
+            } else {
+                format!(
+                    "runtime parameters applied immediately; process-owned sections remain pending [{}]",
+                    pending.join(", ")
+                )
+            },
+        })
+    }
 }
 
 #[derive(Debug, Error)]
@@ -962,20 +1094,8 @@ fn process_restart_sections(
             config_value_differs(&effective.server, &desired.server)?,
         ),
         (
-            "replay",
-            config_value_differs(&effective.replay, &desired.replay)?,
-        ),
-        (
             "paths",
             config_value_differs(&effective.paths, &desired.paths)?,
-        ),
-        (
-            "crosshair",
-            config_value_differs(&effective.crosshair, &desired.crosshair)?,
-        ),
-        (
-            "hardware",
-            config_value_differs(&effective.device, &desired.device)?,
         ),
         (
             "extra",

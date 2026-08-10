@@ -212,6 +212,10 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     readinessCode = "starting";
     readinessLabel = "正在启动";
     readinessDetail = "正在加载采集、模型推理和控制链路。";
+  } else if (running && !runtime?.active_model) {
+    readinessCode = "starting";
+    readinessLabel = "主链运行 · 等待模型";
+    readinessDetail = "控制主链已经启动；发布可用 Engine 后，感知链会在当前进程自动接入。";
   } else if (running && !hasInferenceSignal) {
     readinessCode = "no_video";
     readinessLabel = "未检测到画面";

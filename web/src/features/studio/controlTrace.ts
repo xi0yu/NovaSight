@@ -7,6 +7,8 @@ export type ControlTraceStepId =
   | "target"
   | "aim"
   | "controller"
+  | "limiter"
+  | "recoil"
   | "gate"
   | "device";
 
@@ -63,13 +65,25 @@ export type BuildControlTraceInput = {
   controlFrameAgeMs: number | null;
   measurementDtMs: number | null;
   predictionEnabled: boolean;
+  predictionAllowedX?: boolean | null;
+  predictionAllowedY?: boolean | null;
+  predictionSafeOffset?: string;
   controllerActive: boolean;
   controllerMode: string;
   movementStrategy: string;
   fullError: string;
   floatDemand: string;
+  floatDemandX?: number | null;
+  floatDemandY?: number | null;
+  maxCountsPerUpdate?: number | null;
   integerCommand: string;
   residual: string;
+  recoilEnabled?: boolean;
+  recoilState?: string;
+  recoilStatus?: string;
+  recoilRemainingMs?: number | null;
+  recoilRequestedY?: number | null;
+  recoilEmittedY?: number | null;
   outputEnabled: boolean;
   willEmit: boolean | null;
   triggerActive: boolean | null;
@@ -230,13 +244,25 @@ function buildAimStep(input: BuildControlTraceInput): ControlTraceStep {
     };
   }
   if (input.hasTarget && present(input.controlAim) && present(input.controlError)) {
+    const predictionTelemetryAvailable =
+      input.predictionAllowedX !== undefined || input.predictionAllowedY !== undefined;
+    const predictionApplied = input.predictionAllowedX === true || input.predictionAllowedY === true;
+    const predictionDetail = !input.predictionEnabled
+      ? "预测已关闭，当前观测直接进入控制误差。"
+      : predictionTelemetryAvailable && predictionApplied
+        ? "本次运行样本通过预测门控，安全预测位移已进入控制误差。"
+        : predictionTelemetryAvailable
+          ? "本次运行样本未通过预测门控，当前观测直接进入控制误差。"
+          : "等待运行样本报告预测门控状态。";
     return {
       id: "aim",
       label: "目标速度预测",
       state: "ready",
-      value: formatNumber(input.errorDistancePx, 2, "px"),
-      detail: input.predictionEnabled ? "aim 点速度预测已进入控制误差。" : "当前观测直接进入控制误差。",
-      evidence: `center=${input.controlCenter} · observed=${input.observedAim} · control=${input.controlAim}`
+      value: input.predictionEnabled
+        ? predictionApplied ? "已介入" : "观测直入"
+        : "已关闭",
+      detail: predictionDetail,
+      evidence: `allowed=${String(input.predictionAllowedX ?? "—")}/${String(input.predictionAllowedY ?? "—")} · offset=${input.predictionSafeOffset || "—"}`
     };
   }
   return {
@@ -246,6 +272,89 @@ function buildAimStep(input: BuildControlTraceInput): ControlTraceStep {
     value: "—",
     detail: input.hasTarget ? "等待控制瞄点与画面中心。" : "没有目标时不计算控制误差。",
     evidence: `frame_age=${formatNumber(input.controlFrameAgeMs, 2, "ms")} · dt=${formatNumber(input.measurementDtMs, 3, "ms")}`
+  };
+}
+
+function buildLimiterStep(input: BuildControlTraceInput): ControlTraceStep {
+  if (!input.controllerActive) {
+    return {
+      id: "limiter",
+      label: "跟踪限幅与量化",
+      state: input.hasTarget ? "waiting" : "idle",
+      value: "—",
+      detail: input.hasTarget ? "等待连续控制器产生浮点需求。" : "没有控制需求时限幅器保持空闲。",
+      evidence: `limit=${formatNumber(input.maxCountsPerUpdate ?? null, 0, "counts")}`
+    };
+  }
+  const maxCounts = input.maxCountsPerUpdate ?? null;
+  const demandX = input.floatDemandX ?? null;
+  const demandY = input.floatDemandY ?? null;
+  const saturated = maxCounts !== null && (
+    (demandX !== null && Math.abs(demandX) > maxCounts)
+    || (demandY !== null && Math.abs(demandY) > maxCounts)
+  );
+  return {
+    id: "limiter",
+    label: "跟踪限幅与量化",
+    state: "ready",
+    value: present(input.integerCommand) ? input.integerCommand : "已计算",
+    detail: saturated
+      ? "本次浮点需求触发单轴上限，随后截断为整数命令并保留量化余量。"
+      : "本次浮点需求未触发单轴上限，已截断为整数命令并保留量化余量。",
+    evidence: `demand=${input.floatDemand} · limit=${formatNumber(maxCounts, 0, "counts")} · residual=${input.residual}`
+  };
+}
+
+function buildRecoilStep(input: BuildControlTraceInput): ControlTraceStep {
+  if (!input.outputEnabled) {
+    return {
+      id: "recoil",
+      label: "压枪延迟叠加",
+      state: "idle",
+      value: "未计算",
+      detail: "物理输出门关闭，设备边界不会推进压枪延迟或叠加节拍。",
+      evidence: "output_enabled=false"
+    };
+  }
+  if (input.triggerActive === false || !input.kmnetRuntimeConnected) {
+    return {
+      id: "recoil",
+      label: "压枪延迟叠加",
+      state: "waiting",
+      value: "等待输出条件",
+      detail: input.triggerActive === false
+        ? "硬件触发条件未激活，设备边界不会计算本轮压枪叠加。"
+        : "设备通道未连接，设备边界不会计算本轮压枪叠加。",
+      evidence: `trigger=${String(input.triggerActive ?? "—")} · connected=${String(input.kmnetRuntimeConnected)}`
+    };
+  }
+  if (!input.recoilEnabled) {
+    return {
+      id: "recoil",
+      label: "压枪延迟叠加",
+      state: "ready",
+      value: "关闭（旁路）",
+      detail: "独立压枪未启用，已准入的跟踪命令在设备边界保持不变。",
+      evidence: "recoil_enabled=false"
+    };
+  }
+  if (!input.controllerActive || !input.recoilState) {
+    return {
+      id: "recoil",
+      label: "压枪延迟叠加",
+      state: input.hasTarget ? "waiting" : "idle",
+      value: "等待样本",
+      detail: "等待设备边界报告真实左键、首发延迟和压枪叠加结果。",
+      evidence: `remaining=${formatNumber(input.recoilRemainingMs ?? null, 2, "ms")}`
+    };
+  }
+  return {
+    id: "recoil",
+    label: "压枪延迟叠加",
+    state: "ready",
+    value: input.recoilStatus || input.recoilState,
+    detail: "该阶段只延迟并叠加压枪 +Y，不会延迟左键事件或跟踪控制命令。",
+    evidence: `state=${input.recoilState} · remaining=${formatNumber(input.recoilRemainingMs ?? null, 2, "ms")} · requested/emitted=${formatInteger(input.recoilRequestedY ?? null)}/${formatInteger(input.recoilEmittedY ?? null)}`
   };
 }
 
@@ -274,7 +383,7 @@ function buildGateStep(input: BuildControlTraceInput): ControlTraceStep {
   if (!input.outputEnabled) {
     return {
       id: "gate",
-      label: "输出限幅",
+      label: "输出门控",
       state: "idle",
       value: "暂停",
       detail: "物理输出关闭；算法继续计算，但不会发送鼠标偏移。",
@@ -284,17 +393,17 @@ function buildGateStep(input: BuildControlTraceInput): ControlTraceStep {
   if (input.willEmit === true) {
     return {
       id: "gate",
-      label: "输出限幅",
+      label: "输出门控",
       state: "ready",
       value: "准入",
-      detail: "当前控制命令已通过限幅与输出门，准备进入设备通道。",
+      detail: "当前整数命令已通过触发条件和物理输出门，准备进入设备通道。",
       evidence: input.triggerActive === null ? "trigger=未知" : input.triggerActive ? "trigger=按下" : "trigger=未按下"
     };
   }
   const waitingForTrigger = input.noSendReason.includes("触发") || input.triggerActive === false;
   return {
     id: "gate",
-    label: "输出限幅",
+    label: "输出门控",
     state: waitingForTrigger || !input.hasTarget ? "waiting" : "blocked",
     value: "未发送",
     detail: input.noSendReason || "控制门控未通过。",
@@ -349,7 +458,9 @@ export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSu
     buildTargetStep(input),
     buildAimStep(input),
     buildControllerStep(input),
+    buildLimiterStep(input),
     buildGateStep(input),
+    buildRecoilStep(input),
     buildDeviceStep(input)
   ];
   const completed = steps.filter((step) => step.state === "ready").length;
@@ -365,7 +476,7 @@ export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSu
   const traceState = input.outputTrace ? outputTraceState(input.outputTrace) : null;
   const state = traceState && traceState !== "ready" ? traceState : derivedState;
   const title = state === "ready"
-    ? "控制链路已形成闭环"
+    ? "控制链路已具备输出条件"
     : state === "blocked"
       ? input.outputTrace
         ? outputTraceLabel(input.outputTrace)
@@ -376,7 +487,7 @@ export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSu
         : "控制链路正在等待实时状态"
         : "控制链路等待主链启动";
   const detail = input.outputTrace?.detail ||
-    "按实时链路串起识别结果、选择主要目标、目标速度预测、连续非线性控制、输出限幅和命令输出。";
+    "按实时链路串起识别结果、目标速度预测、连续控制、跟踪限幅、输出门控、设备边界压枪叠加和设备回执。";
   const traceFacts: ControlTraceFact[] = input.outputTrace
     ? [
         {
