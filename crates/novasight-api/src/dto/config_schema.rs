@@ -198,6 +198,10 @@ impl ConfigSchemaResponse {
                     vec![
                         boolean("control.recoil.enabled", "启用独立 Y 轴压枪"),
                         boolean("control.recoil.require_target", "只在存在目标时压枪"),
+                        boolean(
+                            "control.recoil.fire_delay_enabled",
+                            "启用延迟开火（压枪首发）",
+                        ),
                         integer(
                             "control.recoil.interval_ms",
                             "压枪叠加间隔",
@@ -813,7 +817,7 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 12);
+        assert_eq!(value["version"], 13);
         assert_eq!(value["algorithm"]["id"], "continuous_atan_predictive_v1");
         assert_eq!(value["algorithm"]["response"]["atan_scale_counts"], 256.0);
         assert_eq!(

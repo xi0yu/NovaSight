@@ -461,6 +461,11 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     let schema_version = config.schema_version;
     let interval_recoil_explicit =
         nested_section_has_fields(document, "control", "recoil", &["interval_ms", "y_counts"]);
+    let fire_delay_toggle_explicit =
+        nested_section_has_fields(document, "control", "recoil", &["fire_delay_enabled"]);
+    if schema_version < 13 && !fire_delay_toggle_explicit {
+        config.control.recoil.fire_delay_enabled = config.control.recoil.fire_delay_ms > 0;
+    }
     let removed_humanized_motion = config.control.extra.remove("humanized_motion").is_some();
     config.pipeline.extra.remove("projection_invert_y");
     config.pipeline.extra.remove("max_command_age_ms");
@@ -625,6 +630,9 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
             recoil
                 .entry(Value::String("interval_ms".to_owned()))
                 .or_insert_with(|| Value::Number(config.control.recoil.interval_ms.into()));
+            recoil
+                .entry(Value::String("fire_delay_enabled".to_owned()))
+                .or_insert_with(|| Value::Bool(config.control.recoil.fire_delay_enabled));
             recoil
                 .entry(Value::String("fire_delay_ms".to_owned()))
                 .or_insert_with(|| Value::Number(config.control.recoil.fire_delay_ms.into()));

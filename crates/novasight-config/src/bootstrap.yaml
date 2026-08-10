@@ -1,6 +1,6 @@
 # NovaSight's single runtime configuration. Relative paths resolve from the
 # directory in which novasightd is started.
-schema_version: 12
+schema_version: 13
 revision: 0
 server:
   # Remote access belongs behind an authenticated TLS proxy.
@@ -71,6 +71,7 @@ control:
     require_target: true
     # 开火后先等待一个完整间隔；之后在下一张安全新画面中合成一次 +Y，不补发旧间隔。
     # 同时额外等待该时间后再触发第一次叠加。
+    fire_delay_enabled: false
     fire_delay_ms: 0
     interval_ms: 16
     y_counts: 1

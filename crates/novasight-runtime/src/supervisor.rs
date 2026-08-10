@@ -3049,6 +3049,7 @@ fn runtime_recoil_config(config: &ConfigRecoilConfig) -> RecoilConfig {
         enabled: config.enabled,
         require_target: config.require_target,
         interval_ms: config.interval_ms,
+        fire_delay_enabled: config.fire_delay_enabled,
         fire_delay_ms: config.fire_delay_ms,
         y_counts: config.y_counts,
     }

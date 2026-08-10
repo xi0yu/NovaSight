@@ -11,6 +11,7 @@ pub struct RecoilConfig {
     pub enabled: bool,
     pub require_target: bool,
     pub interval_ms: u64,
+    pub fire_delay_enabled: bool,
     pub y_counts: i32,
     pub fire_delay_ms: u64,
 }
@@ -21,6 +22,7 @@ impl Default for RecoilConfig {
             enabled: false,
             require_target: true,
             interval_ms: 16,
+            fire_delay_enabled: false,
             y_counts: 1,
             fire_delay_ms: 0,
         }
@@ -159,7 +161,11 @@ impl IntervalRecoilController {
         let required_interval_ns = if self.last_output_ns.is_none() {
             config
                 .interval_ms
-                .saturating_add(config.fire_delay_ms)
+                .saturating_add(if config.fire_delay_enabled {
+                    config.fire_delay_ms
+                } else {
+                    0
+                })
                 .saturating_mul(1_000_000)
         } else {
             config.interval_ms.saturating_mul(1_000_000)
@@ -188,7 +194,10 @@ impl IntervalRecoilController {
                 elapsed_since_output_ms: Some(elapsed_ms),
                 remaining_ms,
                 source_generation: input.source_generation,
-                block_reason: if self.last_output_ns.is_none() && config.fire_delay_ms > 0 {
+                block_reason: if self.last_output_ns.is_none()
+                    && config.fire_delay_enabled
+                    && config.fire_delay_ms > 0
+                {
                     RecoilBlockReason::FireDelay
                 } else {
                     RecoilBlockReason::IntervalPending
@@ -298,6 +307,7 @@ mod tests {
     #[test]
     fn waits_fire_delay_before_first_shot() {
         let mut config = enabled();
+        config.fire_delay_enabled = true;
         config.fire_delay_ms = 25;
         let mut controller = IntervalRecoilController::new(config).unwrap();
 

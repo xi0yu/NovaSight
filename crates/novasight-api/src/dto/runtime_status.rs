@@ -537,6 +537,7 @@ pub(crate) struct ControlPipelineState {
     pub recoil_active: bool,
     pub recoil_state: RecoilState,
     pub recoil_interval_ms: u64,
+    pub recoil_fire_delay_enabled: bool,
     pub recoil_configured_fire_delay_ms: u64,
     pub recoil_y_counts: i32,
     pub recoil_elapsed_since_output_ms: Option<f64>,
@@ -1189,6 +1190,8 @@ impl RuntimeStatusState {
                         recoil_active: snapshot.pipeline_metrics.recoil.engaged(),
                         recoil_state: snapshot.pipeline_metrics.recoil.state,
                         recoil_interval_ms: snapshot.pipeline_metrics.recoil.interval_ms,
+                        recoil_fire_delay_enabled: config
+                            .is_some_and(|config| config.control.recoil.fire_delay_enabled),
                         recoil_configured_fire_delay_ms: snapshot
                             .pipeline_metrics
                             .recoil

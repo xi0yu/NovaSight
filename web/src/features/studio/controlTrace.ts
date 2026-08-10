@@ -79,6 +79,7 @@ export type BuildControlTraceInput = {
   integerCommand: string;
   residual: string;
   recoilEnabled?: boolean;
+  recoilFireDelayEnabled?: boolean;
   recoilState?: string;
   recoilStatus?: string;
   recoilRemainingMs?: number | null;
@@ -353,7 +354,9 @@ function buildRecoilStep(input: BuildControlTraceInput): ControlTraceStep {
     label: "压枪延迟叠加",
     state: "ready",
     value: input.recoilStatus || input.recoilState,
-    detail: "该阶段只延迟并叠加压枪 +Y，不会延迟左键事件或跟踪控制命令。",
+    detail: input.recoilFireDelayEnabled
+      ? "延迟开火已启用：该阶段只延后首次压枪 +Y，不会延迟或伪造真实左键事件，也不会延迟跟踪控制命令。"
+      : "延迟开火已关闭：首次压枪只等待基础叠加间隔；不会延迟或伪造真实左键事件。",
     evidence: `state=${input.recoilState} · remaining=${formatNumber(input.recoilRemainingMs ?? null, 2, "ms")} · requested/emitted=${formatInteger(input.recoilRequestedY ?? null)}/${formatInteger(input.recoilEmittedY ?? null)}`
   };
 }

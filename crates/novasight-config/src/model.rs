@@ -5,7 +5,7 @@ use novasight_core::tracking::KalmanConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 12;
+pub const CURRENT_SCHEMA_VERSION: u32 = 13;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -236,6 +236,8 @@ pub struct RecoilConfig {
     pub require_target: bool,
     #[serde(default = "default_recoil_interval_ms")]
     pub interval_ms: u64,
+    #[serde(default)]
+    pub fire_delay_enabled: bool,
     #[serde(default = "default_recoil_fire_delay_ms")]
     pub fire_delay_ms: u64,
     #[serde(default = "default_recoil_y_counts")]
@@ -250,6 +252,7 @@ impl Default for RecoilConfig {
             enabled: false,
             require_target: default_recoil_require_target(),
             interval_ms: default_recoil_interval_ms(),
+            fire_delay_enabled: false,
             fire_delay_ms: default_recoil_fire_delay_ms(),
             y_counts: default_recoil_y_counts(),
             extra: BTreeMap::new(),

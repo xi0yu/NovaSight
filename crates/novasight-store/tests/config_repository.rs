@@ -39,7 +39,7 @@ fn bundled_runtime_config_loads_current_algorithm_defaults() {
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 12);
+    assert_eq!(config.schema_version, 13);
     assert_eq!(config.pipeline.p_response_scale, 0.20);
     assert_eq!(config.pipeline.p_response_boost, 0.50);
     assert_eq!(config.pipeline.p_response_curve_shape, 1.0);
@@ -70,7 +70,7 @@ pipeline:
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 12);
+    assert_eq!(config.schema_version, 13);
     assert_eq!(config.pipeline.prediction_lead_ms, 16.0);
     assert!(config.pipeline.extra.is_empty());
 
@@ -78,7 +78,7 @@ pipeline:
         .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["schema_version"], 12);
+    assert_eq!(persisted["schema_version"], 13);
     assert_eq!(persisted["pipeline"]["prediction_lead_ms"], 16.0);
     assert_eq!(persisted["pipeline"]["p_response_boost"], 0.5);
     assert_eq!(persisted["pipeline"]["prediction_cap_px"], 10.0);
