@@ -270,6 +270,12 @@ function StudioApp() {
   const applyRuntimeState = useCallback((runtime: RuntimeState) => {
     const receivedAt = Date.now();
     setState((current) => {
+      if (
+        current.runtime !== null
+        && runtime.semantic.snapshot_sequence < current.runtime.semantic.snapshot_sequence
+      ) {
+        return current;
+      }
       // Short-circuit when the new full frame is structurally equal to the
       // current one. The status heartbeat and idle partial frames are a
       // major source of paint churn; skipping them keeps `lastUpdated` and
@@ -298,6 +304,12 @@ function StudioApp() {
       if (current.runtime === null) {
         // The initial full REST request owns construction of RuntimeState.
         // A partial frame may arrive first on a fast local WebSocket.
+        return current;
+      }
+      if (
+        frame.state.semantic
+        && frame.state.semantic.snapshot_sequence < current.runtime.semantic.snapshot_sequence
+      ) {
         return current;
       }
       // Once a complete runtime exists, every partial WebSocket frame is an

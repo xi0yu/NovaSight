@@ -15,7 +15,7 @@ use novasight_core::{
     select_capture_profile_for_formats,
 };
 use novasight_pipeline::{
-    CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, ModelCandidate,
+    CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, CrosshairHubSlot, ModelCandidate,
     ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
     PerceptionEvent, PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession,
     PipelineIngress, PreviewHub, validate_parser_preset,
@@ -241,12 +241,18 @@ fn build_live_dependencies(
     let latest_frames = LatestFrameExchange::new();
     let preview = PreviewHub::new(config.consumers.preview);
     let crosshair = build_crosshair_hub(config)?;
+    let crosshair_slot = CrosshairHubSlot::new(crosshair);
     let pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
         .map_err(LivePerceptionError::Pipeline)?;
-    let mut dependencies = RuntimeDependencies::new(clock, device, pipeline)
+    let dependencies = RuntimeDependencies::new(clock, device, pipeline)
         .with_device_factory(|config| {
             build_pointer_installation(config)
                 .map_err(|error| RuntimeError::device_unavailable(error.to_string()))
+        })
+        .with_crosshair_slot(crosshair_slot.clone())
+        .with_crosshair_factory(|config| {
+            build_crosshair_hub(config)
+                .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
         })
         .with_model_catalog(model_catalog.clone())
         .with_preview(preview.clone())
@@ -255,13 +261,10 @@ fn build_live_dependencies(
             model_catalog,
             latest_frames,
             preview,
-            crosshair: crosshair.clone(),
+            crosshair: crosshair_slot,
             parser_library,
             model_identity_cache: ModelIdentityCache::default(),
         }));
-    if let Some(crosshair) = crosshair {
-        dependencies = dependencies.with_crosshair(crosshair);
-    }
     Ok(dependencies)
 }
 
@@ -310,7 +313,7 @@ struct CatalogDeepStreamAdapter {
     model_catalog: SqliteModelCatalog,
     latest_frames: LatestFrameExchange,
     preview: PreviewHub,
-    crosshair: Option<CrosshairHub>,
+    crosshair: CrosshairHubSlot,
     parser_library: PathBuf,
     model_identity_cache: ModelIdentityCache,
 }
@@ -322,7 +325,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             &config,
             &self.model_catalog,
             self.preview.clone(),
-            self.crosshair.clone(),
+            self.crosshair.current(),
             &self.parser_library,
             &self.model_identity_cache,
         )
@@ -390,7 +393,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             &current,
             &self.model_catalog,
             self.preview.clone(),
-            self.crosshair.clone(),
+            self.crosshair.current(),
             &self.parser_library,
             &self.model_identity_cache,
         )

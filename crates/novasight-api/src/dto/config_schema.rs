@@ -2,7 +2,7 @@ use novasight_core::controller::{
     ATAN_RESPONSE_MOTION_BOOST_FRACTION, ATAN_RESPONSE_STATIC_BOOST_FRACTION,
     DEFAULT_ATAN_SCALE_COUNTS,
 };
-use novasight_runtime::AppConfig;
+use novasight_runtime::{AppConfig, ConfigApplyMode};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -61,6 +61,7 @@ struct ConfigFieldSchema {
     unit: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<&'static str>,
+    apply_mode: ConfigApplyMode,
     restart_required: bool,
 }
 
@@ -191,7 +192,7 @@ impl ConfigSchemaResponse {
                         ),
                     ],
                 ),
-                runtime_section(
+                hot_section(
                     "control.recoil",
                     "独立压枪",
                     vec![
@@ -220,7 +221,7 @@ impl ConfigSchemaResponse {
                         ),
                     ],
                 ),
-                runtime_section(
+                hot_section(
                     "pipeline",
                     "Rust 实时控制",
                     vec![
@@ -678,6 +679,19 @@ fn runtime_section(
     mut fields: Vec<ConfigFieldSchema>,
 ) -> ConfigSectionSchema {
     for field in &mut fields {
+        field.apply_mode = ConfigApplyMode::EpochReload;
+        field.restart_required = false;
+    }
+    ConfigSectionSchema { id, label, fields }
+}
+
+fn hot_section(
+    id: &'static str,
+    label: &'static str,
+    mut fields: Vec<ConfigFieldSchema>,
+) -> ConfigSectionSchema {
+    for field in &mut fields {
+        field.apply_mode = ConfigApplyMode::HotUpdate;
         field.restart_required = false;
     }
     ConfigSectionSchema { id, label, fields }
@@ -693,6 +707,7 @@ fn field(path: &'static str, label: &'static str, field_type: &'static str) -> C
         max: None,
         unit: None,
         description: None,
+        apply_mode: ConfigApplyMode::ProcessRestart,
         restart_required: true,
     }
 }
@@ -707,6 +722,7 @@ fn boolean(path: &'static str, label: &'static str) -> ConfigFieldSchema {
 
 fn hot_boolean(path: &'static str, label: &'static str) -> ConfigFieldSchema {
     ConfigFieldSchema {
+        apply_mode: ConfigApplyMode::HotUpdate,
         restart_required: false,
         ..boolean(path, label)
     }
@@ -729,6 +745,7 @@ fn hot_select(
     options: &'static [&'static str],
 ) -> ConfigFieldSchema {
     ConfigFieldSchema {
+        apply_mode: ConfigApplyMode::HotUpdate,
         restart_required: false,
         ..select(path, label, options)
     }

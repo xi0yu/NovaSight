@@ -4,7 +4,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -128,6 +128,42 @@ pub struct CrosshairHub {
     template_path: Arc<PathBuf>,
     state: Arc<Mutex<State>>,
     mutation: Arc<Mutex<()>>,
+}
+
+/// Process-local owner of the currently installed crosshair observer.
+///
+/// Runtime epoch reloads replace the hub through this shared slot so the
+/// perception adapter, control pipeline, and control-plane API all resolve the
+/// same instance. Keeping the indirection outside the frame path avoids a
+/// configuration lock in crosshair matching and controller evaluation.
+#[derive(Clone, Debug, Default)]
+pub struct CrosshairHubSlot {
+    current: Arc<RwLock<Option<CrosshairHub>>>,
+}
+
+impl CrosshairHubSlot {
+    pub fn new(current: Option<CrosshairHub>) -> Self {
+        Self {
+            current: Arc::new(RwLock::new(current)),
+        }
+    }
+
+    pub fn current(&self) -> Option<CrosshairHub> {
+        self.current
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn replace(&self, replacement: Option<CrosshairHub>) -> Option<CrosshairHub> {
+        std::mem::replace(
+            &mut *self
+                .current
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            replacement,
+        )
+    }
 }
 
 impl CrosshairHub {

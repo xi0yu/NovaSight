@@ -25,7 +25,9 @@ mod state;
 pub mod supervisor;
 
 pub use application::{Application, ApplicationError, LoadedApplication};
-pub use config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate};
+pub use config_service::{
+    ConfigApplyMode, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate,
+};
 pub use error::{RuntimeError, RuntimeErrorKind};
 pub use model_activation::{ModelActivationError, ModelActivationRequest, ModelActivationResult};
 pub use model_ingress::{

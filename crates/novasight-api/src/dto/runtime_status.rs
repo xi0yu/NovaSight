@@ -47,6 +47,7 @@ pub(crate) struct RuntimeStatusFrame<T> {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RuntimeStatusState {
+    pub semantic: RuntimeSemanticState,
     pub running: bool,
     pub source: String,
     pub active_model: Option<serde_json::Value>,
@@ -61,8 +62,19 @@ pub(crate) struct RuntimeStatusState {
     pub fatal_error: Option<RuntimeErrorSummary>,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct RuntimeSemanticState {
+    pub phase: &'static str,
+    pub perception_phase: &'static str,
+    pub epoch: Option<u64>,
+    pub snapshot_sequence: u64,
+    pub snapshot_updated_at_ms: u64,
+}
+
 #[derive(Serialize)]
 struct RuntimeStatusPatch<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic: Option<&'a RuntimeSemanticState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     running: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -92,6 +104,7 @@ struct RuntimeStatusPatch<'a> {
 impl RuntimeStatusPatch<'_> {
     fn empty() -> Self {
         Self {
+            semantic: None,
             running: None,
             source: None,
             active_model: None,
@@ -123,6 +136,7 @@ pub(crate) fn serialize_runtime_status_frame(
     }
 
     let mut patch = RuntimeStatusPatch::empty();
+    patch.semantic = Some(&state.semantic);
     patch.running = Some(state.running);
     patch.fatal_error = Some(&state.fatal_error);
     match topic {
@@ -828,8 +842,39 @@ impl RuntimeStatusState {
                 .map(|capture| serialized_label(&capture.backend))
                 .unwrap_or_else(|| "unconfigured".to_owned())
         };
+        let waiting_model =
+            running && inference_config.is_some() && snapshot.model.active.is_none();
+        let semantic_phase = match snapshot.pipeline.state {
+            PipelineState::Running if waiting_model => "waiting_model",
+            PipelineState::Running => "running",
+            PipelineState::Starting => "starting",
+            PipelineState::Stopping => "stopping",
+            PipelineState::Faulted => "faulted",
+            PipelineState::Standby => "standby",
+            PipelineState::Stopped => "stopped",
+        };
+        let perception_phase = if waiting_model {
+            "waiting_model"
+        } else if snapshot.subsystems.inference.state == SubsystemState::Running {
+            "running"
+        } else if snapshot.subsystems.inference.state == SubsystemState::Starting {
+            "starting"
+        } else if snapshot.subsystems.inference.state == SubsystemState::Failed {
+            "faulted"
+        } else if inference_config.is_some() {
+            "stopped"
+        } else {
+            "unavailable"
+        };
 
         Self {
+            semantic: RuntimeSemanticState {
+                phase: semantic_phase,
+                perception_phase,
+                epoch: snapshot.pipeline.epoch.map(|epoch| epoch.0),
+                snapshot_sequence: snapshot.sequence,
+                snapshot_updated_at_ms: snapshot.updated_at_ms,
+            },
             running,
             source,
             active_model: snapshot.model.active.as_ref().map(|active| {

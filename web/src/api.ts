@@ -495,7 +495,16 @@ export type RuntimeVisionState = Record<string, unknown> & {
   output_trace?: RuntimeOutputTraceState;
 };
 
+export type RuntimeSemanticState = {
+  phase: "stopped" | "starting" | "waiting_model" | "running" | "standby" | "stopping" | "faulted" | (string & {});
+  perception_phase: "unavailable" | "stopped" | "starting" | "waiting_model" | "running" | "faulted" | (string & {});
+  epoch: number | null;
+  snapshot_sequence: number;
+  snapshot_updated_at_ms: number;
+};
+
 export type RuntimeState = {
+  semantic: RuntimeSemanticState;
   running: boolean;
   source: string;
   active_model: ActiveModel | null;
@@ -534,6 +543,8 @@ export type RuntimeConfigValue =
 
 export type RuntimeConfig = Record<string, RuntimeConfigValue>;
 
+export type ConfigApplyMode = "hot_update" | "epoch_reload" | "process_restart";
+
 export type ConfigFieldSchema = {
   path: string;
   label: string;
@@ -549,6 +560,7 @@ export type ConfigFieldSchema = {
   precision?: number;
   unit?: string;
   description?: string;
+  apply_mode: ConfigApplyMode;
   restart_required: boolean;
 };
 
@@ -590,6 +602,7 @@ export type ConfigSchemaResponse = {
 export type ConfigUpdateResponse = {
   config: RuntimeConfig;
   schema?: ConfigSchemaResponse;
+  apply_mode: ConfigApplyMode;
   restart_required: boolean;
   applied?: boolean;
   rolled_back?: boolean;

@@ -26,9 +26,18 @@ pub struct ConfigFieldUpdate {
     pub expected_revision: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigApplyMode {
+    HotUpdate,
+    EpochReload,
+    ProcessRestart,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConfigUpdate {
     pub config: AppConfig,
+    pub apply_mode: ConfigApplyMode,
     pub restart_required: bool,
     pub applied: bool,
     pub rolled_back: bool,
@@ -69,6 +78,7 @@ impl PersistedOutputGate<'_> {
         self.output_gate_consistent.store(true, Ordering::Release);
         ConfigUpdate {
             config: self.config,
+            apply_mode: ConfigApplyMode::HotUpdate,
             restart_required: !self.advance_effective_revision,
             applied: true,
             rolled_back: false,
@@ -110,6 +120,7 @@ impl PersistedTriggerMode<'_> {
         }
         ConfigUpdate {
             config: self.config,
+            apply_mode: ConfigApplyMode::HotUpdate,
             restart_required: !self.advance_effective_revision,
             applied: true,
             rolled_back: false,
@@ -151,6 +162,7 @@ impl PersistedRecoil<'_> {
         }
         ConfigUpdate {
             config: self.config,
+            apply_mode: ConfigApplyMode::HotUpdate,
             restart_required: !self.advance_effective_revision,
             applied: true,
             rolled_back: false,
@@ -210,6 +222,7 @@ impl PersistedPipeline<'_> {
         };
         ConfigUpdate {
             config: self.config,
+            apply_mode: ConfigApplyMode::HotUpdate,
             restart_required,
             applied: true,
             rolled_back: false,
@@ -294,6 +307,14 @@ impl ConfigService {
             .clone()
     }
 
+    pub(crate) fn stage_effective_runtime_config(&self, config: AppConfig) {
+        *self
+            .inner
+            .effective_config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config;
+    }
+
     pub async fn ensure_effective(&self) -> Result<(), ConfigServiceError> {
         let desired_revision = self.inner.current.read().await.revision;
         let effective_revision = self.effective_revision();
@@ -350,8 +371,10 @@ impl ConfigService {
             });
         }
 
+        let rebuild_device = config_value_differs(&effective.device, &desired.device)?;
+        let rebuild_crosshair = config_value_differs(&effective.crosshair, &desired.crosshair)?;
         runtime
-            .install_stopped_config(desired.clone())
+            .install_stopped_config(desired.clone(), rebuild_device, rebuild_crosshair)
             .await
             .map_err(ConfigServiceError::Runtime)?;
 
@@ -444,21 +467,14 @@ impl ConfigService {
         .await
         .map_err(ConfigServiceError::SaveTask)??;
         *self.inner.current.write().await = config.clone();
-        *self
-            .inner
-            .effective_config
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config.clone();
-        self.inner
-            .effective_revision
-            .store(config.revision, Ordering::Release);
         Ok(ConfigUpdate {
             config,
+            apply_mode: ConfigApplyMode::EpochReload,
             restart_required: false,
-            applied: true,
+            applied: false,
             rolled_back: false,
             message: format!(
-                "capture profile applied: {} {}x{}@{} ({})",
+                "capture profile persisted for runtime installation: {} {}x{}@{} ({})",
                 selected.pixel_format,
                 selected.width,
                 selected.height,
@@ -499,6 +515,7 @@ impl ConfigService {
         *self.inner.current.write().await = config.clone();
         Ok(ConfigUpdate {
             config,
+            apply_mode: ConfigApplyMode::ProcessRestart,
             restart_required: true,
             applied: false,
             rolled_back: false,
@@ -514,22 +531,37 @@ impl ConfigService {
         runtime: &RuntimeHandle,
         update: ConfigFieldUpdate,
     ) -> Result<ConfigUpdate, ConfigServiceError> {
-        let persisted = self.update_field(update).await?;
-        self.apply_persisted_runtime_config(runtime, persisted.config)
+        let _update_guard = self.inner.update_lock.lock().await;
+        let previous_desired = self.inner.current.read().await.clone();
+        let previous_effective = self.blocking_effective_snapshot();
+        let expected_revision = update
+            .expected_revision
+            .unwrap_or(previous_desired.revision);
+        let yaml_value =
+            serde_yaml::to_value(update.value).map_err(ConfigServiceError::SerializeFieldValue)?;
+        let repository = self.inner.repository.clone();
+        let section = update.section;
+        let key = update.key;
+        let config = tokio::task::spawn_blocking(move || {
+            repository.save_field(&section, &key, yaml_value, expected_revision)
+        })
+        .await
+        .map_err(ConfigServiceError::SaveTask)??;
+        self.apply_persisted_runtime_config(runtime, previous_desired, previous_effective, config)
             .await
     }
 
     async fn apply_persisted_runtime_config(
         &self,
         runtime: &RuntimeHandle,
+        previous_desired: AppConfig,
+        previous_effective: AppConfig,
         config: AppConfig,
     ) -> Result<ConfigUpdate, ConfigServiceError> {
-        let previous_effective = self
-            .inner
-            .effective_config
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+        // Persistence already owns this revision. Publish the same desired
+        // snapshot before the potentially slow epoch transition so every
+        // reader agrees with the YAML file throughout the transaction.
+        *self.inner.current.write().await = config.clone();
         let pending = process_restart_sections(&previous_effective, &config)?;
         let mut installed = config.clone();
         if !pending.is_empty() {
@@ -537,7 +569,11 @@ impl ConfigService {
             installed.server = previous_effective.server.clone();
             installed.paths = previous_effective.paths.clone();
             installed.extra = previous_effective.extra.clone();
+            installed.revision = self.effective_revision();
         }
+        let rebuild_device = config_value_differs(&previous_effective.device, &installed.device)?;
+        let rebuild_crosshair =
+            config_value_differs(&previous_effective.crosshair, &installed.crosshair)?;
         // Perception and platform adapters resolve configuration from the
         // effective snapshot while the supervisor constructs the new epoch.
         *self
@@ -546,13 +582,64 @@ impl ConfigService {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = installed.clone();
 
-        if let Err(error) = runtime.apply_config(installed).await {
+        if let Err(error) = runtime
+            .apply_config(
+                self.clone(),
+                installed,
+                previous_effective.clone(),
+                rebuild_device,
+                rebuild_crosshair,
+            )
+            .await
+        {
             *self
                 .inner
                 .effective_config
                 .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = previous_effective;
-            return Err(ConfigServiceError::Runtime(error));
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = previous_effective.clone();
+            let repository = self.inner.repository.clone();
+            let rollback_candidate = previous_desired.clone();
+            let failed_revision = config.revision;
+            let persisted_rollback = tokio::task::spawn_blocking(move || {
+                repository.save_config(&rollback_candidate, failed_revision)
+            })
+            .await
+            .map_err(ConfigServiceError::SaveTask)
+            .and_then(|result| result.map_err(ConfigServiceError::Config));
+            return match persisted_rollback {
+                Ok(rollback) => {
+                    *self.inner.current.write().await = rollback.clone();
+                    let previous_pending =
+                        process_restart_sections(&previous_effective, &previous_desired)?;
+                    if previous_pending.is_empty() && error.previous_runtime_restored {
+                        *self
+                            .inner
+                            .effective_config
+                            .write()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()) = rollback.clone();
+                        self.inner
+                            .effective_revision
+                            .store(rollback.revision, Ordering::Release);
+                    }
+                    Err(ConfigServiceError::RuntimeApplyFailed {
+                        apply: error.apply,
+                        previous_runtime_restored: error.previous_runtime_restored,
+                        recovery: error.recovery,
+                        rollback_revision: Some(rollback.revision),
+                        rollback_error: None,
+                    })
+                }
+                Err(rollback_error) => {
+                    *self.inner.current.write().await = config;
+                    Err(ConfigServiceError::RuntimeApplyFailed {
+                        apply: error.apply,
+                        previous_runtime_restored: error.previous_runtime_restored,
+                        recovery: error.recovery,
+                        rollback_revision: None,
+                        rollback_error: Some(rollback_error.to_string()),
+                    })
+                }
+            };
         }
         if pending.is_empty() {
             self.inner
@@ -561,14 +648,16 @@ impl ConfigService {
         }
         Ok(ConfigUpdate {
             config,
+            apply_mode: ConfigApplyMode::EpochReload,
             restart_required: !pending.is_empty(),
             applied: true,
             rolled_back: false,
             message: if pending.is_empty() {
-                "configuration persisted and applied in the current novasightd process".to_owned()
+                "configuration persisted and applied by a current-process runtime epoch reload"
+                    .to_owned()
             } else {
                 format!(
-                    "runtime parameter applied immediately; process-owned sections remain pending [{}]",
+                    "runtime parameters applied by current-process epoch reload; process-owned sections remain pending [{}]",
                     pending.join(", ")
                 )
             },
@@ -580,7 +669,15 @@ impl ConfigService {
         runtime: &RuntimeHandle,
         config: AppConfig,
     ) -> Result<ConfigUpdate, ConfigServiceError> {
-        self.apply_persisted_runtime_config(runtime, config).await
+        let _update_guard = self.inner.update_lock.lock().await;
+        let previous_effective = self.blocking_effective_snapshot();
+        self.apply_persisted_runtime_config(
+            runtime,
+            previous_effective.clone(),
+            previous_effective,
+            config,
+        )
+        .await
     }
 
     /// Submit a hot output update to the sole runtime actor.
@@ -925,6 +1022,7 @@ impl ConfigService {
         *self.inner.current.write().await = config.clone();
         Ok(ConfigUpdate {
             config,
+            apply_mode: ConfigApplyMode::ProcessRestart,
             restart_required: true,
             applied: false,
             rolled_back: false,
@@ -941,50 +1039,32 @@ impl ConfigService {
         runtime: &RuntimeHandle,
         replacement: Value,
     ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let expected_revision = replacement
+            .get("revision")
+            .and_then(Value::as_u64)
+            .ok_or(ConfigServiceError::ReplacementRevisionRequired)?;
+        let replacement_output_enabled = replacement
+            .get("control")
+            .and_then(|control| control.get("output_enabled"))
+            .and_then(Value::as_bool);
+        let replacement =
+            serde_yaml::to_value(replacement).map_err(ConfigServiceError::SerializeFieldValue)?;
+        let _update_guard = self.inner.update_lock.lock().await;
+        let previous_desired = self.inner.current.read().await.clone();
+        if replacement_output_enabled
+            .is_some_and(|enabled| enabled != previous_desired.control.output_enabled)
+        {
+            return Err(ConfigServiceError::HotUpdateTransactionRequired);
+        }
         let previous_effective = self.blocking_effective_snapshot();
-        let persisted = self.replace(replacement).await?;
-        let pending = process_restart_sections(&previous_effective, &persisted.config)?;
-        let mut installed = persisted.config.clone();
-        if !pending.is_empty() {
-            installed.schema_version = previous_effective.schema_version;
-            installed.server = previous_effective.server.clone();
-            installed.paths = previous_effective.paths.clone();
-            installed.extra = previous_effective.extra.clone();
-        }
-
-        *self
-            .inner
-            .effective_config
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = installed.clone();
-        if let Err(error) = runtime.apply_config(installed).await {
-            *self
-                .inner
-                .effective_config
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = previous_effective;
-            return Err(ConfigServiceError::Runtime(error));
-        }
-
-        if pending.is_empty() {
-            self.inner
-                .effective_revision
-                .store(persisted.config.revision, Ordering::Release);
-        }
-        Ok(ConfigUpdate {
-            config: persisted.config,
-            restart_required: !pending.is_empty(),
-            applied: true,
-            rolled_back: false,
-            message: if pending.is_empty() {
-                "configuration persisted and applied in the current novasightd process".to_owned()
-            } else {
-                format!(
-                    "runtime parameters applied immediately; process-owned sections remain pending [{}]",
-                    pending.join(", ")
-                )
-            },
+        let repository = self.inner.repository.clone();
+        let config = tokio::task::spawn_blocking(move || {
+            repository.replace_document(replacement, expected_revision)
         })
+        .await
+        .map_err(ConfigServiceError::SaveTask)??;
+        self.apply_persisted_runtime_config(runtime, previous_desired, previous_effective, config)
+            .await
     }
 }
 
@@ -1029,6 +1109,16 @@ pub enum ConfigServiceError {
         effective_revision: u64,
         desired_revision: u64,
     },
+    #[error(
+        "runtime configuration apply failed: {apply}; previous_runtime_restored={previous_runtime_restored}; recovery={recovery:?}; persisted_rollback_revision={rollback_revision:?}; rollback_error={rollback_error:?}"
+    )]
+    RuntimeApplyFailed {
+        apply: RuntimeError,
+        previous_runtime_restored: bool,
+        recovery: Option<RuntimeError>,
+        rollback_revision: Option<u64>,
+        rollback_error: Option<String>,
+    },
     #[error(transparent)]
     Runtime(RuntimeError),
     #[error(
@@ -1070,6 +1160,7 @@ impl ConfigServiceError {
                 "CONFIG_OUTPUT_GATE_DISABLED_NOT_PERSISTED"
             }
             Self::RuntimeConfigDiverged { .. } => "CONFIG_RUNTIME_DIVERGED",
+            Self::RuntimeApplyFailed { .. } => "CONFIG_RUNTIME_APPLY_FAILED",
             Self::Runtime(error) => error.kind.code(),
             Self::RestartRequired { .. } | Self::ProcessRestartRequired { .. } => {
                 "CONFIG_RESTART_REQUIRED"

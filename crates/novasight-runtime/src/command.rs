@@ -20,7 +20,7 @@ use crate::model_activation::{
 };
 use crate::model_ingress::{ModelIngressError, ModelIngressRequest, ModelIngressResult};
 use crate::snapshot::RuntimeSnapshot;
-use crate::supervisor::UrgentStopToken;
+use crate::supervisor::{RuntimeConfigApplyFailure, UrgentStopToken};
 use novasight_pipeline::{PreviewSnapshot, TriggerMode};
 
 #[derive(Debug)]
@@ -37,11 +37,17 @@ pub(crate) enum RuntimeCommand {
     },
     InstallStoppedConfig {
         config: Box<AppConfig>,
+        rebuild_device: bool,
+        rebuild_crosshair: bool,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
     ApplyConfig {
+        service: ConfigService,
         config: Box<AppConfig>,
-        reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeError>>,
+        rollback_config: Box<AppConfig>,
+        rebuild_device: bool,
+        rebuild_crosshair: bool,
+        reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeConfigApplyFailure>>,
     },
     PreflightPerception {
         reply: oneshot::Sender<Result<(), RuntimeError>>,

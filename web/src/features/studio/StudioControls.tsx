@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, ty
 
 import { formatNumberDraft, resolveNumberDraft } from "./numberDraft";
 
-export type ParameterApplyMode = "live" | "save" | "launch" | "restart";
+export type ParameterApplyMode = "live" | "reload" | "save" | "launch" | "restart";
 export type ParameterRiskLevel = "normal" | "advanced" | "calibration";
 export type ParameterNumberKind = "slider" | "stepper";
 export type ParameterSelectOption = {
@@ -423,6 +423,9 @@ function applyModeLabel(applyMode: ParameterApplyMode): string {
   }
   if (applyMode === "restart") {
     return "需重启";
+  }
+  if (applyMode === "reload") {
+    return "当前进程重载";
   }
   if (applyMode === "launch") {
     return "启动时";

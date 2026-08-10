@@ -958,7 +958,9 @@ export function StudioConsoleView({
         "配置已保存",
         result.restart_required
           ? "新参数已写入配置；仍有进程级配置等待 novasightd 重启。"
-          : "新参数已经应用。",
+          : result.apply_mode === "epoch_reload"
+            ? "新参数已写入配置，并通过当前进程的新运行 epoch 生效。"
+            : "新参数已经即时应用。",
         "config-dialog"
       );
       finishConfigDialog(dialog);
@@ -1204,14 +1206,10 @@ export function StudioConsoleView({
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeMainlinePresentation = useStableSemanticValue(
     runtimeMainlineStatus,
-    runtimeMainlineStatus.readinessCode,
-    360
-  );
-  const runtimeOutputTrace = useStableSemanticValue(
-    runtimeMainlineStatus.outputTrace,
-    runtimeMainlineStatus.outputTrace?.code ?? "none",
+    `${runtime?.semantic?.phase ?? runtimeMainlineStatus.readinessCode}:${runtime?.semantic?.perception_phase ?? "unknown"}:${runtime?.semantic?.epoch ?? "none"}`,
     280
   );
+  const runtimeOutputTrace = runtimeMainlinePresentation.outputTrace;
   const runtimeInferenceConfigured = runtimeInference.configured === true;
   const runtimeInferenceReason = readString(runtimeInference.reason, "");
   const runtimeInferenceDetail = readString(runtimeInference.detail, "");
@@ -1398,7 +1396,12 @@ export function StudioConsoleView({
   const recoilFireDelayMs = readNumber(recoilConfig.fire_delay_ms, 0);
   const recoilYCounts = readNumber(recoilConfig.y_counts, 1);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
-  const triggerModeApplyMode = configFieldIndex?.get("control.trigger_mode")?.restart_required ? "restart" : "live";
+  const triggerModeSchemaApplyMode = configFieldIndex?.get("control.trigger_mode")?.apply_mode;
+  const triggerModeApplyMode = triggerModeSchemaApplyMode === "hot_update"
+    ? "live"
+    : triggerModeSchemaApplyMode === "epoch_reload"
+      ? "reload"
+      : "restart";
   const controlAlgorithmId = readString(configSchema?.algorithm?.id, DEFAULT_CONTROL_ALGORITHM);
   const controlAlgorithmLabel = readString(configSchema?.algorithm?.label, CONTROL_ALGORITHM_LABEL);
   const algorithmAtanScaleCounts = readNumber(
@@ -1696,17 +1699,9 @@ export function StudioConsoleView({
     "counts"
   );
   const controlWillEmitRaw = readNullableBoolean(control.will_emit);
-  const controlWillEmit = useStableSemanticValue(
-    controlWillEmitRaw,
-    controlWillEmitRaw === null ? "unknown" : String(controlWillEmitRaw),
-    180
-  );
+  const controlWillEmit = controlWillEmitRaw;
   const controlTriggerActiveRaw = readNullableBoolean(control.trigger_active);
-  const controlTriggerActive = useStableSemanticValue(
-    controlTriggerActiveRaw,
-    controlTriggerActiveRaw === null ? "unknown" : String(controlTriggerActiveRaw),
-    180
-  );
+  const controlTriggerActive = controlTriggerActiveRaw;
   const controlNoSendReason = !controlHasTarget
       ? targetPipelineMessage || readString(control.selection_reason, "无目标")
       : controlWillEmit !== true
@@ -1734,15 +1729,11 @@ export function StudioConsoleView({
     runtimeInference.loaded === true &&
     runtimeInference.terminal_error !== true;
   const runtimePreviewActive = runtimeInference.preview_active === true;
-  const previewRuntimePresentation = useStableSemanticValue(
-    {
-      streamReady: deepstreamPreviewStreamReady,
-      active: runtimePreviewActive,
-      reason: readString(runtimeInference.preview_reason, "等待 DeepStream 硬件预览帧")
-    },
-    `${String(deepstreamPreviewStreamReady)}:${String(runtimePreviewActive)}`,
-    280
-  );
+  const previewRuntimePresentation = {
+    streamReady: deepstreamPreviewStreamReady,
+    active: runtimePreviewActive,
+    reason: readString(runtimeInference.preview_reason, "等待 DeepStream 硬件预览帧")
+  };
   const previewActive = previewActiveOverride ?? previewRuntimePresentation.active;
   const previewImageAvailable = deepstreamNvinferSelected
     ? previewRuntimePresentation.streamReady && previewActive
@@ -1877,11 +1868,7 @@ export function StudioConsoleView({
     deviceLastError: kmnetLastError || kmnetLastDeviceError,
     outputTrace: runtimeOutputTrace
   });
-  const controlTrace = useStableSemanticValue(
-    rawControlTrace,
-    rawControlTrace.steps.map((step) => `${step.id}:${step.state}`).join("|"),
-    220
-  );
+  const controlTrace = rawControlTrace;
   const captureReason = capture?.last_error || (
     capture?.running !== true
       ? "采集尚未启动"
@@ -3453,7 +3440,11 @@ export function StudioConsoleView({
             finalizeRuntimeConfigWrite(seq, applied);
             reportSuccess(
               "配置导入成功",
-              result.restart_required ? "运行参数已生效；仍有进程级基础配置待服务重新启动后接管。" : "配置已经进入当前运行状态。",
+              result.restart_required
+                ? "运行参数已生效；仍有进程级基础配置待服务重新启动后接管。"
+                : result.apply_mode === "epoch_reload"
+                  ? "配置已由当前进程重载，并进入新的运行 epoch。"
+                  : "配置已经即时进入当前运行状态。",
               "config-import"
             );
             return true;

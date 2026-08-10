@@ -90,6 +90,16 @@ export type StudioConfigSchemaIssue = {
 
 const NUMERIC_SCHEMA_TYPES = new Set<ConfigFieldSchema["type"]>(["int", "float"]);
 
+function parameterApplyMode(field: ConfigFieldSchema): ParameterApplyMode {
+  if (field.apply_mode === "hot_update") {
+    return "live";
+  }
+  if (field.apply_mode === "epoch_reload") {
+    return "reload";
+  }
+  return "restart";
+}
+
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -147,7 +157,7 @@ export function validateStudioConfigSchema(schema: ConfigSchemaResponse): Studio
     } else if (!NUMERIC_SCHEMA_TYPES.has(field.type)) {
       issues.push({ path, reason: `expected numeric schema field, got ${field.type}` });
     }
-    if (field.restart_required) {
+    if (field.apply_mode !== "hot_update") {
       issues.push({ path, reason: "control algorithm field must be hot-applied by the backend" });
     }
   }
@@ -158,7 +168,7 @@ export function validateStudioConfigSchema(schema: ConfigSchemaResponse): Studio
       issues.push({ path, reason: "Studio targeting parameter is not exposed by backend schema" });
       continue;
     }
-    if (field.restart_required) {
+    if (field.apply_mode !== "hot_update") {
       issues.push({ path, reason: "targeting field must be hot-applied by the backend" });
     }
   }
@@ -185,7 +195,7 @@ function schemaBackedNumberParameter<Field extends string>(
     min,
     max,
     unit: field.unit ?? parameter.unit,
-    applyMode: field.restart_required ? "restart" : "live"
+    applyMode: parameterApplyMode(field)
   };
 }
 

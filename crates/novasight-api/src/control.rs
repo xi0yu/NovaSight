@@ -927,7 +927,7 @@ async fn prepare_config_for_start(state: &ControlState) -> Result<(), ControlApi
     Ok(())
 }
 
-fn runtime_reloadable_config_update(update: &ConfigFieldUpdate) -> bool {
+fn hot_pipeline_config_update(update: &ConfigFieldUpdate) -> bool {
     update.section == "pipeline"
 }
 
@@ -957,14 +957,14 @@ async fn apply_config_field_update(
     let hot_output_gate = update.section == "control" && update.key == "output_enabled";
     let hot_trigger_mode = update.section == "control" && update.key == "trigger_mode";
     let hot_recoil = update.section == "control" && update.key == "recoil";
-    let runtime_reloadable = runtime_reloadable_config_update(&update);
+    let hot_pipeline = hot_pipeline_config_update(&update);
     let result = if hot_output_gate {
         service.update_output_gate(&state.runtime, update).await?
     } else if hot_trigger_mode {
         service.update_trigger_mode(&state.runtime, update).await?
     } else if hot_recoil {
         service.update_recoil(&state.runtime, update).await?
-    } else if runtime_reloadable {
+    } else if hot_pipeline {
         apply_pipeline_config_update(state, service, update).await?
     } else if runtime_reconfigurable_config_update(&update) {
         service.update_runtime_field(&state.runtime, update).await?
@@ -1350,12 +1350,23 @@ async fn stream_runtime_events(socket: WebSocket, state: ControlState, query: Ru
     let (mut outbound, mut inbound) = socket.split();
     let mut snapshot_changed = true;
     let mut first_frame = true;
+    let mut last_semantic = None;
     loop {
         if snapshot_changed {
             let current = snapshots.borrow_and_update().clone();
-            let build_topic = if first_frame { "full" } else { topic };
-            let status = runtime_state_for_topic(&state, current.as_ref(), build_topic).await;
-            let Ok(payload) = serialize_runtime_status_frame(topic, first_frame, &status) else {
+            let status = runtime_state_for_topic(&state, current.as_ref(), topic).await;
+            let semantic = (
+                status.semantic.phase,
+                status.semantic.perception_phase,
+                status.semantic.epoch,
+            );
+            let send_full = first_frame || last_semantic.is_some_and(|last| last != semantic);
+            let status = if send_full {
+                runtime_state_for_topic(&state, current.as_ref(), "full").await
+            } else {
+                status
+            };
+            let Ok(payload) = serialize_runtime_status_frame(topic, send_full, &status) else {
                 return;
             };
             match send_or_shutdown(
@@ -1368,6 +1379,7 @@ async fn stream_runtime_events(socket: WebSocket, state: ControlState, query: Ru
             {
                 SendOutcome::Sent => {
                     first_frame = false;
+                    last_semantic = Some(semantic);
                     snapshot_changed = false;
                 }
                 SendOutcome::Closed | SendOutcome::Shutdown => return,
@@ -1581,7 +1593,9 @@ impl IntoResponse for ControlApiError {
                     "CONFIG_REVISION_CONFLICT" => StatusCode::CONFLICT,
                     "CONFIG_RESTART_REQUIRED" => StatusCode::CONFLICT,
                     "CONFIG_RUNTIME_DIVERGED" => StatusCode::CONFLICT,
-                    "CONFIG_BUSY" | "CONFIG_OUTPUT_GATE_DISABLED_NOT_PERSISTED" => {
+                    "CONFIG_BUSY"
+                    | "CONFIG_OUTPUT_GATE_DISABLED_NOT_PERSISTED"
+                    | "CONFIG_RUNTIME_APPLY_FAILED" => {
                         StatusCode::SERVICE_UNAVAILABLE
                     }
                     "CONFIG_PARSE_ERROR"

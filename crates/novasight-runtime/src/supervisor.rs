@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -17,8 +17,8 @@ use novasight_core::{
     PointerDeviceMode, RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
-    CrosshairHub, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate, PerceptionAdapter,
-    PerceptionError, PerceptionErrorKind, PerceptionEvent, PerceptionMetrics,
+    CrosshairHub, CrosshairHubSlot, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate,
+    PerceptionAdapter, PerceptionError, PerceptionErrorKind, PerceptionEvent, PerceptionMetrics,
     PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession, PipelineConfig,
     PipelineEvent, PipelineIngress, PipelineLiveConfig, PipelineMetrics, PipelineRuntime,
     PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription, TriggerMode,
@@ -46,6 +46,11 @@ use crate::snapshot::{
     RuntimeTelemetrySnapshot, SubsystemSnapshots,
 };
 use crate::state::{DaemonState, PipelineState};
+
+mod config_apply;
+
+pub(crate) use config_apply::RuntimeConfigApplyFailure;
+use config_apply::{apply_config_state, install_config_state};
 
 const COMMAND_CAPACITY: usize = 32;
 const URGENT_ADMISSION_CAPACITY: usize = 8;
@@ -107,13 +112,16 @@ pub struct RuntimeDependencies {
     model_catalog: Option<SqliteModelCatalog>,
     model_jobs: Option<ModelJobRunner>,
     preview: Option<PreviewHub>,
-    crosshair: Option<CrosshairHub>,
+    crosshair: CrosshairHubSlot,
+    crosshair_factory: Option<Arc<CrosshairHubFactory>>,
     output_enabled: bool,
     urgent_stop: Arc<UrgentStopSignal>,
 }
 
 type PointerDeviceFactory =
     dyn Fn(&AppConfig) -> Result<PointerDeviceInstallation, RuntimeError> + Send + Sync;
+type CrosshairHubFactory =
+    dyn Fn(&AppConfig) -> Result<Option<CrosshairHub>, RuntimeError> + Send + Sync;
 
 /// One process-local pointer adapter installation. Production composition
 /// supplies a factory so hardware parameter edits can replace the adapter
@@ -178,7 +186,8 @@ impl RuntimeDependencies {
             model_catalog: None,
             model_jobs: None,
             preview: None,
-            crosshair: None,
+            crosshair: CrosshairHubSlot::default(),
+            crosshair_factory: None,
             output_enabled: false,
             urgent_stop: Arc::new(UrgentStopSignal::new()),
         }
@@ -220,7 +229,24 @@ impl RuntimeDependencies {
             .get_mut()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .crosshair = Some(crosshair.clone());
-        self.crosshair = Some(crosshair);
+        self.crosshair.replace(Some(crosshair));
+        self
+    }
+
+    pub fn with_crosshair_slot(mut self, crosshair: CrosshairHubSlot) -> Self {
+        self.pipeline
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .crosshair = crosshair.current();
+        self.crosshair = crosshair;
+        self
+    }
+
+    pub fn with_crosshair_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(&AppConfig) -> Result<Option<CrosshairHub>, RuntimeError> + Send + Sync + 'static,
+    {
+        self.crosshair_factory = Some(Arc::new(factory));
         self
     }
 
@@ -264,21 +290,31 @@ impl RuntimeDependencies {
         pipeline
     }
 
-    fn install_app_config(&self, config: &AppConfig) -> Result<PointerDeviceMode, RuntimeError> {
-        let installation = self
-            .device_factory
-            .as_ref()
-            .map(|factory| factory(config))
+    fn install_app_config(
+        &self,
+        config: &AppConfig,
+        rebuild_device: bool,
+        rebuild_crosshair: bool,
+    ) -> Result<PointerDeviceMode, RuntimeError> {
+        let installation = rebuild_device
+            .then(|| self.device_factory.as_ref().map(|factory| factory(config)))
+            .flatten()
             .transpose()?;
-        let (current_trigger_poll_interval_ms, crosshair) = {
+        let crosshair = if rebuild_crosshair {
+            self.crosshair_factory
+                .as_ref()
+                .map(|factory| factory(config))
+                .transpose()?
+                .unwrap_or_else(|| self.crosshair.current())
+        } else {
+            self.crosshair.current()
+        };
+        let current_trigger_poll_interval_ms = {
             let pipeline = self
                 .pipeline
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            (
-                pipeline.trigger_poll_interval_ms,
-                pipeline.crosshair.clone(),
-            )
+            pipeline.trigger_poll_interval_ms
         };
         let trigger_poll_interval_ms = installation
             .as_ref()
@@ -286,7 +322,7 @@ impl RuntimeDependencies {
             .unwrap_or(current_trigger_poll_interval_ms);
         let mut pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
             .map_err(RuntimeError::pipeline_rejected)?;
-        pipeline.crosshair = crosshair;
+        pipeline.crosshair = crosshair.clone();
         self.replace_model_geometry(Some(ModelGeometry {
             source_width: pipeline.control.source_width,
             roi_width: pipeline.control.roi_width,
@@ -294,6 +330,12 @@ impl RuntimeDependencies {
         }));
         self.set_trigger_mode(pipeline.trigger_mode);
         self.set_recoil_config(pipeline.recoil);
+        if let Some(preview) = &self.preview {
+            preview.configure(config.consumers.preview);
+        }
+        if rebuild_crosshair {
+            self.crosshair.replace(crosshair);
+        }
         *self
             .pipeline
             .write()
@@ -435,8 +477,9 @@ impl Clock for ProcessMonotonicClock {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct SupervisorState {
+    snapshot_sequence: AtomicU64,
     daemon: DaemonState,
     pipeline: PipelineState,
     pipeline_epoch: Option<RuntimeEpoch>,
@@ -472,6 +515,7 @@ const TELEMETRY_SAMPLE_CAPACITY: usize = 8;
 impl Default for SupervisorState {
     fn default() -> Self {
         Self {
+            snapshot_sequence: AtomicU64::new(0),
             daemon: DaemonState::Starting,
             pipeline: PipelineState::Stopped,
             pipeline_epoch: None,
@@ -495,7 +539,16 @@ impl Default for SupervisorState {
 
 impl SupervisorState {
     fn snapshot(&self, updated_at_ms: u64) -> RuntimeSnapshot {
+        let sequence = match self.snapshot_sequence.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| current.checked_add(1),
+        ) {
+            Ok(previous) => previous + 1,
+            Err(current) => current,
+        };
         RuntimeSnapshot {
+            sequence,
             daemon: DaemonSnapshot {
                 state: self.daemon,
                 version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -921,7 +974,7 @@ pub struct RuntimeHandle {
     urgent_stop: Arc<UrgentStopSignal>,
     urgent_admission: Arc<Semaphore>,
     preview: Option<PreviewHub>,
-    crosshair: Option<CrosshairHub>,
+    crosshair: CrosshairHubSlot,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -1107,11 +1160,15 @@ impl RuntimeHandle {
     }
 
     pub fn crosshair_snapshot(&self) -> Option<CrosshairSnapshot> {
-        self.crosshair.as_ref().map(CrosshairHub::snapshot)
+        self.crosshair
+            .current()
+            .as_ref()
+            .map(CrosshairHub::snapshot)
     }
 
     pub fn learn_crosshair(&self) -> Result<CrosshairTemplateSummary, RuntimeError> {
         self.crosshair
+            .current()
             .as_ref()
             .ok_or_else(RuntimeError::pipeline_unavailable)?
             .learn()
@@ -1120,6 +1177,7 @@ impl RuntimeHandle {
 
     pub fn clear_crosshair(&self) -> Result<CrosshairSnapshot, RuntimeError> {
         self.crosshair
+            .current()
             .as_ref()
             .ok_or_else(RuntimeError::pipeline_unavailable)?
             .clear_template()
@@ -1128,6 +1186,7 @@ impl RuntimeHandle {
 
     pub fn crosshair_template_preview(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
         self.crosshair
+            .current()
             .as_ref()
             .ok_or_else(RuntimeError::pipeline_unavailable)?
             .template_preview_png()
@@ -1181,20 +1240,43 @@ impl RuntimeHandle {
     pub(crate) async fn install_stopped_config(
         &self,
         config: AppConfig,
+        rebuild_device: bool,
+        rebuild_crosshair: bool,
     ) -> Result<(), RuntimeError> {
         self.send_command(|reply| RuntimeCommand::InstallStoppedConfig {
             config: Box::new(config),
+            rebuild_device,
+            rebuild_crosshair,
             reply,
         })
         .await
     }
 
-    pub async fn apply_config(&self, config: AppConfig) -> Result<RuntimeSnapshot, RuntimeError> {
-        self.send_command(|reply| RuntimeCommand::ApplyConfig {
-            config: Box::new(config),
-            reply,
-        })
-        .await
+    pub(crate) async fn apply_config(
+        &self,
+        service: ConfigService,
+        config: AppConfig,
+        rollback_config: AppConfig,
+        rebuild_device: bool,
+        rebuild_crosshair: bool,
+    ) -> Result<RuntimeSnapshot, RuntimeConfigApplyFailure> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::ApplyConfig {
+                service,
+                config: Box::new(config),
+                rollback_config: Box::new(rollback_config),
+                rebuild_device,
+                rebuild_crosshair,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                RuntimeConfigApplyFailure::before_install(RuntimeError::supervisor_closed())
+            })?;
+        reply_rx.await.map_err(|_| {
+            RuntimeConfigApplyFailure::before_install(RuntimeError::supervisor_reply_lost())
+        })?
     }
 
     pub async fn preflight_perception(&self) -> Result<(), RuntimeError> {
@@ -1458,7 +1540,12 @@ async fn handle_command(
             .await;
             let _ = reply.send(result);
         }
-        RuntimeCommand::InstallStoppedConfig { config, reply } => {
+        RuntimeCommand::InstallStoppedConfig {
+            config,
+            rebuild_device,
+            rebuild_crosshair,
+            reply,
+        } => {
             let result = if active.is_some()
                 || !matches!(
                     state.pipeline,
@@ -1468,70 +1555,38 @@ async fn handle_command(
                     "configuration reload requires a stopped runtime",
                 ))
             } else {
-                dependencies.install_app_config(&config).map(|device_mode| {
-                    state.device_mode = device_mode;
-                    state.output_enabled = config.control.output_enabled
-                        && device_mode == PointerDeviceMode::Commissioned;
-                    if device_mode == PointerDeviceMode::Commissioned {
-                        state.subsystems.device.state = SubsystemState::Stopped;
-                        state.subsystems.device.last_error = None;
-                    } else {
-                        state.mark_device_uncommissioned();
-                    }
-                    publish(snapshot_tx, state, now_ms());
-                })
+                install_config_state(
+                    snapshot_tx,
+                    state,
+                    dependencies,
+                    &config,
+                    rebuild_device,
+                    rebuild_crosshair,
+                )
             };
             let _ = reply.send(result);
         }
-        RuntimeCommand::ApplyConfig { config, reply } => {
-            let was_running = matches!(
-                state.pipeline,
-                PipelineState::Running | PipelineState::Standby
-            );
-            let result = async {
-                if was_running {
-                    stop_state(snapshot_tx, ingress_tx, state, active).await?;
-                }
-                let device_mode = match dependencies.install_app_config(&config) {
-                    Ok(device_mode) => device_mode,
-                    Err(error) => {
-                        if was_running {
-                            let _ = start_state(
-                                snapshot_tx,
-                                ingress_tx,
-                                notice_tx,
-                                state,
-                                active,
-                                dependencies,
-                            )
-                            .await;
-                        }
-                        return Err(error);
-                    }
-                };
-                state.device_mode = device_mode;
-                state.output_enabled =
-                    config.control.output_enabled && device_mode == PointerDeviceMode::Commissioned;
-                if device_mode == PointerDeviceMode::Uncommissioned {
-                    state.mark_device_uncommissioned();
-                } else if !was_running {
-                    state.subsystems.device.state = SubsystemState::Stopped;
-                    state.subsystems.device.last_error = None;
-                }
-                if was_running {
-                    start_state(
-                        snapshot_tx,
-                        ingress_tx,
-                        notice_tx,
-                        state,
-                        active,
-                        dependencies,
-                    )
-                    .await
-                } else {
-                    Ok(publish_with_result(snapshot_tx, state, now_ms()))
-                }
-            }
+        RuntimeCommand::ApplyConfig {
+            service,
+            config,
+            rollback_config,
+            rebuild_device,
+            rebuild_crosshair,
+            reply,
+        } => {
+            let result = apply_config_state(
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active,
+                dependencies,
+                &service,
+                &config,
+                &rollback_config,
+                rebuild_device,
+                rebuild_crosshair,
+            )
             .await;
             let _ = reply.send(result);
         }
@@ -3202,7 +3257,7 @@ mod tests {
             urgent_stop: Arc::new(UrgentStopSignal::new()),
             urgent_admission: Arc::new(Semaphore::new(URGENT_ADMISSION_CAPACITY)),
             preview: None,
-            crosshair: None,
+            crosshair: CrosshairHubSlot::default(),
         };
         let (occupied_reply, _occupied_reply_rx) = oneshot::channel();
         command_tx

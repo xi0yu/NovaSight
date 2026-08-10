@@ -52,6 +52,10 @@ pub struct SubsystemSnapshots {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeSnapshot {
+    /// Strictly monotonic process-local publication order. Consumers use this
+    /// instead of wall time when rejecting stale REST/WebSocket frames.
+    #[serde(default)]
+    pub sequence: u64,
     pub daemon: DaemonSnapshot,
     pub pipeline: PipelineSnapshot,
     pub subsystems: SubsystemSnapshots,
