@@ -105,6 +105,7 @@ import {
   useMainlineLaunch,
   type MainlineLaunchStepState
 } from "./useMainlineLaunch";
+import { useConfigApplyPresentation } from "./useConfigApplyPresentation";
 import { useModelSwitchWorkflow } from "./useModelSwitchWorkflow";
 import { buildControlTrace } from "./controlTrace";
 import {
@@ -781,20 +782,24 @@ export function StudioConsoleView({
   const loadedModelProjectIdRef = useRef<number | "">("");
   const loadedModelVersionIdRef = useRef<number | "">("");
   const pendingConfigWritesRef = useRef(0);
+  const [pendingConfigWriteCount, setPendingConfigWriteCount] = useState(0);
+  const beginPendingConfigWrite = useCallback(() => {
+    pendingConfigWritesRef.current += 1;
+    setPendingConfigWriteCount(pendingConfigWritesRef.current);
+  }, []);
+  const finishPendingConfigWrite = useCallback(() => {
+    pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
+    setPendingConfigWriteCount(pendingConfigWritesRef.current);
+  }, []);
   const configWriteSeqRef = useRef(0);
   const configWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
-  // Monotonic sequence for any client-initiated runtime-config write attempt
-  // (field edit, section save, dialog save, kmNet gate flip, config import,
-  // revision-conflict recovery). Used by `finalizeRuntimeConfigWrite` to
-  // guarantee that a slow response from one path cannot overwrite a fresher
-  // response from a newer write. The server-pushed config effect (line
-  // ~1361) bypasses this guard because it's already the canonical state.
-  const runtimeConfigWriteSeqRef = useRef(0);
-  const beginRuntimeConfigWrite = useCallback(() => ++runtimeConfigWriteSeqRef.current, []);
   const finalizeRuntimeConfigWrite = useCallback(
-    (seq: number, config: RuntimeConfig) => {
-      if (seq !== runtimeConfigWriteSeqRef.current) {
-        // A newer write attempt has started; drop this stale response.
+    (config: RuntimeConfig) => {
+      const incomingRevision = readNumber(config.revision, 0);
+      const currentRevision = readNumber(runtimeConfigLatestRef.current?.revision, 0);
+      if (incomingRevision < currentRevision) {
+        // Runtime config writes are serialized. Revision order, not request
+        // start order, determines whether a response is stale.
         return;
       }
       runtimeConfigLatestRef.current = config;
@@ -932,23 +937,22 @@ export function StudioConsoleView({
     }
 
     dialogSavingRef.current = true;
-    pendingConfigWritesRef.current += 1;
+    beginPendingConfigWrite();
     setConfigDialogSaving(true);
     setBusy("config-dialog.save");
     setDialogSaveError(null);
     setLocalError(null);
     try {
-      const seq = beginRuntimeConfigWrite();
       const result = await updateRuntimeConfig(draft);
       const applied = normalizeRuntimeConfig(result.config);
       if (result.schema) {
         applyConfigSchema(result.schema);
       }
-      finalizeRuntimeConfigWrite(seq, applied);
+      finalizeRuntimeConfigWrite(applied);
       reportSuccess(
         "配置已保存",
         result.restart_required
-          ? "新参数已写入配置；仍有进程级配置等待 novasightd 重启。"
+          ? "运行参数已由当前进程应用；仅进程级基础配置留待下次服务启动接管。"
           : result.apply_mode === "epoch_reload"
             ? "新参数已写入配置，并通过当前进程的新运行 epoch 生效。"
             : "新参数已经即时应用。",
@@ -964,9 +968,9 @@ export function StudioConsoleView({
       dialogSavingRef.current = false;
       setConfigDialogSaving(false);
       setBusy(null);
-      pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
+      finishPendingConfigWrite();
     }
-  }, [applyConfigSchema, beginRuntimeConfigWrite, finalizeRuntimeConfigWrite, finishConfigDialog]);
+  }, [applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishConfigDialog, finishPendingConfigWrite]);
 
   const requestDismissConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
     if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
@@ -1410,7 +1414,6 @@ export function StudioConsoleView({
   const controlModeLabel = controlAlgorithmLabel;
 
   useEffect(() => {
-    runtimeConfigLatestRef.current = runtimeConfig;
     if (!runtimeConfig || pendingConfigWritesRef.current > 0 || activeConfigDialogRef.current !== null) {
       return;
     }
@@ -1420,12 +1423,18 @@ export function StudioConsoleView({
       return;
     }
     const next = normalizeRuntimeConfig(runtimeConfig);
+    const incomingRevision = readNumber(next.revision, 0);
+    const currentRevision = readNumber(runtimeConfigLatestRef.current?.revision, 0);
+    if (incomingRevision < currentRevision) {
+      return;
+    }
+    runtimeConfigLatestRef.current = next;
     configDraftRef.current = next;
     // Same-value short-circuit: when the partial frame carries no real
     // configuration change, keep the existing reference so downstream
     // controlled components and memos stay stable.
     setConfigDraft((prev) => (runtimeConfigValuesEqual(prev, next) ? prev : next));
-  }, [runtimeConfig, draggingControlId]);
+  }, [draggingControlId, pendingConfigWriteCount, runtimeConfig]);
   const kmnetConnectedRaw = kmnetStatus.connected === true;
   const kmnetConnectingRaw = kmnetStatus.connecting === true;
   const kmnetExecutorAvailable = kmnetStatus.available === true;
@@ -1442,27 +1451,23 @@ export function StudioConsoleView({
   const kmnetRetryable = kmnetConnectionFailed || kmnetConnectionDegraded;
   const kmnetLastError = readString(kmnetStatus.last_error, "");
   const kmnetLastDeviceError = readString(kmnetStatus.last_device_error, "");
-  const desiredConfigRevision = readNumber(runtime?.config?.version, 0);
-  const effectiveConfigRevision = readNumber(runtime?.config?.effective_version, desiredConfigRevision);
-  const configRestartRequired = runtime?.config?.restart_required === true
-    || desiredConfigRevision !== effectiveConfigRevision;
-  // `pendingConfigWritesRef.current` is bumped while a client-initiated
-  // runtime config write is in flight (field edit, dialog save, section
-  // save, kmNet gate flip, config import). Surfacing this as a derived
-  // signal lets the profile panel show "正在应用" instead of flickering
-  // between "等待重启" and "已生效" during the desired→effective window.
-  const configApplyPending = pendingConfigWritesRef.current > 0;
-  // Mirror of the ref for React-driven re-renders. The ref remains the
-  // synchronous guard in the setConfigDraft effect; this state exists only
-  // so the profile panel and inline apply labels pick up the change.
-  const [pendingApplyTick, setPendingApplyTick] = useState(0);
-  useEffect(() => {
-    if (pendingConfigWritesRef.current > 0 && pendingApplyTick === 0) {
-      setPendingApplyTick(1);
-    } else if (pendingConfigWritesRef.current === 0 && pendingApplyTick !== 0) {
-      setPendingApplyTick(0);
-    }
+  const reportedDesiredConfigRevision = readNumber(runtime?.config?.version, 0);
+  const reportedEffectiveConfigRevision = readNumber(
+    runtime?.config?.effective_version,
+    reportedDesiredConfigRevision
+  );
+  const reportedConfigRestartRequired = runtime?.config?.restart_required === true
+    || reportedDesiredConfigRevision !== reportedEffectiveConfigRevision;
+  const configApplyPresentation = useConfigApplyPresentation({
+    pendingWriteCount: pendingConfigWriteCount,
+    restartRequired: reportedConfigRestartRequired,
+    desiredRevision: reportedDesiredConfigRevision,
+    effectiveRevision: reportedEffectiveConfigRevision
   });
+  const configApplyPending = configApplyPresentation.state === "applying";
+  const configRestartRequired = configApplyPresentation.state === "pending_process";
+  const desiredConfigRevision = configApplyPresentation.desiredRevision;
+  const effectiveConfigRevision = configApplyPresentation.effectiveRevision;
   const kmnetRestartRequired = kmnetStatus.restart_required === true;
   const kmnetConfigurationState = readString(
     kmnetStatus.configuration_state,
@@ -1551,9 +1556,7 @@ export function StudioConsoleView({
       ? "已生效"
       : configApplyPending
         ? "正在应用…"
-        : configRestartRequired
-          ? "已保存 · 等待进程级配置接管"
-          : "运行区域不同";
+        : "已保存 · 等待运行态确认";
   const runtimePostprocessAvailable = runtimeMainlineRunning
     && runtimeInference.loaded === true
     && Number.isFinite(runtimePostprocessConfidence)
@@ -1567,9 +1570,7 @@ export function StudioConsoleView({
       ? "已生效"
       : configApplyPending
         ? "正在应用…"
-        : configRestartRequired
-          ? "已保存 · 等待进程级配置接管"
-          : "运行值不同";
+        : "已保存 · 等待运行态确认";
   const switchableArtifacts = modelArtifacts.filter(
     (item) =>
       item.kind === "engine" &&
@@ -2474,8 +2475,7 @@ export function StudioConsoleView({
       }
       const optimistic = options?.optimistic !== false;
       const writeSeq = ++configWriteSeqRef.current;
-      const runtimeSeq = beginRuntimeConfigWrite();
-      pendingConfigWritesRef.current += 1;
+      beginPendingConfigWrite();
       setDialogSaveError(null);
       const keepsEditorInteractive = section === "control" && key === "aim";
       if (!keepsEditorInteractive) {
@@ -2503,7 +2503,7 @@ export function StudioConsoleView({
         // unified runtime write seq). A newer optimistic edit may still own
         // the visible draft, but the next queued transaction must never be
         // built from an older revision.
-        finalizeRuntimeConfigWrite(runtimeSeq, applied);
+        finalizeRuntimeConfigWrite(applied);
         if (writeSeq === configWriteSeqRef.current) {
           // The optimistic seq still owns the visible draft; mirror the
           // canonical value into the local refs/state without touching the
@@ -2531,13 +2531,13 @@ export function StudioConsoleView({
           throw err;
         }
       } finally {
-        pendingConfigWritesRef.current = Math.max(0, pendingConfigWritesRef.current - 1);
+        finishPendingConfigWrite();
         if (!keepsEditorInteractive && writeSeq === configWriteSeqRef.current) {
           setBusy(null);
         }
       }
     },
-    [applyConfigSchema, beginRuntimeConfigWrite, finalizeRuntimeConfigWrite, onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
+    [applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
   );
 
   const requestOutputGateChange = useCallback((enabled: boolean) => {
@@ -2590,7 +2590,7 @@ export function StudioConsoleView({
         current[section] = nextSection as RuntimeConfig[string];
         return updateRuntimeConfig(current);
       };
-      const seq = beginRuntimeConfigWrite();
+      beginPendingConfigWrite();
       const request = configWriteQueueRef.current.then(async () => {
         const current = cloneRuntimeConfig(runtimeConfigLatestRef.current);
         if (!current) {
@@ -2607,7 +2607,7 @@ export function StudioConsoleView({
           // canonical document and replay only this section's intended keys;
           // never resend an entire stale configuration.
           const latest = normalizeRuntimeConfig(await getRuntimeConfig());
-          finalizeRuntimeConfigWrite(seq, latest);
+          finalizeRuntimeConfigWrite(latest);
           return persistSection(latest);
         }
       });
@@ -2615,18 +2615,22 @@ export function StudioConsoleView({
         () => undefined,
         () => undefined
       );
-      const result = await request;
-      if (!result) {
-        return null;
+      try {
+        const result = await request;
+        if (!result) {
+          return null;
+        }
+        const applied = normalizeRuntimeConfig(result.config);
+        if (result.schema) {
+          applyConfigSchema(result.schema);
+        }
+        finalizeRuntimeConfigWrite(applied);
+        return result;
+      } finally {
+        finishPendingConfigWrite();
       }
-      const applied = normalizeRuntimeConfig(result.config);
-      if (result.schema) {
-        applyConfigSchema(result.schema);
-      }
-      finalizeRuntimeConfigWrite(seq, applied);
-      return result;
     },
-    [applyConfigSchema, beginRuntimeConfigWrite, finalizeRuntimeConfigWrite, onRuntimeConfigChange]
+    [applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange]
   );
 
   const handleCenteredRoiSizeChange = useCallback(
@@ -3306,10 +3310,14 @@ export function StudioConsoleView({
         await disconnectKmNet(signal);
         physicalDisconnectCompleted = true;
         if (outputEnabled) {
-          const seq = beginRuntimeConfigWrite();
-          const gateResult = await setRuntimeOutputGate(false);
-          const applied = normalizeRuntimeConfig(gateResult.config);
-          finalizeRuntimeConfigWrite(seq, applied);
+          beginPendingConfigWrite();
+          try {
+            const gateResult = await setRuntimeOutputGate(false);
+            const applied = normalizeRuntimeConfig(gateResult.config);
+            finalizeRuntimeConfigWrite(applied);
+          } finally {
+            finishPendingConfigWrite();
+          }
         }
         setKmnetTestMessageTone("success");
         setKmnetTestMessage(
@@ -3337,7 +3345,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [beginRuntimeConfigWrite, finalizeRuntimeConfigWrite, kmnetAutoConnect, onRefresh, outputEnabled]);
+  }, [beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, kmnetAutoConnect, onRefresh, outputEnabled]);
 
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
@@ -3408,12 +3416,12 @@ export function StudioConsoleView({
       danger: true,
       onConfirm: async () => {
         setBusy("import");
-        const seq = beginRuntimeConfigWrite();
+        beginPendingConfigWrite();
         const executeImport = async (): Promise<boolean> => {
           try {
             const canonical = normalizeRuntimeConfig(await getRuntimeConfig());
             if (!runtimeConfigValuesEqual(canonical.revision, baseline.revision)) {
-              finalizeRuntimeConfigWrite(seq, canonical);
+              finalizeRuntimeConfigWrite(canonical);
               if (changedRuntimeConfigSections(canonical, imported).length === 0) {
                 reportSuccess("无需导入配置", "当前配置已经与导入文件一致。", "config-import");
                 return true;
@@ -3428,11 +3436,11 @@ export function StudioConsoleView({
             if (result.schema) {
               applyConfigSchema(result.schema);
             }
-            finalizeRuntimeConfigWrite(seq, applied);
+            finalizeRuntimeConfigWrite(applied);
             reportSuccess(
               "配置导入成功",
               result.restart_required
-                ? "运行参数已生效；仍有进程级基础配置待服务重新启动后接管。"
+                ? "运行参数已生效；仅进程级基础配置留待下次服务启动接管。"
                 : result.apply_mode === "epoch_reload"
                   ? "配置已由当前进程重载，并进入新的运行 epoch。"
                   : "配置已经即时进入当前运行状态。",
@@ -3442,7 +3450,7 @@ export function StudioConsoleView({
           } catch (error) {
             if (getApiErrorCode(error) === "CONFIG_REVISION_CONFLICT") {
               const canonical = normalizeRuntimeConfig(await getRuntimeConfig());
-              finalizeRuntimeConfigWrite(seq, canonical);
+              finalizeRuntimeConfigWrite(canonical);
               if (changedRuntimeConfigSections(canonical, imported).length === 0) {
                 reportSuccess("无需导入配置", "当前配置已经与导入文件一致。", "config-import");
                 return true;
@@ -3461,6 +3469,7 @@ export function StudioConsoleView({
         try {
           return await request;
         } finally {
+          finishPendingConfigWrite();
           setBusy(null);
         }
       }
@@ -3661,15 +3670,15 @@ export function StudioConsoleView({
               {currentErrorDetails.length > 0 ? <b>{currentErrorDetails.length}</b> : null}
             </button>
             <ThemeToggle />
-            {pendingApplyTick > 0 ? (
+            {configApplyPending ? (
               <div
-                aria-label="正在写入运行配置"
+                aria-label="正在保存并应用运行配置"
                 className="console-toolbar-pending"
                 role="status"
-                title="至少有一项配置写入尚未被运行态确认"
+                title="至少有一项配置正在保存并等待运行态确认"
               >
                 <NovaIcon name="restart" size={13} />
-                <span>写入中…</span>
+                <span>保存并应用中…</span>
               </div>
             ) : null}
             <div
@@ -4316,7 +4325,7 @@ export function StudioConsoleView({
                 </p>
                 <ModuleSwitch
                   label="启用低频准星观测"
-                  detail="新增独立中心采样支路；修改后需要重启主链。"
+                  detail="新增独立中心采样支路；修改后立即保存并重载当前运行 epoch。"
                   enabled={crosshairEnabled}
                   onToggle={(enabled) => updateConfigField("crosshair", "enabled", enabled)}
                 />
@@ -4546,7 +4555,7 @@ export function StudioConsoleView({
             <Metric title="设备连接" value={kmnetConnectionLabel} small={kmnetRestartRequired ? `运行 ${effectiveConfigRevision} · 已保存 ${desiredConfigRevision}` : kmnetConnected ? "ready" : kmnetConnecting ? "connecting" : kmnetRetryable ? "retry available" : "unavailable"} />
             <Metric title="执行器可用" value={kmnetRestartRequired ? "等待装载" : kmnetExecutorAvailable ? "可用" : "不可用"} small="kmNet" />
             <Metric title="按键数据" value={kmnetStatus.buttons_available === true ? "可用" : "不可用"} small="最近轮询" />
-            <Metric title="自动连接" value={kmnetAutoConnect ? kmnetRestartRequired ? "重启后启用" : "已启用" : "已关闭"} small="startup" />
+            <Metric title="自动连接" value={kmnetAutoConnect ? kmnetRestartRequired ? "重载后启用" : "已启用" : "已关闭"} small="startup" />
             <Metric title="设备通道" value={kmnetRuntimeConnectionLabel} small={kmnetRuntimeConnected ? "运行中" : "等待设备"} />
             <Metric title="命令门控" value={controlWillEmit === true ? "允许" : controlWillEmit === false ? "阻止" : NO_SAMPLE} small={controlNoSendReason || "当前控制样本"} />
           </div>
@@ -4590,13 +4599,13 @@ export function StudioConsoleView({
               {kmnetNotice.code !== "none" ? (
                 <div className={kmnetNotice.code === "failed" ? "kmnet-connection-notice failed" : "kmnet-connection-notice warn"} role="status">
                   <div>
-                    <strong>{kmnetNotice.code === "restart_required" ? "kmNet 配置已保存，等待当前进程重新装载" : kmnetNotice.code === "failed" ? "输出设备未连接" : kmnetNotice.code === "degraded" ? "设备连接异常，正在自动恢复" : "最近一次输出失败"}</strong>
+                    <strong>{kmnetNotice.code === "restart_required" ? "kmNet 配置正在由当前进程重新装载" : kmnetNotice.code === "failed" ? "输出设备未连接" : kmnetNotice.code === "degraded" ? "设备连接异常，正在自动恢复" : "最近一次输出失败"}</strong>
                     <span>{kmnetNotice.code === "restart_required"
                       ? `当前进程使用 revision ${kmnetNotice.effectiveRevision}，已保存 revision ${kmnetNotice.desiredRevision}；正在等待设备适配器重载确认。`
                       : kmnetNotice.lastError || kmnetNotice.lastDeviceError || (kmnetNotice.code === "failed" ? "请检查地址、端口、UUID 和网络连通性。" : "视觉主链继续运行，物理偏移输出保持关闭。")}</span>
                   </div>
                   {kmnetNotice.code === "restart_required" ? (
-                    <small>这是进程内配置重载等待，不是 kmNet 网络连接失败；可以刷新状态或再次保存以重试。</small>
+                    <small>这是进程内设备适配器重载，不是网络连接失败，也不要求重启主链。</small>
                   ) : kmnetRetryable ? (
                     <small>
                       {rustControlPlane
@@ -4619,7 +4628,7 @@ export function StudioConsoleView({
                   onClick={() => void setKmNetConnection(true)}
                 >
                   {kmnetRestartRequired
-                    ? "等待 novasightd 重启"
+                    ? "正在重载 kmNet"
                     : kmnetRuntimeConnected
                       ? "kmNet 已连接"
                       : kmnetConnecting

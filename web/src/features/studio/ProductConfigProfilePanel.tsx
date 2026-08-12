@@ -21,7 +21,7 @@ const ITEM_ICONS: Record<ProductConfigItemId, NovaIconName> = {
 const STATE_ICONS: Record<ProductConfigState, NovaIconName> = {
   live: "check-circle",
   saved: "save",
-  restart: "restart",
+  restart: "clock",
   missing: "triangle-alert",
   paused: "pause-output",
   applying: "restart"
@@ -30,7 +30,7 @@ const STATE_ICONS: Record<ProductConfigState, NovaIconName> = {
 const STATE_LABELS: Record<ProductConfigState, string> = {
   live: "已生效",
   saved: "已保存",
-  restart: "待重启",
+  restart: "基础项待接管",
   missing: "缺失",
   paused: "暂停",
   applying: "正在应用"
@@ -39,7 +39,7 @@ const STATE_LABELS: Record<ProductConfigState, string> = {
 const TONE_CLASSES: Record<ProductConfigState, "ready" | "waiting" | "blocked"> = {
   live: "ready",
   saved: "waiting",
-  restart: "blocked",
+  restart: "waiting",
   missing: "blocked",
   paused: "waiting",
   // Transient state while a write is in flight; same tone as "waiting"

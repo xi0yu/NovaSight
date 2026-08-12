@@ -97,18 +97,6 @@ function buildCaptureItem(input: BuildProductConfigProfileInput): ProductConfigI
       actionLabel: "选择采集"
     };
   }
-  if (input.configRestartRequired && !input.roiApplied) {
-    return {
-      id: "capture",
-      label: "采集规格",
-      state: "restart",
-      value: input.captureProfile,
-      detail: "采集或 ROI 已保存，但运行态仍在使用未生效区域。",
-      evidence: `${input.captureSource} · ROI ${input.roiLabel}`,
-      action: "capture",
-      actionLabel: "检查采集"
-    };
-  }
   if (input.runtimeRunning && input.roiApplied) {
     return {
       id: "capture",
@@ -142,28 +130,6 @@ function buildModelItem(input: BuildProductConfigProfileInput): ProductConfigIte
       evidence: input.modelName,
       action: "models",
       actionLabel: "配置模型"
-    };
-  }
-  if (input.configApplyPending && !input.postprocessApplied) {
-    return {
-      id: "model",
-      label: "模型与推理",
-      state: "applying",
-      value: "正在应用…",
-      detail: "模型或后处理参数已发送，等待运行态确认。",
-      evidence: `${input.artifactLabel} · ${input.postprocessLabel}`
-    };
-  }
-  if (input.configRestartRequired && !input.postprocessApplied) {
-    return {
-      id: "model",
-      label: "模型与推理",
-      state: "restart",
-      value: input.modelName,
-      detail: "模型或后处理参数已保存，当前运行状态仍在使用未生效值。",
-      evidence: `${input.artifactLabel} · ${input.postprocessLabel}`,
-      action: "models",
-      actionLabel: "检查模型"
     };
   }
   if (input.runtimeRunning && input.modelRuntimeLoaded && input.postprocessApplied) {
@@ -319,34 +285,34 @@ function buildKmnetItem(input: BuildProductConfigProfileInput): ProductConfigIte
 }
 
 function buildReloadItem(input: BuildProductConfigProfileInput): ProductConfigItem {
-  // During the desired→effective transaction window the panel previously
-  // flipped between "等待重启" and "已生效" every frame. Show "正在应用"
-  // instead so the user sees a single transition.
+  // The transaction boundary owns the transient write state. Individual
+  // capture/model cards use their own runtime evidence and never inherit a
+  // global revision mismatch from an unrelated process-owned setting.
   if (input.configApplyPending) {
     return {
       id: "reload",
-      label: "重载边界",
+      label: "配置边界",
       state: "applying",
-      value: "正在应用",
-      detail: "配置写入已发送，等待运行态接收并更新有效版本。",
+      value: "保存并应用中",
+      detail: "配置正在写入，或正在等待运行态确认新的有效版本。",
       evidence: `effective/desired=${revisionLabel(input.desiredRevision, input.effectiveRevision)}`
     };
   }
   if (input.configRestartRequired) {
     return {
       id: "reload",
-      label: "重载边界",
+      label: "配置边界",
       state: "restart",
-      value: "等待重启",
-      detail: "已保存配置版本高于运行态有效版本。",
+      value: "基础项待接管",
+      detail: "运行参数已由当前进程应用；仅监听地址、存储路径等进程级基础项留待下次服务启动接管。",
       evidence: `effective/desired=${revisionLabel(input.desiredRevision, input.effectiveRevision)}`,
       action: "advanced",
-      actionLabel: "查看高级"
+      actionLabel: "查看基础项"
     };
   }
   return {
     id: "reload",
-    label: "重载边界",
+    label: "配置边界",
     state: input.runtimeRunning ? "live" : "saved",
     value: "版本一致",
     detail: input.runtimeRunning ? "运行态与保存配置版本一致。" : "保存配置已就绪，等待主链启动。",
@@ -356,10 +322,10 @@ function buildReloadItem(input: BuildProductConfigProfileInput): ProductConfigIt
 
 function profileTitle(state: ProductConfigState): string {
   if (state === "missing") return "配置缺口需要处理";
-  if (state === "restart") return "配置已保存，等待运行态重载";
+  if (state === "restart") return "运行参数已生效，基础项待接管";
   if (state === "paused") return "配置可运行，但输出处于暂停";
   if (state === "live") return "配置正在生效";
-  if (state === "applying") return "正在写入配置";
+  if (state === "applying") return "正在保存并应用配置";
   return "配置已保存";
 }
 
@@ -368,7 +334,7 @@ function profileDetail(state: ProductConfigState, attentionCount: number): strin
     return "先处理缺失项，再启动主链；界面会把用户带到对应配置位置。";
   }
   if (state === "restart") {
-    return "当前有已保存但未进入运行态的配置，重启主链后才能验证效果。";
+    return "参数调整已由当前进程应用；只有进程级基础项会在下次服务启动时接管。";
   }
   if (state === "paused") {
     return "采集、模型和控制可以继续验证，物理输出保持人工暂停。";
@@ -377,7 +343,7 @@ function profileDetail(state: ProductConfigState, attentionCount: number): strin
     return "采集、模型、控制、设备和配置版本形成了同一条有效链路。";
   }
   if (state === "applying") {
-    return "配置写入已发送，等待运行态接收并更新有效版本。";
+    return "保持当前状态，直到运行态稳定确认新的有效版本。";
   }
   return attentionCount > 0
     ? "配置已经落盘，部分项目需要启动主链后才能转为生效。"
