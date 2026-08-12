@@ -54,7 +54,7 @@ import { reportError, reportInfo, reportSuccess, useClearErrorNotices, useErrorN
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { useStableSemanticValue } from "../shared/useStableSemanticValue";
-import { NovaIcon, StatusBadge, ThemeGallery, ThemeToggle } from "../../components/visual";
+import { NovaIcon, StatusBadge, ThemeToggle } from "../../components/visual";
 import { CurrentModelSummary } from "../models/CurrentModelSummary";
 import { ModelSwitchDialog } from "../models/ModelSwitchDialog";
 import {
@@ -707,19 +707,10 @@ export function StudioConsoleView({
     }
     onStatusTopicChange("summary");
   }, [activePage, onStatusTopicChange]);
-  const [wideThemeGallery, setWideThemeGallery] = useState(
-    () => window.matchMedia("(min-width: 1280px)").matches
-  );
   const [device, setDevice] = useState(
     readString(nestedRecord(runtimeConfig, "capture").device, runtime?.capture?.device ?? "/dev/video0")
   );
 
-  useEffect(() => {
-    const query = window.matchMedia("(min-width: 1280px)");
-    const update = () => setWideThemeGallery(query.matches);
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
   const [caps, setCaps] = useState<CaptureCapabilitiesResponse | null>(null);
   const [selectedChoiceId, setSelectedChoiceId] = useState("");
   const [selectedModelProjectId, setSelectedModelProjectId] = useState<number | "">("");
@@ -1806,7 +1797,7 @@ export function StudioConsoleView({
     detectionDataAgeMs,
     detectionFreshnessThresholdMs
   );
-  const rawControlTrace = buildControlTrace({
+  const controlTrace = activePage === "control" ? buildControlTrace({
     runtimeRunning: runtimeMainlineRunning,
     detectionBatchFps,
     publishedBatches: runtimeMainlineStatus.publishedBatches,
@@ -1869,8 +1860,7 @@ export function StudioConsoleView({
     lastAcceptedCommand,
     deviceLastError: kmnetLastError || kmnetLastDeviceError,
     outputTrace: runtimeOutputTrace
-  });
-  const controlTrace = rawControlTrace;
+  }) : null;
   const captureReason = capture?.last_error || (
     capture?.running !== true
       ? "采集尚未启动"
@@ -1904,7 +1894,7 @@ export function StudioConsoleView({
   const activeArtifactPath = activeArtifact?.path ?? null;
   const activeArtifactStatus = activeArtifact?.status ?? null;
   const productConfigProfile = useMemo(
-    () => buildProductConfigProfile({
+    () => activePage === "params" ? buildProductConfigProfile({
       runtimeRunning: runtimeMainlineRunning,
       configRestartRequired,
       configApplyPending,
@@ -1943,8 +1933,9 @@ export function StudioConsoleView({
       kmnetHost,
       kmnetPort: String(kmnetPort),
       kmnetUuid
-    }),
+    }) : null,
     [
+      activePage,
       activeModelName,
       activeModelPublished,
       activeArtifactId,
@@ -1990,13 +1981,15 @@ export function StudioConsoleView({
     inferenceTrace.generation ?? runtimeInference.sampled_detection_generation
   );
   const inferenceTotalMs = readNullableNumber(statistics?.inference_latency_ms);
-  const inferenceHighestConfidence = runtimeDetectionItems.reduce<number | null>(
-    (highest, item) => {
-      const score = readNullableNumber(item.score);
-      return score === null ? highest : highest === null ? score : Math.max(highest, score);
-    },
-    null
-  );
+  const inferenceHighestConfidence = activePage === "infer"
+    ? runtimeDetectionItems.reduce<number | null>(
+        (highest, item) => {
+          const score = readNullableNumber(item.score);
+          return score === null ? highest : highest === null ? score : Math.max(highest, score);
+        },
+        null
+      )
+    : null;
   const inferenceBatchPublished = (deepstreamPublishedBatches ?? 0) > 0;
   const inferenceBatchState = !inferenceRan
     ? NO_SAMPLE
@@ -2715,15 +2708,8 @@ export function StudioConsoleView({
     [updateConfigField]
   );
 
-  const {
-    responseParameters,
-    predictionCoreParameters,
-    predictionConfidenceParameters,
-    predictionCapParameters,
-    stabilityParameters,
-    calibrationParameters
-  } = buildAlgorithmParameterGroups(
-    {
+  const algorithmParameterGroups = algorithmSettingsDialogOpen
+    ? buildAlgorithmParameterGroups({
       pResponseScale,
       pResponseBoost,
       pResponseCurveShape,
@@ -2739,9 +2725,14 @@ export function StudioConsoleView({
       controlFovX,
       controlCountsPer360,
       freshnessThresholdMs
-    },
-    configFieldIndex
-  );
+    }, configFieldIndex)
+    : null;
+  const responseParameters = algorithmParameterGroups?.responseParameters ?? [];
+  const predictionCoreParameters = algorithmParameterGroups?.predictionCoreParameters ?? [];
+  const predictionConfidenceParameters = algorithmParameterGroups?.predictionConfidenceParameters ?? [];
+  const predictionCapParameters = algorithmParameterGroups?.predictionCapParameters ?? [];
+  const stabilityParameters = algorithmParameterGroups?.stabilityParameters ?? [];
+  const calibrationParameters = algorithmParameterGroups?.calibrationParameters ?? [];
 
   const algorithmTuningBrief: Array<{
     id: AlgorithmSettingsSection;
@@ -2749,7 +2740,7 @@ export function StudioConsoleView({
     value: string;
     detail: string;
     icon: Parameters<typeof NovaIcon>[0]["name"];
-  }> = [
+  }> = algorithmSettingsDialogOpen ? [
     {
       id: "response",
       label: "响应",
@@ -2780,7 +2771,7 @@ export function StudioConsoleView({
       detail: `观测最大帧龄 ${formatNumber(freshnessThresholdMs, 1)} ms`,
       icon: "settings"
     }
-  ];
+  ] : [];
 
   const renderAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) => (
     <ParameterNumberControl
@@ -2803,12 +2794,8 @@ export function StudioConsoleView({
     />
   );
 
-  const {
-    targetAdvancedParameters,
-    trackerCoreParameters,
-    trackerKalmanParameters
-  } = buildTargetingParameterGroups(
-    {
+  const targetingParameterGroups = targetAdvancedDialogOpen || trackerSettingsDialogOpen
+    ? buildTargetingParameterGroups({
       targetMinConfidence,
       candidateRatioMaxAspect,
       targetSwitchPreferenceAdvantage,
@@ -2830,9 +2817,11 @@ export function StudioConsoleView({
       trackerKalmanMaxPredictSteps,
       trackerKalmanNisThreshold,
       trackerKalmanNisHardReject
-    },
-    configFieldIndex
-  );
+    }, configFieldIndex)
+    : null;
+  const targetAdvancedParameters = targetingParameterGroups?.targetAdvancedParameters ?? [];
+  const trackerCoreParameters = targetingParameterGroups?.trackerCoreParameters ?? [];
+  const trackerKalmanParameters = targetingParameterGroups?.trackerKalmanParameters ?? [];
 
   const renderTargetingNumberParameter = (parameter: TargetingNumberParameter) => (
     <ParameterNumberControl
@@ -4061,7 +4050,7 @@ export function StudioConsoleView({
             <Metric title="控制误差" value={formatOptionalNumber(predictedErrorDistancePx)} small="px" />
             <Metric title="最近设备接受" value={hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE} small="与当前样本独立" />
           </div>
-          <ControlTracePanel trace={controlTrace} />
+          <ControlTracePanel trace={controlTrace!} />
           <details className="studio-diagnostic-details">
             <summary>
               <span>
@@ -4207,7 +4196,7 @@ export function StudioConsoleView({
             <ProductConfigProfilePanel
               busy={busy !== null}
               onAction={handleProductConfigAction}
-              profile={productConfigProfile}
+              profile={productConfigProfile!}
             />
             <div className={outputEnabled ? "console-card control-output-gate-card enabled" : "console-card control-output-gate-card paused"}>
               <div className="control-output-gate-identity">
@@ -4835,8 +4824,7 @@ export function StudioConsoleView({
         ) : null}
       </main>
 
-      {wideThemeGallery ? <ThemeGallery /> : null}
-
+      {algorithmSettingsDialogOpen ? (
       <AdvancedSettingsDialog
         description="按主链顺序调参：先目标速度预测，再连续非线性控制，再输出限幅；标定只在比例整体错误时修改。"
         dirty={configDialogDirty}
@@ -4844,7 +4832,7 @@ export function StudioConsoleView({
         footerNote={`当前算法：${controlModeLabel}`}
         onClose={() => void requestDismissConfigDialog("algorithm")}
         onSave={() => void saveConfigDialog("algorithm")}
-        open={algorithmSettingsDialogOpen}
+        open
         saveError={dialogSaveError}
         saving={dialogSaving}
         title={`${controlModeLabel} · 控制参数`}
@@ -4983,7 +4971,9 @@ export function StudioConsoleView({
           ) : null}
         </div>
       </AdvancedSettingsDialog>
+      ) : null}
 
+      {targetAdvancedDialogOpen ? (
       <AdvancedSettingsDialog
         description="控制异常框过滤、候选切换门槛和防抖确认。设置过严会阻止切换，过松会造成目标跳变。"
         dirty={configDialogDirty}
@@ -4991,7 +4981,7 @@ export function StudioConsoleView({
         footerNote="这些设置不会改变框内 aim Y，只影响选择与切换。"
         onClose={() => void requestDismissConfigDialog("target-advanced")}
         onSave={() => void saveConfigDialog("target-advanced")}
-        open={targetAdvancedDialogOpen}
+        open
         saveError={dialogSaveError}
         saving={dialogSaving}
         title="目标切换参数"
@@ -5000,7 +4990,9 @@ export function StudioConsoleView({
           {targetAdvancedParameters.map(renderTargetingNumberParameter)}
         </div>
       </AdvancedSettingsDialog>
+      ) : null}
 
+      {trackerSettingsDialogOpen ? (
       <AdvancedSettingsDialog
         description="这些参数直接进入 Rust Tracker 的跨帧身份关联；设置过松会误关联，过严会频繁断轨。"
         dirty={configDialogDirty}
@@ -5008,7 +5000,7 @@ export function StudioConsoleView({
         footerNote="关联算法固定为 Hungarian；仅输出活跃轨迹。"
         onClose={() => void requestDismissConfigDialog("tracker")}
         onSave={() => void saveConfigDialog("tracker")}
-        open={trackerSettingsDialogOpen}
+        open
         saveError={dialogSaveError}
         saving={dialogSaving}
         title="Tracker 参数"
@@ -5027,6 +5019,7 @@ export function StudioConsoleView({
           <small>Hungarian 全局匹配、四维常速度状态、最大 16 条活跃轨迹及协方差安全上限由跟踪器统一管理，不作为常用参数开放。</small>
         </div>
       </AdvancedSettingsDialog>
+      ) : null}
 
       {targetWeightsDialogOpen ? (
         <div
@@ -5480,6 +5473,7 @@ export function StudioConsoleView({
         </Suspense>
       ) : null}
 
+      {modelSwitch.dialogOpen ? (
       <ModelSwitchDialog
         completedStages={modelSwitch.completedStages}
         currentStage={modelSwitch.stageIndex}
@@ -5488,10 +5482,12 @@ export function StudioConsoleView({
         error={modelSwitch.dialogError}
         modelName={selectedCatalogModel?.relative_path ?? "TensorRT Engine"}
         onClose={modelSwitch.closeDialog}
-        open={modelSwitch.dialogOpen}
+        open
         status={modelSwitch.dialogStatus}
       />
+      ) : null}
 
+      {confirmationRequest ? (
       <ActionConfirmationDialog
         busy={confirmationBusy}
         error={confirmationError}
@@ -5501,6 +5497,7 @@ export function StudioConsoleView({
         onConfirm={() => void confirmPendingAction()}
         request={confirmationRequest}
       />
+      ) : null}
 
       {launchDialogOpen ? (
         <div

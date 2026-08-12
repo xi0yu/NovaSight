@@ -6,6 +6,16 @@
   grid-template-columns: 208px minmax(0, 1fr);
 }
 
+@media (min-width: 1280px) {
+  .console-app {
+    grid-template-columns: 208px minmax(0, 1fr);
+  }
+
+  .console-top {
+    grid-column: 1 / 3;
+  }
+}
+
 .console-sidebar {
   min-width: 0;
   padding: 16px 10px;
