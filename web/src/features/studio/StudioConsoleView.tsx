@@ -3762,7 +3762,8 @@ export function StudioConsoleView({
           />
         ) : null}
 
-        <section className={activePage === "capture" ? "console-page active" : "console-page"}>
+        {activePage === "capture" ? (
+          <section className="console-page">
           <div className="console-metrics">
             <Metric title="采集状态" value={captureStatusText} small={capture?.device || configuredCaptureDevice || "等待设备"} />
             <Metric title="推理输入 FPS" value={formatOptionalNumber(nvinferInputFps)} small="有效输入" />
@@ -3887,9 +3888,11 @@ export function StudioConsoleView({
               </div>
             </div>
           </details>
-        </section>
+          </section>
+        ) : null}
 
-        <section className={activePage === "infer" ? "console-page active" : "console-page"}>
+        {activePage === "infer" ? (
+          <section className="console-page">
           <div className="console-metrics">
             <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="模型实际完成" />
             <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果有效产出" />
@@ -4045,9 +4048,11 @@ export function StudioConsoleView({
               </div>
             </div>
           </details>
-        </section>
+          </section>
+        ) : null}
 
-        <section className={activePage === "control" ? "console-page active" : "console-page"}>
+        {activePage === "control" ? (
+          <section className="console-page">
           <div className="console-metrics">
             <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
             <Metric title="目标选择输入率" value={formatOptionalNumber(targetingBatchFps)} small="识别结果/s" />
@@ -4192,9 +4197,11 @@ export function StudioConsoleView({
               </div>
             </div>
           </details>
-        </section>
+          </section>
+        ) : null}
 
-        <section className={activePage === "params" || activePage === "control-test" ? "console-page active" : "console-page"}>
+        {activePage === "params" || activePage === "control-test" ? (
+          <section className="console-page">
           {activePage === "params" ? (
           <>
             <ProductConfigProfilePanel
@@ -4258,12 +4265,6 @@ export function StudioConsoleView({
                   <p>类别名称、选择顺序、瞄点类型与三条共享瞄点线在独立靶场统一管理。</p>
                 </div>
               </div>
-              <dl className="class-config-summary-stats">
-                <div><dt>已定义类别</dt><dd>{detectionClasses.filter(Boolean).length}</dd></div>
-                <div><dt>瞄点类型</dt><dd>头部 / 身体 / 其他</dd></div>
-                <div><dt>已映射</dt><dd>{Object.keys(activeClassRoles).length}</dd></div>
-                <div><dt>目标筛选</dt><dd>{selectedDetectionClassIds.size}/{classEditorIds.length} 类</dd></div>
-              </dl>
               <button type="button"
                 className="console-button primary"
                 disabled={configDialogSaving}
@@ -4794,9 +4795,11 @@ export function StudioConsoleView({
           </div>
           </>
           )}
-        </section>
+          </section>
+        ) : null}
 
-        <section className={activePage === "latency" ? "console-page active" : "console-page"}>
+        {activePage === "latency" ? (
+          <section className="console-page">
           <div className="console-metrics">
             <Metric title="推理链耗时" value={formatOptionalNumber(inferenceTotalMs)} small="预处理 + 推理 + 解析 · ms" />
             <Metric title="结果帧龄" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
@@ -4828,7 +4831,8 @@ export function StudioConsoleView({
               notice={<p className="latency-boundary-note">未打点的阶段不展示 0、不估算，也不拼成所谓完整链路。</p>}
             />
           </div>
-        </section>
+          </section>
+        ) : null}
       </main>
 
       {wideThemeGallery ? <ThemeGallery /> : null}

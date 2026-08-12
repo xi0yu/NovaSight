@@ -1,3 +1,5 @@
+import { memo } from "react";
+
 import { NovaIcon, type NovaIconName } from "../../components/visual";
 import type {
   ProductConfigAction,
@@ -86,7 +88,7 @@ function ProductConfigItemCard({
   );
 }
 
-export function ProductConfigProfilePanel({
+export const ProductConfigProfilePanel = memo(function ProductConfigProfilePanel({
   profile,
   busy,
   onAction
@@ -111,26 +113,25 @@ export function ProductConfigProfilePanel({
         </div>
       </header>
 
-      <ol className="control-trace-steps product-config-profile-items" aria-label="配置检查项">
-        {profile.items.map((item) => (
-          <ProductConfigItemCard
-            key={item.id}
-            item={item}
-            busy={busy}
-            onAction={onAction}
-          />
-        ))}
-      </ol>
-
-      <div className="control-trace-facts product-config-profile-facts" aria-label="配置摘要">
-        {profile.facts.map((fact) => (
-          <div key={fact.label}>
-            <span>{fact.label}</span>
-            <strong>{fact.value}</strong>
-            <small>{fact.detail}</small>
-          </div>
-        ))}
-      </div>
+      <details className="product-config-profile-details">
+        <summary>
+          <span>
+            <b>查看配置来源与生效状态</b>
+            <small>采集、模型、控制、设备和配置版本的逐项证据</small>
+          </span>
+          <i>{profile.attentionCount > 0 ? `${profile.attentionCount} 项需处理` : `${profile.totalCount} 项`}</i>
+        </summary>
+        <ol className="control-trace-steps product-config-profile-items" aria-label="配置检查项">
+          {profile.items.map((item) => (
+            <ProductConfigItemCard
+              key={item.id}
+              item={item}
+              busy={busy}
+              onAction={onAction}
+            />
+          ))}
+        </ol>
+      </details>
     </section>
   );
-}
+});

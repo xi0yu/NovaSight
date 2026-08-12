@@ -1,9 +1,9 @@
 .console-app {
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 208px minmax(0, 1fr);
 }
 
 .console-top {
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 208px minmax(0, 1fr);
 }
 
 .console-sidebar {
@@ -16,7 +16,7 @@
 .console-navigation {
   display: grid;
   align-content: start;
-  gap: 14px;
+  gap: 12px;
 }
 
 .console-nav-group {
@@ -39,14 +39,14 @@
 
 .console-nav {
   width: 100%;
-  min-height: 44px;
+  min-height: 40px;
   height: auto;
   display: grid;
   grid-template-columns: 30px minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   margin: 0;
-  padding: 6px 8px;
+  padding: 5px 8px;
   text-align: left;
 }
 
@@ -61,7 +61,6 @@
   width: auto;
   min-width: 0;
   display: grid;
-  gap: 1px;
   color: inherit;
 }
 
@@ -72,16 +71,6 @@
   line-height: 18px;
 }
 
-.console-nav .console-nav-copy small {
-  overflow: hidden;
-  color: var(--text-tertiary);
-  font-size: 11px;
-  font-weight: 450;
-  line-height: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .console-nav:hover {
   transform: none;
 }
@@ -89,10 +78,6 @@
 .console-nav.active .console-nav-icon {
   color: var(--brand-primary);
   background: color-mix(in srgb, var(--brand-primary) 12%, var(--bg-surface));
-}
-
-.console-nav.active .console-nav-copy small {
-  color: color-mix(in srgb, var(--brand-primary) 68%, var(--text-secondary));
 }
 
 .console-nav.active::before {

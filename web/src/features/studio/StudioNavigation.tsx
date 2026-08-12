@@ -121,13 +121,13 @@ export function StudioNavigation({
                   key={item.id}
                   onClick={() => onNavigate(item.id)}
                   aria-current={active ? "page" : undefined}
+                  title={item.detail}
                 >
                   <span className="console-nav-icon" aria-hidden="true">
                     <NovaIcon name={item.icon} size={18} />
                   </span>
                   <span className="console-nav-copy">
                     <b>{item.label}</b>
-                    <small>{item.detail}</small>
                   </span>
                 </button>
               );

@@ -1452,11 +1452,11 @@
 
 .class-config-summary-card {
   display: grid;
-  grid-template-columns: minmax(280px, 1.2fr) minmax(360px, 1fr) auto;
+  grid-template-columns: minmax(280px, 1fr) auto;
   align-items: center;
-  gap: var(--space-6);
+  gap: var(--space-4);
   margin-bottom: var(--space-4);
-  padding: var(--space-5);
+  padding: var(--space-4);
 }
 
 .class-config-summary-main {
@@ -1500,37 +1500,6 @@
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.5;
-}
-
-.class-config-summary-stats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(72px, 1fr));
-  gap: var(--space-2);
-  margin: 0;
-}
-
-.class-config-summary-stats div {
-  min-width: 0;
-  padding-left: var(--space-3);
-  border-left: 1px solid var(--border-subtle);
-}
-
-.class-config-summary-stats dt {
-  color: var(--text-tertiary);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.class-config-summary-stats dd {
-  margin: 4px 0 0;
-  overflow: hidden;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .target-weight-summary {
@@ -2868,15 +2837,6 @@
 }
 
 @media (max-width: 980px) {
-  .class-config-summary-card {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .class-config-summary-stats {
-    grid-column: 1 / -1;
-    grid-row: 2;
-  }
-
   .class-config-dialog-layout {
     grid-template-columns: 184px minmax(0, 1fr);
   }
@@ -2933,12 +2893,6 @@
 @media (max-width: 620px) {
   .class-config-summary-card {
     grid-template-columns: 1fr;
-  }
-
-  .class-config-summary-stats {
-    grid-column: auto;
-    grid-row: auto;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .class-config-summary-card > .console-button {

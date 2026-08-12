@@ -21,12 +21,6 @@ export type ProductConfigItem = {
   actionLabel?: string;
 };
 
-export type ProductConfigFact = {
-  label: string;
-  value: string;
-  detail: string;
-};
-
 export type ProductConfigProfile = {
   state: ProductConfigState;
   title: string;
@@ -35,7 +29,6 @@ export type ProductConfigProfile = {
   totalCount: number;
   attentionCount: number;
   items: ProductConfigItem[];
-  facts: ProductConfigFact[];
 };
 
 export type BuildProductConfigProfileInput = {
@@ -416,28 +409,6 @@ export function buildProductConfigProfile(input: BuildProductConfigProfileInput)
   const attentionCount = items.filter((item) =>
     item.state === "missing" || item.state === "restart"
   ).length;
-  const facts: ProductConfigFact[] = [
-    {
-      label: "配置版本",
-      value: revisionLabel(input.desiredRevision, input.effectiveRevision),
-      detail: input.configRestartRequired ? "运行态仍在上一版本" : "保存值与运行态一致"
-    },
-    {
-      label: "推理方式",
-      value: input.backendLabel,
-      detail: input.configuredBackendLabel === input.backendLabel ? "与配置一致" : `配置值 ${input.configuredBackendLabel}`
-    },
-    {
-      label: "当前模型",
-      value: input.modelName,
-      detail: input.artifactLabel || "等待发布"
-    },
-    {
-      label: "输出状态",
-      value: input.outputEnabled ? "允许" : "暂停",
-      detail: input.kmnetConnectionLabel
-    }
-  ];
   return {
     state,
     title: profileTitle(state),
@@ -445,7 +416,6 @@ export function buildProductConfigProfile(input: BuildProductConfigProfileInput)
     liveCount,
     totalCount: items.length,
     attentionCount,
-    items,
-    facts
+    items
   };
 }
