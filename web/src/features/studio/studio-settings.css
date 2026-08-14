@@ -1349,12 +1349,7 @@
   left: 31px;
   z-index: 0;
   width: 1px;
-  background: linear-gradient(
-    to bottom,
-    var(--brand-primary),
-    color-mix(in srgb, var(--brand-primary) 32%, var(--border-default)) 72%,
-    var(--status-success-icon)
-  );
+  background: color-mix(in srgb, var(--brand-primary) 32%, var(--border-default));
 }
 
 .parameter-save-bar {
@@ -1451,20 +1446,12 @@
 
 .control-chain-setting.output-enabled {
   border-color: transparent;
-  background: linear-gradient(
-    to right,
-    transparent 0 64px,
-    color-mix(in srgb, var(--status-success-bg) 44%, var(--bg-surface)) 64px
-  );
+  background: color-mix(in srgb, var(--status-success-bg) 44%, var(--bg-surface));
 }
 
 .control-chain-setting.output-paused {
   border-color: transparent;
-  background: linear-gradient(
-    to right,
-    transparent 0 64px,
-    color-mix(in srgb, var(--status-warning-bg) 48%, var(--bg-surface)) 64px
-  );
+  background: color-mix(in srgb, var(--status-warning-bg) 48%, var(--bg-surface));
 }
 
 .control-chain-step {

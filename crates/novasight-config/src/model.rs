@@ -5,7 +5,7 @@ use novasight_core::tracking::KalmanConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 13;
+pub const CURRENT_SCHEMA_VERSION: u32 = 15;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -488,8 +488,6 @@ pub struct PipelineRuntimeConfig {
     pub target_fov_radius_px: f64,
     #[serde(default = "default_target_min_confidence")]
     pub target_min_confidence: f32,
-    #[serde(default = "default_target_track_max_age")]
-    pub target_track_max_age: u64,
     #[serde(default = "default_target_track_max_lost_age_ms")]
     pub target_track_max_lost_age_ms: f64,
     #[serde(default = "default_tracker_max_match_distance")]
@@ -538,8 +536,11 @@ pub struct PipelineRuntimeConfig {
     pub target_class_aim_y_ratios: String,
     #[serde(default = "default_candidate_max_aspect_ratio")]
     pub candidate_max_aspect_ratio: f64,
-    #[serde(default = "default_actuation_feedback_delay_ms")]
-    pub actuation_feedback_delay_ms: f64,
+    #[serde(
+        default = "default_prediction_actuation_delay_ms",
+        alias = "actuation_feedback_delay_ms"
+    )]
+    pub prediction_actuation_delay_ms: f64,
     #[serde(skip)]
     pub(crate) production_fields_explicit: bool,
     #[serde(default, flatten)]
@@ -563,7 +564,6 @@ impl Default for PipelineRuntimeConfig {
             prediction_cap_px: default_prediction_cap_px(),
             target_fov_radius_px: default_target_fov_radius_px(),
             target_min_confidence: default_target_min_confidence(),
-            target_track_max_age: default_target_track_max_age(),
             target_track_max_lost_age_ms: default_target_track_max_lost_age_ms(),
             tracker_max_match_distance: default_tracker_max_match_distance(),
             tracker_position_cost_weight: default_tracker_position_cost_weight(),
@@ -589,7 +589,7 @@ impl Default for PipelineRuntimeConfig {
             target_aim_y_ratio: default_target_aim_y_ratio(),
             target_class_aim_y_ratios: String::new(),
             candidate_max_aspect_ratio: default_candidate_max_aspect_ratio(),
-            actuation_feedback_delay_ms: default_actuation_feedback_delay_ms(),
+            prediction_actuation_delay_ms: default_prediction_actuation_delay_ms(),
             production_fields_explicit: false,
             extra: BTreeMap::new(),
         }
@@ -684,12 +684,6 @@ impl PipelineRuntimeConfig {
             return Err(ConfigValidationError::new(
                 "pipeline.target_min_confidence",
                 "must be finite and within 0..=1",
-            ));
-        }
-        if !(1..=120).contains(&self.target_track_max_age) {
-            return Err(ConfigValidationError::new(
-                "pipeline.target_track_max_age",
-                "must be within 1..=120 frames",
             ));
         }
         validate_finite_range(
@@ -832,8 +826,8 @@ impl PipelineRuntimeConfig {
             100.0,
         )?;
         validate_finite_range(
-            "pipeline.actuation_feedback_delay_ms",
-            self.actuation_feedback_delay_ms,
+            "pipeline.prediction_actuation_delay_ms",
+            self.prediction_actuation_delay_ms,
             0.0,
             100.0,
         )?;
@@ -1014,9 +1008,6 @@ const fn default_target_min_confidence() -> f32 {
     0.5
 }
 
-const fn default_target_track_max_age() -> u64 {
-    5
-}
 const fn default_target_track_max_lost_age_ms() -> f64 {
     120.0
 }
@@ -1109,7 +1100,7 @@ const fn default_candidate_max_aspect_ratio() -> f64 {
     6.0
 }
 
-const fn default_actuation_feedback_delay_ms() -> f64 {
+const fn default_prediction_actuation_delay_ms() -> f64 {
     4.0
 }
 
@@ -1653,7 +1644,7 @@ const fn default_schema_version() -> u32 {
 }
 
 fn default_server_host() -> String {
-    "127.0.0.1".to_owned()
+    "0.0.0.0".to_owned()
 }
 
 const fn default_server_port() -> u16 {

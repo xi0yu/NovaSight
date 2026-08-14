@@ -42,8 +42,6 @@ fn observation_from_value(value: &Value) -> AimSample {
         aim_y: value["aim_y"].as_f64().expect("aim_y"),
         crosshair_x: value["crosshair_x"].as_f64().expect("crosshair_x"),
         crosshair_y: value["crosshair_y"].as_f64().expect("crosshair_y"),
-        detection_confidence: value["detection_confidence"].as_f64().unwrap_or(1.0),
-        track_confidence: value["track_confidence"].as_f64().unwrap_or(1.0),
         target_valid: value["target_valid"].as_bool().expect("target_valid"),
         trigger_active: value["trigger_active"].as_bool().expect("trigger_active"),
     }
@@ -118,8 +116,6 @@ fn first_observation_has_zero_velocity_and_predicted_offset() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -143,8 +139,6 @@ fn rust_feedback_matches_the_continuous_projection_and_atan_reference() {
         aim_y: 380.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     });
@@ -180,8 +174,6 @@ fn default_feedback_converges_with_two_frames_of_visual_delay() {
             aim_y: 320.0,
             crosshair_x: 320.0,
             crosshair_y: 320.0,
-            detection_confidence: 0.9,
-            track_confidence: 0.9,
             target_valid: true,
             trigger_active: true,
         });
@@ -216,8 +208,6 @@ fn second_observation_waits_for_complete_robust_velocity_window() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -231,8 +221,6 @@ fn second_observation_waits_for_complete_robust_velocity_window() {
         aim_y: 380.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -255,8 +243,6 @@ fn invalid_target_returns_target_invalid_block() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: false,
         trigger_active: true,
     };
@@ -277,8 +263,6 @@ fn trigger_inactive_returns_trigger_inactive_block() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: false,
     };
@@ -299,8 +283,6 @@ fn non_monotonic_observation_is_rejected() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -314,8 +296,6 @@ fn non_monotonic_observation_is_rejected() {
         aim_y: 380.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -336,8 +316,6 @@ fn stale_observation_is_rejected() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -358,8 +336,6 @@ fn reset_clears_state_and_history() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -374,8 +350,6 @@ fn reset_clears_state_and_history() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -396,8 +370,6 @@ fn release_trigger_drops_fractional_count_but_keeps_history() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -412,8 +384,6 @@ fn release_trigger_drops_fractional_count_but_keeps_history() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -435,8 +405,6 @@ fn continuous_mode_is_reported_for_small_error() {
         aim_y: 322.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };

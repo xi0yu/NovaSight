@@ -1,10 +1,10 @@
 # NovaSight's single runtime configuration. Relative paths resolve from the
 # directory in which novasightd is started.
-schema_version: 13
+schema_version: 15
 revision: 0
 server:
   # Remote access belongs behind an authenticated TLS proxy.
-  host: 127.0.0.1
+  host: 0.0.0.0
   port: 5174
   control_socket: run/novasightd.sock
 replay:
@@ -34,7 +34,6 @@ pipeline:
   prediction_cap_px: 10.0
   target_fov_radius_px: 180.0
   target_min_confidence: 0.5
-  target_track_max_age: 5
   target_track_max_lost_age_ms: 120.0
   tracker_max_match_distance: 1.5
   tracker_position_cost_weight: 0.75
@@ -56,7 +55,7 @@ pipeline:
   target_class_aim_y_ratios: ""
   candidate_max_aspect_ratio: 6.0
   # 成功发送后，等待设备运动有机会反映到采集帧；实际门控还会加一帧测量周期。
-  actuation_feedback_delay_ms: 4.0
+  prediction_actuation_delay_ms: 4.0
 control:
   output_enabled: true
   # always: 有效目标即可输出；hardware: 仅在设备按钮按下时输出。

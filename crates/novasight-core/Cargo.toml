@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+replay-tools = []
+diagnostics = []
+
 [dependencies]
 async-trait.workspace = true
 serde.workspace = true
@@ -16,3 +21,12 @@ tokio = { workspace = true, features = ["test-util"] }
 [[bench]]
 name = "algorithm_replay"
 harness = false
+required-features = ["replay-tools"]
+
+[[test]]
+name = "replay_slice"
+required-features = ["replay-tools"]
+
+[[test]]
+name = "runtime_algorithm_slice"
+required-features = ["diagnostics"]

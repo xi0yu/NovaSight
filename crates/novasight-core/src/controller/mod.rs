@@ -8,6 +8,7 @@
 mod algorithm;
 mod control_law;
 pub mod recoil;
+#[cfg(feature = "replay-tools")]
 pub mod replay;
 
 pub use algorithm::{

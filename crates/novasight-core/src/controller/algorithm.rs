@@ -58,8 +58,6 @@ pub struct AimAlgorithmConfig {
     pub response_scale: f64,
     pub response_boost: f64,
     pub response_curve_shape: f64,
-    pub max_output_x_counts: f64,
-    pub max_output_y_counts: f64,
     pub velocity_history_reset_gap_ms: f64,
     pub prediction_enabled: bool,
     /// Command-to-visible-response delay used by target prediction.
@@ -82,8 +80,6 @@ impl Default for AimAlgorithmConfig {
             response_scale: 0.20,
             response_boost: 0.50,
             response_curve_shape: 1.0,
-            max_output_x_counts: 127.0,
-            max_output_y_counts: 127.0,
             velocity_history_reset_gap_ms: 80.0,
             prediction_enabled: true,
             prediction_actuation_delay_ms: 4.0,
@@ -135,8 +131,6 @@ pub struct AimSample {
     pub aim_y: f64,
     pub crosshair_x: f64,
     pub crosshair_y: f64,
-    pub detection_confidence: f64,
-    pub track_confidence: f64,
     pub target_valid: bool,
     pub trigger_active: bool,
 }
@@ -167,36 +161,24 @@ pub struct AimResult {
     pub velocity_y: f64,
     pub motion_state: PredictionMotionState,
     pub motion_state_y: PredictionMotionState,
-    pub trend_consistency: f64,
-    pub trend_consistency_y: f64,
-    pub acceleration_px_ms2: f64,
-    pub acceleration_y_px_ms2: f64,
     pub predicted_offset_x: f64,
     pub predicted_offset_y: f64,
-    pub motion_confidence: f64,
     pub history_position_count: usize,
     pub velocity_samples: [Option<f64>; 3],
-    pub mean_velocity: Option<f64>,
     pub medoid_velocity: Option<f64>,
-    pub velocity_spread: Option<f64>,
     pub measurement_dt_ms: Option<f64>,
     pub reference_dt_ms: f64,
     pub prediction_actuation_delay_ms: f64,
     pub prediction_lead_ms: f64,
     pub prediction_horizon_ms: f64,
     pub prediction_raw_offset_x: f64,
-    pub prediction_weighted_offset_x: f64,
     pub prediction_allowed_cap_x: f64,
     pub prediction_allowed: bool,
-    pub motion_confidence_y: f64,
     pub velocity_samples_y: [Option<f64>; 3],
-    pub mean_velocity_y: Option<f64>,
     pub medoid_velocity_y: Option<f64>,
-    pub velocity_spread_y: Option<f64>,
     pub measurement_dt_ms_y: Option<f64>,
     pub reference_dt_ms_y: f64,
     pub prediction_raw_offset_y: f64,
-    pub prediction_weighted_offset_y: f64,
     pub prediction_allowed_cap_y: f64,
     pub prediction_allowed_y: bool,
     pub observed_error_x: f64,
@@ -236,36 +218,24 @@ impl AimResult {
             velocity_y: 0.0,
             motion_state: PredictionMotionState::Unavailable,
             motion_state_y: PredictionMotionState::Unavailable,
-            trend_consistency: 0.0,
-            trend_consistency_y: 0.0,
-            acceleration_px_ms2: 0.0,
-            acceleration_y_px_ms2: 0.0,
             predicted_offset_x: 0.0,
             predicted_offset_y: 0.0,
-            motion_confidence: 0.0,
             history_position_count: 0,
             velocity_samples: [None; 3],
-            mean_velocity: None,
             medoid_velocity: None,
-            velocity_spread: None,
             measurement_dt_ms: None,
             reference_dt_ms: 0.0,
             prediction_actuation_delay_ms: 0.0,
             prediction_lead_ms: 0.0,
             prediction_horizon_ms: 0.0,
             prediction_raw_offset_x: 0.0,
-            prediction_weighted_offset_x: 0.0,
             prediction_allowed_cap_x: 0.0,
             prediction_allowed: false,
-            motion_confidence_y: 0.0,
             velocity_samples_y: [None; 3],
-            mean_velocity_y: None,
             medoid_velocity_y: None,
-            velocity_spread_y: None,
             measurement_dt_ms_y: None,
             reference_dt_ms_y: 0.0,
             prediction_raw_offset_y: 0.0,
-            prediction_weighted_offset_y: 0.0,
             prediction_allowed_cap_y: 0.0,
             prediction_allowed_y: false,
             observed_error_x: 0.0,
@@ -312,10 +282,18 @@ impl AimAlgorithm {
     }
 
     pub fn set_config(&mut self, config: AimAlgorithmConfig) {
+        if self.config == config {
+            return;
+        }
+        let control_changed = self.config.control_parameters() != config.control_parameters();
+        let prediction_changed = self.config.prediction_config() != config.prediction_config();
         self.config = config;
-        self.control_law = AimControlLaw::new(config.control_parameters());
-        self.prediction.set_config(config.prediction_config());
-        self.quantizer.reset();
+        if control_changed {
+            self.control_law = AimControlLaw::new(config.control_parameters());
+        }
+        if prediction_changed {
+            self.prediction.set_config(config.prediction_config());
+        }
     }
 
     pub fn reset(&mut self) {
@@ -470,36 +448,24 @@ impl AimAlgorithm {
             velocity_y: prediction.y.velocity,
             motion_state: prediction.x.motion_state,
             motion_state_y: prediction.y.motion_state,
-            trend_consistency: prediction.x.trend_consistency,
-            trend_consistency_y: prediction.y.trend_consistency,
-            acceleration_px_ms2: prediction.x.acceleration_px_ms2,
-            acceleration_y_px_ms2: prediction.y.acceleration_px_ms2,
             predicted_offset_x,
             predicted_offset_y,
-            motion_confidence: prediction.x.motion_confidence,
             history_position_count: prediction.history_position_count,
             velocity_samples: prediction.x.velocity_samples,
-            mean_velocity: prediction.x.mean_velocity,
             medoid_velocity: prediction.x.medoid_velocity,
-            velocity_spread: prediction.x.velocity_spread,
             measurement_dt_ms: prediction.x.measurement_dt_ms,
             reference_dt_ms: prediction.x.reference_dt_ms,
             prediction_actuation_delay_ms: prediction.actuation_delay_ms,
             prediction_lead_ms: prediction.lead_ms,
             prediction_horizon_ms: prediction.x.horizon_ms,
             prediction_raw_offset_x: prediction.x.raw_offset,
-            prediction_weighted_offset_x: prediction.x.weighted_offset,
             prediction_allowed_cap_x: prediction.x.allowed_cap,
             prediction_allowed: prediction.x.allowed,
-            motion_confidence_y: prediction.y.motion_confidence,
             velocity_samples_y: prediction.y.velocity_samples,
-            mean_velocity_y: prediction.y.mean_velocity,
             medoid_velocity_y: prediction.y.medoid_velocity,
-            velocity_spread_y: prediction.y.velocity_spread,
             measurement_dt_ms_y: prediction.y.measurement_dt_ms,
             reference_dt_ms_y: prediction.y.reference_dt_ms,
             prediction_raw_offset_y: prediction.y.raw_offset,
-            prediction_weighted_offset_y: prediction.y.weighted_offset,
             prediction_allowed_cap_y: prediction.y.allowed_cap,
             prediction_allowed_y: prediction.y.allowed,
             observed_error_x: error_x,
@@ -544,8 +510,6 @@ mod tests {
                 aim_y: 160.0 + error_y,
                 crosshair_x: 160.0,
                 crosshair_y: 160.0,
-                detection_confidence: 0.95,
-                track_confidence: 0.90,
                 target_valid: true,
                 trigger_active: true,
             }));
@@ -554,16 +518,12 @@ mod tests {
         assert!(decision.sample_available);
         assert_eq!(decision.history_position_count, 4);
         assert_eq!(decision.velocity_samples, [Some(0.4); 3]);
-        assert!((decision.mean_velocity.expect("mean") - 0.4).abs() < 1e-12);
         assert!((decision.medoid_velocity.expect("medoid") - 0.4).abs() < 1e-12);
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
         assert_eq!(decision.motion_state, PredictionMotionState::Continuous);
-        assert!(decision.trend_consistency > 0.99);
-        assert_eq!(decision.acceleration_px_ms2, 0.0);
         assert!((decision.reference_dt_ms - 10.0).abs() < 1e-12);
         assert!((decision.prediction_horizon_ms - 14.0).abs() < 1e-12);
         assert!((decision.prediction_raw_offset_x - 5.6).abs() < 1e-12);
-        assert!((decision.prediction_weighted_offset_x - 5.6).abs() < 1e-12);
         assert_eq!(
             decision.prediction_allowed_cap_x,
             decision.prediction_allowed_cap_y
@@ -605,8 +565,6 @@ mod tests {
                 aim_y: 160.0,
                 crosshair_x: 160.0,
                 crosshair_y: 160.0,
-                detection_confidence: 0.95,
-                track_confidence: 0.0,
                 target_valid: true,
                 trigger_active: true,
             }));
@@ -614,7 +572,6 @@ mod tests {
         let decision = decision.expect("last decision");
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
         assert_eq!(decision.motion_state, PredictionMotionState::Continuous);
-        assert_eq!(decision.motion_confidence, 1.0);
         assert!((decision.predicted_offset_x - 4.8).abs() < 1e-12);
         assert!((decision.filtered_error_x - 56.8).abs() < 1e-12);
     }
@@ -639,8 +596,6 @@ mod tests {
                 aim_y: 160.0,
                 crosshair_x: 160.0,
                 crosshair_y: 160.0,
-                detection_confidence: 1.0,
-                track_confidence: 1.0,
                 target_valid: true,
                 trigger_active: true,
             }));
@@ -671,15 +626,12 @@ mod tests {
                 aim_y: 160.0,
                 crosshair_x: 160.0,
                 crosshair_y: 160.0,
-                detection_confidence: 1.0,
-                track_confidence: 1.0,
                 target_valid: true,
                 trigger_active: generation == 4,
             }));
         }
         let decision = decision.expect("triggered decision");
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
-        assert!(decision.motion_confidence > 0.0);
         assert!(decision.predicted_offset_x > 0.0);
         assert!(decision.emit_allowed);
     }

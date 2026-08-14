@@ -1,4 +1,4 @@
-# Continuous Atan Control
+# Continuous Atan Medoid Control
 
 Formal algorithm ID: `continuous_atan_medoid_v2`
 
@@ -7,11 +7,11 @@ Current production name: 连续非线性 Atan 控制
 The serialized ID is historical. Current production behavior uses one continuous
 response model. Prediction is enabled by the production baseline. When enabled,
 the controller estimates 2D aim-point velocity for the one selected TrackId and
-advances that aim point by the measured frame age, configured actuation feedback
-delay, and configured extra lead time. The velocity estimate uses either the
-average or medoid of the latest three adjacent velocity segments after classifying
-the four same-target aim positions as stable, stationary, reverse, oscillating,
-decelerating, jitter, or unstable.
+advances that aim point by the measured frame age, configured prediction
+actuation delay, and configured extra lead time. The velocity estimate is the
+2D medoid of exactly three adjacent velocity segments from the latest four
+same-target aim positions. There is no mean/latest fallback, confidence weight,
+acceleration branch, or motion-profile classifier in the production predictor.
 
 ## Production Data Path
 
@@ -23,7 +23,9 @@ latest valid DetectionBatch
 -> ROI/source projection and geometric atan
 -> calibrated full correction counts
 -> continuous counts-domain Atan response
--> device-count limiter and truncating fractional quantizer
+-> truncating fractional device-count quantizer
+-> recoil composition
+-> fixed X/Y device-boundary clamp
 -> capacity-one latest-replace slot
 -> MouseCommandExecutor validation
 -> kmNet move(dx, dy)
@@ -70,9 +72,10 @@ mouse-count limiter.
 ## State And Integer Output
 
 The active target identity and sub-count limiter residual are target-local.
-Target switch/loss, Tracker rebuild, stale input, geometry or calibration
-change and runtime restart clear state. No velocity history is built while
-prediction is disabled.
+Target switch/loss, Tracker rebuild, stale input, timestamp discontinuity and
+runtime restart clear target-relative state. A live configuration update only
+updates the domain that changed; an output-limit change does not rebuild the
+controller or clear its sub-count residual.
 
 ```text
 accumulator += u
@@ -109,22 +112,20 @@ residual.
 - Positive `prediction_lead_ms` is a direct time horizon in milliseconds. It no
   longer depends on frame interval, so unstable FPS and PGIE interval changes do
   not silently change the configured extra lead.
-- Acceleration remains telemetry only. Prediction output is the aim-point
-  velocity multiplied by the measured time horizon, then confidence-gated and
-  capped.
-- Prediction confidence is used as a motion-state gate. Stable continuous and
-  stable mean windows can keep full projection strength, while low-confidence
-  and peek patterns remain attenuated before the cap.
+- Prediction output is the medoid aim-point velocity multiplied by the measured
+  time horizon, then vector-capped. Detection confidence only admits or rejects
+  a target upstream; it never rescales an admitted prediction.
 - Runtime telemetry separates measured aim, predicted aim, prediction horizon,
-  tracking command, recoil contribution and final device receipt.
+  tracking command, recoil contribution, final fixed clamp and device receipt.
 
 The tuning surface is therefore limited to target/aim selection, projection
-calibration, response strength, response curve, Atan scale, per-update output
-limit, prediction lead/cap, quantization/delivery safety and optional recoil.
+calibration, response strength, response curve, prediction time/cap, fixed X/Y
+output limits and optional recoil. The Atan scale and quantizer residual are
+internal invariants, not user parameters.
 
 ## Physical Calibration Boundary
 
-`counts_per_360`, FOV, response strength, response curve, Atan scale,
-per-update limits and recoil counts require Jetson + kmNet + game trace
+`counts_per_360`, FOV, response strength, response curve, prediction time,
+fixed X/Y limits and recoil counts require Jetson + kmNet + game trace
 calibration. Transport capacity must not silently change controller authority,
 and prediction must not be used to mask a base-control problem.

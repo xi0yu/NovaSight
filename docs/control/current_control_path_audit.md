@@ -1,126 +1,94 @@
 # NovaSight Current Mouse Control Path Audit
 
-Date: 2026-08-04
+Date: 2026-08-14
 
-Status: live-code audit for the current continuous nonlinear Atan control path.
+Status: current Rust mainline audit. This file replaces the retired Python
+`RuntimeService / AngularPDController / CommandScheduler` description.
 
-## Active Mainline
-
-```text
-DetectionBatch latest-only gate
--> FrameContext
--> basic candidate filter
--> RuntimeTracker (identity/association)
--> RuntimeTargetSelector
--> RawAimPointProjector using current bbox
--> continuous nonlinear Atan control
--> capacity-one latest-replace CommandScheduler
--> MouseCommandExecutor
--> KmNetExecutor.move(dx, dy)
-```
-
-The dedicated 2D estimator consumes the measured aim point. It retains four
-positions from one target, derives three adjacent `px/ms` velocity vectors, and
-uses their medoid to reject a single-segment outlier. Tracker Kalman state is
-not used as the final predicted aim, so there is no double prediction.
-
-The active algorithm does not use:
+## Active mainline
 
 ```text
-RuntimeService._mouse_observation_metadata prediction
-MouseController deadzone/arrival/slew envelope
-CommandScheduler trajectory split path
+DetectionBatch
+-> capacity-one latest slot
+-> TargetingCore
+-> AimAlgorithm
+-> capacity-one OutputPlan slot
+-> recoil composition
+-> fixed X/Y device clamp
+-> generation / gate / trigger recheck
+-> PointerDevice::send
 ```
 
-## Per-Observation Ownership
+There is one control law and one physical-output seam. New observations replace
+unsent older observations; the runtime does not split one command into a
+trajectory or accumulate a queue of pending counts.
 
-`RuntimeService._control_intent_from_context()` determines trigger readiness before quantization, creates a typed algorithm observation, and calls the new algorithm exactly once. The resulting integers are wrapped in one `ControlIntent`. `ExecutorRegistry` forces:
+## Numeric ownership
+
+`AimAlgorithm` owns:
+
+- freshness and monotonic observation checks;
+- same-target four-position history and three adjacent velocity vectors;
+- vector-medoid velocity selection;
+- `frame_age + prediction_actuation_delay + prediction_lead` horizon;
+- prediction vector clamp;
+- FOV/counts projection and continuous Atan response;
+- truncating integer quantization with sub-count residual.
+
+The pipeline device worker owns:
+
+- current trigger, output-gate and generation rechecks;
+- recoil +Y composition;
+- one final fixed per-axis clamp;
+- the actual `PointerDevice::send` call;
+- typed output-delivery state.
+
+The final device formula is:
 
 ```text
-scheduler != None
-direct_output = false
-latest_replace = true
+out_x = clamp(tracking_x, -max_output_x_counts, max_output_x_counts)
+out_y = clamp(tracking_y + recoil_y, -max_output_y_counts, max_output_y_counts)
 ```
 
-The observation call replaces the single pending complete integer command and never calls hardware. `RuntimeService.process_control_tick()` takes at most that one command and sends it through `MouseCommandExecutor`. A newer observation or clear event increments the delivery epoch, so a command already removed from the slot but still waiting for the device lock is discarded before the device call. Scheduler step limits equal the controller's per-update limit, so this path never creates a multi-step trajectory or count debt.
+## Parameters that do not intervene
 
-## Source And Time Contract
+The current production path has no dynamic output limit, arrival radius,
+residual-cap parameter, trajectory scheduler, FAR/NEAR branch, integral term or
+confidence-based movement gain.
 
-- `capture_ts_ns`, `inference_end_ts_ns`, and `control_now_ns` must share the host monotonic domain.
-- Capture age below zero, inference completion outside `[capture, control_now]`, stale age, or generation/frame rollback blocks the whole decision. A non-increasing capture timestamp resets prediction history and uses pure measured-position feedback for that otherwise valid observation.
-- Global observation cursors survive target switches; target-local estimator/mode/quantizer state does not.
-- Motion-estimator `dt_ms` is the adjacent same-target capture timestamp difference divided by `1_000_000`.
-- When `prediction.enabled` is true, prediction estimates aim-point velocity
-  from real adjacent capture timestamps. The horizon is
-  `frame_age_ms + actuation_delay_ms + prediction_lead_ms`; velocity is
-  multiplied by that time horizon, then strength-gated from motion confidence
-  before `prediction_cap_px` vector limiting. Acceleration remains telemetry only
-  and does not add a second correction path. Disabling prediction zeros every
-  prediction offset and skips velocity-history updates.
+`target_track_max_age` is retired. Timestamp-free replay uses a fixed internal
+five-frame fallback; production identity loss uses only
+`target_track_max_lost_age_ms`.
 
-## Coordinate Contract
+Detection and track confidence remain targeting evidence. They are not inputs
+to `AimSample` and do not multiply controller demand.
 
-Detection boxes and the dedicated estimator use current ROI coordinates. Trusted source geometry creates `CoordinateTransform`; the full-control center is mapped back into ROI coordinates for `e_meas`. The controller then maps ROI error through ROI/source scaling, FOV, radians, and calibrated counts.
+## Live configuration ownership
 
-If source geometry is unavailable or untrusted, the aim observation is invalid and no command is sent. A predicted-only or stale Track is also invalid as a control source.
+- Targeting changes replace `TargetingConfig` and fence commands from the old
+  generation.
+- Prediction/control changes replace `AimAlgorithmConfig` and take effect on
+  the next observation.
+- Fixed output limits are atomically read at the device seam and do not rebuild
+  prediction state.
+- Recoil configuration is versioned independently and applied without restarting
+  capture or inference.
+- Saved YAML and live runtime use the same canonical `pipeline.*` fields.
 
-## State Ownership
+## UI contract
 
-The control algorithm alone owns:
-
-- continuous response gain from projected counts-domain error magnitude;
-- four-position same-target history;
-- three-segment medoid velocity for single-outlier rejection;
-- spread/trend/detection/track-identity prediction confidence;
-- reference dt, explicit `prediction_lead_ms`, and `prediction_cap_px`;
-- per-axis sub-count quantizer residual.
-
-The runtime owns target selection, initial trigger readiness, algorithm calculation, reset edges, the capacity-one delivery slot, and telemetry publication. Immediately before the serialized device call, the registry verifies that no newer submission superseded the selected command, then `MouseCommandExecutor` rechecks the trigger snapshot, command deadline, and increasing generation. The delivery slot retains at most one complete command and no trajectory.
-
-## Configuration Contract
+The main parameter page follows:
 
 ```text
-pipeline.p_response_scale
-pipeline.p_response_boost
-pipeline.p_response_curve_shape
-pipeline.max_output_x_counts
-pipeline.max_output_y_counts
-pipeline.prediction_lead_ms
-pipeline.prediction_cap_px
+触发方式 -> 开火延迟 -> 预测/算法 -> 压枪 -> 固定限幅 -> 输出
 ```
 
-The Atan scale `S` is fixed internally at 256 counts and is not part of the
-user-facing configuration contract.
+Ordinary target behavior exposes minimum confidence, switch delay and
+millisecond loss grace. Association weights and Kalman tuning are expert-only.
+Replay-only fallback values are not exposed.
 
-Runtime config and Studio edits use the same `pipeline.*` fields that are
-composed into `AimAlgorithmConfig`.
+## Remaining proof gap
 
-## Direct Evidence
-
-Implementation owners:
-
-- `crates/novasight-core/src/controller/algorithm.rs`
-- `crates/novasight-core/src/controller/control_law.rs`
-- `crates/novasight-core/src/prediction/mod.rs`
-- `crates/novasight-pipeline/src/runtime.rs`
-- `crates/novasight-runtime/src/supervisor.rs`
-- `crates/novasight-api/src/dto/runtime_status.rs`
-
-`control_law.rs` is the only owner of the numeric formula from measured pixel
-error and predicted displacement through projection, radial response scheduling,
-and Atan demand. `algorithm.rs` owns bounded temporal state, calls that law
-through `AimControlLaw::evaluate`, and applies only the configured X/Y output
-ceilings before integer conversion. There is no arrival or visual-feedback stop
-policy. Pipeline code adapts selected targets into
-`AimSample`, applies live configuration, records `AimResult`, and delivers the
-resulting device command.
-
-Focused integration tests prove that consecutive DetectionBatch results replace the pending command, one control tick sends only the newest frame, and a newer observation also supersedes an older command that has left the slot but has not acquired the device lock. Prediction-disabled feedback remains the no-prediction baseline; `prediction_lead_ms=0` still compensates measured frame age and actuation delay, but adds no extra user lead.
-
-## Remaining Blind Spots
-
-The least-certain production value is still physical actuation delay. Successful device-send timestamps do not prove when the game consumes input or when the result appears in capture.
-
-The largest control-model limitation is self-motion contamination: screen velocity combines target movement, manual view movement, and NovaSight's own prior output. The current prediction layer keeps prediction small and immediately removable; exact self-motion subtraction remains deferred until counts-to-visual timing is measured.
-
-Capture resource/caps success also does not prove nonblack visual content. That requires a separate GPU content probe and is outside mouse-control ownership.
+Source inspection proves ownership and formulas, not physical timing. Jetson
+validation must still measure real capture age, kmNet acceptance, visible
+actuation delay and game-specific FOV/count calibration.

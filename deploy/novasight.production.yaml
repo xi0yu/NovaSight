@@ -1,4 +1,4 @@
-schema_version: 12
+schema_version: 15
 revision: 0
 server:
   host: 0.0.0.0
@@ -25,10 +25,10 @@ pipeline:
   prediction_enabled: true
   prediction_lead_ms: 16.0
   prediction_cap_px: 10.0
-  target_debounce_distance_px: 64.0
+  prediction_actuation_delay_ms: 4.0
   target_fov_radius_px: 180.0
   target_min_confidence: 0.5
-  target_track_max_age: 5
+  target_track_max_lost_age_ms: 120.0
   tracker_max_match_distance: 1.5
   tracker_position_cost_weight: 0.75
   tracker_iou_cost_weight: 0.25

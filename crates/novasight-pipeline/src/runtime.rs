@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex, TryLockError,
     atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU64, AtomicUsize, Ordering, fence},
@@ -13,9 +12,7 @@ use novasight_core::controller::recoil::{
 use novasight_core::controller::{AimAlgorithm, AimAlgorithmConfig, AimResult, AimSample};
 use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore, TrackState};
 use novasight_core::{
-    Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, PointerDevice,
-    PredictionTruthConfig, PredictionTruthReport, PredictionTruthSample, RuntimeEpoch,
-    score_prediction_truth,
+    Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, PointerDevice, RuntimeEpoch,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -33,7 +30,6 @@ const STATUS_STANDBY: u8 = 5;
 const MAX_TELEMETRY_DETECTIONS: usize = 64;
 const DETECTION_TELEMETRY_MIN_INTERVAL_NS: u64 = 200_000_000;
 const CONTROL_TELEMETRY_MIN_INTERVAL_NS: u64 = 50_000_000;
-const PREDICTION_TRUTH_SAMPLE_CAPACITY: usize = 240;
 const KMNET_MONITOR_ERROR_TOLERANCE_COUNT: usize = 2;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -67,6 +63,42 @@ impl PipelineStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum OutputDeliveryState {
+    #[default]
+    Idle,
+    GateClosed,
+    DeviceDisabled,
+    TriggerInactive,
+    GenerationFenced,
+    NoMovement,
+    Superseded,
+    Sent,
+    SendFailed,
+}
+
+impl OutputDeliveryState {
+    const fn from_atomic(value: u8) -> Self {
+        match value {
+            1 => Self::GateClosed,
+            2 => Self::DeviceDisabled,
+            3 => Self::TriggerInactive,
+            4 => Self::GenerationFenced,
+            5 => Self::NoMovement,
+            6 => Self::Superseded,
+            7 => Self::Sent,
+            8 => Self::SendFailed,
+            _ => Self::Idle,
+        }
+    }
+
+    const fn as_atomic(self) -> u8 {
+        self as u8
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TriggerMode {
     #[default]
@@ -79,6 +111,8 @@ pub struct PipelineConfig {
     pub epoch: RuntimeEpoch,
     pub targeting: TargetingConfig,
     pub control: AimAlgorithmConfig,
+    /// Final device-axis clamp applied once, after recoil composition.
+    pub output_limits: OutputLimitConfig,
     /// Hardware trigger polling cadence. `None` leaves trigger ownership with
     /// the control plane (recording/replay); production devices set this.
     pub trigger_poll_interval_ms: Option<u64>,
@@ -98,6 +132,22 @@ pub struct PipelineConfig {
 pub struct PipelineLiveConfig {
     pub targeting: TargetingConfig,
     pub control: AimAlgorithmConfig,
+    pub output_limits: OutputLimitConfig,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputLimitConfig {
+    pub x_counts: f64,
+    pub y_counts: f64,
+}
+
+impl Default for OutputLimitConfig {
+    fn default() -> Self {
+        Self {
+            x_counts: 127.0,
+            y_counts: 127.0,
+        }
+    }
 }
 
 impl From<&PipelineConfig> for PipelineLiveConfig {
@@ -105,6 +155,7 @@ impl From<&PipelineConfig> for PipelineLiveConfig {
         Self {
             targeting: config.targeting.clone(),
             control: config.control,
+            output_limits: config.output_limits,
         }
     }
 }
@@ -127,6 +178,7 @@ impl Default for PipelineConfig {
             epoch: RuntimeEpoch(1),
             targeting: TargetingConfig::default(),
             control: AimAlgorithmConfig::default(),
+            output_limits: OutputLimitConfig::default(),
             trigger_poll_interval_ms: None,
             trigger_mode: TriggerMode::Always,
             crosshair: None,
@@ -138,6 +190,8 @@ impl Default for PipelineConfig {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PipelineMetrics {
     pub status: PipelineStatus,
+    #[serde(default)]
+    pub output_delivery_state: OutputDeliveryState,
     pub received_batches: u64,
     pub input_overwrites: u64,
     pub targeting_batches: u64,
@@ -168,8 +222,6 @@ pub struct PipelineMetrics {
     pub detections: DetectionTelemetry,
     pub target_selection: TargetSelection,
     pub control: AimResult,
-    #[serde(default)]
-    pub prediction_truth: PredictionTruthReport,
     pub recoil: RecoilDecision,
 }
 
@@ -237,7 +289,6 @@ struct AtomicMetrics {
     vision: Mutex<VisionTelemetry>,
     last_device_receipt: AtomicDeviceReceipt,
     control: Mutex<AimResult>,
-    prediction_truth: Mutex<VecDeque<PredictionTruthSample>>,
     recoil: Mutex<RecoilDecision>,
 }
 
@@ -338,6 +389,7 @@ impl AtomicDeviceReceipt {
 #[derive(Debug)]
 struct SharedState {
     status: AtomicU8,
+    output_delivery_state: AtomicU8,
     output_gate: AtomicBool,
     output_gate_min_generation: AtomicU64,
     hardware_trigger_required: AtomicBool,
@@ -353,6 +405,8 @@ struct SharedState {
     last_vision_telemetry_at_ns: AtomicU64,
     targeting_config_version: AtomicU64,
     control_config_version: AtomicU64,
+    max_output_x_counts: AtomicI32,
+    max_output_y_counts: AtomicI32,
     recoil_config_version: AtomicU64,
     recoil_enabled: AtomicBool,
     recoil_require_target: AtomicBool,
@@ -387,11 +441,11 @@ impl SharedState {
                     ..TargetSelection::default()
                 },
             }),
-            prediction_truth: Mutex::new(VecDeque::with_capacity(PREDICTION_TRUTH_SAMPLE_CAPACITY)),
             ..AtomicMetrics::default()
         };
         Self {
             status: AtomicU8::new(STATUS_STARTING),
+            output_delivery_state: AtomicU8::new(OutputDeliveryState::GateClosed.as_atomic()),
             output_gate: AtomicBool::new(false),
             output_gate_min_generation: AtomicU64::new(0),
             hardware_trigger_required: AtomicBool::new(trigger_mode == TriggerMode::Hardware),
@@ -407,6 +461,12 @@ impl SharedState {
             last_vision_telemetry_at_ns: AtomicU64::new(0),
             targeting_config_version: AtomicU64::new(1),
             control_config_version: AtomicU64::new(1),
+            max_output_x_counts: AtomicI32::new(fixed_output_limit(
+                live_config.output_limits.x_counts,
+            )),
+            max_output_y_counts: AtomicI32::new(fixed_output_limit(
+                live_config.output_limits.y_counts,
+            )),
             recoil_config_version: AtomicU64::new(1),
             recoil_enabled: AtomicBool::new(recoil_config.enabled),
             recoil_require_target: AtomicBool::new(recoil_config.require_target),
@@ -422,6 +482,30 @@ impl SharedState {
 
     fn status(&self) -> PipelineStatus {
         PipelineStatus::from_atomic(self.status.load(Ordering::Acquire))
+    }
+
+    fn set_output_delivery_state(&self, state: OutputDeliveryState) {
+        self.output_delivery_state
+            .store(state.as_atomic(), Ordering::Release);
+    }
+
+    fn output_delivery_state(&self) -> OutputDeliveryState {
+        OutputDeliveryState::from_atomic(self.output_delivery_state.load(Ordering::Acquire))
+    }
+
+    fn refresh_output_delivery_readiness(&self) {
+        let state = if !self.output_gate.load(Ordering::Acquire) {
+            OutputDeliveryState::GateClosed
+        } else if !self.device_connection_enabled.load(Ordering::Acquire) {
+            OutputDeliveryState::DeviceDisabled
+        } else if self.hardware_trigger_required.load(Ordering::Acquire)
+            && !self.trigger_active.load(Ordering::Acquire)
+        {
+            OutputDeliveryState::TriggerInactive
+        } else {
+            OutputDeliveryState::Idle
+        };
+        self.set_output_delivery_state(state);
     }
 
     fn latest_seen_generation(&self) -> Option<Generation> {
@@ -447,24 +531,6 @@ impl SharedState {
             Ok(mut telemetry) => *telemetry = value,
             Err(TryLockError::WouldBlock) => {}
             Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
-        }
-    }
-
-    fn record_prediction_truth(&self, value: AimResult) {
-        let sample = PredictionTruthSample::from_aim_result(&value);
-        match self.metrics.prediction_truth.try_lock() {
-            Ok(mut samples) => {
-                if samples.len() == PREDICTION_TRUTH_SAMPLE_CAPACITY {
-                    samples.pop_front();
-                }
-                samples.push_back(sample);
-            }
-            Err(TryLockError::WouldBlock) => {}
-            Err(TryLockError::Poisoned(poisoned)) => {
-                let mut samples = poisoned.into_inner();
-                samples.clear();
-                samples.push_back(sample);
-            }
         }
     }
 
@@ -530,16 +596,12 @@ impl SharedState {
     fn clear_control_telemetry(&self) {
         self.record_control_decision(AimResult::default());
         self.record_recoil(RecoilDecision::default());
-        self.metrics
-            .prediction_truth
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clear();
     }
 
     fn fault(&self, message: impl Into<String>) {
         let message = message.into();
         self.output_gate.store(false, Ordering::Release);
+        self.set_output_delivery_state(OutputDeliveryState::GateClosed);
         self.trigger_active.store(false, Ordering::Release);
         self.buttons_available.store(false, Ordering::Release);
         self.set_button_left(false);
@@ -564,6 +626,7 @@ impl SharedState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.output_gate.store(false, Ordering::Release);
+        self.set_output_delivery_state(OutputDeliveryState::GateClosed);
         self.trigger_active.store(false, Ordering::Release);
         self.buttons_available.store(false, Ordering::Release);
         self.set_button_left(false);
@@ -573,16 +636,19 @@ impl SharedState {
         self.clear_control_telemetry();
     }
 
-    fn record_device_success(&self) {
+    fn record_device_success(&self) -> bool {
         self.monitor_error_streak.store(0, Ordering::Release);
-        if !self.device_connected.swap(true, Ordering::AcqRel) {
+        let recovered = !self.device_connected.swap(true, Ordering::AcqRel);
+        if recovered {
             self.metrics
                 .device_recovery_count
                 .fetch_add(1, Ordering::Relaxed);
         }
+        recovered
     }
 
     fn record_device_error(&self, error: &novasight_core::AppError) {
+        self.set_output_delivery_state(OutputDeliveryState::SendFailed);
         if matches!(
             error,
             novasight_core::AppError::PointerDevice {
@@ -746,6 +812,8 @@ impl PipelineIngress {
     /// trigger cache without waiting for an already-running vendor call.
     pub fn request_output_stop(&self) {
         self.shared.output_gate.store(false, Ordering::Release);
+        self.shared
+            .set_output_delivery_state(OutputDeliveryState::GateClosed);
         self.shared.trigger_active.store(false, Ordering::Release);
         self.shared
             .buttons_available
@@ -769,6 +837,12 @@ impl PipelineIngress {
         self.shared.buttons_available.store(true, Ordering::Release);
         self.shared.set_button_left(active);
         self.shared.button_right.store(false, Ordering::Release);
+        if active {
+            self.shared.refresh_output_delivery_readiness();
+        } else {
+            self.shared
+                .set_output_delivery_state(OutputDeliveryState::TriggerInactive);
+        }
         if !active {
             // Returning from trigger release is a synchronization point:
             // no device send from the previous active interval remains.
@@ -778,7 +852,6 @@ impl PipelineIngress {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()),
             );
-            self.shared.clear_control_telemetry();
         }
     }
 
@@ -797,8 +870,8 @@ impl PipelineIngress {
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()),
             );
-            self.shared.clear_control_telemetry();
         }
+        self.shared.refresh_output_delivery_readiness();
     }
 
     pub fn trigger_mode(&self) -> TriggerMode {
@@ -839,34 +912,65 @@ impl PipelineIngress {
         self.shared
             .recoil_config_version
             .fetch_add(1, Ordering::Release);
-        self.shared.clear_control_telemetry();
         Ok(())
     }
 
-    /// Replace targeting and mouse-control tuning for the active epoch without
-    /// rebuilding capture, inference, or the pointer device lane.
+    /// Publish only the live configuration domains that actually changed.
+    /// Output limits belong to the device seam and never rebuild the aim
+    /// algorithm or disturb its target-relative state.
     pub fn set_live_config(&self, config: PipelineLiveConfig) -> Result<(), PipelineError> {
         let _lane = self
             .shared
             .device_lane
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *self
-            .shared
-            .targeting_config
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config.targeting;
-        *self
-            .shared
-            .control_config
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config.control;
+        let targeting_changed = {
+            let mut current = self
+                .shared
+                .targeting_config
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *current == config.targeting {
+                false
+            } else {
+                *current = config.targeting;
+                true
+            }
+        };
+        let control_changed = {
+            let mut current = self
+                .shared
+                .control_config
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *current == config.control {
+                false
+            } else {
+                *current = config.control;
+                true
+            }
+        };
+        let next_limit_x = fixed_output_limit(config.output_limits.x_counts);
+        let next_limit_y = fixed_output_limit(config.output_limits.y_counts);
         self.shared
-            .targeting_config_version
-            .fetch_add(1, Ordering::Release);
+            .max_output_x_counts
+            .store(next_limit_x, Ordering::Release);
         self.shared
-            .control_config_version
-            .fetch_add(1, Ordering::Release);
+            .max_output_y_counts
+            .store(next_limit_y, Ordering::Release);
+        if targeting_changed {
+            self.shared
+                .targeting_config_version
+                .fetch_add(1, Ordering::Release);
+        }
+        if control_changed {
+            self.shared
+                .control_config_version
+                .fetch_add(1, Ordering::Release);
+        }
+        if !targeting_changed && !control_changed {
+            return Ok(());
+        }
         let next_generation = self
             .shared
             .latest_seen_generation()
@@ -874,8 +978,9 @@ impl PipelineIngress {
         self.shared
             .output_gate_min_generation
             .store(next_generation, Ordering::Release);
+        self.shared
+            .set_output_delivery_state(OutputDeliveryState::GenerationFenced);
         let _ = self.command_slot.try_take();
-        self.shared.clear_control_telemetry();
         Ok(())
     }
 
@@ -958,8 +1063,6 @@ struct TargetedObservation {
     aim_y: f64,
     crosshair_x: f64,
     crosshair_y: f64,
-    detection_confidence: f64,
-    track_confidence: f64,
     track_rebuilt: bool,
 }
 
@@ -972,8 +1075,6 @@ struct TargetedObservation {
 struct OutputPlan {
     command: DeviceCommand,
     recoil_target_valid: bool,
-    max_output_x_counts: i32,
-    max_output_y_counts: i32,
 }
 
 /// Owns the post-inference real-time lanes. Capture/DeepStream keeps
@@ -1155,6 +1256,7 @@ impl PipelineRuntime {
         shared
             .output_gate
             .store(output_gate_open, Ordering::Release);
+        shared.refresh_output_delivery_readiness();
         shared.status.store(STATUS_RUNNING, Ordering::Release);
         let ingress = PipelineIngress {
             epoch: config.epoch,
@@ -1205,6 +1307,7 @@ impl PipelineRuntime {
                 .store(next_generation, Ordering::Release);
             let _ = self.command_slot.try_take();
             self.shared.output_gate.store(true, Ordering::Release);
+            self.shared.refresh_output_delivery_readiness();
         }
     }
 
@@ -1226,6 +1329,8 @@ impl PipelineRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.shared.output_gate.store(false, Ordering::Release);
+        self.shared
+            .set_output_delivery_state(OutputDeliveryState::GateClosed);
         let _ = self.command_slot.try_take();
     }
 
@@ -1238,6 +1343,7 @@ impl PipelineRuntime {
         match self.device.connect() {
             Ok(()) => {
                 self.shared.record_device_success();
+                self.shared.refresh_output_delivery_readiness();
                 Ok(())
             }
             Err(error) => {
@@ -1254,6 +1360,8 @@ impl PipelineRuntime {
         self.shared
             .device_connection_enabled
             .store(false, Ordering::Release);
+        self.shared
+            .set_output_delivery_state(OutputDeliveryState::DeviceDisabled);
         self.shared.record_manual_device_disconnect();
         self.device
             .disconnect()
@@ -1330,12 +1438,23 @@ fn spawn_trigger_worker(
                     }
                     match device.buttons() {
                         Ok(Some(buttons)) => {
-                            shared.record_device_success();
+                            let recovered = shared.record_device_success();
                             let active = buttons.trigger_active();
                             shared.trigger_active.store(active, Ordering::Release);
                             shared.buttons_available.store(true, Ordering::Release);
                             shared.set_button_left(buttons.left);
                             shared.button_right.store(buttons.right, Ordering::Release);
+                            if recovered
+                                || (active
+                                    && shared.output_delivery_state()
+                                        == OutputDeliveryState::TriggerInactive)
+                            {
+                                shared.refresh_output_delivery_readiness();
+                            } else if !active {
+                                shared.set_output_delivery_state(
+                                    OutputDeliveryState::TriggerInactive,
+                                );
+                            }
                             if !active {
                                 drop(
                                     shared
@@ -1443,12 +1562,7 @@ fn spawn_targeting_worker(
                     if shared.vision_telemetry_due(batch.stamp().captured_at.0) {
                         shared.record_vision(&batch, &selection);
                     }
-                    let track_confidence = if selection.target_state_valid {
-                        selection.target_identity_confidence.unwrap_or(0.0)
-                    } else {
-                        0.0
-                    };
-                    let (target_id, aim_x, aim_y, detection_confidence) = match (
+                    let (target_id, aim_x, aim_y) = match (
                         selection.target_object_id,
                         selection.target_track_id,
                         selection.target_class_id,
@@ -1465,12 +1579,7 @@ fn spawn_targeting_worker(
                             match batch.detections().iter().find(|item| {
                                 item.object_id() == object_id && item.class_id() == class_id
                             }) {
-                                Some(target) => (
-                                    Some(track_id.0),
-                                    aim_x,
-                                    aim_y,
-                                    f64::from(target.confidence()),
-                                ),
+                                Some(_) => (Some(track_id.0), aim_x, aim_y),
                                 None => {
                                     shared.fault(
                                         "target selection did not belong to its detection batch",
@@ -1482,7 +1591,7 @@ fn spawn_targeting_worker(
                         }
                         _ => {
                             let (center_x, center_y) = targeting_center;
-                            (None, center_x, center_y, 0.0)
+                            (None, center_x, center_y)
                         }
                     };
                     let (crosshair_x, crosshair_y) = targeting_center;
@@ -1498,8 +1607,6 @@ fn spawn_targeting_worker(
                         aim_y,
                         crosshair_x,
                         crosshair_y,
-                        detection_confidence,
-                        track_confidence,
                         track_rebuilt: selection.target_rebuilt,
                     };
                     if output.publish(observation).is_err() {
@@ -1528,10 +1635,6 @@ fn spawn_control_worker(
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "control", || {
                 let mut algorithm = AimAlgorithm::new(config.control);
-                let mut max_output_x_counts =
-                    fixed_output_limit(config.control.max_output_x_counts);
-                let mut max_output_y_counts =
-                    fixed_output_limit(config.control.max_output_y_counts);
                 let mut config_version = shared.control_config_version.load(Ordering::Acquire);
                 let mut next_telemetry_at_ns = 0;
                 while let Some(target) = input.wait_take() {
@@ -1546,8 +1649,6 @@ fn spawn_control_worker(
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
                         algorithm.set_config(live_config);
-                        max_output_x_counts = fixed_output_limit(live_config.max_output_x_counts);
-                        max_output_y_counts = fixed_output_limit(live_config.max_output_y_counts);
                         config_version = latest_config_version;
                     }
                     let control_now_ns = clock.now().0;
@@ -1563,8 +1664,6 @@ fn spawn_control_worker(
                         aim_y: target.aim_y,
                         crosshair_x: target.crosshair_x,
                         crosshair_y: target.crosshair_y,
-                        detection_confidence: target.detection_confidence,
-                        track_confidence: target.track_confidence,
                         target_valid: target.target_id.is_some(),
                         trigger_active,
                     };
@@ -1572,7 +1671,6 @@ fn spawn_control_worker(
                         algorithm.reset_target_state();
                     }
                     let decision = algorithm.step(observation);
-                    shared.record_prediction_truth(decision);
                     if control_now_ns >= next_telemetry_at_ns {
                         shared.record_control_decision(decision);
                         next_telemetry_at_ns =
@@ -1618,8 +1716,6 @@ fn spawn_control_worker(
                         .publish(OutputPlan {
                             command,
                             recoil_target_valid: target.recoil_target_valid,
-                            max_output_x_counts,
-                            max_output_y_counts,
                         })
                         .is_err()
                     {
@@ -1689,6 +1785,7 @@ fn spawn_device_worker(
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     if shared.recoil_config_version.load(Ordering::Acquire) != recoil_config_version
                     {
+                        shared.set_output_delivery_state(OutputDeliveryState::Superseded);
                         continue;
                     }
                     if shared.external_stop.load(Ordering::Acquire) != 0
@@ -1697,20 +1794,24 @@ fn spawn_device_worker(
                         break;
                     }
                     if !shared.output_gate.load(Ordering::Acquire) {
+                        shared.set_output_delivery_state(OutputDeliveryState::GateClosed);
                         continue;
                     }
                     if !shared.device_connection_enabled.load(Ordering::Acquire) {
+                        shared.set_output_delivery_state(OutputDeliveryState::DeviceDisabled);
                         continue;
                     }
                     if shared.hardware_trigger_required.load(Ordering::Acquire)
                         && !shared.trigger_active.load(Ordering::Acquire)
                     {
+                        shared.set_output_delivery_state(OutputDeliveryState::TriggerInactive);
                         continue;
                     }
                     let mut command = plan.command;
                     if command.generation.0
                         < shared.output_gate_min_generation.load(Ordering::Acquire)
                     {
+                        shared.set_output_delivery_state(OutputDeliveryState::GenerationFenced);
                         continue;
                     }
                     if command.epoch != config.epoch {
@@ -1723,6 +1824,7 @@ fn spawn_device_worker(
                     if shared.hardware_trigger_required.load(Ordering::Acquire)
                         && !shared.trigger_active.load(Ordering::Acquire)
                     {
+                        shared.set_output_delivery_state(OutputDeliveryState::TriggerInactive);
                         continue;
                     }
 
@@ -1743,11 +1845,13 @@ fn spawn_device_worker(
                     let tracking_y_counts = command.delta_y_counts;
                     let tracking_requested = tracking_x_counts != 0 || tracking_y_counts != 0;
                     let recoil_mix = mix_tracking_and_recoil(tracking_y_counts, recoil_decision);
-                    command.delta_x_counts = tracking_x_counts
-                        .clamp(-plan.max_output_x_counts, plan.max_output_x_counts);
+                    let max_output_x_counts = shared.max_output_x_counts.load(Ordering::Acquire);
+                    let max_output_y_counts = shared.max_output_y_counts.load(Ordering::Acquire);
+                    command.delta_x_counts =
+                        tracking_x_counts.clamp(-max_output_x_counts, max_output_x_counts);
                     command.delta_y_counts = recoil_mix
                         .command_y
-                        .clamp(-plan.max_output_y_counts, plan.max_output_y_counts);
+                        .clamp(-max_output_y_counts, max_output_y_counts);
                     let applied_recoil_counts_y = if recoil_decision.should_add() {
                         command
                             .delta_y_counts
@@ -1758,6 +1862,7 @@ fn spawn_device_worker(
                     };
                     if !tracking_requested && !recoil_decision.should_add() {
                         shared.record_recoil(recoil_decision);
+                        shared.set_output_delivery_state(OutputDeliveryState::NoMovement);
                         continue;
                     }
                     let latest_generation = shared.latest_seen_generation();
@@ -1766,6 +1871,7 @@ fn spawn_device_worker(
                             .metrics
                             .superseded_commands
                             .fetch_add(1, Ordering::Relaxed);
+                        shared.set_output_delivery_state(OutputDeliveryState::Superseded);
                         continue;
                     }
                     match device.send(command) {
@@ -1775,8 +1881,9 @@ fn spawn_device_worker(
                                 recoil.mark_output_sent(accepted_at_ns);
                             }
                             shared.record_recoil(recoil_decision);
-                            shared.record_device_success();
+                            let _ = shared.record_device_success();
                             shared.record_device_receipt(receipt);
+                            shared.set_output_delivery_state(OutputDeliveryState::Sent);
                         }
                         Err(error) => {
                             shared.record_recoil(recoil_decision);
@@ -1784,6 +1891,7 @@ fn spawn_device_worker(
                             shared.trigger_active.store(false, Ordering::Release);
                             shared.set_button_left(false);
                             shared.clear_control_telemetry();
+                            shared.set_output_delivery_state(OutputDeliveryState::SendFailed);
                             if !is_recoverable_pointer_error(&error) {
                                 shared.fault(format!("pointer device failed: {error}"));
                                 break;
@@ -1859,17 +1967,9 @@ fn snapshot_metrics(
         (vision.detections.clone(), vision.target_selection.clone())
     };
     let last_device_receipt = shared.metrics.last_device_receipt.snapshot();
-    let prediction_truth = {
-        let samples = shared
-            .metrics
-            .prediction_truth
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let samples = samples.iter().copied().collect::<Vec<_>>();
-        score_prediction_truth(&samples, PredictionTruthConfig::default())
-    };
     PipelineMetrics {
         status: shared.status(),
+        output_delivery_state: shared.output_delivery_state(),
         received_batches: shared.metrics.received_batches.load(Ordering::Relaxed),
         input_overwrites: batches.metrics().overwritten,
         targeting_batches: shared.metrics.targeting_batches.load(Ordering::Relaxed),
@@ -1908,7 +2008,6 @@ fn snapshot_metrics(
             .control
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        prediction_truth,
         recoil: *shared
             .metrics
             .recoil

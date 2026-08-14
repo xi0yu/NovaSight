@@ -63,18 +63,12 @@ pub struct FocusTargetObservation {
 pub struct AxisPrediction {
     pub velocity: f64,
     pub motion_state: PredictionMotionState,
-    pub trend_consistency: f64,
-    pub acceleration_px_ms2: f64,
-    pub motion_confidence: f64,
     pub velocity_samples: [Option<f64>; 3],
-    pub mean_velocity: Option<f64>,
     pub medoid_velocity: Option<f64>,
-    pub velocity_spread: Option<f64>,
     pub measurement_dt_ms: Option<f64>,
     pub reference_dt_ms: f64,
     pub horizon_ms: f64,
     pub raw_offset: f64,
-    pub weighted_offset: f64,
     pub allowed_cap: f64,
     pub safe_offset: f64,
     pub allowed: bool,
@@ -170,15 +164,13 @@ impl SingleTargetPredictor {
             0.0
         };
         let raw_offset = estimate.velocity.scale(horizon_ms);
-        let weighted_offset = raw_offset;
         let allowed_cap = self.allowed_cap();
-        let safe_offset = clamp_vector_magnitude(weighted_offset, allowed_cap);
+        let safe_offset = clamp_vector_magnitude(raw_offset, allowed_cap);
 
         let projection = AxisPredictionProjection {
             estimate,
             horizon_ms,
             raw_offset,
-            weighted_offset,
             safe_offset,
             allowed_cap,
             allowed,
@@ -208,14 +200,9 @@ struct PositionSample {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VectorVelocityEstimate {
     raw_velocities: [Vector2; 3],
-    mean_velocity: Vector2,
     medoid_velocity: Vector2,
     velocity: Vector2,
     motion_state: PredictionMotionState,
-    trend_consistency: f64,
-    acceleration_px_ms2: Vector2,
-    speed_spread: f64,
-    motion_confidence: f64,
     measurement_dt_ms: f64,
     reference_dt_ms: f64,
 }
@@ -291,7 +278,6 @@ impl RobustAimVelocityEstimator {
             self.samples[3],
         ];
         let mut velocities = [Vector2::zero(); 3];
-        let mut displacements = [Vector2::zero(); 3];
         let mut intervals_ms = [0.0; 3];
         for (index, pair) in points.windows(2).enumerate() {
             let dt_ms = (pair[1].capture_ts_ns - pair[0].capture_ts_ns) as f64 / 1_000_000.0;
@@ -301,36 +287,23 @@ impl RobustAimVelocityEstimator {
             }
             let displacement =
                 Vector2::new(pair[1].aim_x - pair[0].aim_x, pair[1].aim_y - pair[0].aim_y);
-            displacements[index] = displacement;
             velocities[index] = displacement.scale(1.0 / dt_ms);
             intervals_ms[index] = dt_ms;
         }
         let medoid_velocity = medoid_vector(velocities);
-        let mean_velocity = mean_vector(velocities);
-        let mean_speed = mean_three(velocities.map(Vector2::magnitude));
-        let speed_spread =
-            mean_three(velocities.map(|velocity| (velocity.magnitude() - mean_speed).abs()));
         let latest_dt_ms = intervals_ms[2];
         let window_dt_ms = intervals_ms.iter().sum::<f64>();
         let reference_dt_ms = window_dt_ms / 3.0;
-        let straightness = trajectory_straightness(displacements);
         let motion_state = if medoid_velocity.magnitude() <= f64::EPSILON {
             PredictionMotionState::Stationary
         } else {
             PredictionMotionState::Continuous
         };
-        let acceleration_px_ms2 = mean_acceleration(velocities, intervals_ms);
-
         Some(VectorVelocityEstimate {
             raw_velocities: velocities,
-            mean_velocity,
             medoid_velocity,
             velocity: medoid_velocity,
             motion_state,
-            trend_consistency: straightness,
-            acceleration_px_ms2,
-            speed_spread,
-            motion_confidence: 1.0,
             measurement_dt_ms: latest_dt_ms,
             reference_dt_ms,
         })
@@ -342,7 +315,6 @@ struct AxisPredictionProjection {
     estimate: VectorVelocityEstimate,
     horizon_ms: f64,
     raw_offset: Vector2,
-    weighted_offset: Vector2,
     safe_offset: Vector2,
     allowed_cap: f64,
     allowed: bool,
@@ -353,21 +325,15 @@ impl AxisPredictionProjection {
         AxisPrediction {
             velocity: axis.component(self.estimate.velocity),
             motion_state: self.estimate.motion_state,
-            trend_consistency: self.estimate.trend_consistency,
-            acceleration_px_ms2: axis.component(self.estimate.acceleration_px_ms2),
-            motion_confidence: self.estimate.motion_confidence,
             velocity_samples: self
                 .estimate
                 .raw_velocities
                 .map(|velocity| Some(axis.component(velocity))),
-            mean_velocity: Some(axis.component(self.estimate.mean_velocity)),
             medoid_velocity: Some(axis.component(self.estimate.medoid_velocity)),
-            velocity_spread: Some(self.estimate.speed_spread),
             measurement_dt_ms: Some(self.estimate.measurement_dt_ms),
             reference_dt_ms: self.estimate.reference_dt_ms,
             horizon_ms: self.horizon_ms,
             raw_offset: axis.component(self.raw_offset),
-            weighted_offset: axis.component(self.weighted_offset),
             allowed_cap: self.allowed_cap,
             safe_offset: axis.component(self.safe_offset),
             allowed: self.allowed,
@@ -405,10 +371,6 @@ impl Vector2 {
         Self { x: 0.0, y: 0.0 }
     }
 
-    fn add(self, other: Self) -> Self {
-        Self::new(self.x + other.x, self.y + other.y)
-    }
-
     fn sub(self, other: Self) -> Self {
         Self::new(self.x - other.x, self.y - other.y)
     }
@@ -424,40 +386,6 @@ impl Vector2 {
     fn distance(self, other: Self) -> f64 {
         self.sub(other).magnitude()
     }
-}
-
-fn mean_acceleration(velocities: [Vector2; 3], intervals_ms: [f64; 3]) -> Vector2 {
-    let dt_1 = ((intervals_ms[0] + intervals_ms[1]) * 0.5).max(1e-9);
-    let dt_2 = ((intervals_ms[1] + intervals_ms[2]) * 0.5).max(1e-9);
-    let acceleration_1 = velocities[1].sub(velocities[0]).scale(1.0 / dt_1);
-    let acceleration_2 = velocities[2].sub(velocities[1]).scale(1.0 / dt_2);
-    acceleration_1.add(acceleration_2).scale(0.5)
-}
-
-fn trajectory_straightness(displacements: [Vector2; 3]) -> f64 {
-    let path_length = displacements
-        .into_iter()
-        .map(Vector2::magnitude)
-        .sum::<f64>();
-    if path_length <= f64::EPSILON {
-        return 1.0;
-    }
-    let net = displacements
-        .into_iter()
-        .fold(Vector2::zero(), Vector2::add)
-        .magnitude();
-    (net / path_length).clamp(0.0, 1.0)
-}
-
-fn mean_three(values: [f64; 3]) -> f64 {
-    values.into_iter().sum::<f64>() / 3.0
-}
-
-fn mean_vector(values: [Vector2; 3]) -> Vector2 {
-    values
-        .into_iter()
-        .fold(Vector2::zero(), Vector2::add)
-        .scale(1.0 / 3.0)
 }
 
 fn medoid_vector(values: [Vector2; 3]) -> Vector2 {
@@ -567,8 +495,6 @@ mod tests {
         assert!((prediction.x.horizon_ms - 22.0).abs() < 1e-12);
         assert!((prediction.x.raw_offset - 11.0).abs() < 1e-12);
         assert!((prediction.y.raw_offset + 5.5).abs() < 1e-12);
-        assert!(prediction.x.motion_confidence > 0.99);
-        assert!((prediction.x.weighted_offset - prediction.x.raw_offset).abs() < 1e-12);
         assert!((prediction.y.safe_offset - prediction.y.raw_offset).abs() < 1e-12);
     }
 
@@ -586,7 +512,6 @@ mod tests {
 
         assert_eq!(prediction.x.motion_state, PredictionMotionState::Stationary);
         assert_eq!(prediction.x.velocity, 0.0);
-        assert_eq!(prediction.x.motion_confidence, 1.0);
         assert_eq!(prediction.x.safe_offset, 0.0);
         assert_eq!(prediction.y.safe_offset, 0.0);
     }
@@ -609,7 +534,6 @@ mod tests {
             [Some(1.0), Some(1.5), Some(1.5)]
         );
         assert!((prediction.x.velocity - 1.5).abs() < 1e-12);
-        assert_eq!(prediction.x.motion_confidence, 1.0);
         assert!(prediction.x.safe_offset > 0.0);
     }
 
@@ -631,7 +555,6 @@ mod tests {
             [Some(1.0), Some(1.0), Some(-0.5)]
         );
         assert!((prediction.x.velocity - 1.0).abs() < 1e-12);
-        assert_eq!(prediction.x.motion_confidence, 1.0);
         assert!(prediction.x.safe_offset > 0.0);
     }
 
@@ -653,7 +576,6 @@ mod tests {
             [Some(1.0), Some(-1.0), Some(1.0)]
         );
         assert_eq!(prediction.x.velocity, 1.0);
-        assert_eq!(prediction.x.motion_confidence, 1.0);
         assert!(prediction.x.safe_offset > 0.0);
     }
 
@@ -671,11 +593,8 @@ mod tests {
 
         assert!((prediction.x.velocity - 1.0).abs() < 1e-12);
         assert!((prediction.y.velocity - 0.3).abs() < 1e-12);
-        assert!((prediction.x.mean_velocity.expect("mean") - (7.0 / 3.0)).abs() < 1e-12);
-        assert!((prediction.y.mean_velocity.expect("mean") + (3.4 / 3.0)).abs() < 1e-12);
         assert!((prediction.x.medoid_velocity.expect("medoid") - 1.0).abs() < 1e-12);
         assert!((prediction.y.medoid_velocity.expect("medoid") - 0.3).abs() < 1e-12);
-        assert_eq!(prediction.x.motion_confidence, 1.0);
     }
 
     #[test]

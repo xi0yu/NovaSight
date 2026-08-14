@@ -1,124 +1,60 @@
-# NovaSight 主线收口 TODO
+# NovaSight 当前主线 TODO
 
-> 当前目标：停止把设计书执行成无限测试与证明系统，回到产品主线。
->
-> 主线定义：`采集 -> 推理 -> 目标选择/预测 -> 角度控制 -> kmNet -> UI反馈`。
->
-> 开发机没有采集卡、Jetson 工程环境和 kmNet 实机效果，因此开发机只验证结构、契约、配置、坐标、状态机、日志与 UI；真实采集、TensorRT 性能、kmNet 移动和实战手感必须在工程机验收。
+本文只描述当前 Rust 产品主线。旧 Python Angular PD、轨迹 Scheduler、
+动态限幅、arrival radius、residual cap 和多执行器方案不再是实现依据。
 
-## 强制边界
+## 唯一控制链
 
-- 生产运行只允许 `kmnet` 输出。
-- 生产触发只允许 `hardware` 或 `always`。
-- 生产控制策略只保留角度链路：`CompensatedTarget -> AngularErrorMapper -> AngularPDController -> CommandScheduler -> kmNet`。
-- `FOV / counts_per_360 / axis_sign` 只属于 Calibration Profile。
-- DeviceAdapter 只发送命令，不解释 FOV、坐标、角度、方向翻转或目标状态。
-- 开发机不得把模拟采集、模拟 kmNet、doctor/report 结果标记为真实产品验收。
-- 工程机相关问题不得通过无限新增测试文件解决，必须进入工程机验收清单。
+```text
+DetectionBatch latest-only
+-> 目标选择与身份跟踪
+-> 4 点短窗 / 3 段 medoid 速度预测
+-> frame age + actuation delay + lead
+-> 连续 Atan 控制
+-> 整数 counts 量化
+-> 压枪 +Y 合成
+-> 固定 X/Y 设备限幅
+-> generation / trigger / output gate 复核
+-> kmNet move(dx, dy)
+```
 
-## P0 主线收口
+主链不允许第二套控制公式、动态输出上限、轨迹拆分或未声明的 counts
+补偿器介入。目标置信度只决定目标是否进入选择，不参与控制增益。
 
-- [ ] 盘点当前生产入口，确认主线只有一条。
-- [ ] 删除或隐藏非主线运行选项：旧像素 PID、动态 PID、隔离鼠标、本地键鼠触发、dry-run、silent、非 kmNet 输出。
-- [ ] 确认 RuntimeConfig 只保留当前产品可解释、可生效的配置项。
-- [ ] 确认前端页面只展示真实运行状态，不展示误导性模拟状态。
-- [ ] 确认控制日志能从目标到 kmNet 串起来：`target -> aim -> error_px -> error_rad -> counts -> scheduler -> executor -> driver result`。
+## 当前开发顺序
 
-## P1 开发机可验证
+1. 保持参数页面与上述链路同序：触发方式、开火延迟、预测/算法、压枪、
+   固定限幅、输出。
+2. 普通页面只保留能够解释实际产品行为的参数；Tracker/Kalman 标定项
+   只能进入专家区域，回放实现细节不得成为产品参数。
+3. 配置写入必须同时持久化并热更新；只有真正的进程级基础项允许提示
+   下次启动接管。
+4. UI 状态必须来自后端单一语义状态和单调 revision，不允许多个异步
+   布尔值分别推导同一个界面结论。
+5. 默认构建不编译评估、回放分析和历史诊断模块；需要时通过显式 feature
+   开启。
 
-- [ ] 配置保存、热更新、刷新后不丢失。
-- [ ] 坐标转换一致：`Model -> ROI -> Capture -> Control -> Display`。
-- [ ] 角度控制公式一致：`error_px -> atan(error_px / focal_px) -> rad -> counts`。
-- [ ] `axis_sign_x/y` 是唯一方向入口，executor 不再二次翻转。
-- [ ] Scheduler 只处理整数 counts、TTL、pending、取消和设备错误。
-- [ ] Runtime API 返回 UI 需要的真实字段，UI 不直接写 RuntimeState。
-- [ ] 日志字段足够定位：目标选择、Kalman/预测、控制输出、触发门控、kmNet 返回。
+## Jetson 待验收
 
-## P2 工程机验收清单
+- 无模型时 daemon 和 Studio 能正常启动，模型主链保持等待态。
+- 固定监听地址为 `0.0.0.0:5174`，局域网浏览器能够访问 Studio。
+- 配置保存后 YAML revision、运行时 effective revision 和页面状态一致。
+- 真实 DetectionBatch 时间戳与 freshness 门控使用同一 monotonic 时钟域。
+- 预测关闭、预测开启、目标切换和短暂丢失场景没有旧命令补发。
+- 最终设备输出严格满足：
 
-- [ ] 采集卡真实模式：设备、格式、分辨率、FPS、drop。
-- [ ] 真实推理：engine、输入尺寸、平均耗时、P95、输出框数量。
-- [ ] 预览坐标一致：UI 框、推理框、主目标线、控制 aim 点都对齐。
-- [ ] kmNet 连接、按键回传、move/enc_move/move_auto 实际移动方向和幅度。
-- [ ] 标定：`fov_x_deg`、`counts_per_360_x/y`、`axis_sign_x/y`。
-- [ ] 实战：静态目标、横向移动、纵向移动、短暂遮挡、目标切换、丢失停控。
-- [ ] 记录一份工程机验收日志，不能用开发机测试替代。
+  ```text
+  out_x = clamp(tracking_x, -max_x, max_x)
+  out_y = clamp(tracking_y + recoil_y, -max_y, max_y)
+  ```
 
-## P3 暂停项
+- kmNet 硬件触发释放后不存在漏发；最新 generation 以外的命令不会到达
+  设备。
+- 记录真实静态目标、横向移动、纵向移动、遮挡和压枪手感，再校准 FOV、
+  counts/360、响应参数与执行延迟。
 
-- [ ] 暂停继续扩展 Jetson zero-copy report/doctor 证明系统，除非工程机验收明确需要。
-- [ ] 暂停为采集卡、NVMM、TensorRT 性能新增开发机模拟测试。
-- [ ] 暂停新增旁路算法或旁路执行器。
-- [ ] 暂停把设计书拆成更多抽象模块，先验证主线产品体验。
+## 完成边界
 
-## 测试保留策略
-
-保留测试只覆盖开发机能验证的核心契约：
-
-- `tests/test_config_runtime.py`
-- `tests/test_roi.py`
-- `tests/test_angular_control.py`
-- `tests/test_control_output.py`
-- `tests/test_runtime_pipeline.py`
-- `tests/test_runtime_api.py`
-- `tests/test_inference_runtime.py`
-- `tests/test_hardware_control.py`
-
-已按文件名移除非主线测试，不读取测试内容。后续新增测试必须属于以下三类之一：
-
-- 配置、坐标、控制公式、运行状态等纯开发机契约。
-- 已确认 bug 的最小回归测试。
-- 工程机验收产生的真实问题抽象出的最小单元测试。
-
-禁止新增：
-
-- 假装硬件存在的测试。
-- 为 doctor/report 证明系统继续膨胀的测试。
-- 只为覆盖率或设计书条目存在的测试。
-- [x] 完整验收后，启动日志明确输出新生产链路与标定 Profile ID。
-  - RuntimeService 启动与配置更新已记录 `production_control_chain`、策略、执行器、触发方式、Calibration Profile ID/version、FOV 与 counts/axis。覆盖：`tests/test_inference_runtime.py::test_runtime_service_logs_production_chain_and_calibration_profile_on_startup`。
-
-## 当前执行顺序
-
-1. 收口运行边界：只允许 kmNet 输出；触发只允许 `hardware/always`。
-2. 完成 P0 审计，生成现状映射和旧路径清单。
-3. 按 P1-P6 重构主链，优先把新链路接入真实 ControlThread。
-4. 再做 P7/P8 的回放、日志、CI 和旧路径删除。
-
-## 完成定义
-
-- 新链路是唯一生产链路。
-- 旧链路对生产路径零可达。
-- 从补偿目标点到设备 counts 的每一步都严格遵循：`Control px error -> FOV geometry rad error -> angular PD -> counts_per_360 -> scheduler -> kmNet`。
-- 所有关键行为可由日志、回放、静态规则和标定版本证明。
-
-## 剩余设计差距
-
-- [x] GPU 预处理结果生命周期已收紧为硬合同：共享 `novasight.inference.preprocess` 边界要求任何生产 `DeviceTensor` 都必须携带 `owner.release()`；ctypes Jetson native 成功结果必须返回正 `release_token` 且共享库必须导出 `novasight_release_tensor()`，release 返回非 0 会作为运行时释放失败暴露，不能把裸 device pointer 混入 TensorRT 主链。覆盖：`tests/test_inference_runtime.py::test_gpu_resource_preprocessor_rejects_device_tensor_without_release_owner`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_result_without_release_token`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_release_token_without_release_symbol`、`tests/test_inference_runtime.py::test_ctypes_native_backend_owner_release_fails_on_native_error`。
-- [x] `CaptureFrame/RoiFrame` 已具备设计书要求的 opaque 图像资源契约：`CapturedFrame.frame_resource` 可携带 GStreamer sample、资源内存类型、caps/memory 诊断、PTS/DTS 元数据、DMABUF fd；`image_ref` 优先返回 CPU image，缺失时返回 opaque resource handle；预裁剪 ROI 会保留同一 `FrameResource`，CPU 二次裁剪会主动清空资源句柄，避免把 CPU crop 伪装成原始 GPU/NVMM 资源。GStreamer sample 现在会尽量从 DMABuf memory 提取 fd，并写入 `FrameResource.dmabuf_fd` 与 metadata。推理输入与 `last_inference_status` 现在暴露 `frame_id/capture_ts_ns/resource_kind/resource_memory/resource_source/dmabuf_fd`，可区分 CPU fallback 与 GStreamer/NVMM/DMABUF 资源；`PreparedTensorInput` 会携带 `frame_id/capture_ts_ns/dmabuf_fd/resource_metadata`，Jetson native bridge payload 会直接收到 `resource_handle/frame_id/capture_ts_ns/resource_kind/resource_memory/resource_source/dmabuf_fd/resource_metadata`。`novasight.inference.preprocess` 已成为 ONNX/TensorRT 共享的 tensor 预处理边界，CPU image 明确走 `cpu_numpy` backend，未实现的 `gpu_buffer` preprocess 会以标准 reason `GPU_RESOURCE_PREPROCESS_NOT_IMPLEMENTED` 明确失败，不再返回假零张量。`DeviceTensor`、`TensorPreprocessResult`、`GpuResourcePreprocessor` 已导出，TensorRT 可接受外部 GPU device pointer 作为输入 binding。`capture.memory=nvmm` 现在会在生产 `InferenceRuntime` 中注入 `JetsonGpuResourcePreprocessor`；该 preprocessor 已定义 Python native bridge ABI，可通过 `NOVASIGHT_JETSON_PREPROCESSOR` 或默认 `novasight_jetson_preprocess` 模块加载 `prepare_tensor(payload)`/`prepare_nvmm_tensor(payload)`，native bridge 返回 `device_ptr/nbytes/shape` 时会包装为 `DeviceTensor`；缺原生 bridge 时仍以 `JETSON_GPU_RESOURCE_BRIDGE_UNAVAILABLE` 明确失败。`InferenceRuntime.status()` 和 `/api/runtime/state.inference.gpu_preprocessor` 现在不依赖当前 engine 类型，总能暴露 bridge readiness；`doctor jetson-bridge` 可在启动前检查 bridge 模块是否存在、是否暴露 ABI 函数，并输出 module/env/reason/detail。覆盖：`tests/test_capture_pipeline.py::test_gstreamer_appsink_frame_inherits_roi_candidate_metadata`、`tests/test_capture_pipeline.py::test_gstreamer_frame_resource_extracts_dmabuf_fd_metadata`、`tests/test_roi.py::test_center_roi_frame_reuses_pre_cropped_capture_roi`、`tests/test_runtime_service_roi.py::test_runtime_service_reuses_capture_roi_without_second_crop`、`tests/test_inference_runtime.py::test_tensor_input_preparer_prefers_gpu_buffer`、`tests/test_inference_runtime.py::test_gpu_buffer_preprocess_fails_until_real_gpu_ingest_exists`、`tests/test_inference_runtime.py::test_cpu_image_preprocess_reports_host_tensor_backend`、`tests/test_inference_runtime.py::test_gpu_resource_preprocessor_can_return_device_tensor_contract`、`tests/test_inference_runtime.py::test_tensorrt_device_tensor_execution_binds_external_input_without_h2d`、`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_fails_closed_until_native_bridge_exists`、`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_uses_native_bridge_when_available`、`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_status_uses_env_override`、`tests/test_inference_runtime.py::test_inference_runtime_injects_gpu_preprocessor_into_tensorrt_candidates`、`tests/test_capture_service.py::test_doctor_jetson_bridge_reports_missing_native_module`、`tests/test_capture_service.py::test_doctor_jetson_bridge_reports_available_native_module`、`tests/test_runtime_api.py::test_config_schema_matches_runtime_config_and_update_syncs_runtime_objects`。
-- [x] Jetson native bridge 边界已增加硬 ABI/能力握手：native 模块必须声明 `ABI_VERSION=1`，否则 `JetsonGpuResourcePreprocessor.status()` 和 `doctor jetson-bridge` 都会以 `JETSON_GPU_RESOURCE_BRIDGE_INVALID` fail-closed；状态输出现在包含 `required_abi_version/abi_version/abi_compatible/native_ready/native_status/capabilities/contract`，可在运行前区分缺模块、错版本、模块未就绪和可用模块，并看到 native `prepare_tensor(payload)` 必须接收的 payload 字段、必须返回的 `device_ptr/nbytes` 字段与可选字段。Python 边界会先校验 payload 必填字段和值语义：正的 `frame_id/capture_ts_ns`、`resource_source=appsink`、非负 `dmabuf_fd`、正尺寸、合法 `model_shape/nchw/dtype`，不满足时直接 fail-closed 且不会进入 native 调用。若 native 模块声明了 `memory/resource_memory/input_memory`、`resource_kind/input_kind`、`formats/pixel_formats/input_format`、`dtype/tensor_dtype` 等能力，Python 边界会在调用 native `prepare_tensor()` 前按当前 payload 校验，ABI 正确但不支持当前 NVMM/NV12/resource kind/dtype 的模块会直接失败且不会进入 native 调用。默认 `novasight_jetson_preprocess` adapter 已提供 ABI/capabilities/status/prepare contract，并委托 `NOVASIGHT_JETSON_NATIVE_PREPROCESSOR` 或默认 `novasight_jetson_preprocess_native`；`novasight_jetson_preprocess_native` 现在是可打包、ABI 兼容且 fail-closed 的 ctypes 装配层，静态 capabilities 与 reference C 状态都声明 `nvmm/dmabuf + gstreamer_sample + NV12 + float32/float16`，直接作为 `NOVASIGHT_JETSON_PREPROCESSOR` 使用时不会把带 `dmabuf_fd` 的 NVMM sample 误拒在 Python 校验层。未设置 `NOVASIGHT_JETSON_NATIVE_LIBRARY` 时报告 `native_implementation_missing`；设置后要求共享库暴露 `novasight_prepare_tensor_json(payload_json,result_json,size)`，并要求共享库通过 `novasight_abi_version()` 或 `novasight_status_json` 中的 `abi_version=1` 明确证明 C ABI 版本，缺失或不兼容会 fail-closed，不会仅凭 prepare 符号把未知 `.so` 当作可用。ctypes 层在序列化前会复核同一 payload 合同，只把 JSON-safe payload 与 `dmabuf_fd` 传给 C，不把 Python `Gst.Sample` 伪装成 C 可用句柄；缺 `frame_id/capture_ts_ns/resource_source/dmabuf_fd` 或几何/NCHW/dtype 不合法会在 Python 层拒绝调用 native。adapter 缓存按 backend 模块名隔离，并提供 `_reset_backend_cache()` 诊断 hook；同一 Python 进程中先探测缺失 backend、再切换到真实 backend 时会重新加载，不沿用旧错误状态。`novasight_jetson_preprocess_native/include/novasight_jetson_preprocess_native.h` 已提供正式 C ABI 头文件，`novasight_jetson_preprocess_native/native` 已提供 CMake 与 fail-closed reference shared-library 源码；reference library 可构建并导出 `novasight_abi_version/novasight_status_json/novasight_prepare_tensor_json/novasight_release_tensor`，会校验 `frame_id/capture_ts_ns/dmabuf_fd/resource_kind/resource_memory/resource_source/NV12/float32-or-float16/geometry/roi_offset/needs_resize/model_shape/NCHW` payload contract，但明确返回 `jetson_cuda_preprocess_not_compiled`，不会伪造 device tensor；Jetson support validator 与 reference validator 已保持同一关键合同。所有 header/native source/build files 已通过 package-data 随 wheel 发布；`pyproject.toml` 已把 `novasight_jetson_preprocess*` 纳入 wheel 包发现，避免部署包漏掉 bridge adapter/native stub/header/build skeleton。`RuntimePipeline.start()` 现在会在 `capture.memory=nvmm` 且推理启用时提前检查 GPU bridge readiness，bridge 不可用则启动失败并写入 `PipelineStats.last_error`，避免等到第一帧 TensorRT preprocess 才失败；关闭推理时仍允许单独运行 NVMM 采集。新增 TensorRT input dtype 贯穿：engine input binding dtype 会进入 `TensorInputShape.dtype`，GPU preprocessor 与 TensorRT device binding 会按 FP32/FP16 校验 nbytes/dtype，Jetson bridge payload 不再固定 `float32`。覆盖：`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_rejects_incompatible_native_bridge`、`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_rejects_unsupported_payload_before_native_call`、`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_rejects_missing_frame_timestamp_before_native_call`、`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_rejects_missing_dmabuf_before_native_call`、`tests/test_inference_runtime.py::test_default_jetson_bridge_adapter_reports_native_backend_missing`、`tests/test_inference_runtime.py::test_default_jetson_bridge_adapter_reports_ctypes_backend_without_library`、`tests/test_inference_runtime.py::test_ctypes_native_backend_is_abi_compatible_but_unavailable_without_library`、`tests/test_inference_runtime.py::test_ctypes_native_backend_reports_library_status`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_library_without_c_abi_version`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_incompatible_c_abi_version`、`tests/test_inference_runtime.py::test_ctypes_native_backend_prepares_dmabuf_payload_and_releases_owner`、`tests/test_inference_runtime.py::test_direct_ctypes_native_bridge_accepts_nvmm_resource_with_dmabuf`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_missing_dmabuf_fd`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_missing_frame_timestamp_before_native_call`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_non_appsink_source_before_native_call`、`tests/test_inference_runtime.py::test_default_jetson_bridge_adapter_reloads_when_native_backend_env_changes`、`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_rejects_unready_native_bridge`、`tests/test_inference_runtime.py::test_gpu_resource_preprocessor_can_return_fp16_device_tensor_contract`、`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_passes_fp16_dtype_to_native_bridge`、`tests/test_inference_runtime.py::test_tensorrt_device_tensor_execution_accepts_fp16_input_without_h2d`、`tests/test_capture_service.py::test_doctor_jetson_bridge_reports_incompatible_native_module`、`tests/test_capture_service.py::test_doctor_jetson_bridge_default_adapter_reports_missing_native_backend`、`tests/test_config_runtime.py::test_packaging_includes_jetson_bridge_adapter_packages`、`tests/test_config_runtime.py::test_native_jetson_support_validates_required_payload_contract`、`tests/test_runtime_pipeline.py::test_runtime_pipeline_requires_ready_gpu_bridge_for_nvmm_inference`、`tests/test_runtime_pipeline.py::test_runtime_pipeline_allows_nvmm_capture_when_inference_is_disabled`。
-- [x] Jetson native 构建门禁已拆成 `reference / jetson_scaffold / jetson` 三种实现选择：默认 `reference` 仍是便携 fail-closed validator；`jetson_scaffold` 只导出 ABI 并明确返回 `jetson_cuda_preprocess_scaffold_only`，只能用于构建系统验证；`jetson` 生产模式必须显式传入 `NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE`，并通过 Linux/aarch64、CUDA Toolkit、`nvbufsurface.h`、`libnvbufsurface`、`libnvbufsurftransform` 依赖检查，否则 CMake 直接失败。新增 `native/IMPLEMENTATION.md` 固化 DMABUF/NvBufSurface -> GPU tensor 的输入、输出、生命周期和时间戳边界，防止把 reference/scaffold 库误当成 `capture.memory=nvmm` 真零拷贝验收证据。覆盖：`tests/test_config_runtime.py::test_native_jetson_preprocess_cmake_has_production_gate`。
-- [x] Jetson native 成功结果现在必须自证 device tensor 语义：Python bridge 与 ctypes adapter 都要求 `device_ptr/nbytes` 为正整数，dict/JSON 结果必须显式包含 `zero_copy=true` 与 `memory_space=device|cuda|cuda_device|gpu|gpu_device`；通用 `prepare_tensor()` 也拒收 `zero_copy=False`、非 device location、无效 device pointer 或无效 nbytes 的 GPU preprocessor 输出。这样外部 native 模块不能靠缺省字段、host 指针或假 device pointer 混过 `capture.memory=nvmm` 推理入口。覆盖：`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_result_without_device_contract`、`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_rejects_result_without_device_contract`。
-- [x] Jetson native readiness 现在也必须显式声明生产输出能力：没有 `status()/bridge_status()/get_status()/get_bridge_status()` 的 Python bridge 不再被隐式当成 ready；ctypes Jetson 共享库也必须导出 `novasight_status_json`，并在 ready/available 时显式声明 `zero_copy=true` 和 device `memory_space`，不再由 Python 为 ready 库补默认输出合同；backend 名称不能是 reference/scaffold。`RuntimePipeline.start()` 因此能在 `capture.memory=nvmm` 启动推理前拒绝未声明真实 device 输出合同的 bridge，而不是等第一帧 preprocess 才失败；直接调用 ctypes `prepare_tensor()` 也复用同一 readiness 合同，不能绕过 status 门禁；C status hook 自身失败时会以 `native_status_failed` 诊断 fail-closed，不让 doctor/status 崩成未解释异常。覆盖：`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_requires_explicit_ready_status`、`tests/test_inference_runtime.py::test_jetson_gpu_resource_preprocessor_rejects_ready_status_without_output_contract`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_ready_status_without_output_contract`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_library_without_status_symbol`、`tests/test_inference_runtime.py::test_ctypes_native_backend_reports_status_hook_failure`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_prepare_without_status_symbol`、`tests/test_capture_service.py::test_doctor_jetson_bridge_reports_available_native_module`。
-- [x] 采集配置已增加显式资源路径：`capture.memory=cpu|nvmm`，默认 `cpu` 保持稳定；`nvmm` 会选择 `build_resource_appsink_candidates()` + `GstResourceFrameSource`，appsink 前 caps 固定为 `video/x-raw(memory:NVMM),format=NV12`，只发布 `image=None + FrameResource(NVMM)`，且不会 map CPU buffer。若实际 sample 不是 GPU-accessible memory 会 fail-fast。覆盖：`tests/test_capture_pipeline.py::test_resource_appsink_candidates_end_in_nvmm_resource_caps`、`tests/test_capture_pipeline.py::test_gstreamer_resource_source_publishes_opaque_nvmm_frame_without_cpu_map`、`tests/test_config_runtime.py::test_runtime_config_capture_memory_is_explicit_cpu_or_nvmm`、`tests/test_capture_service.py::test_capture_service_passes_configured_memory_to_default_source`。
-- [ ] 生产 GStreamer/TensorRT 真零拷贝推理仍未完成：
-  - 当前默认路径仍是 CPU-readable `BGRx` 并 map 为 numpy BGR；`capture.memory=nvmm` 已能产出真实 NVMM resource contract，TensorRT 也已能执行 `DeviceTensor` 输入 binding，生产 runtime 也已按 `capture.memory=nvmm` 注入 Jetson preprocessor 边界。
-  - Python 侧 native bridge ABI 已能把 `frame_id/capture_ts_ns`、DMABUF fd、GStreamer metadata、`resource_source=appsink`、ROI/source geometry、`needs_resize`、`model_shape/nchw/dtype` 传给外部模块并接收真实 `DeviceTensor` 元数据；Python adapter、ctypes 序列化、reference C validator 与 Jetson support validator 都已把 `frame_id/capture_ts_ns/resource_source=appsink/model_shape/needs_resize/nchw/dtype` 作为硬合同字段。
-  - Jetson native bridge payload、Python/ctypes adapter、reference C validator、Jetson support validator、TensorRT status 与 `jetson-native-smoke`/`jetson-zero-copy-report` 验收证据现在都显式携带并校验 `resource_width/resource_height/resource_pixel_format`；prepared input、native payload、TensorRT last input 与原始 `FrameResource` 的 geometry/format 必须一致，且格式必须为 `NV12`，避免只证明外层 `CapturedFrame.width/height/pixel_format` 而漏掉真实 NVMM/appsink resource 尺寸或格式错配。
-  - `novasight_jetson_preprocess_native` 已可通过 ctypes 调用 Jetson 共享库，并且 `jetson` CMake 模式现在会编入 `novasight_jetson_preprocess_native_jetson_support.{h,cpp}`，为真实 production source 提供 payload 解析、NV12/FP32/FP16/NCHW/model_shape/needs_resize 校验、dtype/nbytes 计算和 fail-closed status/error JSON；native C++ validator 与 reference validator 的字段读取已限定为当前 JSON 对象顶层字段，避免顶层 `width/height` 被嵌套 `model_shape.width/height` 抢先匹配，保持 frame geometry 与 model geometry 硬分离；字符串、对象、数值、布尔和 NCHW 数组项解析现在必须遇到 JSON value terminator，数组项必须逗号分隔，拒绝 `"appsink"x`、`123abc`、`truex`、`[1x,3,640,640]`、`[1 3 640 640]` 这类半合法 payload，避免坏字段混过 resource/source、frame/model geometry、`needs_resize` 或 NCHW 合同。覆盖：`tests/test_config_runtime.py::test_native_jetson_support_validates_required_payload_contract`。
-  - 仓库已新增 bundled production source `novasight_jetson_preprocess_native/native/src/jetson/novasight_jetson_preprocess_native_jetson_cuda.cu`，它按官方 Jetson/CUDA EGL 路线执行 `NvBufSurfaceFromFd -> NvBufSurfaceMapEglImage -> cuGraphicsEGLRegisterImage -> cuGraphicsResourceGetMappedEglFrame`，支持 PITCH/ARRAY CUDA EGL frame，GPU 侧 NV12 -> RGB -> NCHW FP32/FP16，返回 `device_ptr/nbytes/zero_copy=true/memory_space=cuda_device/release_token` 并实现 `novasight_release_tensor()`；device/kernel 代码已避免未限定的 host 风格 `min/max` 调用，缩放索引与 U8 clamp 均使用显式 device helper，降低 Jetson 生产 NVCC 构建歧义风险；生产源还会校验 `NvBufSurface` 实际宽高必须等于本帧/request 宽高，并在 kernel 前校验 NV12 plane 指针与 Y/UV pitch，避免 GStreamer caps、ROI、payload 几何或 EGL plane layout 错配时继续按错误 plane 读写。覆盖：`tests/test_config_runtime.py::test_native_jetson_cuda_source_uses_real_dmabuf_egl_cuda_path`。
-  - TensorRT device-input 路径现在会在外部 `DeviceTensor` 绑定执行完成后释放 native owner/release token，并把 `device_owner_release` 与 `device_owner_release_token` 写入 decode timings；`novasight_release_tensor()` 分配的每帧 device tensor 不再只依赖 Python GC 回收；ctypes bridge 在 native 结果返回 `release_token` 但库未导出 release symbol 时会直接拒收，owner release 也会检查 native `novasight_release_tensor()` 返回码，非 0 时抛错并让 smoke/TensorRT release evidence 进入失败状态，不能误报 `released`。覆盖：`tests/test_inference_runtime.py::test_tensorrt_device_tensor_execution_binds_external_input_without_h2d`、`tests/test_inference_runtime.py::test_ctypes_native_backend_owner_release_fails_on_native_error`、`tests/test_inference_runtime.py::test_ctypes_native_backend_rejects_release_token_without_release_symbol`。
-  - 一键验收入口已新增为 `python -m novasight doctor jetson-zero-copy --build-dir build/jetson-native --device /dev/video0 --pixel-format MJPG --width 1920 --height 1080 --fps 120 --roi-size 640 --input-shape 1x3x640x640 --tensorrt-engine data/models/<model>.engine --require-tensorrt-engine --report-json data/diagnostics/jetson-zero-copy.json`，它会先执行正式构建验收，再把构建出的 `libnovasight_jetson_preprocess_native.so` 自动传给真实帧 smoke 验收；最终验收打开 `--require-tensorrt-engine` 后，缺少 `--tensorrt-engine` 会在 build 前直接失败并写入报告，避免 native-only 调试结果被当作生产推理验收。提供 `--tensorrt-engine` 时会实际调用 `TensorRtInferenceEngine.infer(frame)`，要求 engine 的最后输入为 `gpu_buffer/nvmm/appsink`、TensorRT decode timing 的 `input_location=device`，并输出 `tensorrt_frame_id/tensorrt_capture_ts_ns` 与 engine status 的 `tensorrt_last_input_frame_id/tensorrt_last_input_capture_ts_ns`，证明 TensorRT 绑定消费的是同一个 `CapturedFrame`，同时输出 `tensorrt_output_name/tensorrt_output_shape/tensorrt_output_dtype/tensorrt_decoded_detections/tensorrt_execute_enqueue_ms/tensorrt_d2h_enqueue_ms/tensorrt_release_token/tensorrt_device_owner_release=released`，证明 TensorRT 执行、输出 D2H、decode 阶段以及 native tensor owner 释放实际发生；输出包含构建/真实帧 smoke phase 退出码、phase stdout、参数、共享库路径和最终 `accepted` 状态的机器可读验收报告；一键命令在写入 `accepted=true` 前会复用 `jetson-zero-copy-report` verifier 自检整份报告，phase 退出码为 0 但 stdout 证据缺失时仍会返回失败，并把 verifier 的具体失败项写入报告 `validation_failures`；报告中的 stdout 会保留 `status_zero_copy`、`capture_device`、`frame_id`、`capture_ts_ns`、`capture_ts_source=userspace_monotonic_receive`、`source_ts_ns/source_ts_kind` GStreamer 源时间戳诊断、`resource_kind=gstreamer_sample`、`resource_source=appsink`、`prepared_frame_id/prepared_capture_ts_ns`、`prepared_resource_kind=gstreamer_sample`、`prepared_resource_source=appsink`、`dmabuf_fd`、`preprocess_zero_copy`、`smoke_release_token`、`smoke_device_owner_release=released`、`tensorrt_frame_id`、`tensorrt_capture_ts_ns`、`tensorrt_last_input_mode`、`tensorrt_last_input_frame_id/tensorrt_last_input_capture_ts_ns`、`tensorrt_last_input_resource_source=appsink`、`tensorrt_input_location`、`tensorrt_release_token`、`tensorrt_device_owner_release=released` 与 TensorRT 输出执行证据等关键证据。
-  - `jetson-zero-copy-report` 现在也把 `preprocess_input_mode/preprocess_resource_kind/preprocess_resource_memory` 纳入必需证据和重复字段检查，并要求它们分别等于 `gpu_buffer/gstreamer_sample/nvmm`，同时与 `prepared_mode/prepared_resource_kind/prepared_resource_memory` 一致；不能再只靠 `preprocess_location=device` 与 `preprocess_zero_copy=True` 掩盖 native bridge 实际处理了 CPU image、错误 resource kind 或错误 resource memory 的报告。覆盖：`tests/test_capture_service.py::test_doctor_jetson_zero_copy_report_rejects_preprocess_resource_mismatch`。
-  - 机器可读报告校验入口已新增为 `python -m novasight doctor jetson-zero-copy-report --report-json data/diagnostics/jetson-zero-copy.json`，最终生产验收应追加 `--require-tensorrt-engine`，从而拒绝没有 `parameters.tensorrt_engine` 与 TensorRT binding 证据的 native-only 调试报告。该 verifier 会拒绝 `accepted=true` 但 report 或 phase 对象 `reason` 非空、`validation_failures` 不是空列表、缺少带时区的 `started_at/finished_at`、`finished_at < started_at`、phase stdout 残留非空 `reason` 或关键 stdout evidence key 重复的状态不一致报告；build/smoke/TensorRT 直接值校验也会各自拒绝重复关键 evidence key，避免前面错误值被后面正确值覆盖。该 verifier 也会拒绝缺少 `production_source/configure_command/library/status_available/status_backend/status_zero_copy/status_memory_space`、build phase 未证明 `NOVASIGHT_JETSON_PREPROCESS_IMPL=jetson` 与同一 `NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE`、build stdout `library` 与 `parameters.library` 不一致、自定义 `parameters.source` 与 build stdout 不一致、bundled source 不是仓库 Jetson CUDA `.cu`、生产 backend 非 `jetson_cuda`、smoke stdout `library` 与 `parameters.library` 不一致、真实 `capture_available=True`、真实 `capture_backend=gst-resource`、真实 `capture_device`、`capture_profile`、`frame_id/capture_ts_ns/capture_ts_source/source_ts_ns/source_ts_kind`、最终 `available=True`、`frame_image_present=False`、`userspace_process_ms`、`frame_size`、`frame_format=NV12`、`source_size`、`roi_offset`、`resource_kind=gstreamer_sample`、`resource_memory=nvmm`、`resource_source=appsink`、`resource_size`、`resource_format=NV12`、`dmabuf_fd`、`prepared_mode=gpu_buffer`、`prepared_frame_id/prepared_capture_ts_ns`、`prepared_resource_kind=gstreamer_sample`、`prepared_resource_memory=nvmm`、`prepared_resource_source=appsink`、`prepared_dmabuf_fd`、`input_shape/input_dtype`、`bridge_available/bridge_native_ready`、`preprocess_backend/preprocess_location`、`preprocess_zero_copy`、`smoke_release_token`、`smoke_device_owner_release=released`、`tensor_device_ptr/tensor_nbytes/tensor_shape/tensor_dtype` 等关键证据的弱报告；同时要求 report 参数中必须存在 `source/device/pixel_format/width/height/fps/roi_size/input_shape/dtype`，校验 `capture_device` 必须匹配 `parameters.device`、`capture_available=True`、smoke stdout `library` 必须匹配 `parameters.library`、`frame_id/capture_ts_ns/prepared_frame_id/prepared_capture_ts_ns` 为正整数、`prepared_frame_id/prepared_capture_ts_ns` 必须匹配 `frame_id/capture_ts_ns`、`capture_ts_source=userspace_monotonic_receive`、`source_ts_kind` 只能为 `gstreamer_pts/gstreamer_dts/空`，且有 GStreamer kind 时 `source_ts_ns` 必须为非负整数、无 kind 时 `source_ts_ns` 必须为空或 `None`、`roi_offset` 必须匹配 `parameters.roi_offset_x/roi_offset_y`、`dmabuf_fd/prepared_dmabuf_fd` 为非负整数且一致、`frame_image_present=False`、`userspace_process_ms` 为非负数、`resource_kind=prepared_resource_kind=gstreamer_sample`、`resource_source=prepared_resource_source=appsink`、`resource_size=frame_size=roi_size`、`resource_format=frame_format=NV12`、`bridge_available=True`、`bridge_native_ready=True`、`preprocess_location=device`、`preprocess_backend` 不含 reference/scaffold、`smoke_release_token` 为正整数、`smoke_device_owner_release=released`、`tensor_device_ptr/tensor_nbytes` 为正整数、`tensor_nbytes == input_shape * dtype_bytes`，并要求 report 参数与 smoke stdout 的 `capture_profile/capture_device/source_size/frame_size/resource_size/roi_offset/input_shape/input_dtype/tensor_shape/tensor_dtype` 一致；如果 report 参数提供 `tensorrt_engine`，还会强制校验 `frame_id/capture_ts_ns/tensorrt_frame_id/tensorrt_capture_ts_ns/tensorrt_last_input_frame_id/tensorrt_last_input_capture_ts_ns` 为正整数且 TensorRT 字段与采集帧字段一致、`tensorrt_available=True`、`tensorrt_input_shape` 为 batch=1/channels=3/positive H/W 的 NCHW 输入且必须匹配 `parameters.input_shape`、`tensorrt_input_dtype` 为受支持的 FP32/FP16 dtype 且必须匹配 `parameters.dtype`、`tensorrt_output_name` 非空、`tensorrt_output_shape` 各维为正整数、`tensorrt_output_dtype` 为受支持 dtype、`tensorrt_decoded_detections` 为非负整数、`tensorrt_execute_enqueue_ms/tensorrt_d2h_enqueue_ms` 为非负数、`tensorrt_release_token` 为正整数、`tensorrt_device_owner_release=released`、`tensorrt_last_input_mode=gpu_buffer`、`tensorrt_last_input_resource_kind=gstreamer_sample`、`tensorrt_last_input_resource_memory=nvmm`、`tensorrt_last_input_resource_source=appsink`、`tensorrt_last_input_dmabuf_fd` 为非负整数且与 `dmabuf_fd/prepared_dmabuf_fd` 一致、`tensorrt_preprocess_location=device`、`tensorrt_preprocess_zero_copy=True`、`tensorrt_input_location=device`，避免只凭 `accepted=true`、孤立 stdout、build 未证明生产 CUDA 源、build 产物与 smoke 使用库不一致、capture session 未可用、未到 smoke 成功末尾、CPU image 混入、合成 GPU 资源混入、错采集设备、错资源来源、错资源 metadata、错时间戳时钟域、错 ROI 偏移、错尺寸报告、错 preprocess 位置、错 tensor metadata、错 TensorRT 输入路径、错 TensorRT input/output contract、错 TensorRT DMABUF 资源、错 TensorRT frame/timestamp、错 tensor 字节数、错 TensorRT 输入尺寸/类型、未释放 smoke probe/native tensor owner、重复 evidence 覆盖错误值或缺少执行输出证据误判验收通过。
-  - `capture_profile` 证据现在按 `<format> <width>x<height>@<fps>` 结构化解析并与 report 参数精确比对，不能再靠 `@120` 子串误匹配 `@1200` 这类错误帧率。
-  - TensorRT 专用证据现在也要求 `tensorrt_preprocess_backend` 非空、不得包含 reference/scaffold，且同一 smoke stdout 必须提供 `preprocess_backend` 并与 TensorRT backend 一致；不能只打印空 backend、漏掉 smoke backend，或用另一个 backend 的 TensorRT 证据依赖 `tensorrt_preprocess_location=device` 和 `tensorrt_preprocess_zero_copy=True` 混过验收。覆盖：`tests/test_capture_service.py::test_doctor_jetson_zero_copy_report_rejects_empty_tensorrt_backend`、`tests/test_capture_service.py::test_doctor_jetson_zero_copy_report_rejects_missing_smoke_backend_for_tensorrt_evidence`、`tests/test_capture_service.py::test_doctor_jetson_zero_copy_report_rejects_tensorrt_backend_mismatch`。
-  - TensorRT 专用证据现在要求 `tensorrt_engine` stdout 值非空且必须匹配 `parameters.tensorrt_engine`；不能只打印空 `tensorrt_engine:` 让 report verifier 把“字段存在”误判为实际 engine 绑定证据。覆盖：`tests/test_capture_service.py::test_doctor_jetson_zero_copy_report_rejects_empty_tensorrt_engine_value`。
-  - TensorRT 专用证据现在还会拒绝非空或重复的 `tensorrt_reason`：accepted 报告不能同时携带 TensorRT failure reason 与伪造的成功字段，也不能先打印失败 reason 再用空 reason 覆盖，避免现场失败输出被手工拼成通过报告。覆盖：`tests/test_capture_service.py::test_doctor_jetson_zero_copy_report_rejects_tensorrt_reason_in_success_evidence`、`tests/test_capture_service.py::test_doctor_jetson_zero_copy_report_rejects_duplicate_tensorrt_reason`。
-  - 当 report 参数声明 `source=bundled` 时，build stdout 的 `production_source` 现在必须规范化匹配当前安装包/仓库内置的 `novasight_jetson_preprocess_native/native/src/jetson/novasight_jetson_preprocess_native_jetson_cuda.cu`，不再允许 `/tmp/fake/.../novasight_jetson_preprocess_native_jetson_cuda.cu` 这类同名后缀路径伪装成 bundled production source。覆盖：`tests/test_capture_service.py::test_doctor_jetson_zero_copy_build_values_reject_fake_bundled_source`。
-  - `jetson-zero-copy-report` 成功时现在会额外打印 `evidence:` 摘要和逐项 `evidence.<field>: <value>`，把 build/smoke 实际使用的共享库路径、生产 backend、实际 `capture_device`、`capture_ts_source/source_ts_kind`、NVMM appsink resource、DMABUF、`preprocess_backend`、zero-copy preprocess、owner release、`tensorrt_preprocess_backend` 与 TensorRT device-input 证据直接呈现给现场验收和排障日志。
-  - 分步 `jetson-native-smoke --tensorrt-engine` 现在也会在命令自身返回码层面拒绝 TensorRT 最后输入资源错配、帧身份错配、输入合同错配、输出合同错配、空 TensorRT preprocess backend 与缺失 release 证据：`last_input_frame_id/last_input_capture_ts_ns` 必须与原始 `CapturedFrame` 一致，`last_input_resource_kind` 必须是 `gstreamer_sample`，`last_input_resource_memory` 必须是 `nvmm`，`last_input_resource_source` 必须是 `appsink`，`last_input_dmabuf_fd` 必须与原始 `CapturedFrame.frame_resource.dmabuf_fd` 一致，TensorRT 真实 `input_shape/input_dtype` 必须与本次 native smoke 输入合同一致，`tensorrt_output_name` 必须非空，`tensorrt_output_shape` 必须为正整数维度，`tensorrt_output_dtype` 必须是受支持 tensor dtype，`tensorrt_preprocess_backend` 必须非空，`tensorrt_release_token` 必须为正整数且 `tensorrt_device_owner_release=released`；不再只依赖后续 report verifier 才发现该类问题。
-  - 分步构建验收入口也可单独运行：`python -m novasight doctor jetson-native-build --build-dir build/jetson-native`，它会在 Jetson 上构建 bundled `.cu`，加载生成的共享库，并要求 native status 返回 `status_available: True`、`status_zero_copy: True`、`status_memory_space: cuda_device`；该 doctor 会在 production source 缺失、构建未产出 `.so`、或 native status 未证明 device zero-copy 输出合同时直接返回失败。
-  - 分步真实帧验收入口也可单独运行：`python -m novasight doctor jetson-native-smoke --library build/jetson-native/libnovasight_jetson_preprocess_native.so --device /dev/video0 --pixel-format MJPG --width 1920 --height 1080 --fps 120 --roi-size 640 --input-shape 1x3x640x640 --tensorrt-engine data/models/<model>.engine`，它会强制 `capture.memory=nvmm`，打开生产 `CaptureService` resource appsink 路径，先直接拒绝 `capture_backend` 不是 `gst-resource:*`、`capture_device` 不匹配请求设备、`capture_profile` 缺失或与显式请求的格式/分辨率/帧率不一致的采集状态；随后等待真实 GPU-accessible `FrameResource`，并在 native bridge 初始化前直接拒绝 `frame_id/capture_ts_ns` 非正数、`capture_ts_source != userspace_monotonic_receive`、GStreamer `source_ts_kind/source_ts_ns` 诊断不合法、`userspace_process_ms < 0`、`frame_image_present=True`、`frame_format != NV12`、`source_size` 与采集 profile 不一致、`frame_size` 与 ROI/output contract 不一致、`resource_kind != gstreamer_sample`、`resource_memory != nvmm`、`resource_source != appsink`、`FrameResource.width/height/pixel_format` 与原 `CapturedFrame` 不一致或缺少 `dmabuf_fd` 的帧/资源合同错配；随后要求 bridge status 同时报告 `available=True/native_ready=True` 后才允许进入 `prepare_tensor_input()`，并在调用 native `prepare_tensor()` 前直接拒绝 `prepared_mode != gpu_buffer`、`prepared_frame_id/prepared_capture_ts_ns` 与原始帧不一致、`prepared_pixel_format != NV12`、prepared frame/source/ROI geometry 与原帧不一致、`prepared_resource_kind/memory/source/dmabuf_fd` 与原 `FrameResource` 不一致的输入合同错配；再验证 native bridge 返回 zero-copy `DeviceTensor`，释放 smoke probe tensor owner，并直接拒绝 preprocess result 的 `input_mode/resource_kind/resource_memory` 与 prepared input 不一致、缺失正整数 `smoke_release_token`、`tensor_device_ptr <= 0`、`tensor_nbytes != input_shape * dtype_bytes`、`tensor_shape != input_shape`、`tensor_dtype != input_dtype`、空 backend 或 reference/scaffold backend，不能只依赖最终 report verifier 才发现生命周期证据缺失、tensor metadata 错配或伪生产 backend；提供 `--tensorrt-engine` 时同一帧还必须通过 TensorRT infer，并证明 engine 输入 binding 直接使用该 device tensor 而不是 host tensor，同时打印并校验 TensorRT 绑定的 `frame_id/capture_ts_ns` 与原采集帧一致。
-  - 这些命令仍必须在目标 Jetson 上针对真实 `v4l2src -> NVMM appsink` buffer 和真实 TensorRT `.engine` 编译、运行、校验报告，确认 NvBufSurface layout、EGL frame type、TensorRT binding 和生命周期无误后才能勾选“完成”；在此之前，未安装可用 native shared library 的 `gpu_buffer` 推理路径会 fail-fast，避免“推理成功但输入全零”的假象。
-- [x] `capture_ts_ns` 当前明确为 Python 侧 `appsink.try_pull_sample()` 返回后的 `time.monotonic_ns()` receive timestamp；CPU appsink 路径会在任何 `buffer.map()`/BGR 转换前记录该时间，后续 Python map/convert/resource 包装耗时单独进入 `CapturedFrame.userspace_process_ms` 与 runtime status 的 `frame_userspace_process_ms`，避免 Kalman/延迟补偿把 CPU 转换成本误当采集时间。GStreamer buffer PTS/DTS 会作为独立 `source_ts_ns/source_ts_kind` 元数据进入 `CapturedFrame` 并透传到 `RoiFrame` 与 runtime inference status，不与控制用单调时钟混用。覆盖：`tests/test_capture_pipeline.py::test_gstreamer_appsink_capture_timestamp_is_recorded_before_cpu_map`、`tests/test_capture_pipeline.py::test_gstreamer_appsink_frame_inherits_roi_candidate_metadata`、`tests/test_roi.py::test_center_roi_frame_reuses_pre_cropped_capture_roi`。
+- 开发机静态检查不能替代 Jetson、采集卡、TensorRT 和 kmNet 实机证明。
+- 当前本地优化批次在实机验收前不宣称端到端完成。
+- 验收通过后再提交并推送，提交状态与推送状态分别报告。

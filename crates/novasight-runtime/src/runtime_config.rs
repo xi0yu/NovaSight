@@ -1,7 +1,7 @@
 use novasight_core::controller::AimAlgorithmConfig;
 use novasight_core::controller::recoil::RecoilConfig;
 use novasight_core::tracking::{KalmanConfig, TargetingConfig};
-use novasight_pipeline::{PipelineConfig, TriggerMode};
+use novasight_pipeline::{OutputLimitConfig, PipelineConfig, TriggerMode};
 use novasight_store::config::{
     AppConfig, parse_target_class_aim_y_ratios, parse_target_class_filter,
     parse_target_class_priority,
@@ -25,7 +25,6 @@ pub fn compose_pipeline_config(
         targeting: TargetingConfig {
             target_fov_radius_px: adapters.pipeline.target_fov_radius_px,
             min_confidence: adapters.pipeline.target_min_confidence,
-            track_max_age: adapters.pipeline.target_track_max_age,
             track_max_lost_age_ms: adapters.pipeline.target_track_max_lost_age_ms,
             tracker_max_match_distance: adapters.pipeline.tracker_max_match_distance,
             tracker_position_cost_weight: adapters.pipeline.tracker_position_cost_weight,
@@ -68,11 +67,9 @@ pub fn compose_pipeline_config(
             response_scale: response.scale,
             response_boost: response.boost,
             response_curve_shape: response.curve_shape,
-            max_output_x_counts: adapters.pipeline.max_output_x_counts,
-            max_output_y_counts: adapters.pipeline.max_output_y_counts,
             velocity_history_reset_gap_ms: adapters.pipeline.velocity_history_reset_gap_ms,
             prediction_enabled: adapters.pipeline.prediction_enabled,
-            prediction_actuation_delay_ms: adapters.pipeline.actuation_feedback_delay_ms,
+            prediction_actuation_delay_ms: adapters.pipeline.prediction_actuation_delay_ms,
             prediction_lead_ms: adapters.pipeline.prediction_lead_ms,
             prediction_cap_px: adapters.pipeline.prediction_cap_px,
             source_width: adapters.capture.width,
@@ -80,6 +77,10 @@ pub fn compose_pipeline_config(
             roi_height: adapters.capture.roi_height,
             observation_width: 0,
             observation_height: 0,
+        },
+        output_limits: OutputLimitConfig {
+            x_counts: adapters.pipeline.max_output_x_counts,
+            y_counts: adapters.pipeline.max_output_y_counts,
         },
         trigger_poll_interval_ms,
         trigger_mode: match config.control.trigger_mode {

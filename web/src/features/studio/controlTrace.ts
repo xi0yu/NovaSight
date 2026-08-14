@@ -86,8 +86,25 @@ export type BuildControlTraceInput = {
   acceptedCommandCount: number | null;
   lastAcceptedCommand: string;
   deviceLastError: string;
+  outputDeliveryState: string;
   outputTrace: RuntimeOutputTraceState | null;
 };
+
+const OUTPUT_DELIVERY_LABELS: Record<string, string> = {
+  idle: "等待命令",
+  gate_closed: "输出门关闭",
+  device_disabled: "设备输出停用",
+  trigger_inactive: "等待触发",
+  generation_fenced: "旧配置命令已丢弃",
+  no_movement: "本轮无位移",
+  superseded: "旧命令已被替代",
+  sent: "已发送",
+  send_failed: "发送失败"
+};
+
+function outputDeliveryLabel(value: string): string {
+  return (OUTPUT_DELIVERY_LABELS[value] ?? value) || "等待状态";
+}
 
 const OUTPUT_TRACE_LABELS: Record<string, string> = {
   runtime_stopped: "主链未运行",
@@ -404,7 +421,7 @@ function buildDeviceStep(input: BuildControlTraceInput): ControlTraceStep {
       state: "ready",
       value: input.lastAcceptedCommand,
       detail: "运行时设备通道已接受过控制命令。",
-      evidence: `accepted=${formatInteger(input.acceptedCommandCount)} · ${input.kmnetConnectionLabel}`
+      evidence: `accepted=${formatInteger(input.acceptedCommandCount)} · ${outputDeliveryLabel(input.outputDeliveryState)} · ${input.kmnetConnectionLabel}`
     };
   }
   if (input.kmnetRuntimeConnected) {
@@ -414,7 +431,7 @@ function buildDeviceStep(input: BuildControlTraceInput): ControlTraceStep {
       state: "waiting",
       value: "已连接",
       detail: "设备通道已连接，等待第一条被接受的控制命令。",
-      evidence: input.kmnetConnectionLabel
+      evidence: `${outputDeliveryLabel(input.outputDeliveryState)} · ${input.kmnetConnectionLabel}`
     };
   }
   return {

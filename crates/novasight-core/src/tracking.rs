@@ -332,9 +332,6 @@ impl TargetSelection {
 pub struct TargetingConfig {
     /// Confidence threshold for admitting a detection into targeting.
     pub min_confidence: f32,
-    /// Timestamp-free replay fallback for dropping a lost track. Production
-    /// observations use `track_max_lost_age_ms` instead.
-    pub track_max_age: u64,
     /// Production wall-clock bound for retaining a lost identity, independent
     /// of capture and inference FPS.
     pub track_max_lost_age_ms: f64,
@@ -370,7 +367,6 @@ impl Default for TargetingConfig {
     fn default() -> Self {
         Self {
             min_confidence: 0.5,
-            track_max_age: DEFAULT_TRACK_MAX_AGE,
             track_max_lost_age_ms: DEFAULT_TRACK_MAX_LOST_AGE_MS,
             target_fov_radius_px: 180.0,
             tracker_max_match_distance: 1.5,
@@ -426,7 +422,6 @@ impl TargetingCore {
 
     pub fn set_config(&mut self, config: TargetingConfig) {
         self.config = config;
-        self.pending_switch = None;
     }
 
     pub fn reset(&mut self) {
@@ -919,7 +914,9 @@ fn track_within_loss_grace(track: &Track, captured_at_ns: u64, config: &Targetin
             let lost_age_ms = captured_at_ns.saturating_sub(lost_since_ns) as f64 / 1e6;
             lost_age_ms <= config.track_max_lost_age_ms
         }
-        _ => track.missed_frames <= config.track_max_age,
+        // Timestamp-free replay is an internal deterministic fallback rather
+        // than a production tuning surface.
+        _ => track.missed_frames <= DEFAULT_TRACK_MAX_AGE,
     }
 }
 

@@ -308,13 +308,6 @@ impl ConfigSchemaResponse {
                             1.0,
                             None,
                         ),
-                        integer(
-                            "pipeline.target_track_max_age",
-                            "无时间戳回放漏检上限",
-                            1.0,
-                            120.0,
-                            Some("frame"),
-                        ),
                         float(
                             "pipeline.target_track_max_lost_age_ms",
                             "丢失轨迹最长保留时间",
@@ -466,7 +459,7 @@ impl ConfigSchemaResponse {
                             None,
                         ),
                         float(
-                            "pipeline.actuation_feedback_delay_ms",
+                            "pipeline.prediction_actuation_delay_ms",
                             "预测执行延迟",
                             0.0,
                             100.0,
@@ -789,14 +782,14 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 13);
+        assert_eq!(value["version"], 15);
         assert_eq!(value["algorithm"]["id"], "continuous_atan_medoid_v2");
         assert_eq!(value["algorithm"]["response"]["atan_scale_counts"], 256.0);
         assert_eq!(value["algorithm"]["prediction"]["aim_history_points"], 4);
         assert_eq!(value["algorithm"]["prediction"]["velocity_segments"], 3);
         assert_eq!(value["values"]["server"]["port"], 5174);
         assert_eq!(
-            value["values"]["pipeline"]["actuation_feedback_delay_ms"],
+            value["values"]["pipeline"]["prediction_actuation_delay_ms"],
             4.0
         );
         assert_eq!(value["values"]["pipeline"]["prediction_lead_ms"], 16.0);
@@ -861,10 +854,9 @@ mod tests {
             "pipeline.velocity_history_reset_gap_ms",
             "pipeline.prediction_lead_ms",
             "pipeline.prediction_cap_px",
-            "pipeline.actuation_feedback_delay_ms",
+            "pipeline.prediction_actuation_delay_ms",
             "pipeline.target_fov_radius_px",
             "pipeline.target_min_confidence",
-            "pipeline.target_track_max_age",
             "pipeline.target_track_max_lost_age_ms",
             "pipeline.tracker_max_match_distance",
             "pipeline.tracker_position_cost_weight",

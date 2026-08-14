@@ -25,7 +25,7 @@ latest DetectionBatch
 -> capacity-one latest-replace slot
 -> recoil composition
 -> fixed X/Y device-boundary clamp
--> MouseCommandExecutor
+-> PointerDevice::send
 -> at most one move(dx, dy) per output tick
 ```
 
@@ -95,13 +95,13 @@ historical movement.
 
 The delivery slot retains one complete command. A newer observation replaces
 an older unsent command. Immediately before the device call,
-`MouseCommandExecutor` rechecks trigger state, freshness, generation and device
+the device worker rechecks trigger state, generation, output gate and device
 range. It does not merge pending counts or split one command into a trajectory.
 
 ## Production Configuration
 
 ```yaml
-schema_version: 13
+schema_version: 15
 pipeline:
   p_response_scale: 0.20
   p_response_boost: 0.50
@@ -113,9 +113,14 @@ pipeline:
   prediction_cap_px: 10.0
 ```
 
-The Rust root schema is version 13 and uses `pipeline.prediction_enabled: true`.
+The Rust root schema is version 15 and uses `pipeline.prediction_enabled: true`.
 Retired response fields are rejected rather than silently mapped into the new
 control model.
+
+Timestamp-free replay uses a fixed five-frame identity-loss grace inside the
+targeting module. Production control uses only
+`pipeline.target_track_max_lost_age_ms`, so replay frame count is not a product
+configuration parameter.
 
 ## User-Facing Telemetry
 

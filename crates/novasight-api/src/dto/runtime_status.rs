@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 
-use novasight_core::PredictionTruthReport;
 use novasight_core::controller::recoil::{RecoilBlockReason, RecoilState};
 use novasight_core::controller::{BlockReason, ControlMode};
 use novasight_core::prediction::PredictionMotionState;
 use novasight_core::tracking::{LockReason, TargetSelection};
 use novasight_runtime::{
-    AppConfig, CrosshairSnapshot, DetectionTelemetryItem, PipelineState, PreviewSnapshot,
-    RuntimeErrorSummary, RuntimeSnapshot, SubsystemSnapshot, SubsystemState,
+    AppConfig, CrosshairSnapshot, DetectionTelemetryItem, OutputDeliveryState, PipelineState,
+    PreviewSnapshot, RuntimeErrorSummary, RuntimeSnapshot, SubsystemSnapshot, SubsystemState,
 };
 use serde::Serialize;
 
@@ -468,46 +467,34 @@ pub(crate) struct MouseObservationState {
 pub(crate) struct ControlPipelineState {
     pub control_mode: &'static str,
     pub movement_strategy: &'static str,
-    pub prediction_truth: PredictionTruthReport,
+    pub output_delivery_state: OutputDeliveryState,
     pub mode: Option<&'static str>,
     pub frame_age_ms: Option<f64>,
     pub history_position_count: Option<usize>,
     pub velocity_1: Option<f64>,
     pub velocity_2: Option<f64>,
     pub velocity_3: Option<f64>,
-    pub mean_velocity: Option<f64>,
     pub medoid_velocity: Option<f64>,
     pub prediction_velocity: Option<f64>,
     pub motion_state: Option<PredictionMotionState>,
-    pub trend_consistency: Option<f64>,
-    pub acceleration_px_ms2: Option<f64>,
-    pub velocity_spread: Option<f64>,
-    pub motion_confidence: Option<f64>,
     pub measurement_dt_s: Option<f64>,
     pub reference_dt_ms: Option<f64>,
     pub prediction_actuation_delay_ms: Option<f64>,
     pub prediction_lead_ms: Option<f64>,
     pub prediction_horizon_ms: Option<f64>,
     pub prediction_raw_offset_x: Option<f64>,
-    pub prediction_weighted_offset_x: Option<f64>,
     pub prediction_allowed_cap_x: Option<f64>,
     pub prediction_safe_offset_x: Option<f64>,
     pub prediction_allowed: Option<bool>,
     pub velocity_y_1: Option<f64>,
     pub velocity_y_2: Option<f64>,
     pub velocity_y_3: Option<f64>,
-    pub mean_velocity_y: Option<f64>,
     pub medoid_velocity_y: Option<f64>,
     pub prediction_velocity_y: Option<f64>,
     pub motion_state_y: Option<PredictionMotionState>,
-    pub trend_consistency_y: Option<f64>,
-    pub acceleration_y_px_ms2: Option<f64>,
-    pub velocity_spread_y: Option<f64>,
-    pub motion_confidence_y: Option<f64>,
     pub measurement_dt_y_s: Option<f64>,
     pub reference_dt_y_ms: Option<f64>,
     pub prediction_raw_offset_y: Option<f64>,
-    pub prediction_weighted_offset_y: Option<f64>,
     pub prediction_allowed_cap_y: Option<f64>,
     pub prediction_safe_offset_y: Option<f64>,
     pub prediction_allowed_y: Option<bool>,
@@ -808,6 +795,7 @@ impl RuntimeStatusState {
             hardware_output_enabled,
             snapshot.pipeline_metrics.output_gate_open,
             snapshot.pipeline_metrics.device_connected,
+            snapshot.pipeline_metrics.output_delivery_state,
             metrics.published_batches,
             snapshot.pipeline_metrics.received_batches,
             snapshot.pipeline_metrics.targeting_batches,
@@ -1089,7 +1077,7 @@ impl RuntimeStatusState {
                     pipeline: ControlPipelineState {
                         control_mode: "continuous_atan_medoid_v2",
                         movement_strategy: "latest_replace",
-                        prediction_truth: snapshot.pipeline_metrics.prediction_truth.clone(),
+                        output_delivery_state: snapshot.pipeline_metrics.output_delivery_state,
                         mode: control_sample.then_some(control_mode_label(control.mode)),
                         frame_age_ms: control_sample.then_some(control.frame_age_ms),
                         history_position_count: control_sample
@@ -1097,14 +1085,9 @@ impl RuntimeStatusState {
                         velocity_1: control.velocity_samples[0],
                         velocity_2: control.velocity_samples[1],
                         velocity_3: control.velocity_samples[2],
-                        mean_velocity: control.mean_velocity,
                         medoid_velocity: control.medoid_velocity,
                         prediction_velocity: control_sample.then_some(control.velocity_x),
                         motion_state: control_sample.then_some(control.motion_state),
-                        trend_consistency: control_sample.then_some(control.trend_consistency),
-                        acceleration_px_ms2: control_sample.then_some(control.acceleration_px_ms2),
-                        velocity_spread: control.velocity_spread,
-                        motion_confidence: control_sample.then_some(control.motion_confidence),
                         measurement_dt_s: control.measurement_dt_ms.map(|value| value / 1_000.0),
                         reference_dt_ms: control_sample.then_some(control.reference_dt_ms),
                         prediction_actuation_delay_ms: control_sample
@@ -1114,8 +1097,6 @@ impl RuntimeStatusState {
                             .then_some(control.prediction_horizon_ms),
                         prediction_raw_offset_x: control_sample
                             .then_some(control.prediction_raw_offset_x),
-                        prediction_weighted_offset_x: control_sample
-                            .then_some(control.prediction_weighted_offset_x),
                         prediction_allowed_cap_x: control_sample
                             .then_some(control.prediction_allowed_cap_x),
                         prediction_safe_offset_x: control_sample
@@ -1124,23 +1105,15 @@ impl RuntimeStatusState {
                         velocity_y_1: control.velocity_samples_y[0],
                         velocity_y_2: control.velocity_samples_y[1],
                         velocity_y_3: control.velocity_samples_y[2],
-                        mean_velocity_y: control.mean_velocity_y,
                         medoid_velocity_y: control.medoid_velocity_y,
                         prediction_velocity_y: control_sample.then_some(control.velocity_y),
                         motion_state_y: control_sample.then_some(control.motion_state_y),
-                        trend_consistency_y: control_sample.then_some(control.trend_consistency_y),
-                        acceleration_y_px_ms2: control_sample
-                            .then_some(control.acceleration_y_px_ms2),
-                        velocity_spread_y: control.velocity_spread_y,
-                        motion_confidence_y: control_sample.then_some(control.motion_confidence_y),
                         measurement_dt_y_s: control
                             .measurement_dt_ms_y
                             .map(|value| value / 1_000.0),
                         reference_dt_y_ms: control_sample.then_some(control.reference_dt_ms_y),
                         prediction_raw_offset_y: control_sample
                             .then_some(control.prediction_raw_offset_y),
-                        prediction_weighted_offset_y: control_sample
-                            .then_some(control.prediction_weighted_offset_y),
                         prediction_allowed_cap_y: control_sample
                             .then_some(control.prediction_allowed_cap_y),
                         prediction_safe_offset_y: control_sample
@@ -1318,6 +1291,7 @@ fn output_trace_state(
     hardware_output_enabled: bool,
     output_gate_open: bool,
     device_connected: bool,
+    output_delivery_state: OutputDeliveryState,
     published_batches: u64,
     consumed_batches: u64,
     targeting_batches: u64,
@@ -1430,11 +1404,36 @@ fn output_trace_state(
             next_action: "inspect_control",
         };
     }
-    OutputTraceState {
-        code: "ready",
-        state: "ready",
-        detail: "检测、目标选择、控制器、输出门和设备连接均已贯通。",
-        next_action: "monitor_output",
+    match output_delivery_state {
+        OutputDeliveryState::GenerationFenced => OutputTraceState {
+            code: "generation_fenced",
+            state: "waiting",
+            detail: "配置刚更新，旧 generation 命令已丢弃，等待下一帧。",
+            next_action: "wait_next_frame",
+        },
+        OutputDeliveryState::SendFailed => OutputTraceState {
+            code: "device_send_failed",
+            state: "blocked",
+            detail: "最近一次设备发送失败，等待设备恢复。",
+            next_action: "connect_kmnet",
+        },
+        OutputDeliveryState::DeviceDisabled => OutputTraceState {
+            code: "device_output_disabled",
+            state: "blocked",
+            detail: "设备输出已停用。",
+            next_action: "connect_kmnet",
+        },
+        OutputDeliveryState::Idle
+        | OutputDeliveryState::GateClosed
+        | OutputDeliveryState::TriggerInactive
+        | OutputDeliveryState::NoMovement
+        | OutputDeliveryState::Superseded
+        | OutputDeliveryState::Sent => OutputTraceState {
+            code: "ready",
+            state: "ready",
+            detail: "检测、目标选择、控制器、输出门和设备连接均已贯通。",
+            next_action: "monitor_output",
+        },
     }
 }
 
@@ -1500,13 +1499,11 @@ fn serialized_label(value: &impl Serialize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use novasight_core::Generation;
     use novasight_core::controller::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
     use novasight_core::controller::{AimResult, BlockReason, ControlMode};
     use novasight_core::prediction::PredictionMotionState;
     use novasight_core::tracking::{LockReason, TargetSelection, TrackId};
-    use novasight_core::{
-        Generation, PredictionTruthHorizonScore, PredictionTruthProjection, PredictionTruthReport,
-    };
     use novasight_pipeline::DetectionTelemetryItem;
     use novasight_runtime::{
         AppConfig, PipelineState, RuntimeErrorSummary, RuntimeSnapshot, SubsystemState,
@@ -1563,35 +1560,23 @@ mod tests {
             block_reason: BlockReason::None,
             mode: ControlMode::Continuous,
             velocity_x: 0.25,
-            motion_confidence: 0.8,
             history_position_count: 4,
             velocity_samples: [Some(0.2), Some(0.3), Some(0.25)],
-            mean_velocity: Some(0.25),
             medoid_velocity: Some(0.25),
-            velocity_spread: Some(0.05),
             motion_state: PredictionMotionState::Continuous,
-            trend_consistency: 0.92,
-            acceleration_px_ms2: 0.01,
             measurement_dt_ms: Some(8.0),
             reference_dt_ms: 8.1,
             prediction_lead_ms: 1.0,
             prediction_raw_offset_x: 2.0,
-            prediction_weighted_offset_x: 1.6,
             prediction_allowed_cap_x: 3.0,
             prediction_allowed: true,
             velocity_y: -0.10,
-            motion_confidence_y: 0.75,
             velocity_samples_y: [Some(-0.08), Some(-0.12), Some(-0.10)],
-            mean_velocity_y: Some(-0.10),
             medoid_velocity_y: Some(-0.10),
-            velocity_spread_y: Some(0.02),
             motion_state_y: PredictionMotionState::Unstable,
-            trend_consistency_y: 0.25,
-            acceleration_y_px_ms2: -0.005,
             measurement_dt_ms_y: Some(8.0),
             reference_dt_ms_y: 8.1,
             prediction_raw_offset_y: -0.8,
-            prediction_weighted_offset_y: -0.6,
             prediction_allowed_cap_y: 1.5,
             prediction_allowed_y: true,
             predicted_offset_x: 1.6,
@@ -1621,22 +1606,6 @@ mod tests {
             block_reason: RecoilBlockReason::None,
         };
         snapshot.pipeline_metrics.targeting_batches = 1;
-        snapshot.pipeline_metrics.prediction_truth = PredictionTruthReport {
-            total_samples: 12,
-            valid_position_samples: 10,
-            projection: PredictionTruthProjection::Capped,
-            horizons: vec![PredictionTruthHorizonScore {
-                horizon_ms: 10.0,
-                sample_pairs: 8,
-                mae_px: 1.25,
-                rmse_px: 1.5,
-                bias_x_px: -0.4,
-                bias_y_px: 0.1,
-                p90_error_px: 2.0,
-                p95_error_px: 2.4,
-            }],
-            motion_classes: Vec::new(),
-        };
         snapshot.pipeline.state = PipelineState::Running;
         snapshot.subsystems.inference.state = SubsystemState::Running;
         snapshot.perception_metrics.published_batches = 1;
@@ -1712,25 +1681,11 @@ mod tests {
         assert_eq!(value["vision"]["detection_items"][0]["cx"], 330.0);
         assert_eq!(pipeline["control_mode"], "continuous_atan_medoid_v2");
         assert_eq!(pipeline["mode"], "CONTINUOUS");
-        assert_eq!(pipeline["prediction_truth"]["total_samples"], 12);
-        assert_eq!(pipeline["prediction_truth"]["valid_position_samples"], 10);
-        assert_eq!(pipeline["prediction_truth"]["projection"], "capped");
-        assert_eq!(
-            pipeline["prediction_truth"]["horizons"][0]["horizon_ms"],
-            10.0
-        );
-        assert_eq!(pipeline["prediction_truth"]["horizons"][0]["mae_px"], 1.25);
         assert_eq!(pipeline["velocity_2"], 0.3);
-        assert_eq!(pipeline["mean_velocity"], 0.25);
         assert_eq!(pipeline["motion_state"], "continuous");
-        assert_eq!(pipeline["trend_consistency"], 0.92);
-        assert_eq!(pipeline["acceleration_px_ms2"], 0.01);
         assert_eq!(pipeline["prediction_safe_offset_x"], 1.6);
-        assert_eq!(pipeline["mean_velocity_y"], -0.10);
         assert_eq!(pipeline["prediction_velocity_y"], -0.10);
         assert_eq!(pipeline["motion_state_y"], "unstable");
-        assert_eq!(pipeline["trend_consistency_y"], 0.25);
-        assert_eq!(pipeline["acceleration_y_px_ms2"], -0.005);
         assert_eq!(pipeline["prediction_safe_offset_y"], -0.6);
         assert_eq!(pipeline["prediction_allowed_y"], true);
         assert_eq!(pipeline["integer_command_x"], 12);

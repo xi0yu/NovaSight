@@ -96,10 +96,6 @@ fn static_target_pipeline_drives_freshness_targeting_and_control() {
             aim_y: matched.center_y(),
             crosshair_x: 320.0,
             crosshair_y: 320.0,
-            detection_confidence: f64::from(matched.confidence()),
-            track_confidence: tracking
-                .locked()
-                .map_or(0.0, |track| track.identity_confidence),
             target_valid: true,
             trigger_active: true,
         };
@@ -138,10 +134,6 @@ fn moving_target_records_emit_typed_decisions() {
                 aim_y: matched.center_y(),
                 crosshair_x: 320.0,
                 crosshair_y: 320.0,
-                detection_confidence: f64::from(matched.confidence()),
-                track_confidence: tracking
-                    .locked()
-                    .map_or(0.0, |track| track.identity_confidence),
                 target_valid: true,
                 trigger_active: true,
             };
@@ -163,8 +155,6 @@ fn control_first_observation_emits_first_decision() {
         aim_y: 360.0,
         crosshair_x: 320.0,
         crosshair_y: 320.0,
-        detection_confidence: 1.0,
-        track_confidence: 1.0,
         target_valid: true,
         trigger_active: true,
     };
@@ -213,8 +203,6 @@ fn closed_loop_algorithm_score_tracks_visual_convergence() {
             aim_y: selection.target_aim_y.unwrap_or(320.0),
             crosshair_x: 320.0,
             crosshair_y: 320.0,
-            detection_confidence: selection.target_detection_confidence.map_or(0.0, f64::from),
-            track_confidence: selection.target_identity_confidence.unwrap_or(0.0),
             target_valid: selection.target_track_id.is_some(),
             trigger_active: true,
         });

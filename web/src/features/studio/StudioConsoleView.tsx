@@ -1159,6 +1159,11 @@ export function StudioConsoleView({
     280
   );
   const runtimeOutputTrace = runtimeMainlinePresentation.outputTrace;
+  const stableRuntimeOutputTrace = useStableSemanticValue(
+    runtimeOutputTrace,
+    runtimeOutputTrace?.code ?? "unavailable",
+    220
+  );
   const runtimeInferenceConfigured = runtimeInference.configured === true;
   const runtimeInferenceReason = readString(runtimeInference.reason, "");
   const runtimeInferenceDetail = readString(runtimeInference.detail, "");
@@ -1227,6 +1232,7 @@ export function StudioConsoleView({
   const crosshairSampleHz = readNumber(crosshairConfig.sample_hz, 10);
   const crosshairSampleFrames = readNumber(crosshairConfig.sample_frames, 5);
   const crosshairState = readString(crosshairStatus.state, "idle");
+  const stableCrosshairState = useStableSemanticValue(crosshairState, crosshairState, 280);
   const crosshairTemplateId = readString(crosshairTemplate.id, "");
   const crosshairRecentSamples = readNumber(crosshairStatus.recent_samples, 0);
   const crosshairRequiredSamples = readNumber(crosshairStatus.required_samples, crosshairSampleFrames);
@@ -1305,7 +1311,6 @@ export function StudioConsoleView({
   const trackerMaxMatchDistance = readNumber(rustPipelineConfig.tracker_max_match_distance, 1.5);
   const trackerPositionCostWeight = readNumber(rustPipelineConfig.tracker_position_cost_weight, 0.75);
   const trackerIouCostWeight = readNumber(rustPipelineConfig.tracker_iou_cost_weight, 0.25);
-  const targetTrackMaxAge = readNumber(rustPipelineConfig.target_track_max_age, 5);
   const targetLostGraceMs = readNumber(rustPipelineConfig.target_track_max_lost_age_ms, 120);
   const targetSwitchPreferenceAdvantage = readNumber(rustPipelineConfig.target_switch_min_preference_advantage, 0.08);
   const targetSwitchContinuityScore = readNumber(rustPipelineConfig.target_switch_min_continuity_score, 0.7);
@@ -1322,7 +1327,7 @@ export function StudioConsoleView({
   const controlPredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
   const controlPredictionLeadMs = readNumber(rustPipelineConfig.prediction_lead_ms, 16);
   const controlPredictionCapPx = readNumber(rustPipelineConfig.prediction_cap_px, 10);
-  const actuationFeedbackDelayMs = readNumber(rustPipelineConfig.actuation_feedback_delay_ms, 4);
+  const predictionActuationDelayMs = readNumber(rustPipelineConfig.prediction_actuation_delay_ms, 4);
   const targetMinConfidence = readNumber(rustPipelineConfig.target_min_confidence, 0.5);
   const trackerScaleCostWeight = readNumber(rustPipelineConfig.tracker_scale_cost_weight, 0.15);
   const trackerMaxSizeRatio = readNumber(rustPipelineConfig.tracker_max_size_ratio, 2.5);
@@ -1640,13 +1645,15 @@ export function StudioConsoleView({
   const controlWillEmit = controlWillEmitRaw;
   const controlTriggerActiveRaw = readNullableBoolean(control.trigger_active);
   const controlTriggerActive = controlTriggerActiveRaw;
-  const controlNoSendReason = !controlHasTarget
+  const controlNoSendReason = stableRuntimeOutputTrace?.detail || (
+    !controlHasTarget
       ? targetPipelineMessage || readString(control.selection_reason, "无目标")
       : controlWillEmit !== true
         ? readString(control.no_send_reason, readString(control.reason, "控制门控未通过"))
         : !kmnetRuntimeConnected
           ? "主链设备通道未连接"
-          : "命令已获准进入设备通道";
+          : "命令已获准进入设备通道"
+  );
   const runtimeOutputEnabled = readNullableBoolean(control.output_enabled);
   const deepstreamInputFrames = runtimeMainlineStatus.nvinferInputFrames;
   const deepstreamOutputBuffers = readNullableNumber(runtimeInference.output_buffers);
@@ -1805,7 +1812,8 @@ export function StudioConsoleView({
     acceptedCommandCount,
     lastAcceptedCommand,
     deviceLastError: kmnetLastError || kmnetLastDeviceError,
-    outputTrace: runtimeOutputTrace
+    outputDeliveryState: readString(controlPipeline.output_delivery_state, "idle"),
+    outputTrace: stableRuntimeOutputTrace
   }) : null;
   const captureReason = capture?.last_error || (
     capture?.running !== true
@@ -2738,7 +2746,7 @@ export function StudioConsoleView({
       pResponseScale,
       pResponseBoost,
       pResponseCurveShape,
-      actuationFeedbackDelayMs,
+      predictionActuationDelayMs,
       controlPredictionLeadMs,
       controlPredictionHistoryResetGapMs,
       controlPredictionCapPx,
@@ -2789,7 +2797,6 @@ export function StudioConsoleView({
       trackerScaleCostWeight,
       trackerMaxSizeRatio,
       trackerMaxAssociationDtMs,
-      targetTrackMaxAge,
       targetLostGraceMs,
       trackerKalmanAccelerationNoise,
       trackerKalmanMeasurementNoiseX,
@@ -4390,12 +4397,6 @@ export function StudioConsoleView({
                   enabled={crosshairEnabled}
                   onToggle={(enabled) => updateConfigField("crosshair", "enabled", enabled)}
                 />
-                <ModuleSwitch
-                  label="用于目标选择与鼠标控制"
-                  enabled={crosshairUseForControl}
-                  disabled={!crosshairEnabled || !crosshairTemplateId}
-                  onToggle={(enabled) => updateConfigField("crosshair", "use_for_control", enabled)}
-                />
                 <div className="crosshair-reference-panel">
                   <div className="crosshair-template-preview" data-empty={!crosshairTemplateId}>
                     {crosshairTemplateId ? (
@@ -4409,7 +4410,7 @@ export function StudioConsoleView({
                   </div>
                   <div className="crosshair-reference-status">
                     <span>当前状态</span>
-                    <b data-state={crosshairState}>{crosshairStateLabel(crosshairState)}</b>
+                    <b data-state={stableCrosshairState}>{crosshairStateLabel(stableCrosshairState)}</b>
                   </div>
                 </div>
                 <div className="crosshair-learn-actions">
@@ -4439,6 +4440,16 @@ export function StudioConsoleView({
                 ) : crosshairMessage ? (
                   <p className="crosshair-inline-message">{crosshairMessage}</p>
                 ) : null}
+                <details className="crosshair-advanced-settings">
+                  <summary>高级控制原点</summary>
+                  <ModuleSwitch
+                    compact
+                    label="使用视觉准星作为控制原点"
+                    enabled={crosshairUseForControl}
+                    disabled={!crosshairEnabled || !crosshairTemplateId}
+                    onToggle={(enabled) => updateConfigField("crosshair", "use_for_control", enabled)}
+                  />
+                </details>
                 <details className="crosshair-advanced-settings">
                   <summary>观测信息</summary>
                   <div className="console-kv compact-kv crosshair-reference-kv">
@@ -4524,7 +4535,7 @@ export function StudioConsoleView({
                 </div>
                 <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("target-advanced")}              >
                   <NovaIcon name="settings" size={15} />
-                  切换参数
+                  目标行为
                 </button>
               </div>
 
@@ -4532,7 +4543,7 @@ export function StudioConsoleView({
                 <SectionTitle title="目标跟踪" />
                 <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("tracker")}              >
                   <NovaIcon name="settings" size={15} />
-                  Tracker 参数
+                  专家跟踪
                 </button>
               </div>
                 </div>
@@ -4920,13 +4931,13 @@ export function StudioConsoleView({
       <AdvancedSettingsDialog
         dirty={configDialogDirty}
         eyebrow="目标选择"
-        footerNote="目标切换参数"
+        footerNote="目标行为"
         onClose={() => void requestDismissConfigDialog("target-advanced")}
         onSave={() => void saveConfigDialog("target-advanced")}
         open
         saveError={dialogSaveError}
         saving={dialogSaving}
-        title="目标切换参数"
+        title="目标行为"
       >
         <div className="advanced-settings-grid two-column">
           {targetAdvancedParameters.map(renderTargetingNumberParameter)}
@@ -4938,13 +4949,13 @@ export function StudioConsoleView({
       <AdvancedSettingsDialog
         dirty={configDialogDirty}
         eyebrow="目标跟踪"
-        footerNote="Tracker 参数"
+        footerNote="专家跟踪参数"
         onClose={() => void requestDismissConfigDialog("tracker")}
         onSave={() => void saveConfigDialog("tracker")}
         open
         saveError={dialogSaveError}
         saving={dialogSaving}
-        title="Tracker 参数"
+        title="专家跟踪参数"
       >
         <div className="advanced-settings-grid two-column">
           {trackerCoreParameters.map(renderTargetingNumberParameter)}

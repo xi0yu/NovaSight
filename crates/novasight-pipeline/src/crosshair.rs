@@ -477,7 +477,8 @@ impl CrosshairHub {
         let state = lock(&self.state);
         let geometry = geometry_signature(width, height);
         let reason = fallback_reason(&state, &self.config, &geometry);
-        let Some(observation) = state.last_confirmed.as_ref().filter(|_| reason.is_empty()) else {
+        let hard_fallback = requires_geometry_fallback(&reason);
+        let Some(observation) = state.last_confirmed.as_ref().filter(|_| !hard_fallback) else {
             return ControlReference {
                 x: geometric_x,
                 y: geometric_y,
@@ -506,7 +507,7 @@ impl CrosshairHub {
                 .last_confirmed_at
                 .map_or(0.0, |at| at.elapsed().as_secs_f64() * 1000.0),
             geometry_signature: geometry,
-            reason: String::new(),
+            reason,
         }
     }
 
@@ -527,6 +528,7 @@ impl CrosshairHub {
             })
             .unwrap_or_default();
         let reason = fallback_reason(state, &self.config, &geometry);
+        let geometry_fallback = requires_geometry_fallback(&reason);
         CrosshairSnapshot {
             enabled: self.config.enabled,
             use_for_control: self.config.use_for_control,
@@ -537,8 +539,8 @@ impl CrosshairHub {
                 .map_or("idle", |item| item.status.as_str())
                 .to_owned(),
             observation: state.latest.clone(),
-            control_reference_ready: reason.is_empty(),
-            control_reference_source: if reason.is_empty() {
+            control_reference_ready: !geometry_fallback,
+            control_reference_source: if !geometry_fallback {
                 if state
                     .latest
                     .as_ref()
@@ -988,6 +990,18 @@ fn fallback_reason(state: &State, config: &CrosshairConfig, geometry: &str) -> S
     }
     .to_owned()
 }
+
+fn requires_geometry_fallback(reason: &str) -> bool {
+    matches!(
+        reason,
+        "disabled"
+            | "control_disabled"
+            | "template_unavailable"
+            | "geometry_changed"
+            | "observation_unconfirmed"
+    )
+}
+
 fn clear_tracking(state: &mut State) {
     state.latest = None;
     state.latest_at = None;

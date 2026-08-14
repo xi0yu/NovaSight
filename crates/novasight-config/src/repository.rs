@@ -27,7 +27,6 @@ use super::{AppConfig, CURRENT_SCHEMA_VERSION, ConfigValidationError, PipelineRu
 const CONFIG_LOCK_WAIT: Duration = Duration::from_millis(250);
 const CONFIG_LOCK_RETRY: Duration = Duration::from_millis(2);
 const DEFAULT_RUNTIME_CONFIG: &str = include_str!("bootstrap.yaml");
-const RESPONSIVE_TARGET_TRACK_MAX_AGE: u64 = 5;
 const RETIRED_PIPELINE_FIELDS: &[&str] = &[
     "projection_invert_y",
     "atan_scale_counts",
@@ -38,11 +37,13 @@ const RETIRED_PIPELINE_FIELDS: &[&str] = &[
     "target_selection_class_weight",
     "target_selection_distance_weight",
     "target_sticky_bias",
+    "target_debounce_distance_px",
     "max_command_age_ms",
     "output_interval_ms",
     "max_counts_per_update",
     "arrival_radius_counts",
     "residual_cap",
+    "target_track_max_age",
 ];
 
 pub trait ConfigRepository {
@@ -441,6 +442,7 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
         })?;
     normalize_root_alias(path, &mut document, "device", "hardware")?;
     migrate_output_limits(&mut document);
+    migrate_prediction_actuation_delay(&mut document);
     let mut config: AppConfig =
         serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Parse {
             path: path.to_owned(),
@@ -469,11 +471,13 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     }
     let removed_humanized_motion = config.control.extra.remove("humanized_motion").is_some();
     config.pipeline.extra.remove("projection_invert_y");
+    config.pipeline.extra.remove("target_debounce_distance_px");
     config.pipeline.extra.remove("max_command_age_ms");
     config.pipeline.extra.remove("output_interval_ms");
     config.pipeline.extra.remove("atan_scale_counts");
     config.pipeline.extra.remove("arrival_radius_counts");
     config.pipeline.extra.remove("residual_cap");
+    config.pipeline.extra.remove("target_track_max_age");
     for retired_key in [
         "velocity_change_base_px_ms",
         "velocity_change_relative",
@@ -586,9 +590,6 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     {
         control.remove(Value::String("humanized_motion".to_owned()));
     }
-    if schema_version < CURRENT_SCHEMA_VERSION && config.pipeline.target_track_max_age == 2 {
-        config.pipeline.target_track_max_age = RESPONSIVE_TARGET_TRACK_MAX_AGE;
-    }
     if schema_version >= CURRENT_SCHEMA_VERSION {
         return;
     }
@@ -671,6 +672,20 @@ fn migrate_output_limits(document: &mut Value) {
     }
 }
 
+fn migrate_prediction_actuation_delay(document: &mut Value) {
+    let Value::Mapping(root) = document else {
+        return;
+    };
+    let Some(Value::Mapping(pipeline)) = root.get_mut(Value::String("pipeline".to_owned())) else {
+        return;
+    };
+    let old_key = Value::String("actuation_feedback_delay_ms".to_owned());
+    let new_key = Value::String("prediction_actuation_delay_ms".to_owned());
+    if let Some(value) = pipeline.remove(&old_key) {
+        pipeline.entry(new_key).or_insert(value);
+    }
+}
+
 fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRuntimeConfig) {
     for (key, value) in [
         ("p_response_scale", config.p_response_scale),
@@ -685,8 +700,12 @@ fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRunti
         ("prediction_lead_ms", config.prediction_lead_ms),
         ("prediction_cap_px", config.prediction_cap_px),
         (
-            "actuation_feedback_delay_ms",
-            config.actuation_feedback_delay_ms,
+            "target_track_max_lost_age_ms",
+            config.target_track_max_lost_age_ms,
+        ),
+        (
+            "prediction_actuation_delay_ms",
+            config.prediction_actuation_delay_ms,
         ),
     ] {
         pipeline.insert(
@@ -767,12 +786,14 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "p_response_curve_shape",
             "max_output_x_counts",
             "max_output_y_counts",
+            "velocity_history_reset_gap_ms",
             "prediction_enabled",
             "prediction_lead_ms",
             "prediction_cap_px",
+            "prediction_actuation_delay_ms",
             "target_fov_radius_px",
             "target_min_confidence",
-            "target_track_max_age",
+            "target_track_max_lost_age_ms",
             "tracker_max_match_distance",
             "tracker_position_cost_weight",
             "tracker_iou_cost_weight",

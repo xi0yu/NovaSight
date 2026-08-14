@@ -40,7 +40,7 @@ export const CONTROL_PIPELINE_FIELDS = [
   "velocity_history_reset_gap_ms",
   "prediction_lead_ms",
   "prediction_cap_px",
-  "actuation_feedback_delay_ms"
+  "prediction_actuation_delay_ms"
 ] as const;
 
 export type ControlPipelineField = typeof CONTROL_PIPELINE_FIELDS[number];
@@ -48,7 +48,6 @@ export type ControlPipelineField = typeof CONTROL_PIPELINE_FIELDS[number];
 export const TARGETING_PIPELINE_FIELDS = [
   "target_fov_radius_px",
   "target_min_confidence",
-  "target_track_max_age",
   "target_track_max_lost_age_ms",
   "tracker_max_match_distance",
   "tracker_position_cost_weight",
@@ -202,7 +201,7 @@ export type AlgorithmParameterValues = {
   pResponseScale: number;
   pResponseBoost: number;
   pResponseCurveShape: number;
-  actuationFeedbackDelayMs: number;
+  predictionActuationDelayMs: number;
   controlPredictionLeadMs: number;
   controlPredictionHistoryResetGapMs: number;
   controlPredictionCapPx: number;
@@ -230,7 +229,6 @@ export type TargetingParameterValues = {
   trackerScaleCostWeight: number;
   trackerMaxSizeRatio: number;
   trackerMaxAssociationDtMs: number;
-  targetTrackMaxAge: number;
   targetLostGraceMs: number;
   trackerKalmanAccelerationNoise: number;
   trackerKalmanMeasurementNoiseX: number;
@@ -341,11 +339,11 @@ export function buildAlgorithmParameterGroups(
     ],
     calibrationParameters: [
       {
-        key: "actuation_feedback_delay_ms",
+        key: "prediction_actuation_delay_ms",
         label: "预测执行延迟",
         formula: "T_delay",
         detail: "命令发出到画面可观察到响应的系统延迟，只参与目标速度预测时域。",
-        value: values.actuationFeedbackDelayMs,
+        value: values.predictionActuationDelayMs,
         min: 0,
         max: 1000,
         recommendedMin: 0,
@@ -418,12 +416,42 @@ export function buildTargetingParameterGroups(
       {
         key: "target_min_confidence",
         label: "控制目标最低置信度",
-        detail: "推理结果通过模型阈值后，还必须达到该值才允许进入目标选择。",
+        detail: "低于该值的检测结果不进入控制目标选择。",
         value: values.targetMinConfidence,
         min: 0,
         max: 1,
         step: 0.01
       },
+      {
+        key: "target_switch_delay_ms",
+        label: "目标切换确认延迟",
+        detail: "新目标持续满足切换条件多久后才接管。",
+        value: values.targetSwitchDelayMs,
+        min: 0,
+        max: 10000,
+        recommendedMin: 0,
+        recommendedMax: 500,
+        step: 1,
+        unit: "ms",
+        kind: "stepper",
+        transform: Math.round
+      },
+      {
+        key: "target_track_max_lost_age_ms",
+        label: "目标丢失保持",
+        detail: "短暂漏检时保留原目标身份的时间。",
+        value: values.targetLostGraceMs,
+        min: 1,
+        max: 10000,
+        recommendedMin: 1,
+        recommendedMax: 1000,
+        step: 1,
+        unit: "ms",
+        kind: "stepper",
+        transform: Math.round
+      }
+    ],
+    trackerCoreParameters: [
       {
         key: "candidate_max_aspect_ratio",
         label: "候选框最大宽高比",
@@ -443,7 +471,8 @@ export function buildTargetingParameterGroups(
         value: values.targetSwitchPreferenceAdvantage,
         min: 0,
         max: 1,
-        step: 0.01
+        step: 0.01,
+        riskLevel: "advanced"
       },
       {
         key: "target_switch_min_continuity_score",
@@ -452,24 +481,9 @@ export function buildTargetingParameterGroups(
         value: values.targetSwitchContinuityScore,
         min: 0,
         max: 1,
-        step: 0.01
+        step: 0.01,
+        riskLevel: "advanced"
       },
-      {
-        key: "target_switch_delay_ms",
-        label: "目标切换确认延迟",
-        detail: "新候选持续满足优势和连续性阈值达到此时间后，才正式替换当前目标。",
-        value: values.targetSwitchDelayMs,
-        min: 0,
-        max: 10000,
-        recommendedMin: 0,
-        recommendedMax: 500,
-        step: 1,
-        unit: "ms",
-        kind: "stepper",
-        transform: Math.round
-      }
-    ],
-    trackerCoreParameters: [
       {
         key: "tracker_max_match_distance",
         label: "归一化匹配距离",
@@ -535,34 +549,6 @@ export function buildTargetingParameterGroups(
         label: "最大关联时间间隔",
         detail: "两次观测间隔超过该值时，不使用上一轨迹继续关联。",
         value: values.trackerMaxAssociationDtMs,
-        min: 1,
-        max: 10000,
-        recommendedMin: 1,
-        recommendedMax: 1000,
-        step: 1,
-        unit: "ms",
-        kind: "stepper",
-        riskLevel: "advanced",
-        transform: Math.round
-      },
-      {
-        key: "target_track_max_age",
-        label: "无时间戳漏检上限",
-        detail: "只用于没有有效捕获时间戳的回放或降级输入；Jetson 正常主链优先使用毫秒保持时间。",
-        value: values.targetTrackMaxAge,
-        min: 1,
-        max: 120,
-        step: 1,
-        unit: "帧",
-        kind: "stepper",
-        riskLevel: "advanced",
-        transform: Math.round
-      },
-      {
-        key: "target_track_max_lost_age_ms",
-        label: "目标丢失保持",
-        detail: "锁定目标短暂漏检时暂停输出并保留原身份；超过该时间后才允许其他目标接管。",
-        value: values.targetLostGraceMs,
         min: 1,
         max: 10000,
         recommendedMin: 1,

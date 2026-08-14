@@ -120,10 +120,7 @@ fn empty_detections_hold_lock_identity_without_emitting_a_stale_target() {
 
 #[test]
 fn detection_reacquired_inside_grace_keeps_the_same_track_id() {
-    let mut core = TargetingCore::new(TargetingConfig {
-        track_max_age: 2,
-        ..TargetingConfig::default()
-    });
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let first = Detection::new(1, 0, 280.0, 280.0, 80.0, 100.0, 0.9).expect("first");
     let track_id = core
         .select(&[first], OBSERVATION_CENTER)
@@ -611,10 +608,7 @@ fn scale_jump_and_expired_capture_gap_allocate_new_identities() {
 
 #[test]
 fn missing_locked_target_does_not_promote_a_different_class_during_grace() {
-    let mut core = TargetingCore::new(TargetingConfig {
-        track_max_age: 2,
-        ..TargetingConfig::default()
-    });
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let first = vec![
         Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("locked"),
         Detection::new(2, 1, 380.0, 270.0, 80.0, 100.0, 0.9).expect("challenger"),
@@ -635,7 +629,6 @@ fn missing_locked_target_does_not_promote_a_different_class_during_grace() {
 #[test]
 fn temporarily_missing_locked_target_does_not_immediately_switch_to_challenger() {
     let mut core = TargetingCore::new(TargetingConfig {
-        track_max_age: 2,
         track_max_lost_age_ms: 120.0,
         ..TargetingConfig::default()
     });
@@ -678,7 +671,6 @@ fn temporarily_missing_locked_target_does_not_immediately_switch_to_challenger()
 #[test]
 fn locked_target_loss_grace_uses_capture_time_instead_of_inference_frame_count() {
     let mut core = TargetingCore::new(TargetingConfig {
-        track_max_age: 2,
         track_max_lost_age_ms: 120.0,
         ..TargetingConfig::default()
     });
@@ -727,7 +719,6 @@ fn association_beyond_normalized_distance_allocates_a_new_identity() {
 #[test]
 fn filtered_classes_age_out_the_previous_track() {
     let mut core = TargetingCore::new(TargetingConfig {
-        track_max_age: 2,
         allowed_class_ids: Some(BTreeSet::from([0, 1])),
         ..TargetingConfig::default()
     });
@@ -735,7 +726,7 @@ fn filtered_classes_age_out_the_previous_track() {
     let first = core.select(std::slice::from_ref(&target), OBSERVATION_CENTER);
     let first_track = first.target_track_id.expect("first track");
     let irrelevant = Detection::new(0, 2, 280.0, 300.0, 40.0, 80.0, 0.9).expect("irrelevant");
-    for _ in 0..3 {
+    for _ in 0..6 {
         assert!(
             core.select(std::slice::from_ref(&irrelevant), OBSERVATION_CENTER)
                 .target_track_id
@@ -749,16 +740,14 @@ fn filtered_classes_age_out_the_previous_track() {
 
 #[test]
 fn lost_track_cannot_produce_a_target_object_id() {
-    let mut core = TargetingCore::new(TargetingConfig {
-        track_max_age: 2,
-        ..TargetingConfig::default()
-    });
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
     core.select(&[head], OBSERVATION_CENTER);
-    // Two empty frames in a row force the lock to Lost; the next
-    // admissible frame restarts the targeting state cleanly.
-    core.select(&[], OBSERVATION_CENTER);
-    core.select(&[], OBSERVATION_CENTER);
+    // Timestamp-free replay keeps a short fixed internal grace period. Once
+    // those frames are consumed, the next admissible frame starts cleanly.
+    for _ in 0..5 {
+        core.select(&[], OBSERVATION_CENTER);
+    }
     let body = Detection::new(2, 1, 320.0, 360.0, 30.0, 60.0, 0.9).expect("body");
     let next = core.select(&[body], OBSERVATION_CENTER);
     assert_eq!(next.target_object_id, Some(2));
