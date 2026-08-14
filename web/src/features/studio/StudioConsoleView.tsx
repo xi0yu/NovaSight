@@ -228,8 +228,8 @@ const ALGORITHM_SETTINGS_SECTIONS: Array<{
   },
   {
     id: "stability",
-    label: "跟踪输出限幅",
-    detail: "跟踪 counts 上限、到位与反馈等待",
+    label: "输出限幅",
+    detail: "单次移动上限",
     panelId: "algorithm-settings-stability"
   },
   {
@@ -1396,14 +1396,12 @@ export function StudioConsoleView({
   const pResponseBoost = readNumber(rustPipelineConfig.p_response_boost, 0.50);
   const pResponseCurveShape = readNumber(rustPipelineConfig.p_response_curve_shape, 1);
   const controlMaxCounts = readNumber(rustPipelineConfig.max_counts_per_update, 127);
-  const controlArrivalRadiusCounts = readNumber(rustPipelineConfig.arrival_radius_counts, 3);
   const controlPredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, true);
   const controlPredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
   const velocitySpreadBasePxMs = readNumber(rustPipelineConfig.velocity_spread_base_px_ms, 0.12);
   const velocitySpreadRelative = readNumber(rustPipelineConfig.velocity_spread_relative, 0.50);
   const controlPredictionLeadMs = readNumber(rustPipelineConfig.prediction_lead_ms, 16);
   const controlPredictionCapPx = readNumber(rustPipelineConfig.prediction_cap_px, 10);
-  const residualCap = readNumber(rustPipelineConfig.residual_cap, 1);
   const actuationFeedbackDelayMs = readNumber(rustPipelineConfig.actuation_feedback_delay_ms, 4);
   const targetMinConfidence = readNumber(rustPipelineConfig.target_min_confidence, 0.5);
   const trackerScaleCostWeight = readNumber(rustPipelineConfig.tracker_scale_cost_weight, 0.15);
@@ -2831,8 +2829,6 @@ export function StudioConsoleView({
       velocitySpreadRelative,
       controlPredictionCapPx,
       controlMaxCounts,
-      controlArrivalRadiusCounts,
-      residualCap,
       controlFovX,
       controlCountsPer360,
       freshnessThresholdMs
@@ -2871,8 +2867,8 @@ export function StudioConsoleView({
     {
       id: "stability",
       label: "限制",
-      value: `跟踪上限 ${formatNumber(controlMaxCounts, 0)} counts`,
-      detail: `到位 ${formatNumber(controlArrivalRadiusCounts, 1)} counts · 残差 ${formatNumber(residualCap, 2)}`,
+      value: `${formatNumber(controlMaxCounts, 0)} counts / 次`,
+      detail: "单次移动上限",
       icon: "control"
     },
     {
@@ -2884,8 +2880,9 @@ export function StudioConsoleView({
     }
   ] : [];
 
-  const renderAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) => (
+  const buildAlgorithmNumberParameterControl = (parameter: AlgorithmNumberParameter, compact = false) => (
     <ParameterNumberControl
+      compact={compact}
       key={parameter.key}
       label={parameter.label}
       detail={parameter.detail}
@@ -2904,6 +2901,10 @@ export function StudioConsoleView({
       onEditingChange={handleParameterEditingChange}
     />
   );
+  const renderAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) =>
+    buildAlgorithmNumberParameterControl(parameter);
+  const renderCompactAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) =>
+    buildAlgorithmNumberParameterControl(parameter, true);
 
   const targetingParameterGroups = targetAdvancedDialogOpen || trackerSettingsDialogOpen
     ? buildTargetingParameterGroups({
@@ -5124,14 +5125,8 @@ export function StudioConsoleView({
 
           {algorithmSettingsSection === "stability" ? (
             <section aria-labelledby="algorithm-settings-stability-tab" className="algorithm-settings-panel" id="algorithm-settings-stability" role="tabpanel" tabIndex={0}>
-              <header className="algorithm-settings-panel-header">
-                <span>跟踪输出限幅</span>
-                <h3 id="algorithm-settings-stability-title">跟踪输出与到位保持</h3>
-                <p>这些参数不改变目标位置。M 限制每轮跟踪控制的 counts，压枪 +Y 在设备边界另行叠加；D 决定到位停止，Q_res 只保留不足 1 count 的小数余量。</p>
-              </header>
-              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低跟踪单次限幅，再检查到位半径；压枪叠加量在参数页“压枪”中调整</span></div>
-              <div className="advanced-settings-grid two-column">
-                {stabilityParameters.map(renderAlgorithmNumberParameter)}
+              <div className="advanced-settings-grid algorithm-settings-limit-grid">
+                {stabilityParameters.map(renderCompactAlgorithmNumberParameter)}
               </div>
             </section>
           ) : null}

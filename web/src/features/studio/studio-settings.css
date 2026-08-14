@@ -67,6 +67,13 @@
   color: var(--status-warning-fg);
 }
 
+.parameter-control-unit {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 650;
+}
+
 .parameter-control-detail {
   margin: -2px 0 0;
   color: var(--text-tertiary);
@@ -273,6 +280,11 @@
 
 .advanced-settings-grid.two-column {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.advanced-settings-grid.algorithm-settings-limit-grid {
+  max-width: 28rem;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .advanced-settings-grid .parameter-control-field {

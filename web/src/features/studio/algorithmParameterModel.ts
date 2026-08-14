@@ -219,8 +219,6 @@ export type AlgorithmParameterValues = {
   velocitySpreadRelative: number;
   controlPredictionCapPx: number;
   controlMaxCounts: number;
-  controlArrivalRadiusCounts: number;
-  residualCap: number;
   controlFovX: number;
   controlCountsPer360: number;
   freshnessThresholdMs: number;
@@ -388,42 +386,15 @@ export function buildAlgorithmParameterGroups(
     stabilityParameters: [
       {
         key: "max_counts_per_update",
-        label: "跟踪最大移动量",
-        formula: "M",
-        detail: "控制器每轮最多输出多少跟踪设备 counts。压枪 +Y 会在设备边界另行叠加；该参数不改变预测 aim 点。",
+        label: "单次移动上限",
+        detail: "",
         value: values.controlMaxCounts,
         min: 1,
         max: 32767,
-        recommendedMin: 1,
-        recommendedMax: 2000,
         step: 1,
         unit: "counts",
         kind: "stepper",
         transform: Math.round
-      },
-      {
-        key: "arrival_radius_counts",
-        label: "到位停止半径",
-        formula: "D",
-        detail: "每轴进入该范围后清空残差并停止；退出范围自动扩大 1.5 倍形成迟滞。",
-        value: values.controlArrivalRadiusCounts,
-        min: 0.5,
-        max: 1000,
-        recommendedMin: 0.5,
-        recommendedMax: 50,
-        step: 0.5,
-        unit: "counts"
-      },
-      {
-        key: "residual_cap",
-        label: "小数残差上限",
-        formula: "Q_res",
-        detail: "限制不足一个设备计数的累计余量，范围为 0～1；不是额外移动速度。",
-        value: values.residualCap,
-        min: 0,
-        max: 1,
-        step: 0.01,
-        unit: "counts"
       }
     ],
     calibrationParameters: [

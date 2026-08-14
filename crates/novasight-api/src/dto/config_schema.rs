@@ -267,7 +267,7 @@ impl ConfigSchemaResponse {
                         ),
                         float(
                             "pipeline.max_counts_per_update",
-                            "跟踪单次计数上限",
+                            "单次移动上限",
                             1.0,
                             i16::MAX as f64,
                             Some("count"),

@@ -450,6 +450,7 @@ export function ParameterNumberControl({
   step,
   unit,
   kind = "slider",
+  compact = false,
   disabled = false,
   applyMode = "save",
   riskLevel = "normal",
@@ -468,6 +469,7 @@ export function ParameterNumberControl({
   step: number;
   unit?: string;
   kind?: ParameterNumberKind;
+  compact?: boolean;
   disabled?: boolean;
   applyMode?: ParameterApplyMode;
   riskLevel?: ParameterRiskLevel;
@@ -486,15 +488,18 @@ export function ParameterNumberControl({
     <div className={`parameter-control-field parameter-control-${kind} parameter-risk-${riskLevel}`}>
       <div className="parameter-control-header">
         <label htmlFor={`${controlId}-${kind === "stepper" ? "value" : "range"}`} title={detail}>{label}</label>
-        <span className="parameter-control-meta" aria-label="参数属性">
-          {formula ? <span title="算法符号">{formula}</span> : null}
-          {unit ? <span>{unit}</span> : null}
-          <span>{applyModeLabel(applyMode)}</span>
-          {outsideRecommendedRange ? <span data-tone="warning">超推荐</span> : null}
-          {riskLevel !== "normal" ? <span>{riskLevel === "calibration" ? "标定" : "高级"}</span> : null}
-        </span>
+        {compact && unit ? <span className="parameter-control-unit">{unit}</span> : null}
+        {!compact ? (
+          <span className="parameter-control-meta" aria-label="参数属性">
+            {formula ? <span title="算法符号">{formula}</span> : null}
+            {unit ? <span>{unit}</span> : null}
+            <span>{applyModeLabel(applyMode)}</span>
+            {outsideRecommendedRange ? <span data-tone="warning">超推荐</span> : null}
+            {riskLevel !== "normal" ? <span>{riskLevel === "calibration" ? "标定" : "高级"}</span> : null}
+          </span>
+        ) : null}
       </div>
-      {detail ? <p className="parameter-control-detail">{detail}</p> : null}
+      {!compact && detail ? <p className="parameter-control-detail">{detail}</p> : null}
       {kind === "stepper" ? (
         <StepperNumberControl
           value={value}
@@ -529,7 +534,7 @@ export function ParameterNumberControl({
           controlId={controlId}
         />
       )}
-      {hasRecommendedRange ? (
+      {!compact && hasRecommendedRange ? (
         <div className="parameter-control-range">
           <span>建议 {rangeLabel(normalizedRecommendedMin, normalizedRecommendedMax, unit)}</span>
           {outsideRecommendedRange ? <span>边界 {rangeLabel(min, max, unit)}</span> : null}
