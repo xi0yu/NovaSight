@@ -43,7 +43,8 @@ fn bundled_runtime_config_loads_current_algorithm_defaults() {
     assert_eq!(config.pipeline.p_response_scale, 0.20);
     assert_eq!(config.pipeline.p_response_boost, 0.50);
     assert_eq!(config.pipeline.p_response_curve_shape, 1.0);
-    assert_eq!(config.pipeline.max_counts_per_update, 127.0);
+    assert_eq!(config.pipeline.max_output_x_counts, 127.0);
+    assert_eq!(config.pipeline.max_output_y_counts, 127.0);
     assert_eq!(config.pipeline.prediction_lead_ms, 16.0);
     assert_eq!(config.pipeline.prediction_cap_px, 10.0);
     assert!(config.pipeline.prediction_enabled);
@@ -75,7 +76,7 @@ pipeline:
     assert!(config.pipeline.extra.is_empty());
 
     YamlConfigRepository::new(&path)
-        .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
+        .save_field("pipeline", "max_output_x_counts", Value::from(128.0), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(persisted["schema_version"], 13);
@@ -110,7 +111,7 @@ pipeline:
     assert!(config.pipeline.extra.is_empty());
 
     YamlConfigRepository::new(&path)
-        .save_field("pipeline", "residual_cap", Value::from(0.75), 0)
+        .save_field("pipeline", "max_output_x_counts", Value::from(128.0), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(persisted["pipeline"]["velocity_spread_base_px_ms"], 0.42);

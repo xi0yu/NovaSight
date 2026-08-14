@@ -2,21 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DeviceCountLimits {
-    pub max_counts_per_axis: f64,
-    pub residual_cap: f64,
-}
-
-impl DeviceCountLimits {
-    fn valid(self) -> bool {
-        self.max_counts_per_axis.is_finite()
-            && (1.0..=f64::from(i16::MAX)).contains(&self.max_counts_per_axis)
-            && self.residual_cap.is_finite()
-            && (0.0..=1.0).contains(&self.residual_cap)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AxisCountLimiter {
     residual: f64,
@@ -35,22 +20,20 @@ impl AxisCountLimiter {
         self.residual
     }
 
-    pub fn limit(
-        &mut self,
-        demand_counts: f64,
-        limits: DeviceCountLimits,
-    ) -> Result<i32, AppError> {
-        if !demand_counts.is_finite() || !limits.valid() {
+    pub fn limit(&mut self, demand_counts: f64, max_counts_per_axis: f64) -> Result<i32, AppError> {
+        if !demand_counts.is_finite()
+            || !max_counts_per_axis.is_finite()
+            || !(1.0..=f64::from(i16::MAX)).contains(&max_counts_per_axis)
+        {
             self.reset();
             return Err(AppError::DeviceCountOutOfRange);
         }
-        let demand_counts =
-            demand_counts.clamp(-limits.max_counts_per_axis, limits.max_counts_per_axis);
+        let demand_counts = demand_counts.clamp(-max_counts_per_axis, max_counts_per_axis);
         if self.residual != 0.0 && demand_counts != 0.0 && self.residual * demand_counts < 0.0 {
             self.reset();
         }
         self.residual += demand_counts;
-        let integer_limit = limits.max_counts_per_axis.ceil();
+        let integer_limit = max_counts_per_axis.floor();
         let counts = self.residual.trunc().clamp(-integer_limit, integer_limit);
         if !counts.is_finite() || counts < f64::from(i32::MIN) || counts > f64::from(i32::MAX) {
             self.reset();
@@ -58,9 +41,6 @@ impl AxisCountLimiter {
         }
         let counts = counts as i32;
         self.residual -= f64::from(counts);
-        self.residual = self
-            .residual
-            .clamp(-limits.residual_cap, limits.residual_cap);
         Ok(counts)
     }
 }
@@ -106,16 +86,17 @@ impl DeviceCountLimiter {
         &mut self,
         demand_x: f64,
         demand_y: f64,
-        limits: DeviceCountLimits,
+        max_x_counts: f64,
+        max_y_counts: f64,
     ) -> Result<LimitedDeviceCounts, AppError> {
-        let dx = match self.x.limit(demand_x, limits) {
+        let dx = match self.x.limit(demand_x, max_x_counts) {
             Ok(value) => value,
             Err(error) => {
                 self.reset();
                 return Err(error);
             }
         };
-        let dy = match self.y.limit(demand_y, limits) {
+        let dy = match self.y.limit(demand_y, max_y_counts) {
             Ok(value) => value,
             Err(error) => {
                 self.reset();

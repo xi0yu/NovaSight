@@ -65,7 +65,8 @@ curve = 1 - exp(-(r ^ response_curve_shape))
 R = 1 + response_boost * curve * (0.35 + 0.65 * motion_strength)
 response_gain = response_scale * R
 u = response_gain * S * atan(full_counts / S)
-u = clamp_per_axis(u, -max_counts_per_update, max_counts_per_update)
+u_x = clamp(u_x, -max_output_x_counts, max_output_x_counts)
+u_y = clamp(u_y, -max_output_y_counts, max_output_y_counts)
 ```
 
 `response_scale` is the base response strength. `response_boost` controls how
@@ -103,7 +104,8 @@ pipeline:
   p_response_scale: 0.20
   p_response_boost: 0.50
   p_response_curve_shape: 1.0
-  max_counts_per_update: 127.0
+  max_output_x_counts: 127.0
+  max_output_y_counts: 127.0
   prediction_enabled: true
   prediction_lead_ms: 16.0
   prediction_cap_px: 10.0

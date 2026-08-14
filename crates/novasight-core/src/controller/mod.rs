@@ -11,7 +11,7 @@ pub mod recoil;
 pub mod replay;
 
 pub use algorithm::{
-    AimAlgorithm, AimAlgorithmConfig, AimFeedback, AimResult, AimSample, BlockReason, ControlMode,
+    AimAlgorithm, AimAlgorithmConfig, AimResult, AimSample, BlockReason, ControlMode,
 };
 pub use control_law::{
     AimControlInput, AimControlLaw, AimControlParameters, AimControlResult, AxisPair,

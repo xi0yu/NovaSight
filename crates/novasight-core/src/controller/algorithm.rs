@@ -10,26 +10,17 @@
 //!   emit-eligible decision. Triggers and target validity gate the
 //!   state machine; stale or non-monotonic observations are rejected
 //!   with a typed `BlockReason`.
-//! * `quantizer_residual` reports fractional demand retained by the limiter
-//!   until it becomes one actionable device count. Once the full correction is within
-//!   half a count, the current integer position is already the nearest point
-//!   the device can represent and that axis settles instead of limit-cycling.
+//! * `quantizer_residual` reports fractional demand retained only for integer
+//!   device conversion. It does not stop tracking or alter the target position.
 
 use serde::{Deserialize, Serialize};
 
 use super::control_law::{AimControlInput, AimControlLaw, AimControlParameters, AxisPair};
-use crate::limiter::{DeviceCountLimiter, DeviceCountLimits};
+use crate::limiter::DeviceCountLimiter;
 use crate::prediction::{
     FocusTargetObservation, PredictionMotionState, SingleTargetPredictionConfig,
     SingleTargetPredictor,
 };
-
-/// Integer mouse output cannot represent a correction smaller than one count.
-/// At half a count or less the current integer position is the nearest
-/// representable point, so retaining residual would only create a +/-1 cycle.
-const HALF_DEVICE_COUNT: f64 = 0.5;
-const ARRIVAL_CONFIRM_NS: u64 = 8_000_000;
-const ARRIVAL_CONFIRM_SAMPLES: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ControlMode {
@@ -52,10 +43,6 @@ pub enum BlockReason {
     TriggerInactive,
     /// No device count is actionable at the current position.
     DeadZone,
-    /// The target is inside the FOV-projected arrival region.
-    AimSettled,
-    /// A successful device movement is not yet observable by this frame.
-    ActuationFeedbackPending,
     /// Demand converted to a count out of signed 32-bit range.
     DemandOutOfRange,
     /// The algorithm produced an emit-eligible decision; no block.
@@ -70,15 +57,13 @@ pub struct AimAlgorithmConfig {
     pub response_scale: f64,
     pub response_boost: f64,
     pub response_curve_shape: f64,
-    pub max_counts_per_update: f64,
-    /// Half-size of the per-axis arrival box in projected device counts.
-    pub arrival_radius_counts: f64,
+    pub max_output_x_counts: f64,
+    pub max_output_y_counts: f64,
     pub velocity_history_reset_gap_ms: f64,
     pub velocity_spread_base_px_ms: f64,
     pub velocity_spread_relative: f64,
     pub prediction_enabled: bool,
-    /// Unified command-to-visible-response delay shared with the runtime's
-    /// actuation feedback gate.
+    /// Command-to-visible-response delay used by target prediction.
     pub prediction_actuation_delay_ms: f64,
     pub prediction_lead_ms: f64,
     pub prediction_cap_px: f64,
@@ -87,8 +72,6 @@ pub struct AimAlgorithmConfig {
     pub roi_height: u32,
     pub observation_width: u32,
     pub observation_height: u32,
-    /// Cap on the fractional residual retained across emits.
-    pub residual_cap: f64,
 }
 
 impl Default for AimAlgorithmConfig {
@@ -100,8 +83,8 @@ impl Default for AimAlgorithmConfig {
             response_scale: 0.20,
             response_boost: 0.50,
             response_curve_shape: 1.0,
-            max_counts_per_update: 127.0,
-            arrival_radius_counts: 3.0,
+            max_output_x_counts: 127.0,
+            max_output_y_counts: 127.0,
             velocity_history_reset_gap_ms: 80.0,
             velocity_spread_base_px_ms: 0.12,
             velocity_spread_relative: 0.50,
@@ -114,7 +97,6 @@ impl Default for AimAlgorithmConfig {
             roi_height: 640,
             observation_width: 640,
             observation_height: 640,
-            residual_cap: 1.0,
         }
     }
 }
@@ -132,7 +114,6 @@ impl AimAlgorithmConfig {
             response_scale: self.response_scale,
             response_boost: self.response_boost,
             response_curve_shape: self.response_curve_shape,
-            max_counts_per_update: self.max_counts_per_update,
         }
     }
 
@@ -163,12 +144,6 @@ pub struct AimSample {
     pub track_confidence: f64,
     pub target_valid: bool,
     pub trigger_active: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct AimFeedback {
-    pub pending_x: bool,
-    pub pending_y: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -237,14 +212,6 @@ pub struct AimResult {
     pub full_error_counts_y: f64,
     pub float_demand_x: f64,
     pub float_demand_y: f64,
-    pub arrival_settled_x: bool,
-    pub arrival_settled_y: bool,
-    pub arrival_hold_x: bool,
-    pub arrival_hold_y: bool,
-    pub arrival_enter_counts: f64,
-    pub arrival_exit_counts: f64,
-    pub actuation_pending_x: bool,
-    pub actuation_pending_y: bool,
 }
 
 impl AimResult {
@@ -314,14 +281,6 @@ impl AimResult {
             full_error_counts_y: 0.0,
             float_demand_x: 0.0,
             float_demand_y: 0.0,
-            arrival_settled_x: false,
-            arrival_settled_y: false,
-            arrival_hold_x: false,
-            arrival_hold_y: false,
-            arrival_enter_counts: 0.0,
-            arrival_exit_counts: 0.0,
-            actuation_pending_x: false,
-            actuation_pending_y: false,
         }
     }
 }
@@ -329,66 +288,6 @@ impl AimResult {
 impl Default for AimResult {
     fn default() -> Self {
         Self::blocked(BlockReason::TriggerInactive)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct AxisArrivalState {
-    settled: bool,
-    arrival_since_ns: Option<u64>,
-    arrival_samples: u8,
-    departure_since_ns: Option<u64>,
-    departure_samples: u8,
-}
-
-impl AxisArrivalState {
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    fn hold(&mut self, full_error_counts: f64, capture_ts_ns: u64, enter_counts: f64) -> bool {
-        let absolute = full_error_counts.abs();
-        let exit_counts = (enter_counts * 1.5).max(enter_counts + HALF_DEVICE_COUNT);
-        let hard_exit_counts = exit_counts * 2.0;
-
-        if self.settled {
-            self.arrival_since_ns = None;
-            self.arrival_samples = 0;
-            if absolute <= exit_counts {
-                self.departure_since_ns = None;
-                self.departure_samples = 0;
-                return true;
-            }
-            if absolute >= hard_exit_counts {
-                self.reset();
-                return false;
-            }
-            let since = *self.departure_since_ns.get_or_insert(capture_ts_ns);
-            self.departure_samples = self.departure_samples.saturating_add(1);
-            if self.departure_samples >= ARRIVAL_CONFIRM_SAMPLES
-                && capture_ts_ns.saturating_sub(since) >= ARRIVAL_CONFIRM_NS
-            {
-                self.reset();
-                return false;
-            }
-            return true;
-        }
-
-        self.departure_since_ns = None;
-        self.departure_samples = 0;
-        if absolute <= enter_counts {
-            let since = *self.arrival_since_ns.get_or_insert(capture_ts_ns);
-            self.arrival_samples = self.arrival_samples.saturating_add(1);
-            if self.arrival_samples >= ARRIVAL_CONFIRM_SAMPLES
-                && capture_ts_ns.saturating_sub(since) >= ARRIVAL_CONFIRM_NS
-            {
-                self.settled = true;
-            }
-            return true;
-        }
-        self.arrival_since_ns = None;
-        self.arrival_samples = 0;
-        false
     }
 }
 
@@ -401,12 +300,7 @@ pub struct AimAlgorithm {
     last_generation: Option<u64>,
     last_capture_ts_ns: Option<u64>,
     target_id: Option<u64>,
-    previous_error_x: f64,
-    previous_error_y: f64,
-    measured_error_history_valid: bool,
     prediction: SingleTargetPredictor,
-    arrival_x: AxisArrivalState,
-    arrival_y: AxisArrivalState,
 }
 
 impl AimAlgorithm {
@@ -418,12 +312,7 @@ impl AimAlgorithm {
             last_generation: None,
             last_capture_ts_ns: None,
             target_id: None,
-            previous_error_x: 0.0,
-            previous_error_y: 0.0,
-            measured_error_history_valid: false,
             prediction: SingleTargetPredictor::new(config.prediction_config()),
-            arrival_x: AxisArrivalState::default(),
-            arrival_y: AxisArrivalState::default(),
         }
     }
 
@@ -432,8 +321,6 @@ impl AimAlgorithm {
         self.control_law = AimControlLaw::new(config.control_parameters());
         self.prediction.set_config(config.prediction_config());
         self.limiter.reset();
-        self.arrival_x.reset();
-        self.arrival_y.reset();
     }
 
     pub fn reset(&mut self) {
@@ -441,18 +328,11 @@ impl AimAlgorithm {
         self.last_generation = None;
         self.last_capture_ts_ns = None;
         self.target_id = None;
-        self.previous_error_x = 0.0;
-        self.previous_error_y = 0.0;
-        self.measured_error_history_valid = false;
         self.prediction.reset(None);
-        self.arrival_x.reset();
-        self.arrival_y.reset();
     }
 
     pub fn release_trigger(&mut self) {
         self.limiter.reset();
-        self.arrival_x.reset();
-        self.arrival_y.reset();
     }
 
     /// Clear target-relative state while preserving observation sequence
@@ -461,20 +341,13 @@ impl AimAlgorithm {
         self.release_trigger();
         self.prediction.reset(None);
         self.target_id = None;
-        self.previous_error_x = 0.0;
-        self.previous_error_y = 0.0;
-        self.measured_error_history_valid = false;
     }
 
     pub fn step(&mut self, sample: AimSample) -> AimResult {
-        self.step_with_feedback(sample, AimFeedback::default())
+        self.step_internal(sample)
     }
 
-    pub fn step_with_feedback(&mut self, sample: AimSample, feedback: AimFeedback) -> AimResult {
-        self.step_internal(sample, feedback)
-    }
-
-    fn step_internal(&mut self, observation: AimSample, feedback: AimFeedback) -> AimResult {
+    fn step_internal(&mut self, observation: AimSample) -> AimResult {
         let frame_age_ns = observation.control_now_ns as i128 - observation.capture_ts_ns as i128;
         if frame_age_ns < 0 {
             self.release_trigger();
@@ -496,7 +369,6 @@ impl AimAlgorithm {
             .is_some_and(|prev| observation.capture_ts_ns <= prev);
         if capture_timestamp_discontinuity {
             self.prediction.reset(self.target_id);
-            self.measured_error_history_valid = false;
         }
 
         if self
@@ -510,15 +382,11 @@ impl AimAlgorithm {
             self.last_generation = Some(observation.generation);
             self.last_capture_ts_ns = Some(observation.capture_ts_ns);
             self.target_id = None;
-            self.measured_error_history_valid = false;
             self.prediction.reset(None);
             self.release_trigger();
             return AimResult::blocked(BlockReason::TargetInvalid);
         }
-        if !self.config.arrival_radius_counts.is_finite()
-            || self.config.arrival_radius_counts < HALF_DEVICE_COUNT
-            || !self.prediction.config_valid()
-        {
+        if !self.prediction.config_valid() {
             self.release_trigger();
             return AimResult::blocked(BlockReason::GeometryInvalid);
         }
@@ -526,14 +394,6 @@ impl AimAlgorithm {
         let aim_y = observation.aim_y;
         let error_x = aim_x - observation.crosshair_x;
         let error_y = aim_y - observation.crosshair_y;
-        if self.measured_error_history_valid {
-            if crossed_center(self.previous_error_x, error_x) {
-                self.limiter.reset_x();
-            }
-            if crossed_center(self.previous_error_y, error_y) {
-                self.limiter.reset_y();
-            }
-        }
         let prediction = if capture_timestamp_discontinuity {
             self.prediction.unavailable()
         } else {
@@ -569,53 +429,16 @@ impl AimAlgorithm {
         let filtered_error_y = control_result.predicted_error_px.y;
         let full_x = control_result.projected_error_counts.x;
         let full_y = control_result.projected_error_counts.y;
-        let mut demand_x = control_result.demand_counts.x;
-        let mut demand_y = control_result.demand_counts.y;
-
-        let arrival_enter_counts = self.config.arrival_radius_counts.max(HALF_DEVICE_COUNT);
-        let arrival_exit_counts =
-            (arrival_enter_counts * 1.5).max(arrival_enter_counts + HALF_DEVICE_COUNT);
-        let feedback_hold_x = actuation_feedback_should_hold(
-            feedback.pending_x,
-            self.measured_error_history_valid,
-            self.previous_error_x,
-            error_x,
-            full_x,
-            arrival_enter_counts,
-        );
-        let feedback_hold_y = actuation_feedback_should_hold(
-            feedback.pending_y,
-            self.measured_error_history_valid,
-            self.previous_error_y,
-            error_y,
-            full_y,
-            arrival_enter_counts,
-        );
-        let arrival_hold_x = feedback_hold_x
-            || self
-                .arrival_x
-                .hold(full_x, observation.capture_ts_ns, arrival_enter_counts);
-        let arrival_hold_y = feedback_hold_y
-            || self
-                .arrival_y
-                .hold(full_y, observation.capture_ts_ns, arrival_enter_counts);
-
-        if arrival_hold_x || full_x.abs() <= HALF_DEVICE_COUNT {
-            self.limiter.reset_x();
-            demand_x = 0.0;
-        }
-        if arrival_hold_y || full_y.abs() <= HALF_DEVICE_COUNT {
-            self.limiter.reset_y();
-            demand_y = 0.0;
-        }
-
-        let limits = DeviceCountLimits {
-            max_counts_per_axis: control_result.max_counts_per_update,
-            residual_cap: self.config.residual_cap,
-        };
+        let demand_x = control_result.demand_counts.x;
+        let demand_y = control_result.demand_counts.y;
 
         let (dx, dy, block_reason) = if observation.trigger_active {
-            let limited = match self.limiter.limit(demand_x, demand_y, limits) {
+            let limited = match self.limiter.limit(
+                demand_x,
+                demand_y,
+                self.config.max_output_x_counts,
+                self.config.max_output_y_counts,
+            ) {
                 Ok(value) => value,
                 Err(_) => {
                     self.release_trigger();
@@ -624,11 +447,7 @@ impl AimAlgorithm {
             };
             let dx = limited.dx;
             let dy = limited.dy;
-            let reason = if dx == 0 && dy == 0 && (feedback_hold_x || feedback_hold_y) {
-                BlockReason::ActuationFeedbackPending
-            } else if dx == 0 && dy == 0 && (arrival_hold_x || arrival_hold_y) {
-                BlockReason::AimSettled
-            } else if dx == 0 && dy == 0 {
+            let reason = if dx == 0 && dy == 0 {
                 BlockReason::DeadZone
             } else {
                 BlockReason::None
@@ -642,9 +461,6 @@ impl AimAlgorithm {
         self.last_generation = Some(observation.generation);
         self.last_capture_ts_ns = Some(observation.capture_ts_ns);
         self.target_id = Some(observation.target_id);
-        self.previous_error_x = error_x;
-        self.previous_error_y = error_y;
-        self.measured_error_history_valid = true;
 
         let (quantizer_residual_x, quantizer_residual_y) = self.limiter.residuals();
         AimResult {
@@ -712,77 +528,14 @@ impl AimAlgorithm {
             full_error_counts_y: full_y,
             float_demand_x: demand_x,
             float_demand_y: demand_y,
-            arrival_settled_x: self.arrival_x.settled,
-            arrival_settled_y: self.arrival_y.settled,
-            arrival_hold_x,
-            arrival_hold_y,
-            arrival_enter_counts,
-            arrival_exit_counts,
-            actuation_pending_x: feedback.pending_x,
-            actuation_pending_y: feedback.pending_y,
         }
     }
 }
 
-fn actuation_feedback_should_hold(
-    pending: bool,
-    history_valid: bool,
-    previous_error: f64,
-    current_error: f64,
-    full_counts: f64,
-    arrival_enter_counts: f64,
-) -> bool {
-    if !pending {
-        return false;
-    }
-    if !history_valid || !previous_error.is_finite() || !current_error.is_finite() {
-        return true;
-    }
-    if full_counts.abs() <= arrival_enter_counts.max(HALF_DEVICE_COUNT) * 2.0 {
-        return true;
-    }
-    if crossed_center(previous_error, current_error) {
-        return true;
-    }
-    current_error.abs() <= previous_error.abs() + HALF_DEVICE_COUNT
-}
-
-fn crossed_center(previous: f64, current: f64) -> bool {
-    previous.is_finite() && current.is_finite() && previous * current < 0.0
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        AimAlgorithm, AimAlgorithmConfig, AimFeedback, AimSample, AxisArrivalState, BlockReason,
-        ControlMode,
-    };
+    use super::{AimAlgorithm, AimAlgorithmConfig, AimSample, BlockReason, ControlMode};
     use crate::prediction::PredictionMotionState;
-
-    #[test]
-    fn arrival_state_uses_hysteresis_but_never_traps_a_real_departure() {
-        let mut state = AxisArrivalState::default();
-        let enter = 3.0;
-
-        assert!(state.hold(2.9, 1_000_000_000, enter));
-        assert!(state.hold(2.8, 1_009_000_000, enter));
-        assert!(state.settled);
-
-        // Between the 3-count enter threshold and 4.5-count exit threshold,
-        // detector chatter remains settled.
-        assert!(state.hold(4.4, 1_018_000_000, enter));
-        // A modest departure is confirmed over time instead of reacting to a
-        // single noisy sample.
-        assert!(state.hold(5.0, 1_027_000_000, enter));
-        assert!(!state.hold(5.0, 1_036_000_000, enter));
-
-        // A large displacement bypasses confirmation immediately, so the
-        // dead zone cannot retain a genuinely moved/new target.
-        state.hold(2.0, 1_045_000_000, enter);
-        state.hold(2.0, 1_054_000_000, enter);
-        assert!(state.settled);
-        assert!(!state.hold(9.1, 1_055_000_000, enter));
-    }
 
     #[test]
     fn confidence_weighted_vector_prediction_respects_single_cap() {
@@ -882,93 +635,6 @@ mod tests {
         assert_eq!(decision.motion_confidence, 0.0);
         assert_eq!(decision.predicted_offset_x, 0.0);
         assert_eq!(decision.filtered_error_x, 52.0);
-    }
-
-    #[test]
-    fn pending_feedback_holds_stationary_axis_to_avoid_duplicate_correction() {
-        let mut control = AimAlgorithm::new(AimAlgorithmConfig {
-            prediction_enabled: false,
-            ..AimAlgorithmConfig::default()
-        });
-        let first = AimSample {
-            generation: 1,
-            target_id: 7,
-            capture_ts_ns: 1_000_000_000,
-            control_now_ns: 1_008_000_000,
-            aim_x: 240.0,
-            aim_y: 160.0,
-            crosshair_x: 160.0,
-            crosshair_y: 160.0,
-            detection_confidence: 1.0,
-            track_confidence: 1.0,
-            target_valid: true,
-            trigger_active: true,
-        };
-        assert!(control.step(first).emit_allowed);
-
-        let second = AimSample {
-            generation: 2,
-            capture_ts_ns: 1_010_000_000,
-            control_now_ns: 1_018_000_000,
-            ..first
-        };
-        let decision = control.step_with_feedback(
-            second,
-            AimFeedback {
-                pending_x: true,
-                pending_y: false,
-            },
-        );
-
-        assert!(!decision.emit_allowed);
-        assert_eq!(decision.block_reason, BlockReason::ActuationFeedbackPending);
-        assert_eq!(decision.dx, 0);
-        assert!(decision.arrival_hold_x);
-        assert!(decision.actuation_pending_x);
-    }
-
-    #[test]
-    fn pending_feedback_does_not_freeze_axis_when_error_keeps_growing() {
-        let mut control = AimAlgorithm::new(AimAlgorithmConfig {
-            prediction_enabled: false,
-            ..AimAlgorithmConfig::default()
-        });
-        let first = AimSample {
-            generation: 1,
-            target_id: 7,
-            capture_ts_ns: 1_000_000_000,
-            control_now_ns: 1_008_000_000,
-            aim_x: 240.0,
-            aim_y: 160.0,
-            crosshair_x: 160.0,
-            crosshair_y: 160.0,
-            detection_confidence: 1.0,
-            track_confidence: 1.0,
-            target_valid: true,
-            trigger_active: true,
-        };
-        assert!(control.step(first).emit_allowed);
-
-        let second = AimSample {
-            generation: 2,
-            capture_ts_ns: 1_010_000_000,
-            control_now_ns: 1_018_000_000,
-            aim_x: 260.0,
-            ..first
-        };
-        let decision = control.step_with_feedback(
-            second,
-            AimFeedback {
-                pending_x: true,
-                pending_y: false,
-            },
-        );
-
-        assert!(decision.emit_allowed);
-        assert_eq!(decision.block_reason, BlockReason::None);
-        assert_ne!(decision.dx, 0);
-        assert!(!decision.arrival_hold_x);
-        assert!(decision.actuation_pending_x);
     }
 
     #[test]

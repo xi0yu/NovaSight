@@ -16,7 +16,7 @@ DeepStream capture/inference
 -> selected aim_x / aim_y
 -> aim-point velocity prediction
 -> continuous Atan control
--> limiter / arrival hold
+-> per-axis output limit
 -> recoil mix
 -> kmNet / HID output
 ```
@@ -191,7 +191,8 @@ curve = 1 - exp(-(r ^ response_curve_shape))
 R = 1 + response_boost * curve * (0.35 + 0.65 * motion_strength)
 gain = response_scale * R
 demand = gain * S * atan(error_counts / S)
-limit = max_counts_per_update
+limit_x = max_output_x_counts
+limit_y = max_output_y_counts
 ```
 
 This means:
@@ -210,31 +211,21 @@ no explicit D term
 no prediction of mouse counts
 ```
 
-## 6. Arrival, Limiter, And Quantization
+## 6. Output Limit And Integer Conversion
 
-Before output, the controller applies:
-
-```text
-arrival radius
-arrival hysteresis
-actuation feedback pending hold
-per-update count limit
-fractional residual quantization
-```
-
-Arrival prevents tiny correction cycles once the target is close enough in
-device-count space. Actuation feedback hold prevents duplicate correction while
-a previous successful movement has not yet had enough time to appear in the
-camera image.
-
-The limiter owns final integer mouse counts:
+The limiter owns the only output-bound policy and the final integer mouse
+counts:
 
 ```text
-float demand
--> clamp per axis
+out_x = clamp(float_demand_x, -max_output_x_counts, max_output_x_counts)
+out_y = clamp(float_demand_y, -max_output_y_counts, max_output_y_counts)
+-> carry fractional remainder needed by integer-only hardware
 -> integer dx / dy
--> bounded residual
 ```
+
+The fractional remainder is internal conversion state, not a parameter and not
+a stop condition. There is no arrival radius, arrival hysteresis, visual
+feedback wait, or suppression of repeated `+1` / `-1` corrections.
 
 ## 7. Recoil And Device Output
 
@@ -282,7 +273,7 @@ The core model is:
 target aim motion
 + time lead
 + continuous nonlinear P response
-+ limiter / arrival
++ X/Y output limit
 = one latest physical output command
 ```
 

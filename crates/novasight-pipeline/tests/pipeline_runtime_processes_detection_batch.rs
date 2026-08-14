@@ -111,79 +111,6 @@ fn pipeline_runtime_drives_current_algorithms_and_device_on_owned_threads() {
 }
 
 #[test]
-fn control_waits_until_a_successful_device_move_can_be_visible_in_capture() {
-    let epoch = RuntimeEpoch(72);
-    let clock = Arc::new(ManualClock::new(1_008_000_000));
-    let daemon_clock: Arc<dyn Clock> = clock.clone();
-    let device = Arc::new(RecordingPointerDevice::default());
-    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
-    let (mut runtime, ingress) = PipelineRuntime::start(
-        PipelineConfig {
-            epoch,
-            ..PipelineConfig::default()
-        },
-        daemon_clock,
-        pointer,
-    )
-    .expect("pipeline starts");
-    ingress.set_trigger_active(true);
-
-    let batch = |generation, captured_at_ns| {
-        DetectionBatch::new(
-            FrameStamp::new(epoch, generation, captured_at_ns),
-            640,
-            640,
-            vec![Detection::new(generation, 0, 380.0, 300.0, 40.0, 40.0, 0.95).unwrap()],
-        )
-        .unwrap()
-    };
-    ingress.submit(batch(1, 1_000_000_000)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while device.receipts().is_empty() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(device.receipts().len(), 1);
-
-    // This frame was captured before the first accepted movement and cannot
-    // possibly contain its visual result. It must not authorize a duplicate.
-    clock.0.store(1_012_000_000, Ordering::Release);
-    ingress.submit(batch(2, 1_004_000_000)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while runtime.metrics().control_decisions < 2 && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-    thread::sleep(Duration::from_millis(10));
-    assert_eq!(
-        device.receipts().len(),
-        1,
-        "a frame captured before the previous move became visible must not emit again"
-    );
-
-    // The first later sample also establishes the current measurement cadence.
-    // Once a subsequent frame is newer than send + delay + cadence, control
-    // must resume instead of turning the feedback gate into a permanent latch.
-    clock.0.store(1_038_000_000, Ordering::Release);
-    ingress.submit(batch(3, 1_030_000_000)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while runtime.metrics().control_decisions < 3 && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-    clock.0.store(1_047_000_000, Ordering::Release);
-    ingress.submit(batch(4, 1_039_000_000)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while device.receipts().len() < 2 && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(
-        device.receipts().len(),
-        2,
-        "control must resume once a captured frame can contain the successful move"
-    );
-
-    runtime.shutdown().unwrap();
-}
-
-#[test]
 fn smooth_detection_motion_keeps_one_identity_through_control_and_device_output() {
     let epoch = RuntimeEpoch(71);
     let clock = Arc::new(ManualClock::new(1_008_000_000));
@@ -621,17 +548,16 @@ fn recoil_is_added_to_an_existing_tracking_command_after_its_interval() {
 }
 
 #[test]
-fn due_recoil_emits_at_the_predicted_aim_point_when_tracking_is_settled() {
+fn due_recoil_emits_when_tracking_demand_is_zero() {
     let epoch = RuntimeEpoch(15);
     let clock = Arc::new(ManualClock::new(1_008_000_000));
     let daemon_clock: Arc<dyn Clock> = clock.clone();
     let device = Arc::new(RecordingPointerDevice::default());
     let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
-    let mut control = novasight_core::controller::AimAlgorithmConfig {
+    let control = novasight_core::controller::AimAlgorithmConfig {
         prediction_enabled: true,
         ..Default::default()
     };
-    control.arrival_radius_counts = 3.0;
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
@@ -682,9 +608,8 @@ fn due_recoil_emits_at_the_predicted_aim_point_when_tracking_is_settled() {
     assert_eq!(receipts[0].delta_y_counts, 2);
     assert_eq!(runtime.metrics().recoil.state, RecoilState::Applied);
 
-    // A recoil-only send is feed-forward compensation. It must not mark the
-    // visual controller's Y correction as pending, otherwise a short recoil
-    // interval can starve Y tracking for the entire firing period.
+    // A later nonzero tracking demand must still be emitted independently of
+    // the earlier recoil-only send.
     clock.0.store(1_079_000_000, Ordering::Release);
     ingress
         .submit(

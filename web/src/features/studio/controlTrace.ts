@@ -75,9 +75,9 @@ export type BuildControlTraceInput = {
   floatDemand: string;
   floatDemandX?: number | null;
   floatDemandY?: number | null;
-  maxCountsPerUpdate?: number | null;
+  maxOutputXCounts?: number | null;
+  maxOutputYCounts?: number | null;
   integerCommand: string;
-  residual: string;
   recoilEnabled?: boolean;
   recoilFireDelayEnabled?: boolean;
   recoilState?: string;
@@ -280,29 +280,28 @@ function buildLimiterStep(input: BuildControlTraceInput): ControlTraceStep {
   if (!input.controllerActive) {
     return {
       id: "limiter",
-      label: "跟踪限幅与量化",
+      label: "X/Y 输出限幅",
       state: input.hasTarget ? "waiting" : "idle",
       value: "—",
       detail: input.hasTarget ? "等待连续控制器产生浮点需求。" : "没有控制需求时限幅器保持空闲。",
-      evidence: `limit=${formatNumber(input.maxCountsPerUpdate ?? null, 0, "counts")}`
+      evidence: `limit_x/y=${formatNumber(input.maxOutputXCounts ?? null, 0, "counts")}/${formatNumber(input.maxOutputYCounts ?? null, 0, "counts")}`
     };
   }
-  const maxCounts = input.maxCountsPerUpdate ?? null;
+  const maxX = input.maxOutputXCounts ?? null;
+  const maxY = input.maxOutputYCounts ?? null;
   const demandX = input.floatDemandX ?? null;
   const demandY = input.floatDemandY ?? null;
-  const saturated = maxCounts !== null && (
-    (demandX !== null && Math.abs(demandX) > maxCounts)
-    || (demandY !== null && Math.abs(demandY) > maxCounts)
-  );
+  const saturated = (maxX !== null && demandX !== null && Math.abs(demandX) > maxX)
+    || (maxY !== null && demandY !== null && Math.abs(demandY) > maxY);
   return {
     id: "limiter",
-    label: "跟踪限幅与量化",
+    label: "X/Y 输出限幅",
     state: "ready",
     value: present(input.integerCommand) ? input.integerCommand : "已计算",
     detail: saturated
-      ? "本次浮点需求触发单轴上限，随后截断为整数命令并保留量化余量。"
-      : "本次浮点需求未触发单轴上限，已截断为整数命令并保留量化余量。",
-    evidence: `demand=${input.floatDemand} · limit=${formatNumber(maxCounts, 0, "counts")} · residual=${input.residual}`
+      ? "本次浮点需求已按 X/Y 轴上限截断并转换为整数命令。"
+      : "本次浮点需求未触发 X/Y 轴上限，已转换为整数命令。",
+    evidence: `demand=${input.floatDemand} · limit_x/y=${formatNumber(maxX, 0, "counts")}/${formatNumber(maxY, 0, "counts")}`
   };
 }
 
@@ -369,7 +368,7 @@ function buildControllerStep(input: BuildControlTraceInput): ControlTraceStep {
       state: "ready",
       value: present(input.integerCommand) ? input.integerCommand : "已计算",
       detail: `${input.controllerMode}${input.movementStrategy ? ` · ${input.movementStrategy}` : ""}`,
-      evidence: `full=${input.fullError} · atan=${input.floatDemand} · residual=${input.residual}`
+      evidence: `full=${input.fullError} · atan=${input.floatDemand}`
     };
   }
   return {

@@ -13,7 +13,6 @@ fn prediction_is_applied_before_projection_and_nonlinear_response() {
         response_scale: 0.25,
         response_boost: 0.0,
         response_curve_shape: 1.0,
-        max_counts_per_update: 127.0,
     };
     let law = AimControlLaw::new(parameters).expect("valid control law");
 
@@ -40,5 +39,4 @@ fn prediction_is_applied_before_projection_and_nonlinear_response() {
     assert!((result.demand_counts.y - expected_y).abs() < 1e-12);
     assert_eq!(result.response_multiplier, 1.0);
     assert_eq!(result.effective_gain, 0.25);
-    assert_eq!(result.max_counts_per_update, 127.0);
 }

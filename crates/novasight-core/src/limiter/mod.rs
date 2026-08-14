@@ -6,6 +6,4 @@
 
 mod device_counts;
 
-pub use device_counts::{
-    AxisCountLimiter, DeviceCountLimiter, DeviceCountLimits, LimitedDeviceCounts,
-};
+pub use device_counts::{AxisCountLimiter, DeviceCountLimiter, LimitedDeviceCounts};

@@ -51,7 +51,8 @@ curve = 1 - exp(-(r ^ response_curve_shape))
 R = 1 + response_boost * curve * (0.35 + 0.65 * motion_strength)
 K = response_scale * R
 u = K * S_counts * atan(full_counts / S_counts)
-u = clamp_per_axis(u, -max_counts_per_update, max_counts_per_update)
+u_x = clamp(u_x, -max_output_x_counts, max_output_x_counts)
+u_y = clamp(u_y, -max_output_y_counts, max_output_y_counts)
 ```
 
 The first Atan converts image displacement into view angle. The second is the
@@ -64,7 +65,8 @@ bounded amount of extra strength available as normalized error grows.
 `motion_strength` comes from the prediction profile: large static errors retain
 35% of the configured acquisition boost, while stable motion can use the full
 boost. `S_counts` is the fixed internal Atan scale and is not user configurable.
-`max_counts_per_update` is a device-count limiter; it is not part of prediction.
+`max_output_x_counts` and `max_output_y_counts` are device-count limits; they
+are not part of prediction.
 `prediction_cap_px` is a vector cap on future aim-point displacement; it is not a
 mouse-count limiter.
 

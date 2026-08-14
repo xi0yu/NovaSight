@@ -25,7 +25,7 @@ export type StudioNumberParameter<Field extends string> = {
 
 export type AlgorithmNumberParameter = StudioNumberParameter<ControlPipelineField>;
 export type TargetingNumberParameter = StudioNumberParameter<TargetingPipelineField>;
-export type AlgorithmSettingsSection = "response" | "prediction" | "stability" | "calibration";
+export type AlgorithmSettingsSection = "response" | "prediction" | "calibration";
 export const FIXED_ATAN_SCALE_COUNTS = 256;
 
 export const CONTROL_PIPELINE_FIELDS = [
@@ -35,15 +35,14 @@ export const CONTROL_PIPELINE_FIELDS = [
   "p_response_scale",
   "p_response_boost",
   "p_response_curve_shape",
-  "max_counts_per_update",
+  "max_output_x_counts",
+  "max_output_y_counts",
   "prediction_enabled",
   "velocity_history_reset_gap_ms",
   "velocity_spread_base_px_ms",
   "velocity_spread_relative",
   "prediction_lead_ms",
   "prediction_cap_px",
-  "arrival_radius_counts",
-  "residual_cap",
   "actuation_feedback_delay_ms"
 ] as const;
 
@@ -218,7 +217,6 @@ export type AlgorithmParameterValues = {
   velocitySpreadBasePxMs: number;
   velocitySpreadRelative: number;
   controlPredictionCapPx: number;
-  controlMaxCounts: number;
   controlFovX: number;
   controlCountsPer360: number;
   freshnessThresholdMs: number;
@@ -229,7 +227,6 @@ export type AlgorithmParameterGroups = {
   predictionCoreParameters: AlgorithmNumberParameter[];
   predictionConfidenceParameters: AlgorithmNumberParameter[];
   predictionCapParameters: AlgorithmNumberParameter[];
-  stabilityParameters: AlgorithmNumberParameter[];
   calibrationParameters: AlgorithmNumberParameter[];
 };
 
@@ -383,26 +380,12 @@ export function buildAlgorithmParameterGroups(
         unit: "px"
       }
     ],
-    stabilityParameters: [
-      {
-        key: "max_counts_per_update",
-        label: "单次移动上限",
-        detail: "",
-        value: values.controlMaxCounts,
-        min: 1,
-        max: 32767,
-        step: 1,
-        unit: "counts",
-        kind: "stepper",
-        transform: Math.round
-      }
-    ],
     calibrationParameters: [
       {
         key: "actuation_feedback_delay_ms",
-        label: "系统执行反馈延迟",
+        label: "预测执行延迟",
         formula: "T_delay",
-        detail: "命令发出到画面可观察到响应的系统延迟。通常只需按真实链路标定一次；它同时参与预测时域和重复输出保护。",
+        detail: "命令发出到画面可观察到响应的系统延迟，只参与目标速度预测时域。",
         value: values.actuationFeedbackDelayMs,
         min: 0,
         max: 1000,
@@ -464,7 +447,6 @@ export function buildAlgorithmParameterGroups(
     predictionCoreParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionCoreParameters),
     predictionConfidenceParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionConfidenceParameters),
     predictionCapParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionCapParameters),
-    stabilityParameters: schemaBackedNumberParameters(schemaIndex, groups.stabilityParameters),
     calibrationParameters: schemaBackedNumberParameters(schemaIndex, groups.calibrationParameters)
   };
 }

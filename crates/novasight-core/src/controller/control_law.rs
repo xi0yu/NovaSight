@@ -41,7 +41,6 @@ pub struct AimControlParameters {
     pub response_scale: f64,
     pub response_boost: f64,
     pub response_curve_shape: f64,
-    pub max_counts_per_update: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -58,7 +57,6 @@ pub struct AimControlResult {
     pub demand_counts: AxisPair,
     pub response_multiplier: f64,
     pub effective_gain: f64,
-    pub max_counts_per_update: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -131,7 +129,6 @@ impl AimControlLaw {
             demand_counts,
             response_multiplier: multiplier,
             effective_gain,
-            max_counts_per_update: self.parameters.max_counts_per_update,
         })
     }
 }
@@ -152,8 +149,6 @@ fn parameters_valid(parameters: AimControlParameters) -> bool {
         && parameters.response_boost >= 0.0
         && parameters.response_curve_shape.is_finite()
         && (0.5..=4.0).contains(&parameters.response_curve_shape)
-        && parameters.max_counts_per_update.is_finite()
-        && (1.0..=f64::from(i16::MAX)).contains(&parameters.max_counts_per_update)
 }
 
 fn atan_response(error_counts: f64, gain: f64) -> f64 {

@@ -472,10 +472,10 @@ pub struct PipelineRuntimeConfig {
     pub p_response_boost: f64,
     #[serde(default = "default_response_curve_shape")]
     pub p_response_curve_shape: f64,
-    #[serde(default = "default_max_counts_per_update")]
-    pub max_counts_per_update: f64,
-    #[serde(default = "default_arrival_radius_counts")]
-    pub arrival_radius_counts: f64,
+    #[serde(default = "default_max_output_counts")]
+    pub max_output_x_counts: f64,
+    #[serde(default = "default_max_output_counts")]
+    pub max_output_y_counts: f64,
     #[serde(default = "default_velocity_history_reset_gap_ms")]
     pub velocity_history_reset_gap_ms: f64,
     #[serde(default = "default_velocity_spread_base_px_ms")]
@@ -488,8 +488,6 @@ pub struct PipelineRuntimeConfig {
     pub prediction_lead_ms: f64,
     #[serde(default = "default_prediction_cap_px")]
     pub prediction_cap_px: f64,
-    #[serde(default = "default_residual_cap")]
-    pub residual_cap: f64,
     #[serde(default = "default_target_fov_radius_px")]
     pub target_fov_radius_px: f64,
     #[serde(default = "default_target_min_confidence")]
@@ -561,15 +559,14 @@ impl Default for PipelineRuntimeConfig {
             p_response_scale: default_p_response_scale(),
             p_response_boost: default_p_response_boost(),
             p_response_curve_shape: default_response_curve_shape(),
-            max_counts_per_update: default_max_counts_per_update(),
-            arrival_radius_counts: default_arrival_radius_counts(),
+            max_output_x_counts: default_max_output_counts(),
+            max_output_y_counts: default_max_output_counts(),
             velocity_history_reset_gap_ms: default_velocity_history_reset_gap_ms(),
             velocity_spread_base_px_ms: default_velocity_spread_base_px_ms(),
             velocity_spread_relative: default_velocity_spread_relative(),
             prediction_enabled: default_prediction_enabled(),
             prediction_lead_ms: default_prediction_lead_ms(),
             prediction_cap_px: default_prediction_cap_px(),
-            residual_cap: default_residual_cap(),
             target_fov_radius_px: default_target_fov_radius_px(),
             target_min_confidence: default_target_min_confidence(),
             target_track_max_age: default_target_track_max_age(),
@@ -652,16 +649,16 @@ impl PipelineRuntimeConfig {
             4.0,
         )?;
         validate_finite_range(
-            "pipeline.max_counts_per_update",
-            self.max_counts_per_update,
+            "pipeline.max_output_x_counts",
+            self.max_output_x_counts,
             1.0,
             f64::from(i16::MAX),
         )?;
         validate_finite_range(
-            "pipeline.arrival_radius_counts",
-            self.arrival_radius_counts,
-            0.5,
-            1_000.0,
+            "pipeline.max_output_y_counts",
+            self.max_output_y_counts,
+            1.0,
+            f64::from(i16::MAX),
         )?;
         validate_finite_range(
             "pipeline.velocity_history_reset_gap_ms",
@@ -693,7 +690,6 @@ impl PipelineRuntimeConfig {
             0.0,
             100_000.0,
         )?;
-        validate_finite_range("pipeline.residual_cap", self.residual_cap, 0.0, 1.0)?;
         validate_finite_range(
             "pipeline.target_fov_radius_px",
             self.target_fov_radius_px,
@@ -1008,10 +1004,6 @@ const fn default_p_response_boost() -> f64 {
     0.50
 }
 
-const fn default_arrival_radius_counts() -> f64 {
-    3.0
-}
-
 const fn default_velocity_history_reset_gap_ms() -> f64 {
     80.0
 }
@@ -1032,16 +1024,12 @@ const fn default_prediction_lead_ms() -> f64 {
     16.0
 }
 
-const fn default_max_counts_per_update() -> f64 {
+const fn default_max_output_counts() -> f64 {
     127.0
 }
 
 const fn default_prediction_cap_px() -> f64 {
     10.0
-}
-
-const fn default_residual_cap() -> f64 {
-    1.0
 }
 
 const fn default_target_fov_radius_px() -> f64 {

@@ -28,7 +28,7 @@ The active algorithm does not use:
 
 ```text
 RuntimeService._mouse_observation_metadata prediction
-MouseController deadzone/arrival/slew/rounding envelope
+MouseController deadzone/arrival/slew envelope
 CommandScheduler trajectory split path
 ```
 
@@ -73,7 +73,6 @@ The control algorithm alone owns:
 - three-segment medoid velocity for single-outlier rejection;
 - spread/trend/detection/track-identity prediction confidence;
 - reference dt, explicit `prediction_lead_ms`, and `prediction_cap_px`;
-- measured-error zero-cross history;
 - per-axis sub-count quantizer residual.
 
 The runtime owns target selection, initial trigger readiness, algorithm calculation, reset edges, the capacity-one delivery slot, and telemetry publication. Immediately before the serialized device call, the registry verifies that no newer submission superseded the selected command, then `MouseCommandExecutor` rechecks the trigger snapshot, command deadline, and increasing generation. The delivery slot retains at most one complete command and no trajectory.
@@ -84,8 +83,8 @@ The runtime owns target selection, initial trigger readiness, algorithm calculat
 pipeline.p_response_scale
 pipeline.p_response_boost
 pipeline.p_response_curve_shape
-pipeline.max_counts_per_update
-pipeline.arrival_radius_counts
+pipeline.max_output_x_counts
+pipeline.max_output_y_counts
 pipeline.prediction_lead_ms
 pipeline.prediction_cap_px
 ```
@@ -109,8 +108,10 @@ Implementation owners:
 
 `control_law.rs` is the only owner of the numeric formula from measured pixel
 error and predicted displacement through projection, radial response scheduling,
-and Atan demand. `algorithm.rs` owns bounded temporal state and calls that law
-through `AimControlLaw::evaluate`. Pipeline code adapts selected targets into
+and Atan demand. `algorithm.rs` owns bounded temporal state, calls that law
+through `AimControlLaw::evaluate`, and applies only the configured X/Y output
+ceilings before integer conversion. There is no arrival or visual-feedback stop
+policy. Pipeline code adapts selected targets into
 `AimSample`, applies live configuration, records `AimResult`, and delivers the
 resulting device command.
 

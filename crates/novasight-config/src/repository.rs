@@ -42,6 +42,9 @@ const RETIRED_PIPELINE_FIELDS: &[&str] = &[
     "target_sticky_bias",
     "max_command_age_ms",
     "output_interval_ms",
+    "max_counts_per_update",
+    "arrival_radius_counts",
+    "residual_cap",
 ];
 
 pub trait ConfigRepository {
@@ -440,6 +443,7 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
         })?;
     normalize_root_alias(path, &mut document, "device", "hardware")?;
     migrate_retired_pipeline_aliases(&mut document);
+    migrate_output_limits(&mut document);
     let mut config: AppConfig =
         serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Parse {
             path: path.to_owned(),
@@ -471,6 +475,8 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     config.pipeline.extra.remove("max_command_age_ms");
     config.pipeline.extra.remove("output_interval_ms");
     config.pipeline.extra.remove("atan_scale_counts");
+    config.pipeline.extra.remove("arrival_radius_counts");
+    config.pipeline.extra.remove("residual_cap");
     for (retired_key, _) in RETIRED_PIPELINE_NUMERIC_ALIASES {
         config.pipeline.extra.remove(*retired_key);
     }
@@ -649,6 +655,26 @@ fn migrate_retired_pipeline_aliases(document: &mut Value) {
     }
 }
 
+fn migrate_output_limits(document: &mut Value) {
+    let Value::Mapping(root) = document else {
+        return;
+    };
+    let Some(Value::Mapping(pipeline)) = root.get_mut(Value::String("pipeline".to_owned())) else {
+        return;
+    };
+    let Some(old_limit) = pipeline.remove(Value::String("max_counts_per_update".to_owned())) else {
+        return;
+    };
+    let Some(value) = old_limit.as_f64().filter(|value| value.is_finite()) else {
+        return;
+    };
+    for key in ["max_output_x_counts", "max_output_y_counts"] {
+        pipeline
+            .entry(Value::String(key.to_owned()))
+            .or_insert_with(|| serde_yaml::to_value(value).expect("finite output limit migration"));
+    }
+}
+
 fn migrate_pipeline_numeric_alias(document: &mut Value, retired_key: &str, current_key: &str) {
     let Value::Mapping(root) = document else {
         return;
@@ -677,8 +703,8 @@ fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRunti
         ("p_response_scale", config.p_response_scale),
         ("p_response_boost", config.p_response_boost),
         ("p_response_curve_shape", config.p_response_curve_shape),
-        ("max_counts_per_update", config.max_counts_per_update),
-        ("arrival_radius_counts", config.arrival_radius_counts),
+        ("max_output_x_counts", config.max_output_x_counts),
+        ("max_output_y_counts", config.max_output_y_counts),
         (
             "velocity_history_reset_gap_ms",
             config.velocity_history_reset_gap_ms,
@@ -690,7 +716,6 @@ fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRunti
         ("velocity_spread_relative", config.velocity_spread_relative),
         ("prediction_lead_ms", config.prediction_lead_ms),
         ("prediction_cap_px", config.prediction_cap_px),
-        ("residual_cap", config.residual_cap),
         (
             "actuation_feedback_delay_ms",
             config.actuation_feedback_delay_ms,
@@ -772,11 +797,11 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "p_response_scale",
             "p_response_boost",
             "p_response_curve_shape",
-            "max_counts_per_update",
+            "max_output_x_counts",
+            "max_output_y_counts",
             "prediction_enabled",
             "prediction_lead_ms",
             "prediction_cap_px",
-            "residual_cap",
             "target_fov_radius_px",
             "target_min_confidence",
             "target_track_max_age",
@@ -1149,6 +1174,7 @@ fn replace_document(
         mapping.remove(Value::String("schema_version".to_owned()));
     }
     migrate_retired_pipeline_aliases(&mut replacement);
+    migrate_output_limits(&mut replacement);
     merge_value(&mut document, replacement);
     let root =
         document

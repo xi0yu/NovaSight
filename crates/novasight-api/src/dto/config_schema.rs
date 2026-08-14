@@ -266,17 +266,17 @@ impl ConfigSchemaResponse {
                             None,
                         ),
                         float(
-                            "pipeline.max_counts_per_update",
-                            "单次移动上限",
+                            "pipeline.max_output_x_counts",
+                            "X 轴输出上限",
                             1.0,
                             i16::MAX as f64,
                             Some("count"),
                         ),
                         float(
-                            "pipeline.arrival_radius_counts",
-                            "FOV 投影后的到位半径",
-                            0.5,
-                            1_000.0,
+                            "pipeline.max_output_y_counts",
+                            "Y 轴输出上限",
+                            1.0,
+                            i16::MAX as f64,
                             Some("count"),
                         ),
                         boolean("pipeline.prediction_enabled", "启用目标速度预测"),
@@ -314,13 +314,6 @@ impl ConfigSchemaResponse {
                             0.0,
                             100_000.0,
                             Some("px"),
-                        ),
-                        float(
-                            "pipeline.residual_cap",
-                            "量化残差上限",
-                            0.0,
-                            1.0,
-                            Some("count"),
                         ),
                         float(
                             "pipeline.target_fov_radius_px",
@@ -495,7 +488,7 @@ impl ConfigSchemaResponse {
                         ),
                         float(
                             "pipeline.actuation_feedback_delay_ms",
-                            "设备移动的最小视觉反馈等待",
+                            "预测执行延迟",
                             0.0,
                             100.0,
                             Some("ms"),
@@ -831,14 +824,14 @@ mod tests {
         assert_eq!(value["algorithm"]["prediction"]["aim_history_points"], 4);
         assert_eq!(value["algorithm"]["prediction"]["velocity_segments"], 3);
         assert_eq!(value["values"]["server"]["port"], 5174);
-        assert_eq!(value["values"]["pipeline"]["arrival_radius_counts"], 3.0);
         assert_eq!(
             value["values"]["pipeline"]["actuation_feedback_delay_ms"],
             4.0
         );
         assert_eq!(value["values"]["pipeline"]["prediction_lead_ms"], 16.0);
         assert_eq!(value["values"]["pipeline"]["p_response_boost"], 0.5);
-        assert_eq!(value["values"]["pipeline"]["max_counts_per_update"], 127.0);
+        assert_eq!(value["values"]["pipeline"]["max_output_x_counts"], 127.0);
+        assert_eq!(value["values"]["pipeline"]["max_output_y_counts"], 127.0);
         assert_eq!(value["values"]["pipeline"]["prediction_cap_px"], 10.0);
         assert_eq!(value["values"]["inference"], Value::Null);
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
@@ -891,15 +884,14 @@ mod tests {
             "pipeline.p_response_scale",
             "pipeline.p_response_boost",
             "pipeline.p_response_curve_shape",
-            "pipeline.max_counts_per_update",
+            "pipeline.max_output_x_counts",
+            "pipeline.max_output_y_counts",
             "pipeline.prediction_enabled",
             "pipeline.velocity_history_reset_gap_ms",
             "pipeline.velocity_spread_base_px_ms",
             "pipeline.velocity_spread_relative",
             "pipeline.prediction_lead_ms",
             "pipeline.prediction_cap_px",
-            "pipeline.arrival_radius_counts",
-            "pipeline.residual_cap",
             "pipeline.actuation_feedback_delay_ms",
             "pipeline.target_fov_radius_px",
             "pipeline.target_min_confidence",

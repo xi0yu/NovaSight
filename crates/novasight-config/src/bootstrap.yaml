@@ -26,16 +26,14 @@ pipeline:
   p_response_scale: 0.20
   p_response_boost: 0.50
   p_response_curve_shape: 1.0
-  max_counts_per_update: 127.0
-  # FOV 投影后的每轴到位半径。进入 3 counts 后清空残差，退出阈值自动扩大以抑制抖动。
-  arrival_radius_counts: 3.0
+  max_output_x_counts: 127.0
+  max_output_y_counts: 127.0
   velocity_history_reset_gap_ms: 80.0
   velocity_spread_base_px_ms: 0.12
   velocity_spread_relative: 0.50
   prediction_enabled: true
   prediction_lead_ms: 16.0
   prediction_cap_px: 10.0
-  residual_cap: 1.0
   target_fov_radius_px: 180.0
   target_min_confidence: 0.5
   target_track_max_age: 5

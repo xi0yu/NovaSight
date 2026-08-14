@@ -6,7 +6,7 @@
 //! * `block_reason` is `BlockReason::None` only when
 //!   `target_valid && trigger_active`.
 //! * `dx` / `dy` are integer counts that the device can consume.
-//! * `quantizer_residual` stays in `[-residual_cap, +residual_cap]`.
+//! * `quantizer_residual` stays below one device count by construction.
 //! * `velocity_x` / `velocity_y` are finite; on the first observation
 //!   they are exactly zero (no prior capture to derive velocity from).
 //! * The state machine resets on every `reset()` call and
@@ -212,87 +212,6 @@ fn default_feedback_converges_with_two_frames_of_visual_delay() {
     assert!(
         worst_overshoot_px < 2.0,
         "new-target acquisition must not hide a large transient behind eventual convergence; worst overshoot={worst_overshoot_px:.3}px"
-    );
-}
-
-#[test]
-fn sub_count_arrival_becomes_quiet_instead_of_limit_cycling() {
-    let config = AimAlgorithmConfig::default();
-    let focal_x =
-        (config.source_width as f64 * 0.5) / (config.projection_fov_x_deg.to_radians() * 0.5).tan();
-    let observation_px_per_count =
-        focal_x * (std::f64::consts::TAU / config.projection_counts_per_360).tan();
-    let mut control = AimAlgorithm::new(config);
-    let mut true_error_x = 100.0;
-    let mut delayed_errors = [true_error_x; 3];
-    let mut tail_nonzero_commands = 0;
-
-    for generation in 1..=240_u64 {
-        let observed_error_x = delayed_errors[0];
-        delayed_errors.rotate_left(1);
-        let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
-        let decision = control.step(AimSample {
-            generation,
-            target_id: 1,
-            capture_ts_ns,
-            control_now_ns: capture_ts_ns + 4_000_000,
-            aim_x: 320.0 + observed_error_x,
-            aim_y: 320.0,
-            crosshair_x: 320.0,
-            crosshair_y: 320.0,
-            detection_confidence: 1.0,
-            track_confidence: 1.0,
-            target_valid: true,
-            trigger_active: true,
-        });
-        true_error_x -= f64::from(decision.dx) * observation_px_per_count;
-        delayed_errors[2] = true_error_x;
-        if generation > 160 && decision.dx != 0 {
-            tail_nonzero_commands += 1;
-        }
-    }
-
-    assert_eq!(
-        tail_nonzero_commands, 0,
-        "a target inside half of one physical count must settle without periodic +/-1 commands"
-    );
-}
-
-#[test]
-fn aim_region_rejects_persistent_subpixel_detector_chatter() {
-    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
-    let errors = [0.4_f64; 4]
-        .into_iter()
-        .chain([-0.4_f64; 4])
-        .cycle()
-        .take(32);
-    let mut emitted = Vec::new();
-
-    for (index, error_x) in errors.enumerate() {
-        let generation = index as u64 + 1;
-        let capture_ts_ns = 1_000_000_000 + generation * 8_333_333;
-        let decision = control.step(AimSample {
-            generation,
-            target_id: 1,
-            capture_ts_ns,
-            control_now_ns: capture_ts_ns + 4_000_000,
-            aim_x: 320.0 + error_x,
-            aim_y: 320.0,
-            crosshair_x: 320.0,
-            crosshair_y: 320.0,
-            detection_confidence: 1.0,
-            track_confidence: 1.0,
-            target_valid: true,
-            trigger_active: true,
-        });
-        if decision.dx != 0 {
-            emitted.push(decision.dx);
-        }
-    }
-
-    assert!(
-        emitted.is_empty(),
-        "subpixel detector drift inside the aim region must not emit alternating device counts: {emitted:?}"
     );
 }
 

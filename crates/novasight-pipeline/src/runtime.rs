@@ -10,9 +10,7 @@ use std::time::Duration;
 use novasight_core::controller::recoil::{
     IntervalRecoilController, RecoilConfig, RecoilDecision, RecoilInput, mix_tracking_and_recoil,
 };
-use novasight_core::controller::{
-    AimAlgorithm, AimAlgorithmConfig, AimFeedback, AimResult, AimSample,
-};
+use novasight_core::controller::{AimAlgorithm, AimAlgorithmConfig, AimResult, AimSample};
 use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore, TrackState};
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, PointerDevice,
@@ -87,14 +85,12 @@ pub struct PipelineConfig {
     /// Runtime activation policy. `Always` still respects the
     /// output gate, device connection, freshness, and target-validity guards.
     pub trigger_mode: TriggerMode,
-    /// Minimum device-to-capture visibility delay after a successful move.
-    pub actuation_feedback_delay_ns: u64,
     /// Optional vision-verified control origin. The hub owns its template and
     /// observation state; targeting only performs a cheap resolved-point read.
     pub crosshair: Option<CrosshairHub>,
     /// Positive-Y recoil contribution mixed into the newest safe output plan.
-    /// A plan may carry zero tracking demand when the aim is already settled
-    /// or when target gating is disabled and no target is present.
+    /// A plan may carry zero tracking demand when quantization has not yet
+    /// produced an integer count or no target is present.
     pub recoil: RecoilConfig,
 }
 
@@ -102,7 +98,6 @@ pub struct PipelineConfig {
 pub struct PipelineLiveConfig {
     pub targeting: TargetingConfig,
     pub control: AimAlgorithmConfig,
-    pub actuation_feedback_delay_ns: u64,
 }
 
 impl From<&PipelineConfig> for PipelineLiveConfig {
@@ -110,7 +105,6 @@ impl From<&PipelineConfig> for PipelineLiveConfig {
         Self {
             targeting: config.targeting.clone(),
             control: config.control,
-            actuation_feedback_delay_ns: config.actuation_feedback_delay_ns,
         }
     }
 }
@@ -135,7 +129,6 @@ impl Default for PipelineConfig {
             control: AimAlgorithmConfig::default(),
             trigger_poll_interval_ms: None,
             trigger_mode: TriggerMode::Always,
-            actuation_feedback_delay_ns: 4_000_000,
             crosshair: None,
             recoil: RecoilConfig::default(),
         }
@@ -212,8 +205,6 @@ pub enum PipelineError {
     IngressBusy,
     #[error("trigger polling interval must be within 1..=50 ms, got {actual_ms}")]
     InvalidTriggerPollInterval { actual_ms: u64 },
-    #[error("actuation feedback delay must be within 0..=100 ms, got {actual_ns} ns")]
-    InvalidActuationFeedbackDelay { actual_ns: u64 },
     #[error("invalid recoil configuration: {message}")]
     InvalidRecoilConfig { message: &'static str },
     #[error("pointer device connection failed: {0}")]
@@ -360,11 +351,8 @@ struct SharedState {
     device_connection_enabled: AtomicBool,
     external_stop: Arc<AtomicUsize>,
     last_vision_telemetry_at_ns: AtomicU64,
-    latest_successful_send_x_ts_ns: AtomicU64,
-    latest_successful_send_y_ts_ns: AtomicU64,
     targeting_config_version: AtomicU64,
     control_config_version: AtomicU64,
-    actuation_feedback_delay_ns: AtomicU64,
     recoil_config_version: AtomicU64,
     recoil_enabled: AtomicBool,
     recoil_require_target: AtomicBool,
@@ -417,11 +405,8 @@ impl SharedState {
             device_connection_enabled: AtomicBool::new(true),
             external_stop,
             last_vision_telemetry_at_ns: AtomicU64::new(0),
-            latest_successful_send_x_ts_ns: AtomicU64::new(0),
-            latest_successful_send_y_ts_ns: AtomicU64::new(0),
             targeting_config_version: AtomicU64::new(1),
             control_config_version: AtomicU64::new(1),
-            actuation_feedback_delay_ns: AtomicU64::new(live_config.actuation_feedback_delay_ns),
             recoil_config_version: AtomicU64::new(1),
             recoil_enabled: AtomicBool::new(recoil_config.enabled),
             recoil_require_target: AtomicBool::new(recoil_config.require_target),
@@ -449,7 +434,7 @@ impl SharedState {
             self.button_left_epoch.fetch_add(1, Ordering::Release);
             if !pressed {
                 // Release is an immediate business-state transition even when
-                // settled tracking produces no subsequent device plan.
+                // centered tracking produces no subsequent device plan.
                 self.record_recoil(RecoilDecision::default());
             }
         }
@@ -530,25 +515,7 @@ impl SharedState {
         true
     }
 
-    fn record_device_receipt(
-        &self,
-        receipt: DeviceReceipt,
-        accepted_at_ns: u64,
-        tracking_x_counts: i32,
-        tracking_y_counts: i32,
-    ) {
-        // The feedback gate prevents a visual controller from issuing the
-        // same tracking correction against a frame that predates that move.
-        // Recoil is an independent feed-forward disturbance compensation: a
-        // recoil-only tick must not keep visual Y tracking permanently pending.
-        if tracking_x_counts != 0 {
-            self.latest_successful_send_x_ts_ns
-                .store(accepted_at_ns, Ordering::Release);
-        }
-        if tracking_y_counts != 0 {
-            self.latest_successful_send_y_ts_ns
-                .store(accepted_at_ns, Ordering::Release);
-        }
+    fn record_device_receipt(&self, receipt: DeviceReceipt) {
         self.metrics.last_device_receipt.store(receipt);
     }
 
@@ -879,11 +846,6 @@ impl PipelineIngress {
     /// Replace targeting and mouse-control tuning for the active epoch without
     /// rebuilding capture, inference, or the pointer device lane.
     pub fn set_live_config(&self, config: PipelineLiveConfig) -> Result<(), PipelineError> {
-        if config.actuation_feedback_delay_ns > 100_000_000 {
-            return Err(PipelineError::InvalidActuationFeedbackDelay {
-                actual_ns: config.actuation_feedback_delay_ns,
-            });
-        }
         let _lane = self
             .shared
             .device_lane
@@ -899,9 +861,6 @@ impl PipelineIngress {
             .control_config
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = config.control;
-        self.shared
-            .actuation_feedback_delay_ns
-            .store(config.actuation_feedback_delay_ns, Ordering::Release);
         self.shared
             .targeting_config_version
             .fetch_add(1, Ordering::Release);
@@ -1096,11 +1055,6 @@ impl PipelineRuntime {
             && !(1..=50).contains(&actual_ms)
         {
             return Err(PipelineError::InvalidTriggerPollInterval { actual_ms });
-        }
-        if config.actuation_feedback_delay_ns > 100_000_000 {
-            return Err(PipelineError::InvalidActuationFeedbackDelay {
-                actual_ns: config.actuation_feedback_delay_ns,
-            });
         }
         config
             .recoil
@@ -1573,7 +1527,6 @@ fn spawn_control_worker(
             guard_worker(&shared, "control", || {
                 let mut algorithm = AimAlgorithm::new(config.control);
                 let mut config_version = shared.control_config_version.load(Ordering::Acquire);
-                let mut previous_capture_ts_ns = None;
                 let mut next_telemetry_at_ns = 0;
                 while let Some(target) = input.wait_take() {
                     if shared.status() != PipelineStatus::Running {
@@ -1609,41 +1562,8 @@ fn spawn_control_worker(
                     };
                     if target.track_rebuilt {
                         algorithm.reset_target_state();
-                        previous_capture_ts_ns = None;
                     }
-                    let measurement_guard_ns = previous_capture_ts_ns
-                        .map(|previous: u64| {
-                            target
-                                .stamp
-                                .captured_at
-                                .0
-                                .saturating_sub(previous)
-                                .min(50_000_000)
-                        })
-                        .unwrap_or(0);
-                    previous_capture_ts_ns = Some(target.stamp.captured_at.0);
-                    let visible_after_delay_ns = shared
-                        .actuation_feedback_delay_ns
-                        .load(Ordering::Acquire)
-                        .saturating_add(measurement_guard_ns);
-                    let pending_for_axis = |accepted_at_ns: u64| {
-                        accepted_at_ns != 0
-                            && target.stamp.captured_at.0
-                                <= accepted_at_ns.saturating_add(visible_after_delay_ns)
-                    };
-                    let feedback = AimFeedback {
-                        pending_x: pending_for_axis(
-                            shared
-                                .latest_successful_send_x_ts_ns
-                                .load(Ordering::Acquire),
-                        ),
-                        pending_y: pending_for_axis(
-                            shared
-                                .latest_successful_send_y_ts_ns
-                                .load(Ordering::Acquire),
-                        ),
-                    };
-                    let decision = algorithm.step_with_feedback(observation, feedback);
+                    let decision = algorithm.step(observation);
                     shared.record_prediction_truth(decision);
                     if control_now_ns >= next_telemetry_at_ns {
                         shared.record_control_decision(decision);
@@ -1721,13 +1641,7 @@ fn recoil_plan_allowed(
         && shared.buttons_available.load(Ordering::Acquire)
         && shared.button_left.load(Ordering::Acquire)
         && (target_valid || !shared.recoil_require_target.load(Ordering::Acquire))
-        && matches!(
-            reason,
-            BlockReason::TargetInvalid
-                | BlockReason::DeadZone
-                | BlockReason::AimSettled
-                | BlockReason::ActuationFeedbackPending
-        )
+        && matches!(reason, BlockReason::TargetInvalid | BlockReason::DeadZone)
 }
 
 fn spawn_device_worker(
@@ -1840,12 +1754,7 @@ fn spawn_device_worker(
                             }
                             shared.record_recoil(recoil_decision);
                             shared.record_device_success();
-                            shared.record_device_receipt(
-                                receipt,
-                                accepted_at_ns,
-                                tracking_x_counts,
-                                recoil_mix.surviving_tracking_counts_y,
-                            );
+                            shared.record_device_receipt(receipt);
                         }
                         Err(error) => {
                             shared.record_recoil(recoil_decision);

@@ -227,12 +227,6 @@ const ALGORITHM_SETTINGS_SECTIONS: Array<{
     panelId: "algorithm-settings-prediction"
   },
   {
-    id: "stability",
-    label: "输出限幅",
-    detail: "单次移动上限",
-    panelId: "algorithm-settings-stability"
-  },
-  {
     id: "calibration",
     label: "控制标定",
     detail: "系统延迟、FOV、设备 counts 与过期画面",
@@ -513,24 +507,6 @@ function formatPredictionTruthMetric(value: unknown, key: string): string {
 
 function readNullableBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
-}
-
-function formatAxisSettlement(x: unknown, y: unknown): string {
-  const settledX = readNullableBoolean(x);
-  const settledY = readNullableBoolean(y);
-  if (settledX === null || settledY === null) {
-    return NO_SAMPLE;
-  }
-  return `${settledX ? "X 已到位" : "X 调整中"} / ${settledY ? "Y 已到位" : "Y 调整中"}`;
-}
-
-function formatFeedbackGate(x: unknown, y: unknown): string {
-  const pendingX = readNullableBoolean(x);
-  const pendingY = readNullableBoolean(y);
-  if (pendingX === null || pendingY === null) {
-    return NO_SAMPLE;
-  }
-  return pendingX || pendingY ? "等待新画面" : "允许闭环更新";
 }
 
 function freshnessSummary(ageMs: number | null, thresholdMs: number | null): string {
@@ -1395,7 +1371,8 @@ export function StudioConsoleView({
   const pResponseScale = readNumber(rustPipelineConfig.p_response_scale, 0.20);
   const pResponseBoost = readNumber(rustPipelineConfig.p_response_boost, 0.50);
   const pResponseCurveShape = readNumber(rustPipelineConfig.p_response_curve_shape, 1);
-  const controlMaxCounts = readNumber(rustPipelineConfig.max_counts_per_update, 127);
+  const maxOutputXCounts = readNumber(rustPipelineConfig.max_output_x_counts, 127);
+  const maxOutputYCounts = readNumber(rustPipelineConfig.max_output_y_counts, 127);
   const controlPredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, true);
   const controlPredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
   const velocitySpreadBasePxMs = readNumber(rustPipelineConfig.velocity_spread_base_px_ms, 0.12);
@@ -1870,9 +1847,9 @@ export function StudioConsoleView({
     floatDemand: formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2, "counts"),
     floatDemandX: readNullableNumber(controlPipeline.float_demand_x),
     floatDemandY: readNullableNumber(controlPipeline.float_demand_y),
-    maxCountsPerUpdate: controlMaxCounts,
+    maxOutputXCounts,
+    maxOutputYCounts,
     integerCommand: formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts"),
-    residual: formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts"),
     recoilEnabled: effectiveRecoilEnabled,
     recoilFireDelayEnabled,
     recoilState: readString(controlPipeline.recoil_state, ""),
@@ -2828,7 +2805,6 @@ export function StudioConsoleView({
       velocitySpreadBasePxMs,
       velocitySpreadRelative,
       controlPredictionCapPx,
-      controlMaxCounts,
       controlFovX,
       controlCountsPer360,
       freshnessThresholdMs
@@ -2838,7 +2814,6 @@ export function StudioConsoleView({
   const predictionCoreParameters = algorithmParameterGroups?.predictionCoreParameters ?? [];
   const predictionConfidenceParameters = algorithmParameterGroups?.predictionConfidenceParameters ?? [];
   const predictionCapParameters = algorithmParameterGroups?.predictionCapParameters ?? [];
-  const stabilityParameters = algorithmParameterGroups?.stabilityParameters ?? [];
   const calibrationParameters = algorithmParameterGroups?.calibrationParameters ?? [];
 
   const algorithmTuningBrief: Array<{
@@ -2863,13 +2838,6 @@ export function StudioConsoleView({
         ? `提前 ${formatNumber(controlPredictionLeadMs, 1)} ms · 上限 ${formatNumber(controlPredictionCapPx, 1)} px`
         : "当前观测直接进入控制器",
       icon: "target"
-    },
-    {
-      id: "stability",
-      label: "限制",
-      value: `${formatNumber(controlMaxCounts, 0)} counts / 次`,
-      detail: "单次移动上限",
-      icon: "control"
     },
     {
       id: "calibration",
@@ -2903,8 +2871,6 @@ export function StudioConsoleView({
   );
   const renderAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) =>
     buildAlgorithmNumberParameterControl(parameter);
-  const renderCompactAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) =>
-    buildAlgorithmNumberParameterControl(parameter, true);
 
   const targetingParameterGroups = targetAdvancedDialogOpen || trackerSettingsDialogOpen
     ? buildTargetingParameterGroups({
@@ -4273,12 +4239,8 @@ export function StudioConsoleView({
                   <span>响应阶段</span><b>{formatResponseStage(controlPipeline.mode)}</b>
                   <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
                   <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
-                  <span>跟踪单轴限幅</span><b>{formatOptionalNumber(controlMaxCounts, 0, "counts")}</b>
+                  <span>X / Y 输出上限</span><b>{`${formatOptionalNumber(maxOutputXCounts, 0)} / ${formatOptionalNumber(maxOutputYCounts, 0)} counts`}</b>
                   <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
-                  <span>量化余量</span><b>{formatPoint(controlPipeline.quantizer_residual_x, controlPipeline.quantizer_residual_y, 3, "counts")}</b>
-                  <span>到位区（进入 / 退出）</span><b>{formatPoint(controlPipeline.arrival_enter_counts, controlPipeline.arrival_exit_counts, 2, "counts")}</b>
-                  <span>每轴到位</span><b>{formatAxisSettlement(controlPipeline.arrival_settled_x, controlPipeline.arrival_settled_y)}</b>
-                  <span>视觉反馈门控</span><b>{formatFeedbackGate(controlPipeline.actuation_pending_x, controlPipeline.actuation_pending_y)}</b>
                   <span>独立压枪状态</span><b>{effectiveRecoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
                   <span>延迟开火（压枪首发）</span><b>{recoilFireDelayEnabled ? `已开启 · ${recoilFireDelayMs.toFixed(0)} ms` : "已关闭"}</b>
                   <span>压枪间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_y_counts, 0)} counts`}</b>
@@ -4462,30 +4424,27 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">05</span>
                 <div className="control-chain-setting-title">
                   <b>限幅</b>
-                  <span>{controlMaxCounts.toFixed(0)} counts</span>
+                  <span>{`X ${maxOutputXCounts.toFixed(0)} · Y ${maxOutputYCounts.toFixed(0)}`}</span>
                 </div>
-                <div className="control-chain-setting-controls split">
+                <div className="control-chain-setting-controls">
                   <label className="control-chain-inline-field">
-                    <span>单轴上限</span>
+                    <span>X 轴上限</span>
                     <InlineNumberControl
-                      ariaLabel="跟踪单轴限幅"
-                      value={controlMaxCounts}
-                      onCommit={(value) => updateControlPipelineField("max_counts_per_update", Math.max(1, Math.min(32767, Math.round(value))))}
+                      ariaLabel="X 轴输出上限"
+                      value={maxOutputXCounts}
+                      onCommit={(value) => updateControlPipelineField("max_output_x_counts", Math.max(1, Math.min(32767, Math.round(value))))}
                     />
                     <i>counts</i>
                   </label>
-                  <button
-                    className="console-button"
-                    disabled={configDialogSaving}
-                    onClick={() => {
-                      openConfigDialog("algorithm");
-                      setAlgorithmSettingsSection("stability");
-                    }}
-                    type="button"
-                  >
-                    <NovaIcon name="settings" size={15} />
-                    更多限幅
-                  </button>
+                  <label className="control-chain-inline-field">
+                    <span>Y 轴上限</span>
+                    <InlineNumberControl
+                      ariaLabel="Y 轴输出上限"
+                      value={maxOutputYCounts}
+                      onCommit={(value) => updateControlPipelineField("max_output_y_counts", Math.max(1, Math.min(32767, Math.round(value))))}
+                    />
+                    <i>counts</i>
+                  </label>
                 </div>
               </li>
 
@@ -5014,7 +4973,7 @@ export function StudioConsoleView({
 
       {algorithmSettingsDialogOpen ? (
       <AdvancedSettingsDialog
-        description="按主链顺序调参：先目标速度预测，再连续非线性控制，再输出限幅；标定只在比例整体错误时修改。"
+        description="这里只调整目标速度预测与连续非线性控制；X/Y 输出限幅在参数主链的独立限幅步骤中调整。"
         dirty={configDialogDirty}
         eyebrow="参数设置 / 控制算法"
         footerNote={`当前算法：${controlModeLabel}`}
@@ -5085,7 +5044,7 @@ export function StudioConsoleView({
                 <h3 id="algorithm-settings-response-title">K_base / B / gamma 响应曲线</h3>
                 <p>这组只调公式里的 K_base、B、gamma：u = K_base * R(r,m) * S * atan(e_pred / S)，S 固定 256 counts；R(r,m) = 1 + B * schedule(m) * (1 - exp(-(r ^ gamma)))。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>慢但稳先看</b><span>K_base 提整体速度，B 提稳定运动时的追赶，gamma 只改增强进入早晚；跟踪输出被“跟踪最大移动量”限住时再看限制页。</span></div>
+              <div className="algorithm-tuning-order"><b>慢但稳先看</b><span>K_base 提整体速度，B 提稳定运动时的追赶，gamma 只改增强进入早晚；输出封顶请回到参数主链的“限幅”。</span></div>
               <div className="advanced-settings-grid two-column">
                 {responseParameters.map(renderAlgorithmNumberParameter)}
               </div>
@@ -5123,20 +5082,12 @@ export function StudioConsoleView({
             </section>
           ) : null}
 
-          {algorithmSettingsSection === "stability" ? (
-            <section aria-labelledby="algorithm-settings-stability-tab" className="algorithm-settings-panel" id="algorithm-settings-stability" role="tabpanel" tabIndex={0}>
-              <div className="advanced-settings-grid algorithm-settings-limit-grid">
-                {stabilityParameters.map(renderCompactAlgorithmNumberParameter)}
-              </div>
-            </section>
-          ) : null}
-
           {algorithmSettingsSection === "calibration" ? (
             <section aria-labelledby="algorithm-settings-calibration-tab" className="algorithm-settings-panel" id="algorithm-settings-calibration" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
                 <span>控制标定</span>
                 <h3 id="algorithm-settings-calibration-title">系统延迟、坐标比例与观测时效</h3>
-                <p>这些值描述真实链路和设备，不是日常响应旋钮；标定错误会让预测、反馈等待或移动比例一起失真。</p>
+                <p>这些值描述真实链路和设备，不是日常响应旋钮；标定错误会让预测时域或移动比例失真。</p>
               </header>
               <div className="algorithm-settings-warning"><b>不要用标定参数修响应</b><span>整体移动比例不对才检查标定；只是误差区间的响应不合适，请回到“连续非线性控制”。</span></div>
               <div className="advanced-settings-grid two-column">

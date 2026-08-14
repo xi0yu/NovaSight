@@ -387,7 +387,6 @@ impl RuntimeDependencies {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         pipeline.targeting.clone_from(&live.targeting);
         pipeline.control = live.control;
-        pipeline.actuation_feedback_delay_ns = live.actuation_feedback_delay_ns;
         Ok(live)
     }
 

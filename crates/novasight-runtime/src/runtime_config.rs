@@ -68,8 +68,8 @@ pub fn compose_pipeline_config(
             response_scale: response.scale,
             response_boost: response.boost,
             response_curve_shape: response.curve_shape,
-            max_counts_per_update: adapters.pipeline.max_counts_per_update,
-            arrival_radius_counts: adapters.pipeline.arrival_radius_counts,
+            max_output_x_counts: adapters.pipeline.max_output_x_counts,
+            max_output_y_counts: adapters.pipeline.max_output_y_counts,
             velocity_history_reset_gap_ms: adapters.pipeline.velocity_history_reset_gap_ms,
             velocity_spread_base_px_ms: adapters.pipeline.velocity_spread_base_px_ms,
             velocity_spread_relative: adapters.pipeline.velocity_spread_relative,
@@ -82,10 +82,7 @@ pub fn compose_pipeline_config(
             roi_height: adapters.capture.roi_height,
             observation_width: 0,
             observation_height: 0,
-            residual_cap: adapters.pipeline.residual_cap,
         },
-        actuation_feedback_delay_ns: (adapters.pipeline.actuation_feedback_delay_ms * 1_000_000.0)
-            .round() as u64,
         trigger_poll_interval_ms,
         trigger_mode: match config.control.trigger_mode {
             novasight_store::config::TriggerMode::Always => TriggerMode::Always,
