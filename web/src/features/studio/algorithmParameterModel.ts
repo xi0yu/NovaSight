@@ -26,7 +26,6 @@ export type StudioNumberParameter<Field extends string> = {
 export type AlgorithmNumberParameter = StudioNumberParameter<ControlPipelineField>;
 export type TargetingNumberParameter = StudioNumberParameter<TargetingPipelineField>;
 export type AlgorithmSettingsSection = "response" | "prediction" | "calibration";
-export const FIXED_ATAN_SCALE_COUNTS = 256;
 
 export const CONTROL_PIPELINE_FIELDS = [
   "freshness_threshold_ms",

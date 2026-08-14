@@ -19,7 +19,7 @@ export function AdvancedSettingsDialog({
   open: boolean;
   eyebrow: string;
   title: string;
-  description: string;
+  description?: string;
   footerNote: string;
   dirty?: boolean;
   saving?: boolean;
@@ -91,7 +91,7 @@ export function AdvancedSettingsDialog({
           <div>
             <span className="class-config-eyebrow">{eyebrow}</span>
             <h2 id={titleId}>{title}</h2>
-            <p>{description}</p>
+            {description ? <p>{description}</p> : null}
           </div>
           <button
             aria-label={`关闭${title}`}
@@ -113,12 +113,12 @@ export function AdvancedSettingsDialog({
         <footer className="advanced-settings-dialog-footer">
           <span className={saveError ? "dialog-save-status error" : dirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
             {saving
-              ? "正在处理本次修改…"
+              ? "正在处理…"
               : saveError
-                ? `处理失败 · ${saveError}`
+                ? saveError
                 : dirty
-                  ? "有未确认修改 · 加入页面草稿后仍需点击“保存修改”。"
-                  : `未修改 · ${footerNote}`}
+                  ? "修改尚未加入页面草稿"
+                  : footerNote}
           </span>
           <button
             className={`console-button ${dirty ? "primary dialog-save-button" : "dialog-close-button"}`}

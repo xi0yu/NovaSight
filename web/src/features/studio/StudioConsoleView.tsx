@@ -84,7 +84,6 @@ import {
   buildAlgorithmParameterGroups,
   buildConfigFieldIndex,
   buildTargetingParameterGroups,
-  FIXED_ATAN_SCALE_COUNTS,
   validateStudioConfigSchema,
   type AlgorithmSettingsSection,
   type AlgorithmNumberParameter,
@@ -211,25 +210,21 @@ type ConfigDialogId = "class-config" | "target-weights" | "algorithm" | "target-
 const ALGORITHM_SETTINGS_SECTIONS: Array<{
   id: AlgorithmSettingsSection;
   label: string;
-  detail: string;
   panelId: string;
 }> = [
   {
     id: "response",
-    label: "连续非线性控制",
-    detail: "K_base、B、gamma 与 Atan 压缩",
+    label: "控制响应",
     panelId: "algorithm-settings-response"
   },
   {
     id: "prediction",
     label: "目标速度预测",
-    detail: "aim 点速度、提前量与可信度",
     panelId: "algorithm-settings-prediction"
   },
   {
     id: "calibration",
     label: "控制标定",
-    detail: "系统延迟、FOV、设备 counts 与过期画面",
     panelId: "algorithm-settings-calibration"
   }
 ];
@@ -1402,10 +1397,6 @@ export function StudioConsoleView({
   const triggerMode = readString(controlConfig.trigger_mode, "always");
   const controlAlgorithmId = readString(configSchema?.algorithm?.id, DEFAULT_CONTROL_ALGORITHM);
   const controlAlgorithmLabel = readString(configSchema?.algorithm?.label, CONTROL_ALGORITHM_LABEL);
-  const algorithmAtanScaleCounts = readNumber(
-    configSchema?.algorithm?.response?.atan_scale_counts,
-    FIXED_ATAN_SCALE_COUNTS
-  );
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
@@ -2816,38 +2807,6 @@ export function StudioConsoleView({
   const predictionCapParameters = algorithmParameterGroups?.predictionCapParameters ?? [];
   const calibrationParameters = algorithmParameterGroups?.calibrationParameters ?? [];
 
-  const algorithmTuningBrief: Array<{
-    id: AlgorithmSettingsSection;
-    label: string;
-    value: string;
-    detail: string;
-    icon: Parameters<typeof NovaIcon>[0]["name"];
-  }> = algorithmSettingsDialogOpen ? [
-    {
-      id: "response",
-      label: "响应",
-      value: `K_base ${formatNumber(pResponseScale, 3)} · B ${formatNumber(pResponseBoost, 2)}`,
-      detail: `gamma ${formatNumber(pResponseCurveShape, 2)} · S ${formatNumber(algorithmAtanScaleCounts, 0)} counts`,
-      icon: "response-curve"
-    },
-    {
-      id: "prediction",
-      label: "预测",
-      value: controlPredictionEnabled ? "运动门控 4 点速度" : "关闭",
-      detail: controlPredictionEnabled
-        ? `提前 ${formatNumber(controlPredictionLeadMs, 1)} ms · 上限 ${formatNumber(controlPredictionCapPx, 1)} px`
-        : "当前观测直接进入控制器",
-      icon: "target"
-    },
-    {
-      id: "calibration",
-      label: "标定",
-      value: `${formatNumber(controlFovX, 1)}° · ${formatNumber(controlCountsPer360, 0)} counts`,
-      detail: `观测最大帧龄 ${formatNumber(freshnessThresholdMs, 1)} ms`,
-      icon: "settings"
-    }
-  ] : [];
-
   const buildAlgorithmNumberParameterControl = (parameter: AlgorithmNumberParameter, compact = false) => (
     <ParameterNumberControl
       compact={compact}
@@ -2870,7 +2829,7 @@ export function StudioConsoleView({
     />
   );
   const renderAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) =>
-    buildAlgorithmNumberParameterControl(parameter);
+    buildAlgorithmNumberParameterControl(parameter, true);
 
   const targetingParameterGroups = targetAdvancedDialogOpen || trackerSettingsDialogOpen
     ? buildTargetingParameterGroups({
@@ -2914,6 +2873,7 @@ export function StudioConsoleView({
       step={parameter.step}
       unit={parameter.unit}
       kind={parameter.kind}
+      compact
       applyMode={parameter.applyMode ?? "live"}
       riskLevel={parameter.riskLevel}
       onCommit={(value) => updatePipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
@@ -4278,11 +4238,7 @@ export function StudioConsoleView({
               </span>
               <div aria-live="polite" role="status">
                 <b>{parameterPageDirty ? "修改尚未保存" : "参数已同步"}</b>
-                <small>
-                  {parameterPageDirty
-                    ? "保存后写入配置并立即作用到运行链。"
-                    : "修改参数后，请点击保存修改。"}
-                </small>
+                {parameterPageDirty ? <small>保存后立即生效</small> : null}
               </div>
               <div className="parameter-save-bar-actions">
                 {parameterPageDirty ? (
@@ -4338,7 +4294,6 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">02</span>
                 <div className="control-chain-setting-title">
                   <b>开火延迟</b>
-                  <span>{recoilFireDelayEnabled ? `${recoilFireDelayMs.toFixed(0)} ms` : "关闭"}</span>
                 </div>
                 <div className="control-chain-setting-controls">
                   <ModuleSwitch
@@ -4365,7 +4320,6 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">03</span>
                 <div className="control-chain-setting-title">
                   <b>算法配置</b>
-                  <span>{controlPredictionEnabled ? "预测开启" : "预测关闭"}</span>
                 </div>
                 <div className="control-chain-setting-controls split">
                   <ModuleSwitch
@@ -4390,7 +4344,6 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">04</span>
                 <div className="control-chain-setting-title">
                   <b>压枪</b>
-                  <span>{recoilEnabled ? "开启" : "关闭"}</span>
                 </div>
                 <div className="control-chain-setting-controls recoil">
                   <ModuleSwitch compact label="启用压枪" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
@@ -4424,7 +4377,6 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">05</span>
                 <div className="control-chain-setting-title">
                   <b>限幅</b>
-                  <span>{`X ${maxOutputXCounts.toFixed(0)} · Y ${maxOutputYCounts.toFixed(0)}`}</span>
                 </div>
                 <div className="control-chain-setting-controls">
                   <label className="control-chain-inline-field">
@@ -4452,7 +4404,6 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">06</span>
                 <div className="control-chain-setting-title">
                   <b>输出</b>
-                  <span>{outputEnabled ? "允许" : "暂停"}</span>
                 </div>
                 <ModuleSwitch
                   compact
@@ -4475,7 +4426,6 @@ export function StudioConsoleView({
               <summary>
                 <span>
                   <b>目标与识别设置</b>
-                  <small>类别、准星、目标选择与跟踪</small>
                 </span>
                 <i>展开</i>
               </summary>
@@ -4488,7 +4438,6 @@ export function StudioConsoleView({
                     <div>
                       <span className="class-config-eyebrow">类别配置</span>
                       <h3>{activeDetectionProfile}</h3>
-                      <p>类别名称、选择顺序、瞄点类型与三条共享瞄点线在独立靶场统一管理。</p>
                     </div>
                   </div>
                   <button type="button"
@@ -4503,20 +4452,13 @@ export function StudioConsoleView({
                 <div className="console-grid2 params-control-grid compact-content-grid" data-algorithm-page={controlAlgorithmId}>
               <div className="console-card crosshair-reference-card">
                 <SectionTitle title="视觉准星基准" />
-                <p className="console-section-note">
-                  从主链中心独立采样真实 HUD 准星。未学习、未确认或观测过期时，控制会自动使用 ROI 几何中心。
-                </p>
                 <ModuleSwitch
                   label="启用低频准星观测"
-                  detail="新增独立中心采样支路；修改后立即保存并重载当前运行 epoch。"
                   enabled={crosshairEnabled}
                   onToggle={(enabled) => updateConfigField("crosshair", "enabled", enabled)}
                 />
                 <ModuleSwitch
                   label="用于目标选择与鼠标控制"
-                  detail={crosshairTemplateId
-                    ? "只有连续确认且未过期的观测会接管控制基准。"
-                    : "请先启动主链并学习准星模板；现在始终使用几何中心。"}
                   enabled={crosshairUseForControl}
                   disabled={!crosshairEnabled || !crosshairTemplateId}
                   onToggle={(enabled) => updateConfigField("crosshair", "use_for_control", enabled)}
@@ -4532,14 +4474,9 @@ export function StudioConsoleView({
                       <span><NovaIcon name="target" size={30} /><b>等待学习</b></span>
                     )}
                   </div>
-                  <div className="console-kv compact-kv crosshair-reference-kv">
-                    <span>观测状态</span><b data-state={crosshairState}>{crosshairStateLabel(crosshairState)}</b>
-                    <span>采样支路</span><b>{crosshairBranchActive ? "运行中" : crosshairEnabled ? "不可用" : "关闭"}</b>
-                    <span>控制可用</span><b>{crosshairReferenceReady ? "是" : "否，使用几何中心"}</b>
-                    <span>模板</span><b>{crosshairTemplateId || "尚未生成"}</b>
-                    <span>中心偏移</span><b>{crosshairReferenceReady ? `${crosshairOffsetX.toFixed(STANDARD_DECIMAL_DIGITS)}, ${crosshairOffsetY.toFixed(STANDARD_DECIMAL_DIGITS)} px` : "—"}</b>
-                    <span>匹配置信度</span><b>{crosshairConfidence > 0 ? `${(crosshairConfidence * 100).toFixed(STANDARD_DECIMAL_DIGITS)}%` : "—"}</b>
-                    <span>学习帧</span><b>{crosshairRecentSamples}/{crosshairRequiredSamples}</b>
+                  <div className="crosshair-reference-status">
+                    <span>当前状态</span>
+                    <b data-state={crosshairState}>{crosshairStateLabel(crosshairState)}</b>
                   </div>
                 </div>
                 <div className="crosshair-learn-actions">
@@ -4569,6 +4506,17 @@ export function StudioConsoleView({
                 ) : crosshairMessage ? (
                   <p className="crosshair-inline-message">{crosshairMessage}</p>
                 ) : null}
+                <details className="crosshair-advanced-settings">
+                  <summary>观测信息</summary>
+                  <div className="console-kv compact-kv crosshair-reference-kv">
+                    <span>采样支路</span><b>{crosshairBranchActive ? "运行中" : crosshairEnabled ? "不可用" : "关闭"}</b>
+                    <span>控制可用</span><b>{crosshairReferenceReady ? "是" : "否，使用几何中心"}</b>
+                    <span>模板</span><b>{crosshairTemplateId || "尚未生成"}</b>
+                    <span>中心偏移</span><b>{crosshairReferenceReady ? `${crosshairOffsetX.toFixed(STANDARD_DECIMAL_DIGITS)}, ${crosshairOffsetY.toFixed(STANDARD_DECIMAL_DIGITS)} px` : "—"}</b>
+                    <span>匹配置信度</span><b>{crosshairConfidence > 0 ? `${(crosshairConfidence * 100).toFixed(STANDARD_DECIMAL_DIGITS)}%` : "—"}</b>
+                    <span>学习帧</span><b>{crosshairRecentSamples}/{crosshairRequiredSamples}</b>
+                  </div>
+                </details>
                 <details className="crosshair-advanced-settings">
                   <summary>采样参数</summary>
                   <div className="advanced-settings-grid">
@@ -4613,10 +4561,10 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                <SectionTitle title="目标选择与切换 · 通用参数" />
+                <SectionTitle title="目标选择" />
                 <ParameterNumberControl
-                  label="目标选择半径（640 基准）"
-                  detail="以 640×640 ROI 为基准；运行时按当前 ROI 尺寸同比缩放，保证 320～640 ROI 使用一致的相对选择范围。"
+                  compact
+                  label="选择半径"
                   value={targetFovRadiusPx}
                   min={0.000001}
                   max={100000}
@@ -4629,42 +4577,29 @@ export function StudioConsoleView({
                 />
                 <div className="target-weight-summary">
                   <div>
-                    <span>当前综合分权重</span>
+                    <span>类别 / 距离</span>
                     <strong>
-                      类别 {(normalizedSelectionClassWeight * 100).toFixed(0)}%
+                      {(normalizedSelectionClassWeight * 100).toFixed(0)}%
                       <i>·</i>
-                      距离 {(normalizedSelectionDistanceWeight * 100).toFixed(0)}%
+                      {(normalizedSelectionDistanceWeight * 100).toFixed(0)}%
                     </strong>
-                    <small>类别偏好与准星距离由此处调整；候选准入由实时识别结果自动处理。</small>
                   </div>
                   <button type="button" className="console-button" disabled={configDialogSaving} onClick={() => openConfigDialog("target-weights")}              >
                     <NovaIcon name="settings" size={15} />
-                    调整权重
+                    权重
                   </button>
-                </div>
-                <div className="advanced-settings-summary compact">
-                  <div><span>异常框宽高比</span><b>≤ {candidateRatioMaxAspect.toFixed(STANDARD_DECIMAL_DIGITS)}</b></div>
-                  <div><span>切换门槛</span><b>{targetSwitchPreferenceAdvantage.toFixed(2)}</b></div>
-                  <div><span>确认延迟</span><b>{targetSwitchDelayMs.toFixed(0)} ms</b></div>
                 </div>
                 <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("target-advanced")}              >
                   <NovaIcon name="settings" size={15} />
-                  目标切换参数
+                  切换参数
                 </button>
               </div>
 
               <div className="console-card">
-                <SectionTitle title="Tracker · 身份关联" />
-                <div className="console-kv compact-kv"><span>关联算法</span><b>Hungarian</b><span>输出状态</span><b>仅活跃轨迹</b></div>
-                <div className="advanced-settings-summary compact">
-                  <div><span>匹配距离</span><b>{trackerMaxMatchDistance.toFixed(2)}</b></div>
-                  <div><span>位置 / IoU / 尺度</span><b>{trackerPositionCostWeight.toFixed(2)} / {trackerIouCostWeight.toFixed(2)} / {trackerScaleCostWeight.toFixed(2)}</b></div>
-                  <div><span>NIS 可信 / 拒绝</span><b>{trackerKalmanNisThreshold.toFixed(2)} / {trackerKalmanNisHardReject.toFixed(2)}</b></div>
-                  <div><span>丢失保持</span><b>{targetLostGraceMs.toFixed(0)} ms</b></div>
-                </div>
+                <SectionTitle title="目标跟踪" />
                 <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("tracker")}              >
                   <NovaIcon name="settings" size={15} />
-                  管理 Tracker
+                  Tracker 参数
                 </button>
               </div>
                 </div>
@@ -4674,7 +4609,6 @@ export function StudioConsoleView({
               <summary>
                 <span>
                   <b>配置生效状态</b>
-                  <small>采集、模型、控制与设备</small>
                 </span>
                 <i>{productConfigProfile!.attentionCount > 0 ? `${productConfigProfile!.attentionCount} 项需处理` : "正常"}</i>
               </summary>
@@ -4973,47 +4907,16 @@ export function StudioConsoleView({
 
       {algorithmSettingsDialogOpen ? (
       <AdvancedSettingsDialog
-        description="这里只调整目标速度预测与连续非线性控制；X/Y 输出限幅在参数主链的独立限幅步骤中调整。"
         dirty={configDialogDirty}
-        eyebrow="参数设置 / 控制算法"
-        footerNote={`当前算法：${controlModeLabel}`}
+        eyebrow="算法配置"
+        footerNote={controlModeLabel}
         onClose={() => void requestDismissConfigDialog("algorithm")}
         onSave={() => void saveConfigDialog("algorithm")}
         open
         saveError={dialogSaveError}
         saving={dialogSaving}
-        title={`${controlModeLabel} · 控制参数`}
+        title="控制参数"
       >
-        <div className="algorithm-settings-brief" aria-label="当前算法调参摘要">
-          {algorithmTuningBrief.map((item) => {
-            const selected = algorithmSettingsSection === item.id;
-            return (
-              <button type="button"
-                aria-pressed={selected}
-                className={selected ? "algorithm-settings-brief-card active" : "algorithm-settings-brief-card"}
-                key={item.id}
-                onClick={() => focusAlgorithmSettingsSection(item.id)}
-              >
-                <span className="algorithm-settings-brief-icon" aria-hidden="true">
-                  <NovaIcon name={item.icon} size={16} strokeWidth={1.9} />
-                </span>
-                <span>
-                  <small>{item.label}</small>
-                  <b>{item.value}</b>
-                  <em>{item.detail}</em>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="algorithm-settings-global-switches" aria-label="控制算法总开关">
-          <ModuleSwitch
-            label="启用 X / Y 目标速度预测"
-            detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。"
-            enabled={controlPredictionEnabled}
-            onToggle={(enabled) => updateControlPipelineField("prediction_enabled", enabled)}
-          />
-        </div>
         <div className="algorithm-settings-layout">
           <nav aria-label="控制算法调参分类" className="algorithm-settings-nav" role="tablist">
             {ALGORITHM_SETTINGS_SECTIONS.map((section) => {
@@ -5031,7 +4934,6 @@ export function StudioConsoleView({
                   tabIndex={selected ? 0 : -1}
                 >
                   <b>{section.label}</b>
-                  <small>{section.detail}</small>
                 </button>
               );
             })}
@@ -5039,12 +4941,6 @@ export function StudioConsoleView({
 
           {algorithmSettingsSection === "response" ? (
             <section aria-labelledby="algorithm-settings-response-tab" className="algorithm-settings-panel" id="algorithm-settings-response" role="tabpanel" tabIndex={0}>
-              <header className="algorithm-settings-panel-header">
-                <span>连续非线性控制</span>
-                <h3 id="algorithm-settings-response-title">K_base / B / gamma 响应曲线</h3>
-                <p>这组只调公式里的 K_base、B、gamma：u = K_base * R(r,m) * S * atan(e_pred / S)，S 固定 256 counts；R(r,m) = 1 + B * schedule(m) * (1 - exp(-(r ^ gamma)))。</p>
-              </header>
-              <div className="algorithm-tuning-order"><b>慢但稳先看</b><span>K_base 提整体速度，B 提稳定运动时的追赶，gamma 只改增强进入早晚；输出封顶请回到参数主链的“限幅”。</span></div>
               <div className="advanced-settings-grid two-column">
                 {responseParameters.map(renderAlgorithmNumberParameter)}
               </div>
@@ -5053,11 +4949,6 @@ export function StudioConsoleView({
 
           {algorithmSettingsSection === "prediction" ? (
             <section aria-labelledby="algorithm-settings-prediction-tab" className="algorithm-settings-panel" id="algorithm-settings-prediction" role="tabpanel" tabIndex={0}>
-              <header className="algorithm-settings-panel-header">
-                <span>目标速度预测</span>
-                <h3 id="algorithm-settings-prediction-title">日常只调整提前量和位移上限</h3>
-                <p>提前量决定向目标运动方向多看多久，位移上限限制最多提前多少像素。</p>
-              </header>
               {controlPredictionEnabled ? (
                 <>
                   <div className="advanced-settings-grid two-column">
@@ -5067,7 +4958,7 @@ export function StudioConsoleView({
                     {predictionCapParameters.map(renderAlgorithmNumberParameter)}
                   </div>
                   <details className="algorithm-settings-disclosure">
-                    <summary><span><b>预测稳定性保护</b><small>断流或速度不稳定时自动降低预测，通常保持默认</small></span><i>{predictionCoreParameters.length - 1 + predictionConfidenceParameters.length} 项</i></summary>
+                    <summary><span><b>高级预测参数</b></span><i>{predictionCoreParameters.length - 1 + predictionConfidenceParameters.length} 项</i></summary>
                     <div className="advanced-settings-grid two-column">
                       {predictionCoreParameters
                         .filter((parameter) => parameter.key !== "prediction_lead_ms")
@@ -5077,19 +4968,13 @@ export function StudioConsoleView({
                   </details>
                 </>
               ) : (
-                <div className="algorithm-settings-empty"><b>预测当前关闭</b><span>控制器直接使用当前观测位置；下面的预测参数不会参与主链计算。</span></div>
+                <div className="algorithm-settings-empty"><b>预测已关闭</b></div>
               )}
             </section>
           ) : null}
 
           {algorithmSettingsSection === "calibration" ? (
             <section aria-labelledby="algorithm-settings-calibration-tab" className="algorithm-settings-panel" id="algorithm-settings-calibration" role="tabpanel" tabIndex={0}>
-              <header className="algorithm-settings-panel-header">
-                <span>控制标定</span>
-                <h3 id="algorithm-settings-calibration-title">系统延迟、坐标比例与观测时效</h3>
-                <p>这些值描述真实链路和设备，不是日常响应旋钮；标定错误会让预测时域或移动比例失真。</p>
-              </header>
-              <div className="algorithm-settings-warning"><b>不要用标定参数修响应</b><span>整体移动比例不对才检查标定；只是误差区间的响应不合适，请回到“连续非线性控制”。</span></div>
               <div className="advanced-settings-grid two-column">
                 {calibrationParameters.map(renderAlgorithmNumberParameter)}
               </div>
@@ -5101,10 +4986,9 @@ export function StudioConsoleView({
 
       {targetAdvancedDialogOpen ? (
       <AdvancedSettingsDialog
-        description="控制异常框过滤、候选切换门槛和防抖确认。设置过严会阻止切换，过松会造成目标跳变。"
         dirty={configDialogDirty}
-        eyebrow="参数设置 / 目标选择"
-        footerNote="这些设置不会改变框内 aim Y，只影响选择与切换。"
+        eyebrow="目标选择"
+        footerNote="目标切换参数"
         onClose={() => void requestDismissConfigDialog("target-advanced")}
         onSave={() => void saveConfigDialog("target-advanced")}
         open
@@ -5120,10 +5004,9 @@ export function StudioConsoleView({
 
       {trackerSettingsDialogOpen ? (
       <AdvancedSettingsDialog
-        description="这些参数直接进入 Rust Tracker 的跨帧身份关联；设置过松会误关联，过严会频繁断轨。"
         dirty={configDialogDirty}
-        eyebrow="参数设置 / Tracker"
-        footerNote="关联算法固定为 Hungarian；仅输出活跃轨迹。"
+        eyebrow="目标跟踪"
+        footerNote="Tracker 参数"
         onClose={() => void requestDismissConfigDialog("tracker")}
         onSave={() => void saveConfigDialog("tracker")}
         open
@@ -5135,15 +5018,11 @@ export function StudioConsoleView({
           {trackerCoreParameters.map(renderTargetingNumberParameter)}
         </div>
         <details className="algorithm-settings-disclosure">
-          <summary><span><b>卡尔曼关联与马氏门控</b><small>只维护目标身份，不直接平滑鼠标 AimPoint；画面稳定时通常保持默认值</small></span><i>5 项</i></summary>
+          <summary><span><b>卡尔曼参数</b></span><i>{trackerKalmanParameters.length} 项</i></summary>
           <div className="advanced-settings-grid two-column">
             {trackerKalmanParameters.map(renderTargetingNumberParameter)}
           </div>
         </details>
-        <div className="advanced-settings-divider">
-          <span>固定跟踪策略</span>
-          <small>Hungarian 全局匹配、四维常速度状态、最大 16 条活跃轨迹及协方差安全上限由跟踪器统一管理，不作为常用参数开放。</small>
-        </div>
       </AdvancedSettingsDialog>
       ) : null}
 
@@ -5167,9 +5046,8 @@ export function StudioConsoleView({
           >
             <header className="target-weight-dialog-header">
               <div>
-                <span className="class-config-eyebrow">目标选择 / 评分策略</span>
-                <h2 id="target-weight-dialog-title">调整目标选择权重</h2>
-                <p>比例决定多个候选同时出现时，类别顺序与准星距离各自占多大影响；置信度只负责候选准入，不参与排序。</p>
+                <span className="class-config-eyebrow">目标选择</span>
+                <h2 id="target-weight-dialog-title">选择权重</h2>
               </div>
               <button type="button"
                 aria-label="关闭权重调整"
@@ -5190,7 +5068,6 @@ export function StudioConsoleView({
                 <div className="target-weight-section-heading">
                   <div>
                     <span>综合目标分数</span>
-                    <small>类别比例由用户设置，距离自动使用剩余比例，两项始终合计 100%。</small>
                   </div>
                   <b>类别优先</b>
                 </div>
@@ -5204,6 +5081,7 @@ export function StudioConsoleView({
                 </div>
                 <div className="target-weight-controls">
                   <ParameterNumberControl
+                    compact
                     label="类别偏好比例"
                     detail="类别顺序按 1、0.5、0.25…递减；距离自动使用剩余比例。提高后更倾向高优先类别。"
                     value={normalizedSelectionClassWeight}
@@ -5221,12 +5099,12 @@ export function StudioConsoleView({
             <footer className="target-weight-dialog-footer">
               <span className={dialogSaveError ? "dialog-save-status error" : configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
                 {dialogSaving
-                  ? "正在处理本次修改…"
+                  ? "正在处理…"
                   : dialogSaveError
-                    ? `处理失败 · ${dialogSaveError}`
+                    ? dialogSaveError
                     : configDialogDirty
-                      ? "有未确认修改 · 加入页面草稿后仍需点击“保存修改”。"
-                      : "未修改 · 关闭不会请求服务。"}
+                      ? "修改尚未加入页面草稿"
+                      : "未修改"}
               </span>
               <button type="button"
                 className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}
