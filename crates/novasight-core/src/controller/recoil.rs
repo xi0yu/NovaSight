@@ -240,13 +240,15 @@ impl IntervalRecoilController {
 pub struct RecoilMix {
     pub command_y: i32,
     pub applied_counts_y: i32,
-    /// Portion of the signed tracking demand that remains in the physical
-    /// command after the positive-Y recoil contribution is composed.
+    /// Portion of the signed tracking demand that remains after the positive-Y
+    /// recoil contribution is composed within the device integer range. The
+    /// configured fixed Y limit is applied to the combined command downstream.
     pub surviving_tracking_counts_y: i32,
 }
 
 /// Mix the recoil contribution into the current command exactly once and
-/// report how much positive Y survived the device-range clamp.
+/// report how much positive Y survived the representable device-range clamp.
+/// The configured fixed X/Y output limits remain the final downstream boundary.
 pub fn mix_tracking_and_recoil(tracking_y: i32, recoil: RecoilDecision) -> RecoilMix {
     let command_y = if recoil.should_add() {
         tracking_y

@@ -972,6 +972,8 @@ struct TargetedObservation {
 struct OutputPlan {
     command: DeviceCommand,
     recoil_target_valid: bool,
+    max_output_x_counts: i32,
+    max_output_y_counts: i32,
 }
 
 /// Owns the post-inference real-time lanes. Capture/DeepStream keeps
@@ -1526,6 +1528,10 @@ fn spawn_control_worker(
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "control", || {
                 let mut algorithm = AimAlgorithm::new(config.control);
+                let mut max_output_x_counts =
+                    fixed_output_limit(config.control.max_output_x_counts);
+                let mut max_output_y_counts =
+                    fixed_output_limit(config.control.max_output_y_counts);
                 let mut config_version = shared.control_config_version.load(Ordering::Acquire);
                 let mut next_telemetry_at_ns = 0;
                 while let Some(target) = input.wait_take() {
@@ -1535,11 +1541,13 @@ fn spawn_control_worker(
                     let latest_config_version =
                         shared.control_config_version.load(Ordering::Acquire);
                     if latest_config_version != config_version {
-                        let config = *shared
+                        let live_config = *shared
                             .control_config
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        algorithm.set_config(config);
+                        algorithm.set_config(live_config);
+                        max_output_x_counts = fixed_output_limit(live_config.max_output_x_counts);
+                        max_output_y_counts = fixed_output_limit(live_config.max_output_y_counts);
                         config_version = latest_config_version;
                     }
                     let control_now_ns = clock.now().0;
@@ -1610,6 +1618,8 @@ fn spawn_control_worker(
                         .publish(OutputPlan {
                             command,
                             recoil_target_valid: target.recoil_target_valid,
+                            max_output_x_counts,
+                            max_output_y_counts,
                         })
                         .is_err()
                     {
@@ -1733,7 +1743,19 @@ fn spawn_device_worker(
                     let tracking_y_counts = command.delta_y_counts;
                     let tracking_requested = tracking_x_counts != 0 || tracking_y_counts != 0;
                     let recoil_mix = mix_tracking_and_recoil(tracking_y_counts, recoil_decision);
-                    command.delta_y_counts = recoil_mix.command_y;
+                    command.delta_x_counts = tracking_x_counts
+                        .clamp(-plan.max_output_x_counts, plan.max_output_x_counts);
+                    command.delta_y_counts = recoil_mix
+                        .command_y
+                        .clamp(-plan.max_output_y_counts, plan.max_output_y_counts);
+                    let applied_recoil_counts_y = if recoil_decision.should_add() {
+                        command
+                            .delta_y_counts
+                            .saturating_sub(tracking_y_counts)
+                            .clamp(0, recoil_decision.requested_counts_y)
+                    } else {
+                        0
+                    };
                     if !tracking_requested && !recoil_decision.should_add() {
                         shared.record_recoil(recoil_decision);
                         continue;
@@ -1749,7 +1771,7 @@ fn spawn_device_worker(
                     match device.send(command) {
                         Ok(receipt) => {
                             let accepted_at_ns = clock.now().0;
-                            if recoil_decision.mark_output_result(recoil_mix.applied_counts_y) {
+                            if recoil_decision.mark_output_result(applied_recoil_counts_y) {
                                 recoil.mark_output_sent(accepted_at_ns);
                             }
                             shared.record_recoil(recoil_decision);
@@ -1775,6 +1797,10 @@ fn spawn_device_worker(
             worker: "device",
             source,
         })
+}
+
+fn fixed_output_limit(configured: f64) -> i32 {
+    configured.floor().clamp(1.0, f64::from(i16::MAX)) as i32
 }
 
 fn is_recoverable_pointer_error(error: &novasight_core::AppError) -> bool {
