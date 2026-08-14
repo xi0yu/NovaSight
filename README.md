@@ -119,14 +119,16 @@ access and require the configured production public key for signed activation.
 
 ## Developer Source Run
 
-For source-tree development without assembling `out/package/NovaSight`, run the
-launcher through Cargo from the workspace root:
+Runtime startup never builds additional Rust or Web artifacts. Prepare the
+artifacts explicitly when backend or production-Web sources change:
 
 ```bash
-cargo run -p novasight
+cargo build --locked -p novasight -p novasightd -p novasightctl
+pnpm --dir web build
+out/cargo/debug/novasight
 ```
 
-In this mode the launcher uses the workspace root as the runtime root. Models,
+The source launcher uses the workspace root as the runtime root. Models,
 configuration, logs, and run markers are read from the source tree:
 
 - models: `data/models/`
@@ -134,10 +136,31 @@ configuration, logs, and run markers are read from the source tree:
 - logs: `logs/`
 - ready/control socket: `run/`
 
-The launcher builds `novasightd` and `novasightctl` into `out/cargo`, builds the
-Web UI into `out/web`, then starts the daemon with `NOVASIGHT_WEB_ROOT=out/web`.
-This is a developer convenience path; the user-facing path remains
+It validates `novasightd`, `novasightctl`, and `out/web/index.html`, then starts
+the daemon with `NOVASIGHT_WEB_ROOT=out/web`. Missing artifacts produce an
+explicit error instead of triggering a hidden Cargo or Pnpm build. This is a
+developer convenience path; the user-facing path remains
 `out/package/NovaSight/NovaSight`.
+
+## Frontend HMR Development
+
+Frontend development is a separate, explicit two-process mode. It never shares
+the product runtime configuration file:
+
+```bash
+# terminal 1: internal Rust API only
+cargo run -p novasightd -- --frontend-dev
+
+# terminal 2: browser-facing Vite UI
+pnpm --dir web dev
+```
+
+Both processes read their endpoint roles from `deploy/studio-endpoints.json`.
+Vite listens on `0.0.0.0:7351` with strict port ownership and proxies API,
+health, and WebSocket traffic to the Rust daemon at `127.0.0.1:5174`. The
+dedicated frontend-development configuration is initialized with the Rust
+development defaults on first use. Product/source-launcher configuration stays
+in `data/novasight.yaml` and is not read or rewritten by the HMR daemon.
 
 ## Local Control CLI
 

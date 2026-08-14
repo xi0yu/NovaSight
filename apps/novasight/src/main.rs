@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
-use novasight_config::YamlConfigRepository;
+use novasight_config::{YamlConfigRepository, studio_endpoint_contract};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Number, Value};
 use tokio::process::{Child, Command};
@@ -22,8 +22,6 @@ const LOG_DIR: &str = "logs";
 const RUN_DIR: &str = "run";
 const CONTROL_SOCKET: &str = "run/novasightd.sock";
 const READY_FILE: &str = "run/ready.json";
-const PORTABLE_BIND_HOST: &str = "0.0.0.0";
-const PORTABLE_BIND_PORT: u16 = 7351;
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const DAEMON_LOG_TAIL_BYTES: u64 = 12 * 1024;
@@ -75,8 +73,7 @@ async fn run() -> Result<()> {
     let _args = Args::parse();
     let layout = PortableLayout::discover()?;
     prepare_layout(&layout)?;
-    ensure_developer_artifacts(&layout)?;
-    ensure_portable_config(&layout)?;
+    validate_developer_artifacts(&layout)?;
     std::env::set_current_dir(&layout.root)
         .with_context(|| format!("set bundle root {}", layout.root.display()))?;
 
@@ -89,6 +86,7 @@ async fn run() -> Result<()> {
     }
 
     let _ = fs::remove_file(&layout.ready_file);
+    ensure_portable_config(&layout)?;
     let mut child = spawn_daemon(&layout)?;
     let ready = wait_for_ready(
         &layout.ready_file,
@@ -227,49 +225,26 @@ fn ensure_private_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_developer_artifacts(layout: &PortableLayout) -> Result<()> {
+fn validate_developer_artifacts(layout: &PortableLayout) -> Result<()> {
     if layout.mode != LayoutMode::Developer {
         return Ok(());
     }
-    run_developer_command(
-        &layout.root,
-        "cargo",
-        [
-            "build",
-            "--locked",
-            "-p",
-            "novasightd",
-            "-p",
-            "novasightctl",
-        ],
-        &[],
-    )?;
-    run_developer_command(
-        &layout.root,
-        "pnpm",
-        ["--dir", "web", "build"],
-        &[("CI", "true")],
-    )
-}
 
-fn run_developer_command<I, S>(
-    cwd: &Path,
-    program: &str,
-    args: I,
-    envs: &[(&str, &str)],
-) -> Result<()>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<std::ffi::OsStr>,
-{
-    let mut command = StdCommand::new(program);
-    command.args(args).current_dir(cwd);
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-    let status = command.status().with_context(|| format!("run {program}"))?;
-    if !status.success() {
-        bail!("{program} exited with {status}");
+    let required = [
+        ("novasightd", layout.daemon.clone()),
+        ("novasightctl", layout.control.clone()),
+        ("Studio Web UI", layout.root.join("out/web/index.html")),
+    ];
+    let missing = required
+        .iter()
+        .filter(|(_, path)| !path.is_file())
+        .map(|(label, path)| format!("{label}: {}", path.display()))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        bail!(
+            "developer runtime artifacts are missing; startup does not build artifacts implicitly:\n{}\nprepare them explicitly before running NovaSight",
+            missing.join("\n")
+        );
     }
     Ok(())
 }
@@ -284,18 +259,19 @@ fn ensure_portable_config(layout: &PortableLayout) -> Result<()> {
         File::open(&layout.config).with_context(|| format!("open {}", layout.config.display()))?,
     )
     .with_context(|| format!("parse {}", layout.config.display()))?;
+    let studio_endpoint = &studio_endpoint_contract().studio;
     let mut changed = false;
     changed |= set_mapping_field(
         &mut document,
         "server",
         "host",
-        Value::String(PORTABLE_BIND_HOST.to_owned()),
+        Value::String(studio_endpoint.host.clone()),
     )?;
     changed |= set_mapping_field(
         &mut document,
         "server",
         "port",
-        Value::Number(Number::from(PORTABLE_BIND_PORT)),
+        Value::Number(Number::from(studio_endpoint.port)),
     )?;
     changed |= set_mapping_field(
         &mut document,
@@ -368,6 +344,8 @@ fn spawn_daemon(layout: &PortableLayout) -> Result<Child> {
         .with_context(|| format!("clone {}", layout.daemon_log.display()))?;
     let mut command = Command::new(&layout.daemon);
     command
+        .arg("--config")
+        .arg(&layout.config)
         .current_dir(&layout.root)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(log));

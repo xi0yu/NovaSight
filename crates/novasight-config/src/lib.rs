@@ -1,8 +1,10 @@
 #![deny(unsafe_code)]
 
+mod endpoints;
 mod model;
 mod repository;
 
+pub use endpoints::{NetworkEndpoint, StudioEndpointContract, studio_endpoint_contract};
 pub use model::{
     AppConfig, CURRENT_SCHEMA_VERSION, CaptureConfig, CaptureMemory, CapturePreference,
     ComputeDevice, ConfigValidationError, ConsumerConfig, CrosshairConfig, DeepStreamBackend,

@@ -102,17 +102,37 @@ notes in that directory are not copied into the user package.
 
 ## Developer Source Run
 
-Developers can run without packaging:
+The source launcher does not build anything implicitly. Prepare its runtime
+artifacts explicitly, then run the compiled launcher:
 
 ```bash
-cargo run -p novasight
+cargo build --locked -p novasight -p novasightd -p novasightctl
+pnpm --dir web build
+out/cargo/debug/novasight
 ```
 
 When the launcher detects that it was started from Cargo's `out/cargo` artifact
 directory, it treats the workspace root as the runtime root. It uses source-tree
-`data/models`, `data/novasight.yaml`, `logs`, and `run`. It also builds
-`novasightd`, `novasightctl`, and `out/web` before starting the daemon, so the
-source run still uses the same compiled Rust backend and built Studio assets.
+`data/models`, `data/novasight.yaml`, `logs`, and `run`. It validates
+`novasightd`, `novasightctl`, and `out/web/index.html` before starting the
+daemon. Missing artifacts fail with an explicit message and never trigger a
+hidden Cargo or Pnpm build.
+
+For React HMR, use a separate daemon configuration and keep the Rust process
+API-only:
+
+```bash
+# terminal 1
+cargo run -p novasightd -- --frontend-dev
+
+# terminal 2
+pnpm --dir web dev
+```
+
+Both processes resolve their endpoint roles from
+`deploy/studio-endpoints.json`. This mode exposes Vite at `0.0.0.0:7351` and
+keeps the Rust API at `127.0.0.1:5174`. It does not reuse or mutate
+`data/novasight.yaml`.
 
 ## Same-Path Testing
 

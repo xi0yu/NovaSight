@@ -1210,6 +1210,7 @@ dependencies = [
  "libc",
  "novasight-core",
  "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror",
  "xattr",

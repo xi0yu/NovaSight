@@ -10,7 +10,9 @@ use clap::Parser;
 #[cfg(feature = "deepstream")]
 use novasight_runtime::NativeModelJobRunner;
 use novasight_runtime::{ConfigService, LoadedApplication, RuntimeDependencies};
-use novasight_store::config::AppConfig;
+use novasight_store::config::{
+    AppConfig, ConfigError, YamlConfigRepository, studio_endpoint_contract,
+};
 use novasight_store::model_catalog::SqliteModelCatalog;
 use tracing_subscriber::EnvFilter;
 
@@ -22,6 +24,7 @@ use crate::server;
 use crate::live_perception;
 
 const DEFAULT_CONFIG_PATH: &str = "data/novasight.yaml";
+const FRONTEND_DEV_CONFIG_PATH: &str = "data/novasight.frontend-dev.yaml";
 #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
 const PRODUCTION_RUNTIME_UNAVAILABLE: &str =
     "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream";
@@ -29,6 +32,14 @@ const PRODUCTION_RUNTIME_UNAVAILABLE: &str =
 #[derive(Parser, Debug)]
 #[command(about = "NovaSight runtime daemon")]
 struct Args {
+    /// Runtime configuration file for ordinary daemon startup.
+    #[arg(long, value_name = "PATH", conflicts_with = "frontend_dev")]
+    config: Option<PathBuf>,
+
+    /// Use the dedicated internal API endpoint and configuration for Vite HMR.
+    #[arg(long)]
+    frontend_dev: bool,
+
     /// Run preflight checks and exit; do not start the pipeline.
     #[arg(long)]
     check: bool,
@@ -45,7 +56,19 @@ fn init_logging() {
 pub async fn entry() -> ExitCode {
     init_logging();
     let args = Args::parse();
-    let config_path = Path::new(DEFAULT_CONFIG_PATH);
+    let config_path = if args.frontend_dev {
+        Path::new(FRONTEND_DEV_CONFIG_PATH)
+    } else {
+        args.config
+            .as_deref()
+            .unwrap_or_else(|| Path::new(DEFAULT_CONFIG_PATH))
+    };
+    if args.frontend_dev
+        && let Err(error) = ensure_frontend_development_config(config_path)
+    {
+        eprintln!("{}: {error}", error.code());
+        return ExitCode::FAILURE;
+    }
     let load = LoadedApplication::load_or_initialize_default(config_path).await;
     let loaded = match load {
         Ok(loaded) => loaded,
@@ -165,13 +188,40 @@ pub async fn entry() -> ExitCode {
     #[cfg(feature = "deepstream")]
     let dependencies = dependencies.with_model_jobs(NativeModelJobRunner::new());
     let dependencies = dependencies.with_output_enabled(loaded.config().control.output_enabled);
-    match server::run_daemon(loaded, dependencies, config_service, model_catalog, mode).await {
+    let web_ui_mode = if args.frontend_dev {
+        server::WebUiMode::Disabled
+    } else {
+        server::WebUiMode::Configured
+    };
+    match server::run_daemon(
+        loaded,
+        dependencies,
+        config_service,
+        model_catalog,
+        mode,
+        web_ui_mode,
+    )
+    .await
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}: {error}", error.code());
             ExitCode::FAILURE
         }
     }
+}
+
+fn ensure_frontend_development_config(path: &Path) -> Result<(), ConfigError> {
+    let mut config = YamlConfigRepository::load_or_initialize_default(path)?;
+    let endpoint = &studio_endpoint_contract().frontend_development_api;
+    if config.server.host == endpoint.host && config.server.port == endpoint.port {
+        return Ok(());
+    }
+    let revision = config.revision;
+    config.server.host.clone_from(&endpoint.host);
+    config.server.port = endpoint.port;
+    YamlConfigRepository::save(path, &config, revision)?;
+    Ok(())
 }
 
 fn resolve_deepstream_parser_library(configured: &Path, bundled: Option<&Path>) -> PathBuf {

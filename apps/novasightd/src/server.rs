@@ -41,6 +41,12 @@ pub(super) enum DaemonMode {
     Hardware,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum WebUiMode {
+    Configured,
+    Disabled,
+}
+
 impl DaemonMode {
     const fn label(self) -> &'static str {
         match self {
@@ -62,6 +68,7 @@ pub(super) async fn run_daemon(
     config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
     mode: DaemonMode,
+    web_ui_mode: WebUiMode,
 ) -> Result<(), DaemonRunError> {
     let _instance_lock = acquire_instance_lock(mode.hardware_output_enabled())?;
     let host = loaded.config().server.host.clone();
@@ -95,7 +102,10 @@ pub(super) async fn run_daemon(
         mode.hardware_output_enabled(),
         server_shutdown_rx.clone(),
     );
-    let web_root = effective_web_root(&configured_web_root());
+    let web_root = match web_ui_mode {
+        WebUiMode::Configured => effective_web_root(&configured_web_root()),
+        WebUiMode::Disabled => None,
+    };
     let router = attach_web_ui(api_router.clone(), web_root.as_deref());
     let control_router = with_trusted_local_control(api_router);
     let http_server = axum::serve(listener, router)
