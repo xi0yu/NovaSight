@@ -212,7 +212,7 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
     )?;
     fs::write(
         layout.root.join("README-USER.txt"),
-        "Run ./NovaSight from this directory. NovaSight listens on the printed 0.0.0.0 Studio URL; use the printed LAN URL from another computer on the same network. Press Ctrl+C in the launcher terminal to stop NovaSight. Open USER_MANUAL.md for the user guide.\n",
+        "Run ./NovaSight from this directory. NovaSight listens on 0.0.0.0:7351; use the printed LAN URL from another computer on the same network. Press Ctrl+C in the launcher terminal to stop NovaSight. Open USER_MANUAL.md for the user guide.\n",
     )
     .with_context(|| format!("write {}", layout.root.join("README-USER.txt").display()))?;
     Ok(())

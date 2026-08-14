@@ -2,7 +2,7 @@ schema_version: 12
 revision: 0
 server:
   host: 0.0.0.0
-  port: 0
+  port: 7351
   control_socket: run/novasightd.sock
 replay:
   enabled: false

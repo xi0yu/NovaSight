@@ -23,6 +23,7 @@ const RUN_DIR: &str = "run";
 const CONTROL_SOCKET: &str = "run/novasightd.sock";
 const READY_FILE: &str = "run/ready.json";
 const PORTABLE_BIND_HOST: &str = "0.0.0.0";
+const PORTABLE_BIND_PORT: u16 = 7351;
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const DAEMON_LOG_TAIL_BYTES: u64 = 12 * 1024;
@@ -294,7 +295,7 @@ fn ensure_portable_config(layout: &PortableLayout) -> Result<()> {
         &mut document,
         "server",
         "port",
-        Value::Number(Number::from(0)),
+        Value::Number(Number::from(PORTABLE_BIND_PORT)),
     )?;
     changed |= set_mapping_field(
         &mut document,

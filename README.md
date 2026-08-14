@@ -88,9 +88,9 @@ out/package/NovaSight/
 
 Users start `NovaSight`. The launcher creates package-local `data`, `logs`,
 and `run` directories, starts `bin/novasightd`, waits for `run/ready.json`, and
-prints the Studio Web UI listener and LAN URLs. Portable packages listen on
-`0.0.0.0` so a browser on another machine in the same LAN can open the printed
-LAN URL. The
+prints the Studio Web UI listener and LAN URLs. Portable packages listen on the
+fixed `0.0.0.0:7351` address so a browser on another machine in the same LAN can
+open the printed LAN URL. The
 launcher also tries to open a desktop browser when one is available. It stays in
 the foreground; pressing `Ctrl+C` stops the package-local daemon. It does not
 install systemd units, write to `/etc`, `/usr`, `/var/lib`, or

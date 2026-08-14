@@ -145,15 +145,15 @@ Prefer `Ctrl+C` in the launcher terminal; if that terminal is gone, use:
 bin/novasightctl shutdown
 ```
 
-Use the printed port for HTTP checks on the target host:
+Use the fixed Studio port for HTTP checks on the target host:
 
 ```bash
-curl -fsS http://127.0.0.1:<port>/healthz
-curl -fsS http://127.0.0.1:<port>/ >/dev/null
+curl -fsS http://127.0.0.1:7351/healthz
+curl -fsS http://127.0.0.1:7351/ >/dev/null
 ```
 
 For remote Studio access, open the printed
-`NovaSight Studio Web UI (LAN): http://<target-lan-ip>:<port>/` URL from a
+`NovaSight Studio Web UI (LAN): http://<target-lan-ip>:7351/` URL from a
 browser on the same LAN. `0.0.0.0` is the bind address; remote browsers use the
 target machine's LAN IP.
 
