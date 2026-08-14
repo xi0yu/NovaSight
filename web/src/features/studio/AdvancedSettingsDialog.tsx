@@ -98,7 +98,7 @@ export function AdvancedSettingsDialog({
             className="launch-dialog-close"
             disabled={saving}
             onClick={onClose}
-            title={dirty ? "关闭；未保存修改会先请求确认" : "关闭"}
+            title={dirty ? "关闭并放弃本弹窗修改" : "关闭"}
             type="button"
           >
             <NovaIcon name="x-circle" size={18} />
@@ -113,11 +113,11 @@ export function AdvancedSettingsDialog({
         <footer className="advanced-settings-dialog-footer">
           <span className={saveError ? "dialog-save-status error" : dirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
             {saving
-              ? "正在保存本次修改…"
+              ? "正在处理本次修改…"
               : saveError
-                ? `保存失败 · ${saveError}`
+                ? `处理失败 · ${saveError}`
                 : dirty
-                  ? "有未保存修改 · 保存后才会同步到运行配置。"
+                  ? "有未确认修改 · 加入页面草稿后仍需点击“保存修改”。"
                   : `未修改 · ${footerNote}`}
           </span>
           <button
@@ -126,7 +126,7 @@ export function AdvancedSettingsDialog({
             onClick={dirty ? onSave : onClose}
             type="button"
           >
-            {dirty ? "保存并关闭" : "关闭"}
+            {dirty ? "加入草稿并关闭" : "关闭"}
           </button>
         </footer>
       </section>

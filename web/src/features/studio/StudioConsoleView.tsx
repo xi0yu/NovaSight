@@ -235,7 +235,7 @@ const ALGORITHM_SETTINGS_SECTIONS: Array<{
   {
     id: "calibration",
     label: "控制标定",
-    detail: "FOV、设备 counts 与过期画面",
+    detail: "系统延迟、FOV、设备 counts 与过期画面",
     panelId: "algorithm-settings-calibration"
   }
 ];
@@ -764,15 +764,19 @@ export function StudioConsoleView({
   }, []);
   const [configSchema, setConfigSchema] = useState<ConfigSchemaResponse | null>(null);
   const [configDialogDirty, setConfigDialogDirty] = useState(false);
-  const [configDialogSaving, setConfigDialogSaving] = useState(false);
+  const configDialogSaving = false;
+  const dialogSaving = false;
+  const [parameterPageDirty, setParameterPageDirty] = useState(false);
+  const [parameterPageSaving, setParameterPageSaving] = useState(false);
   const [dialogSaveError, setDialogSaveError] = useState<string | null>(null);
-  const dialogSaving = configDialogSaving;
   const configFieldIndex = useMemo(() => buildConfigFieldIndex(configSchema), [configSchema]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
   const runtimeConfigLatestRef = useRef<RuntimeConfig | null>(runtimeConfig);
   const activeConfigDialogRef = useRef<ConfigDialogId | null>(null);
   const configDialogBaselineRef = useRef<RuntimeConfig | null>(null);
+  const parameterPageBaselineRef = useRef<RuntimeConfig | null>(null);
+  const parameterPageDirtyRef = useRef(false);
   const confirmationBusyRef = useRef(false);
   // Per-call AbortController for kmNet connect/disconnect. If the user
   // rapidly toggles "连接" / "断开", the previous in-flight call is
@@ -829,6 +833,33 @@ export function StudioConsoleView({
     setConfigDialogDirty(false);
     setDialogSaveError(null);
   }, [setConfigDialogVisibility]);
+
+  const setParameterPageDirtyState = useCallback((dirty: boolean) => {
+    parameterPageDirtyRef.current = dirty;
+    setParameterPageDirty(dirty);
+  }, []);
+
+  const stageParameterPageDraft = useCallback((next: RuntimeConfig) => {
+    if (!parameterPageBaselineRef.current) {
+      const baseline = cloneRuntimeConfig(runtimeConfigLatestRef.current);
+      parameterPageBaselineRef.current = baseline;
+    }
+    configDraftRef.current = next;
+    setConfigDraft(next);
+    setParameterPageDirtyState(
+      !runtimeConfigsEqual(parameterPageBaselineRef.current, next)
+    );
+    setDialogSaveError(null);
+  }, [setParameterPageDirtyState]);
+
+  const discardParameterPageDraft = useCallback(() => {
+    const latest = cloneRuntimeConfig(runtimeConfigLatestRef.current);
+    configDraftRef.current = latest;
+    setConfigDraft(latest);
+    parameterPageBaselineRef.current = null;
+    setParameterPageDirtyState(false);
+    setDialogSaveError(null);
+  }, [setParameterPageDirtyState]);
 
   const focusAlgorithmSettingsSection = useCallback((section: AlgorithmSettingsSection) => {
     setAlgorithmSettingsSection(section);
@@ -928,48 +959,20 @@ export function StudioConsoleView({
     const draft = configDraftRef.current;
     const baseline = configDialogBaselineRef.current;
     if (!draft || !baseline || runtimeConfigsEqual(draft, baseline)) {
-      const latest = cloneRuntimeConfig(runtimeConfigLatestRef.current) ?? draft;
-      configDraftRef.current = latest;
-      setConfigDraft(latest);
+      configDraftRef.current = baseline ?? draft;
+      setConfigDraft(baseline ?? draft);
       finishConfigDialog(dialog);
       return;
     }
 
-    dialogSavingRef.current = true;
-    beginPendingConfigWrite();
-    setConfigDialogSaving(true);
-    setBusy("config-dialog.save");
-    setDialogSaveError(null);
-    setLocalError(null);
-    try {
-      const result = await updateRuntimeConfig(draft);
-      const applied = normalizeRuntimeConfig(result.config);
-      if (result.schema) {
-        applyConfigSchema(result.schema);
-      }
-      finalizeRuntimeConfigWrite(applied);
-      reportSuccess(
-        "配置已保存",
-        result.restart_required
-          ? "运行参数已由当前进程应用；仅进程级基础配置留待下次服务启动接管。"
-          : result.apply_mode === "epoch_reload"
-            ? "新参数已写入配置，并通过当前进程的新运行 epoch 生效。"
-            : "新参数已经即时应用。",
-        "config-dialog"
-      );
-      finishConfigDialog(dialog);
-    } catch (error) {
-      const message = getErrorMessage(error);
-      setLocalError(`配置保存失败：${message}`);
-      setDialogSaveError(message);
-      reportError(error, { source: "config-dialog", title: "配置保存失败" });
-    } finally {
-      dialogSavingRef.current = false;
-      setConfigDialogSaving(false);
-      setBusy(null);
-      finishPendingConfigWrite();
-    }
-  }, [applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishConfigDialog, finishPendingConfigWrite]);
+    stageParameterPageDraft(draft);
+    finishConfigDialog(dialog);
+    reportInfo(
+      "修改已加入参数草稿",
+      "这些参数尚未写入配置；请在参数设置页面点击“保存修改”。",
+      "config-dialog"
+    );
+  }, [finishConfigDialog, stageParameterPageDraft]);
 
   const requestDismissConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
     if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
@@ -984,15 +987,13 @@ export function StudioConsoleView({
     const draft = configDraftRef.current;
     const baseline = configDialogBaselineRef.current;
     if (!draft || !baseline || runtimeConfigsEqual(draft, baseline)) {
-      const latest = cloneRuntimeConfig(runtimeConfigLatestRef.current) ?? draft;
-      configDraftRef.current = latest;
-      setConfigDraft(latest);
+      configDraftRef.current = baseline ?? draft;
+      setConfigDraft(baseline ?? draft);
       finishConfigDialog(dialog);
       return;
     }
 
-    // The user already chose to close the dialog. Don't ask again — the
-    // explicit "保存并关闭" button is the safe path; closing via Esc/backdrop
+    // The explicit "加入草稿并关闭" button keeps the dialog edits; closing via Esc/backdrop
     // is the explicit "放弃" path. Surface a non-blocking info toast so the
     // user can immediately reopen if they change their mind.
     configDraftRef.current = baseline;
@@ -1041,10 +1042,6 @@ export function StudioConsoleView({
   }, []);
 
   useEffect(() => {
-    dialogSavingRef.current = dialogSaving;
-  }, [dialogSaving]);
-
-  useEffect(() => {
     const anyConfigDialogOpen =
       classConfigDialogOpen ||
       targetWeightsDialogOpen ||
@@ -1064,14 +1061,51 @@ export function StudioConsoleView({
 
   useEffect(() => {
     writePageToUrl(activePage, "replace");
-    const onPopState = () => setActivePage(pageFromUrl());
+    const onPopState = () => {
+      const nextPage = pageFromUrl();
+      if (
+        parameterPageDirtyRef.current
+        && nextPage !== "params"
+        && !window.confirm("参数设置中还有未保存修改。离开页面将放弃这些修改，确定继续吗？")
+      ) {
+        writePageToUrl("params", "replace");
+        return;
+      }
+      if (parameterPageDirtyRef.current && nextPage !== "params") {
+        discardParameterPageDraft();
+      }
+      setActivePage(nextPage);
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [discardParameterPageDraft]);
 
   const navigatePage = useCallback((page: ConsolePage) => {
+    if (
+      activePage === "params"
+      && page !== "params"
+      && parameterPageDirtyRef.current
+      && !window.confirm("参数设置中还有未保存修改。离开页面将放弃这些修改，确定继续吗？")
+    ) {
+      return;
+    }
+    if (activePage === "params" && page !== "params" && parameterPageDirtyRef.current) {
+      discardParameterPageDraft();
+    }
     setActivePage(page);
     writePageToUrl(page);
+  }, [activePage, discardParameterPageDraft]);
+
+  useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!parameterPageDirtyRef.current) {
+        return;
+      }
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
   useEffect(() => {
@@ -1397,7 +1431,6 @@ export function StudioConsoleView({
     configSchema?.algorithm?.response?.atan_scale_counts,
     FIXED_ATAN_SCALE_COUNTS
   );
-  const algorithmVelocitySegments = readNumber(configSchema?.algorithm?.prediction?.velocity_segments, 3);
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
@@ -1407,7 +1440,12 @@ export function StudioConsoleView({
   const controlModeLabel = controlAlgorithmLabel;
 
   useEffect(() => {
-    if (!runtimeConfig || pendingConfigWritesRef.current > 0 || activeConfigDialogRef.current !== null) {
+    if (
+      !runtimeConfig
+      || pendingConfigWritesRef.current > 0
+      || activeConfigDialogRef.current !== null
+      || parameterPageDirtyRef.current
+    ) {
       return;
     }
     // Skip syncing while the user is actively editing a parameter; the
@@ -2450,7 +2488,7 @@ export function StudioConsoleView({
       section: string,
       key: string,
       value: RuntimeConfigValue,
-      options?: { optimistic?: boolean; rethrow?: boolean }
+      options?: { immediate?: boolean; optimistic?: boolean; rethrow?: boolean }
     ): Promise<void> => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
       const next = base ? normalizeRuntimeConfig(base) : null;
@@ -2466,6 +2504,13 @@ export function StudioConsoleView({
         stageConfigDialogDraft(next);
         return;
       }
+      if (activePage === "params" && options?.immediate !== true) {
+        stageParameterPageDraft(next);
+        return;
+      }
+      const preservedParameterDraft = options?.immediate === true && parameterPageDirtyRef.current
+        ? cloneRuntimeConfig(base)
+        : null;
       const optimistic = options?.optimistic !== false;
       const writeSeq = ++configWriteSeqRef.current;
       beginPendingConfigWrite();
@@ -2497,7 +2542,29 @@ export function StudioConsoleView({
         // the visible draft, but the next queued transaction must never be
         // built from an older revision.
         finalizeRuntimeConfigWrite(applied);
-        if (writeSeq === configWriteSeqRef.current) {
+        if (preservedParameterDraft) {
+          const appliedSection = asRecord(applied[section]);
+          const preservedSection = {
+            ...asRecord(preservedParameterDraft[section]),
+            [key]: appliedSection[key]
+          };
+          preservedParameterDraft.revision = applied.revision;
+          preservedParameterDraft[section] = preservedSection as RuntimeConfig[string];
+          const baseline = cloneRuntimeConfig(parameterPageBaselineRef.current);
+          if (baseline) {
+            baseline.revision = applied.revision;
+            baseline[section] = {
+              ...asRecord(baseline[section]),
+              [key]: appliedSection[key]
+            } as RuntimeConfig[string];
+            parameterPageBaselineRef.current = baseline;
+          }
+          configDraftRef.current = preservedParameterDraft;
+          setConfigDraft(preservedParameterDraft);
+          setParameterPageDirtyState(
+            !runtimeConfigsEqual(parameterPageBaselineRef.current, preservedParameterDraft)
+          );
+        } else if (writeSeq === configWriteSeqRef.current) {
           // The optimistic seq still owns the visible draft; mirror the
           // canonical value into the local refs/state without touching the
           // runtime write seq again (the canonical update above is the one
@@ -2530,7 +2597,7 @@ export function StudioConsoleView({
         }
       }
     },
-    [applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange, runtimeConfig, stageConfigDialogDraft]
+    [activePage, applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange, runtimeConfig, setParameterPageDirtyState, stageConfigDialogDraft, stageParameterPageDraft]
   );
 
   const requestOutputGateChange = useCallback((enabled: boolean) => {
@@ -2539,7 +2606,7 @@ export function StudioConsoleView({
         "control",
         "output_enabled",
         false,
-        { optimistic: false, rethrow: true }
+        { immediate: true, optimistic: false, rethrow: true }
       );
     }
     setConfirmationRequest({
@@ -2556,11 +2623,58 @@ export function StudioConsoleView({
         "control",
         "output_enabled",
         true,
-        { optimistic: false, rethrow: true }
+        { immediate: true, optimistic: false, rethrow: true }
       )
     });
     return false;
   }, [kmnetHost, kmnetPort, kmnetRuntimeConnected, updateConfigField]);
+
+  const saveParameterPageDraft = useCallback(async () => {
+    if (!parameterPageDirtyRef.current || parameterPageSaving) {
+      return;
+    }
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+      await Promise.resolve();
+    }
+    const draft = cloneRuntimeConfig(configDraftRef.current);
+    if (!draft) {
+      return;
+    }
+    beginPendingConfigWrite();
+    setParameterPageSaving(true);
+    setBusy("parameter-page.save");
+    setDialogSaveError(null);
+    setLocalError(null);
+    try {
+      const result = await updateRuntimeConfig(draft);
+      const applied = normalizeRuntimeConfig(result.config);
+      if (result.schema) {
+        applyConfigSchema(result.schema);
+      }
+      finalizeRuntimeConfigWrite(applied);
+      parameterPageBaselineRef.current = null;
+      setParameterPageDirtyState(false);
+      reportSuccess(
+        "参数已保存并生效",
+        result.restart_required
+          ? "运行参数已由当前进程应用；仅进程级基础配置留待下次服务启动接管。"
+          : result.apply_mode === "epoch_reload"
+            ? "修改已写入配置文件，并由当前进程的新运行 epoch 接管。"
+            : "修改已写入配置文件，并立即应用到当前运行链。",
+        "parameter-page"
+      );
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setLocalError(`参数保存失败：${message}`);
+      setDialogSaveError(message);
+      reportError(error, { source: "parameter-page", title: "参数保存失败" });
+    } finally {
+      setParameterPageSaving(false);
+      setBusy(null);
+      finishPendingConfigWrite();
+    }
+  }, [applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, parameterPageSaving, setParameterPageDirtyState]);
 
   const updateConfigSection = useCallback(
     async (
@@ -2750,7 +2864,7 @@ export function StudioConsoleView({
       label: "预测",
       value: controlPredictionEnabled ? "运动门控 4 点速度" : "关闭",
       detail: controlPredictionEnabled
-        ? `${formatNumber(algorithmVelocitySegments, 0)} 段速度 · 提前 ${formatNumber(controlPredictionLeadMs, 1)} ms · 断流 ${formatNumber(controlPredictionHistoryResetGapMs, 0)} ms`
+        ? `提前 ${formatNumber(controlPredictionLeadMs, 1)} ms · 上限 ${formatNumber(controlPredictionCapPx, 1)} px`
         : "当前观测直接进入控制器",
       icon: "target"
     },
@@ -4195,6 +4309,40 @@ export function StudioConsoleView({
           <section className="console-page">
           {activePage === "params" ? (
           <>
+            <div className={parameterPageDirty ? "parameter-save-bar dirty" : "parameter-save-bar"}>
+              <span className="parameter-save-bar-icon" aria-hidden="true">
+                <NovaIcon name={parameterPageDirty ? "save" : "check-circle"} size={18} />
+              </span>
+              <div aria-live="polite" role="status">
+                <b>{parameterPageDirty ? "有未保存修改" : "修改后需要手动保存"}</b>
+                <small>
+                  {parameterPageDirty
+                    ? "当前只保存在页面草稿中，尚未写入配置或作用到运行链。"
+                    : "参数修改不会自动生效；输出总开关属于安全操作，仍然即时执行。"}
+                </small>
+              </div>
+              <div className="parameter-save-bar-actions">
+                {parameterPageDirty ? (
+                  <button
+                    className="console-button"
+                    disabled={parameterPageSaving || pendingConfigWriteCount > 0}
+                    onClick={discardParameterPageDraft}
+                    type="button"
+                  >
+                    放弃修改
+                  </button>
+                ) : null}
+                <button
+                  className="console-button primary"
+                  disabled={!parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0}
+                  onClick={() => void saveParameterPageDraft()}
+                  type="button"
+                >
+                  <NovaIcon name="save" size={15} />
+                  {parameterPageSaving ? "正在保存…" : "保存修改"}
+                </button>
+              </div>
+            </div>
             <ol className="control-chain-settings" aria-label="鼠标控制参数链">
               <li className="console-card control-chain-setting">
                 <span className="control-chain-step" aria-hidden="true">01</span>
@@ -4947,31 +5095,24 @@ export function StudioConsoleView({
             <section aria-labelledby="algorithm-settings-prediction-tab" className="algorithm-settings-panel" id="algorithm-settings-prediction" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
                 <span>目标速度预测</span>
-                <h3 id="algorithm-settings-prediction-title">唯一锁定目标的 aim 点提前量</h3>
-                <p>预测只改变目标 aim 点：P_pred = P + V * T_future；T_future = 观测帧龄 + 执行反馈延迟 + 预测提前量。</p>
+                <h3 id="algorithm-settings-prediction-title">日常只调整提前量和位移上限</h3>
+                <p>提前量决定向目标运动方向多看多久，位移上限限制最多提前多少像素。</p>
               </header>
-              <div className="advanced-settings-grid two-column">
-                {predictionCoreParameters
-                  .filter((parameter) => parameter.key === "actuation_feedback_delay_ms")
-                  .map(renderAlgorithmNumberParameter)}
-              </div>
               {controlPredictionEnabled ? (
                 <>
                   <div className="advanced-settings-grid two-column">
                     {predictionCoreParameters
-                      .filter((parameter) => parameter.key !== "actuation_feedback_delay_ms")
+                      .filter((parameter) => parameter.key === "prediction_lead_ms")
                       .map(renderAlgorithmNumberParameter)}
+                    {predictionCapParameters.map(renderAlgorithmNumberParameter)}
                   </div>
                   <details className="algorithm-settings-disclosure">
-                    <summary><span><b>预测可信度保护</b><small>检测速度异常时降低或取消预测，一般不需要修改</small></span><i>2 项</i></summary>
+                    <summary><span><b>预测稳定性保护</b><small>断流或速度不稳定时自动降低预测，通常保持默认</small></span><i>{predictionCoreParameters.length - 1 + predictionConfidenceParameters.length} 项</i></summary>
                     <div className="advanced-settings-grid two-column">
+                      {predictionCoreParameters
+                        .filter((parameter) => parameter.key !== "prediction_lead_ms")
+                        .map(renderAlgorithmNumberParameter)}
                       {predictionConfidenceParameters.map(renderAlgorithmNumberParameter)}
-                    </div>
-                  </details>
-                  <details className="algorithm-settings-disclosure">
-                    <summary><span><b>预测位移上限</b><small>防止提前量超过当前误差，只有确认预测被截断时再修改</small></span><i>6 项</i></summary>
-                    <div className="advanced-settings-grid two-column">
-                      {predictionCapParameters.map(renderAlgorithmNumberParameter)}
                     </div>
                   </details>
                 </>
@@ -4999,8 +5140,8 @@ export function StudioConsoleView({
             <section aria-labelledby="algorithm-settings-calibration-tab" className="algorithm-settings-panel" id="algorithm-settings-calibration" role="tabpanel" tabIndex={0}>
               <header className="algorithm-settings-panel-header">
                 <span>控制标定</span>
-                <h3 id="algorithm-settings-calibration-title">坐标标定与观测时效</h3>
-                <p>这里不是响应增益。FOV 与每圈 counts 必须对应真实游戏和设备；错误标定会让所有 Atan 参数一起表现错误。</p>
+                <h3 id="algorithm-settings-calibration-title">系统延迟、坐标比例与观测时效</h3>
+                <p>这些值描述真实链路和设备，不是日常响应旋钮；标定错误会让预测、反馈等待或移动比例一起失真。</p>
               </header>
               <div className="algorithm-settings-warning"><b>不要用标定参数修响应</b><span>整体移动比例不对才检查标定；只是误差区间的响应不合适，请回到“连续非线性控制”。</span></div>
               <div className="advanced-settings-grid two-column">
@@ -5089,7 +5230,7 @@ export function StudioConsoleView({
                 className="launch-dialog-close"
                 disabled={dialogSaving}
                 onClick={() => void requestDismissConfigDialog("target-weights")}
-                title={configDialogDirty ? "关闭；未保存修改会先请求确认" : "关闭"}
+                title={configDialogDirty ? "关闭并放弃本弹窗修改" : "关闭"}
               >
                 <NovaIcon name="x-circle" size={18} />
               </button>
@@ -5134,11 +5275,11 @@ export function StudioConsoleView({
             <footer className="target-weight-dialog-footer">
               <span className={dialogSaveError ? "dialog-save-status error" : configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
                 {dialogSaving
-                  ? "正在保存本次修改…"
+                  ? "正在处理本次修改…"
                   : dialogSaveError
-                    ? `保存失败 · ${dialogSaveError}`
+                    ? `处理失败 · ${dialogSaveError}`
                     : configDialogDirty
-                      ? "有未保存修改 · 保存后才会同步到运行配置。"
+                      ? "有未确认修改 · 加入页面草稿后仍需点击“保存修改”。"
                       : "未修改 · 关闭不会请求服务。"}
               </span>
               <button type="button"
@@ -5146,7 +5287,7 @@ export function StudioConsoleView({
                 disabled={dialogSaving}
                 onClick={() => void saveConfigDialog("target-weights")}
               >
-                {configDialogDirty ? "保存并关闭" : "关闭"}
+                {configDialogDirty ? "加入草稿并关闭" : "关闭"}
               </button>
             </footer>
           </section>
@@ -5182,7 +5323,7 @@ export function StudioConsoleView({
                 className="launch-dialog-close"
                 disabled={dialogSaving}
                 onClick={() => void requestDismissConfigDialog("class-config")}
-                title={configDialogDirty ? "关闭；未保存修改会先请求确认" : "关闭"}
+                title={configDialogDirty ? "关闭并放弃本弹窗修改" : "关闭"}
               >
                 <NovaIcon name="x-circle" size={18} />
               </button>
@@ -5401,11 +5542,11 @@ export function StudioConsoleView({
             <footer className="class-config-dialog-footer">
               <span className={dialogSaveError ? "dialog-save-status error" : configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
                 {dialogSaving
-                  ? "正在保存类别配置…"
+                  ? "正在处理类别配置…"
                   : dialogSaveError
-                    ? `保存失败 · ${dialogSaveError}`
+                    ? `处理失败 · ${dialogSaveError}`
                     : configDialogDirty
-                      ? "有未保存修改 · 保存后才会同步整份类别配置。"
+                      ? "有未确认修改 · 加入页面草稿后仍需点击“保存修改”。"
                       : `未修改 · 当前配置：${activeDetectionProfile}`}
               </span>
               <button type="button"
@@ -5413,7 +5554,7 @@ export function StudioConsoleView({
                 disabled={dialogSaving}
                 onClick={() => void saveConfigDialog("class-config")}
               >
-                {configDialogDirty ? "保存并关闭" : "关闭"}
+                {configDialogDirty ? "加入草稿并关闭" : "关闭"}
               </button>
             </footer>
           </section>

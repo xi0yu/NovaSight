@@ -313,20 +313,6 @@ export function buildAlgorithmParameterGroups(
     ],
     predictionCoreParameters: [
       {
-        key: "actuation_feedback_delay_ms",
-        label: "执行与反馈延迟",
-        formula: "T_delay",
-        detail: "命令发出到画面可观察到响应的延迟：预测会补偿这段时间，发送后也会等待这段时间再接受新画面反馈。",
-        value: values.actuationFeedbackDelayMs,
-        min: 0,
-        max: 1000,
-        recommendedMin: 0,
-        recommendedMax: 100,
-        step: 0.5,
-        unit: "ms",
-        applyMode: "live"
-      },
-      {
         key: "prediction_lead_ms",
         label: "预测提前量",
         formula: "T_extra",
@@ -396,8 +382,7 @@ export function buildAlgorithmParameterGroups(
         recommendedMin: 0,
         recommendedMax: 80,
         step: 0.1,
-        unit: "px",
-        riskLevel: "advanced"
+        unit: "px"
       }
     ],
     stabilityParameters: [
@@ -442,6 +427,21 @@ export function buildAlgorithmParameterGroups(
       }
     ],
     calibrationParameters: [
+      {
+        key: "actuation_feedback_delay_ms",
+        label: "系统执行反馈延迟",
+        formula: "T_delay",
+        detail: "命令发出到画面可观察到响应的系统延迟。通常只需按真实链路标定一次；它同时参与预测时域和重复输出保护。",
+        value: values.actuationFeedbackDelayMs,
+        min: 0,
+        max: 1000,
+        recommendedMin: 0,
+        recommendedMax: 100,
+        step: 0.5,
+        unit: "ms",
+        applyMode: "live",
+        riskLevel: "calibration"
+      },
       {
         key: "projection_fov_x_deg",
         label: "水平视场角 FOVX",
