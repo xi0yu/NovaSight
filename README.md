@@ -119,13 +119,14 @@ access and require the configured production public key for signed activation.
 
 ## Developer Source Run
 
-Runtime startup never builds additional Rust or Web artifacts. Prepare the
-artifacts explicitly when backend or production-Web sources change:
+From a source workspace, the launcher uses the current frontend source by
+default. It starts the internal Rust API and Vite together; Vite serves
+`web/src` directly and does not build or read `out/web`. Cargo checks and
+refreshes `novasightd` and `novasightctl` from the current Rust source before
+they are started:
 
 ```bash
-cargo build --locked -p novasight -p novasightd -p novasightctl
-pnpm --dir web build
-out/cargo/debug/novasight
+cargo run -p novasight
 ```
 
 The source launcher uses the workspace root as the runtime root. Models,
@@ -136,24 +137,23 @@ configuration, logs, and run markers are read from the source tree:
 - logs: `logs/`
 - ready/control socket: `run/`
 
-It validates `novasightd`, `novasightctl`, and `out/web/index.html`, and refuses
-to serve `out/web` when frontend source files are newer than that build. Missing
-or stale artifacts produce an explicit error instead of triggering a hidden
-Cargo or Pnpm build. A stale-UI error points to `--frontend-dev` for live source
-or the explicit Web build command. When artifacts are current, the launcher
-starts the daemon with `NOVASIGHT_WEB_ROOT=out/web`. This is a developer
-convenience path; the user-facing path remains
-`out/package/NovaSight/NovaSight`.
+The source launcher has no fallback to `out/web`: an old Web build can no longer
+replace current frontend source. Only the user-facing packaged path
+`out/package/NovaSight/NovaSight` serves build output created by the packaging
+workflow.
 
 ## Frontend HMR Development
 
 Frontend development has one process owner and never shares the product runtime
-configuration file. After preparing the Rust binaries and `web/node_modules`,
-start both the internal daemon and Vite with one command:
+configuration file. After installing `web/node_modules`, the ordinary source
+command refreshes the Rust binaries as needed and starts the internal daemon
+and Vite:
 
 ```bash
-out/cargo/debug/novasight --frontend-dev
+cargo run -p novasight
 ```
+
+`--frontend-dev` remains an explicit compatibility alias for the same mode.
 
 Both processes read their endpoint roles from `deploy/studio-endpoints.json`.
 Vite listens on `0.0.0.0:7351` with strict port ownership and proxies API,
@@ -163,10 +163,9 @@ development defaults on first use. Product/source-launcher configuration stays
 in `data/novasight.yaml` and is not read or rewritten by the HMR daemon. On a
 headless Jetson, open `http://<Jetson-LAN-IP>:7351/` from another machine on the
 same LAN. The launcher prints the resolved LAN URL and `Ctrl+C` stops both
-processes. It does not run Cargo, install packages, or build the Web UI.
-If the existing daemon binary predates `--frontend-dev`, the launcher stops
-before startup and prints the exact explicit Cargo command required to refresh
-it.
+processes. It does not install packages or build the Web UI. Cargo dependency
+fingerprints make unchanged Rust startup checks cheap, while changed backend
+source is rebuilt before launch instead of running an older daemon.
 
 ## Local Control CLI
 

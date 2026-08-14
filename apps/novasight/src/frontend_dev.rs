@@ -18,7 +18,6 @@ use super::{
 const FRONTEND_READY_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
-    validate_artifacts(layout)?;
     std::env::set_current_dir(&layout.root)
         .with_context(|| format!("set workspace root {}", layout.root.display()))?;
 
@@ -30,6 +29,8 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
             ready.url
         );
     }
+
+    validate_artifacts(layout)?;
 
     let _ = fs::remove_file(&layout.ready_file);
     let mut daemon = spawn_daemon(layout)?;
@@ -82,10 +83,19 @@ fn validate_artifacts(layout: &PortableLayout) -> Result<()> {
         bail!("--frontend-dev is available only from a NovaSight source workspace");
     }
 
+    let vite = vite_executable(layout);
+    if !vite.is_file() {
+        bail!(
+            "Vite is missing at {}; install frontend dependencies explicitly before running NovaSight",
+            vite.display()
+        );
+    }
+
+    refresh_rust_artifacts(layout)?;
+
     let required = [
         ("novasightd", layout.daemon.clone()),
         ("novasightctl", layout.control.clone()),
-        ("Vite", vite_executable(layout)),
     ];
     let missing = required
         .iter()
@@ -94,11 +104,36 @@ fn validate_artifacts(layout: &PortableLayout) -> Result<()> {
         .collect::<Vec<_>>();
     if !missing.is_empty() {
         bail!(
-            "frontend development artifacts are missing; startup does not build or install anything implicitly:\n{}\nprepare them explicitly before running NovaSight",
+            "Cargo completed but frontend development artifacts are missing:\n{}",
             missing.join("\n")
         );
     }
     validate_daemon_capability(layout)?;
+    Ok(())
+}
+
+fn refresh_rust_artifacts(layout: &PortableLayout) -> Result<()> {
+    eprintln!(
+        "NOVASIGHT_DEV_REFRESH: checking current novasightd and novasightctl sources with Cargo"
+    );
+    let status = StdCommand::new("cargo")
+        .args([
+            "build",
+            "--locked",
+            "-p",
+            "novasightd",
+            "-p",
+            "novasightctl",
+        ])
+        .current_dir(&layout.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("refresh frontend-development Rust binaries with Cargo")?;
+    if !status.success() {
+        bail!("Cargo could not refresh frontend-development Rust binaries: {status}");
+    }
     Ok(())
 }
 
@@ -113,7 +148,7 @@ fn validate_daemon_capability(layout: &PortableLayout) -> Result<()> {
         return Ok(());
     }
     bail!(
-        "novasightd is older than the unified frontend-development launcher: {}\nrebuild it explicitly with: cargo build --locked -p novasightd -p novasightctl",
+        "Cargo produced a novasightd without the required --frontend-dev capability: {}",
         layout.daemon.display()
     )
 }

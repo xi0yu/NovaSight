@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, ExitCode, Stdio};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
@@ -31,7 +31,8 @@ const DAEMON_LOG_TAIL_BYTES: u64 = 3 * 1024;
 #[derive(Parser, Debug)]
 #[command(name = "novasight", about = "NovaSight portable launcher")]
 struct Args {
-    /// Run the internal Rust API and browser-facing Vite UI together.
+    /// Explicitly run the internal Rust API and browser-facing Vite UI together.
+    /// Source workspaces use this mode by default.
     #[arg(long)]
     frontend_dev: bool,
 }
@@ -49,7 +50,6 @@ struct PortableLayout {
     run_dir: PathBuf,
     ready_file: PathBuf,
     daemon_log: PathBuf,
-    web_root_override: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,10 +79,9 @@ async fn run() -> Result<()> {
     let args = Args::parse();
     let layout = PortableLayout::discover()?;
     prepare_layout(&layout)?;
-    if args.frontend_dev {
+    if layout.mode == LayoutMode::Developer || args.frontend_dev {
         return frontend_dev::run(&layout).await;
     }
-    validate_developer_artifacts(&layout)?;
     std::env::set_current_dir(&layout.root)
         .with_context(|| format!("set bundle root {}", layout.root.display()))?;
 
@@ -121,22 +120,15 @@ impl PortableLayout {
                 workspace.clone(),
                 executable_dir.join(executable_name("novasightd")),
                 executable_dir.join(executable_name("novasightctl")),
-                Some(PathBuf::from("out/web")),
             ));
         }
         let root = infer_bundle_root(executable_dir);
         let daemon = resolve_binary(&root, executable_dir, "novasightd")?;
         let control = resolve_binary(&root, executable_dir, "novasightctl")?;
-        Ok(Self::new(LayoutMode::Package, root, daemon, control, None))
+        Ok(Self::new(LayoutMode::Package, root, daemon, control))
     }
 
-    fn new(
-        mode: LayoutMode,
-        root: PathBuf,
-        daemon: PathBuf,
-        control: PathBuf,
-        web_root_override: Option<PathBuf>,
-    ) -> Self {
+    fn new(mode: LayoutMode, root: PathBuf, daemon: PathBuf, control: PathBuf) -> Self {
         let config = root.join(CONFIG_PATH);
         let data_dir = root.join(DATA_DIR);
         let model_dir = root.join(MODEL_DIR);
@@ -156,7 +148,6 @@ impl PortableLayout {
             run_dir,
             ready_file,
             daemon_log,
-            web_root_override,
         }
     }
 }
@@ -232,96 +223,6 @@ fn ensure_private_directory(path: &Path) -> Result<()> {
             .with_context(|| format!("set private permissions on {}", path.display()))?;
     }
     Ok(())
-}
-
-fn validate_developer_artifacts(layout: &PortableLayout) -> Result<()> {
-    if layout.mode != LayoutMode::Developer {
-        return Ok(());
-    }
-
-    let required = [
-        ("novasightd", layout.daemon.clone()),
-        ("novasightctl", layout.control.clone()),
-        ("Studio Web UI", layout.root.join("out/web/index.html")),
-    ];
-    let missing = required
-        .iter()
-        .filter(|(_, path)| !path.is_file())
-        .map(|(label, path)| format!("{label}: {}", path.display()))
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
-        bail!(
-            "developer runtime artifacts are missing; startup does not build artifacts implicitly:\n{}\nprepare them explicitly before running NovaSight",
-            missing.join("\n")
-        );
-    }
-    validate_web_build_freshness(layout)?;
-    Ok(())
-}
-
-fn validate_web_build_freshness(layout: &PortableLayout) -> Result<()> {
-    let built_index = layout.root.join("out/web/index.html");
-    let built_at = fs::metadata(&built_index)
-        .with_context(|| format!("inspect {}", built_index.display()))?
-        .modified()
-        .with_context(|| format!("read modification time for {}", built_index.display()))?;
-    let frontend_inputs = [
-        layout.root.join("web/src"),
-        layout.root.join("web/index.html"),
-        layout.root.join("web/package.json"),
-        layout.root.join("web/vite.config.ts"),
-        layout.root.join("deploy/studio-endpoints.json"),
-    ];
-    let mut newest_input: Option<(PathBuf, SystemTime)> = None;
-    for input in frontend_inputs {
-        newest_input = newest_modified_file(&input, newest_input)?;
-    }
-    let Some((source, source_modified_at)) = newest_input else {
-        return Ok(());
-    };
-    if source_modified_at > built_at {
-        bail!(
-            "Studio Web UI artifact is older than frontend source {}; refusing to serve stale out/web assets\nuse current source without a Web build: cargo run -p novasight -- --frontend-dev\nor explicitly refresh the static UI: pnpm --dir web build",
-            source.display()
-        );
-    }
-    Ok(())
-}
-
-fn newest_modified_file(
-    path: &Path,
-    current: Option<(PathBuf, SystemTime)>,
-) -> Result<Option<(PathBuf, SystemTime)>> {
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("inspect frontend source {}", path.display()))?;
-    if metadata.file_type().is_symlink() {
-        return Ok(current);
-    }
-    if metadata.is_file() {
-        let modified_at = metadata
-            .modified()
-            .with_context(|| format!("read modification time for {}", path.display()))?;
-        return Ok(match current {
-            Some((current_path, current_modified_at)) if current_modified_at >= modified_at => {
-                Some((current_path, current_modified_at))
-            }
-            _ => Some((path.to_owned(), modified_at)),
-        });
-    }
-    let mut newest = current;
-    if metadata.is_dir() {
-        for entry in fs::read_dir(path)
-            .with_context(|| format!("read frontend source {}", path.display()))?
-        {
-            newest = newest_modified_file(
-                &entry
-                    .with_context(|| format!("read entry below {}", path.display()))?
-                    .path(),
-                newest,
-            )?;
-        }
-    }
-    Ok(newest)
 }
 
 fn ensure_portable_config(layout: &PortableLayout) -> Result<()> {
@@ -422,9 +323,6 @@ fn spawn_daemon(layout: &PortableLayout) -> Result<Child> {
         .current_dir(&layout.root)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(log));
-    if let Some(web_root) = &layout.web_root_override {
-        command.env("NOVASIGHT_WEB_ROOT", web_root);
-    }
     command
         .spawn()
         .with_context(|| format!("start {}", layout.daemon.display()))
