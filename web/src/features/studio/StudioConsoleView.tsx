@@ -3804,7 +3804,7 @@ export function StudioConsoleView({
         <StudioNavigation activePage={activePage} onNavigate={navigatePage} />
       </aside>
 
-      <main className="console-main">
+      <main className="console-main" data-page={activePage}>
         <StudioPageHeader
           page={activePage}
           runtimeRunning={runtime?.running === true}
@@ -4314,11 +4314,11 @@ export function StudioConsoleView({
                 <NovaIcon name={parameterPageDirty ? "save" : "check-circle"} size={18} />
               </span>
               <div aria-live="polite" role="status">
-                <b>{parameterPageDirty ? "有未保存修改" : "修改后需要手动保存"}</b>
+                <b>{parameterPageDirty ? "修改尚未保存" : "参数已同步"}</b>
                 <small>
                   {parameterPageDirty
-                    ? "当前只保存在页面草稿中，尚未写入配置或作用到运行链。"
-                    : "参数修改不会自动生效；输出总开关属于安全操作，仍然即时执行。"}
+                    ? "保存后写入配置并立即作用到运行链。"
+                    : "修改参数后，请点击保存修改。"}
                 </small>
               </div>
               <div className="parameter-save-bar-actions">
