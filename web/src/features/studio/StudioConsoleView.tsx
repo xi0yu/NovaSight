@@ -4089,9 +4089,7 @@ export function StudioConsoleView({
             <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
             <Metric title="目标选择输入率" value={formatOptionalNumber(targetingBatchFps)} small="识别结果/s" />
             <Metric title="控制观测帧龄" value={formatOptionalNumber(controlFrameAgeMs)} small="当前控制样本 · ms" />
-            <Metric title="最近 Track" value={formatOptionalInteger(controlTrackId)} small={`${activeRuntimeClassLabel || "target"} · 最多 5Hz 遥测`} />
-            <Metric title="控制误差" value={formatOptionalNumber(predictedErrorDistancePx)} small="px" />
-            <Metric title="最近设备接受" value={hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE} small="与当前样本独立" />
+            <Metric title="当前命令" value={formatPoint(control.dx, control.dy, 0)} small="X / Y counts" />
           </div>
           <ControlTracePanel trace={controlTrace!} />
           <details className="studio-diagnostic-details">

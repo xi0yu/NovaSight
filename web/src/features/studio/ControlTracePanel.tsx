@@ -42,7 +42,7 @@ function StepStateBadge({ state }: { state: ControlTraceState }) {
 
 function ControlTraceStepCard({ step }: { step: ControlTraceStep }) {
   return (
-    <li className={`control-trace-step ${step.state}`}>
+    <li className={`control-trace-step ${step.state}`} title={`${step.detail} ${step.evidence}`}>
       <span className="control-trace-step-icon" aria-hidden="true">
         <NovaIcon name={STEP_ICONS[step.id]} size={18} />
       </span>
@@ -52,8 +52,6 @@ function ControlTraceStepCard({ step }: { step: ControlTraceStep }) {
           <StepStateBadge state={step.state} />
         </div>
         <b>{step.value}</b>
-        <p>{step.detail}</p>
-        <small>{step.evidence}</small>
       </div>
     </li>
   );
@@ -66,12 +64,10 @@ export function ControlTracePanel({ trace }: { trace: ControlTraceSummary }) {
         <div>
           <span className="class-config-eyebrow">实时控制链</span>
           <h2 id="control-trace-title">{trace.title}</h2>
-          <p>{trace.detail}</p>
         </div>
         <div className="control-trace-count" aria-label={`控制链路通过 ${trace.completed}/${trace.total}`}>
           <strong>{trace.completed}</strong>
           <span>/ {trace.total}</span>
-          <small>阶段通过</small>
         </div>
       </header>
 
@@ -80,16 +76,6 @@ export function ControlTracePanel({ trace }: { trace: ControlTraceSummary }) {
           <ControlTraceStepCard key={step.id} step={step} />
         ))}
       </ol>
-
-      <div className="control-trace-facts" aria-label="控制链路摘要">
-        {trace.facts.map((fact) => (
-          <div key={fact.label}>
-            <span>{fact.label}</span>
-            <strong>{fact.value}</strong>
-            <small>{fact.detail}</small>
-          </div>
-        ))}
-      </div>
     </section>
   );
 }

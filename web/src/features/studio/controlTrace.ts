@@ -21,20 +21,12 @@ export type ControlTraceStep = {
   evidence: string;
 };
 
-export type ControlTraceFact = {
-  label: string;
-  value: string;
-  detail: string;
-};
-
 export type ControlTraceSummary = {
   state: ControlTraceState;
   title: string;
-  detail: string;
   completed: number;
   total: number;
   steps: ControlTraceStep[];
-  facts: ControlTraceFact[];
 };
 
 export type BuildControlTraceInput = {
@@ -113,27 +105,8 @@ const OUTPUT_TRACE_LABELS: Record<string, string> = {
   ready: "输出链路已贯通"
 };
 
-const NEXT_ACTION_LABELS: Record<string, string> = {
-  start_mainline: "启动主链",
-  check_model: "检查模型",
-  check_capture_or_model: "检查采集或模型",
-  inspect_runtime_ingress: "查看输入状态",
-  check_latency: "检查延迟",
-  check_targeting: "检查目标选择",
-  inspect_control: "查看控制链",
-  check_license_or_build: "检查授权或构建",
-  enable_output_gate: "打开输出门",
-  activate_trigger: "激活触发条件",
-  connect_kmnet: "连接 kmNet",
-  monitor_output: "观察输出"
-};
-
 function outputTraceLabel(trace: RuntimeOutputTraceState): string {
   return OUTPUT_TRACE_LABELS[trace.code] ?? trace.code;
-}
-
-function outputTraceNextAction(trace: RuntimeOutputTraceState): string {
-  return NEXT_ACTION_LABELS[trace.next_action] ?? (trace.next_action || "继续观察");
 }
 
 function outputTraceState(trace: RuntimeOutputTraceState): ControlTraceState {
@@ -488,47 +461,11 @@ export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSu
           ? outputTraceLabel(input.outputTrace)
         : "控制链路正在等待实时状态"
         : "控制链路等待主链启动";
-  const detail = input.outputTrace?.detail ||
-    "按实时链路串起识别结果、目标速度预测、连续控制、跟踪限幅、输出门控、设备边界压枪叠加和设备回执。";
-  const traceFacts: ControlTraceFact[] = input.outputTrace
-    ? [
-        {
-          label: "输出状态",
-          value: outputTraceLabel(input.outputTrace),
-          detail: outputTraceNextAction(input.outputTrace)
-        }
-      ]
-    : [];
-
   return {
     state,
     title,
-    detail,
     completed,
     total: steps.length,
-    steps,
-    facts: [
-      ...traceFacts,
-      {
-        label: "当前目标",
-        value: input.trackId === null ? (input.hasTarget ? "已选择" : "无") : `track ${Math.trunc(input.trackId)}`,
-        detail: input.classLabel || "等待类别"
-      },
-      {
-        label: "控制误差",
-        value: formatNumber(input.errorDistancePx, 2, "px"),
-        detail: input.controlError
-      },
-      {
-        label: "整数命令",
-        value: present(input.integerCommand) ? input.integerCommand : "—",
-        detail: input.willEmit === true ? "已准入" : input.noSendReason || "未发送"
-      },
-      {
-        label: "最近回执",
-        value: positive(input.acceptedCommandCount) ? input.lastAcceptedCommand : "—",
-        detail: `accepted=${formatInteger(input.acceptedCommandCount)}`
-      }
-    ]
+    steps
   };
 }

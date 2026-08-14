@@ -2241,7 +2241,7 @@ tbody tr:hover {
   text-wrap: balance;
 }
 
-.control-trace-header p {
+.product-config-profile-header p {
   max-width: 780px;
   margin: 0;
   color: var(--text-secondary);
@@ -2253,7 +2253,7 @@ tbody tr:hover {
 
 .control-trace-count {
   min-width: 82px;
-  min-height: 58px;
+  min-height: 44px;
   display: grid;
   grid-template-columns: auto auto;
   align-content: center;
@@ -2279,7 +2279,7 @@ tbody tr:hover {
   font-weight: 900;
 }
 
-.control-trace-count small {
+.product-config-profile-score small {
   grid-column: 1 / -1;
   color: var(--text-tertiary);
   font-size: 10px;
@@ -2298,8 +2298,9 @@ tbody tr:hover {
 
 .control-trace-step {
   min-width: 0;
-  min-height: 170px;
+  min-height: 94px;
   display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
   align-content: start;
   gap: 9px;
   padding: 10px;
@@ -2406,60 +2407,6 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
-.control-trace-step-copy p,
-.control-trace-step-copy small {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 760;
-  line-height: 1.45;
-  text-wrap: pretty;
-}
-
-.control-trace-step-copy small {
-  color: var(--text-tertiary);
-  overflow-wrap: anywhere;
-}
-
-.control-trace-facts {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.control-trace-facts > div {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-  padding: 9px 10px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--surface);
-}
-
-.control-trace-facts span {
-  color: var(--text-tertiary);
-  font-size: 10px;
-  font-weight: 850;
-}
-
-.control-trace-facts strong {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 930;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.control-trace-facts small {
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 760;
-  overflow-wrap: anywhere;
-}
-
 .product-config-profile-items {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -2543,6 +2490,21 @@ tbody tr:hover {
   align-items: start;
   justify-content: space-between;
   gap: 8px;
+}
+
+.product-config-profile-item .control-trace-step-copy p,
+.product-config-profile-item .control-trace-step-copy small {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.product-config-profile-item .control-trace-step-copy small {
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
 }
 
 .product-config-profile-state {
@@ -4989,7 +4951,6 @@ body::after {
   .launch-readiness-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-config-profile-items { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .control-trace-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .control-trace-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .current-model-summary { grid-template-columns: minmax(0, 1fr) auto; }
   .current-model-runtime-facts { grid-column: 1 / -1; grid-row: 2; }
 }
@@ -5051,18 +5012,11 @@ body::after {
   .control-trace-count {
     width: 100%;
     min-height: 52px;
-    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-columns: auto auto;
     justify-content: start;
     padding: 0 12px;
   }
-  .control-trace-count small {
-    grid-column: auto;
-    align-self: end;
-    padding-bottom: 2px;
-    text-align: left;
-  }
-  .control-trace-steps,
-  .control-trace-facts {
+  .control-trace-steps {
     grid-template-columns: minmax(0, 1fr);
   }
   .console-kv {
