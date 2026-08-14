@@ -136,10 +136,13 @@ configuration, logs, and run markers are read from the source tree:
 - logs: `logs/`
 - ready/control socket: `run/`
 
-It validates `novasightd`, `novasightctl`, and `out/web/index.html`, then starts
-the daemon with `NOVASIGHT_WEB_ROOT=out/web`. Missing artifacts produce an
-explicit error instead of triggering a hidden Cargo or Pnpm build. This is a
-developer convenience path; the user-facing path remains
+It validates `novasightd`, `novasightctl`, and `out/web/index.html`, and refuses
+to serve `out/web` when frontend source files are newer than that build. Missing
+or stale artifacts produce an explicit error instead of triggering a hidden
+Cargo or Pnpm build. A stale-UI error points to `--frontend-dev` for live source
+or the explicit Web build command. When artifacts are current, the launcher
+starts the daemon with `NOVASIGHT_WEB_ROOT=out/web`. This is a developer
+convenience path; the user-facing path remains
 `out/package/NovaSight/NovaSight`.
 
 ## Frontend HMR Development

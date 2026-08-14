@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, ExitCode, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
@@ -255,7 +255,73 @@ fn validate_developer_artifacts(layout: &PortableLayout) -> Result<()> {
             missing.join("\n")
         );
     }
+    validate_web_build_freshness(layout)?;
     Ok(())
+}
+
+fn validate_web_build_freshness(layout: &PortableLayout) -> Result<()> {
+    let built_index = layout.root.join("out/web/index.html");
+    let built_at = fs::metadata(&built_index)
+        .with_context(|| format!("inspect {}", built_index.display()))?
+        .modified()
+        .with_context(|| format!("read modification time for {}", built_index.display()))?;
+    let frontend_inputs = [
+        layout.root.join("web/src"),
+        layout.root.join("web/index.html"),
+        layout.root.join("web/package.json"),
+        layout.root.join("web/vite.config.ts"),
+        layout.root.join("deploy/studio-endpoints.json"),
+    ];
+    let mut newest_input: Option<(PathBuf, SystemTime)> = None;
+    for input in frontend_inputs {
+        newest_input = newest_modified_file(&input, newest_input)?;
+    }
+    let Some((source, source_modified_at)) = newest_input else {
+        return Ok(());
+    };
+    if source_modified_at > built_at {
+        bail!(
+            "Studio Web UI artifact is older than frontend source {}; refusing to serve stale out/web assets\nuse current source without a Web build: cargo run -p novasight -- --frontend-dev\nor explicitly refresh the static UI: pnpm --dir web build",
+            source.display()
+        );
+    }
+    Ok(())
+}
+
+fn newest_modified_file(
+    path: &Path,
+    current: Option<(PathBuf, SystemTime)>,
+) -> Result<Option<(PathBuf, SystemTime)>> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("inspect frontend source {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(current);
+    }
+    if metadata.is_file() {
+        let modified_at = metadata
+            .modified()
+            .with_context(|| format!("read modification time for {}", path.display()))?;
+        return Ok(match current {
+            Some((current_path, current_modified_at)) if current_modified_at >= modified_at => {
+                Some((current_path, current_modified_at))
+            }
+            _ => Some((path.to_owned(), modified_at)),
+        });
+    }
+    let mut newest = current;
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)
+            .with_context(|| format!("read frontend source {}", path.display()))?
+        {
+            newest = newest_modified_file(
+                &entry
+                    .with_context(|| format!("read entry below {}", path.display()))?
+                    .path(),
+                newest,
+            )?;
+        }
+    }
+    Ok(newest)
 }
 
 fn ensure_portable_config(layout: &PortableLayout) -> Result<()> {
