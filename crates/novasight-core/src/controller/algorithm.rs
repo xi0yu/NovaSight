@@ -3,9 +3,10 @@
 //! This module owns sequencing, bounded temporal state, and output policy.
 //! Target prediction is delegated to `prediction`, pure projection and
 //! nonlinear response math to `control_law`, and integer conversion to
-//! `limiter`.
+//! `quantizer`.
 //!
-//! * `dx`/`dy` are integer mouse counts the device should emit.
+//! * `dx`/`dy` are integer tracking demand. Recoil composition and the single
+//!   fixed X/Y output limit are applied later at the device boundary.
 //! * `emit_allowed` is `true` only when the algorithm produced an
 //!   emit-eligible decision. Triggers and target validity gate the
 //!   state machine; stale or non-monotonic observations are rejected
@@ -16,11 +17,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::control_law::{AimControlInput, AimControlLaw, AimControlParameters, AxisPair};
-use crate::limiter::DeviceCountLimiter;
 use crate::prediction::{
     FocusTargetObservation, PredictionMotionState, SingleTargetPredictionConfig,
     SingleTargetPredictor,
 };
+use crate::quantizer::DeviceCountQuantizer;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ControlMode {
@@ -296,7 +297,7 @@ impl Default for AimResult {
 pub struct AimAlgorithm {
     config: AimAlgorithmConfig,
     control_law: Option<AimControlLaw>,
-    limiter: DeviceCountLimiter,
+    quantizer: DeviceCountQuantizer,
     last_generation: Option<u64>,
     last_capture_ts_ns: Option<u64>,
     target_id: Option<u64>,
@@ -308,7 +309,7 @@ impl AimAlgorithm {
         Self {
             config,
             control_law: AimControlLaw::new(config.control_parameters()),
-            limiter: DeviceCountLimiter::new(),
+            quantizer: DeviceCountQuantizer::new(),
             last_generation: None,
             last_capture_ts_ns: None,
             target_id: None,
@@ -320,11 +321,11 @@ impl AimAlgorithm {
         self.config = config;
         self.control_law = AimControlLaw::new(config.control_parameters());
         self.prediction.set_config(config.prediction_config());
-        self.limiter.reset();
+        self.quantizer.reset();
     }
 
     pub fn reset(&mut self) {
-        self.limiter.reset();
+        self.quantizer.reset();
         self.last_generation = None;
         self.last_capture_ts_ns = None;
         self.target_id = None;
@@ -332,7 +333,7 @@ impl AimAlgorithm {
     }
 
     pub fn release_trigger(&mut self) {
-        self.limiter.reset();
+        self.quantizer.reset();
     }
 
     /// Clear target-relative state while preserving observation sequence
@@ -433,20 +434,15 @@ impl AimAlgorithm {
         let demand_y = control_result.demand_counts.y;
 
         let (dx, dy, block_reason) = if observation.trigger_active {
-            let limited = match self.limiter.limit(
-                demand_x,
-                demand_y,
-                self.config.max_output_x_counts,
-                self.config.max_output_y_counts,
-            ) {
+            let quantized = match self.quantizer.quantize(demand_x, demand_y) {
                 Ok(value) => value,
                 Err(_) => {
                     self.release_trigger();
                     return AimResult::blocked(BlockReason::DemandOutOfRange);
                 }
             };
-            let dx = limited.dx;
-            let dy = limited.dy;
+            let dx = quantized.dx;
+            let dy = quantized.dy;
             let reason = if dx == 0 && dy == 0 {
                 BlockReason::DeadZone
             } else {
@@ -462,7 +458,7 @@ impl AimAlgorithm {
         self.last_capture_ts_ns = Some(observation.capture_ts_ns);
         self.target_id = Some(observation.target_id);
 
-        let (quantizer_residual_x, quantizer_residual_y) = self.limiter.residuals();
+        let (quantizer_residual_x, quantizer_residual_y) = self.quantizer.residuals();
         AimResult {
             sample_available: true,
             generation: observation.generation,
