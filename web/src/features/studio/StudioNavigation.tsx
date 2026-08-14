@@ -54,7 +54,7 @@ const navigationGroups: NavigationGroup[] = [
     id: "configuration",
     label: "配置管理",
     items: [
-      { id: "params", label: "参数设置", detail: "类别、算法与跟踪", icon: "settings" }
+      { id: "params", label: "参数设置", detail: "触发到输出", icon: "settings" }
     ]
   },
   {
@@ -86,7 +86,7 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
   params: {
     group: "配置管理",
     title: "参数设置",
-    description: "查看当前配置，维护类别、控制算法和设备参数。"
+    description: "按控制链顺序调整触发、延迟、算法、压枪、限幅和输出。"
   },
   "control-test": {
     group: "排查工具",

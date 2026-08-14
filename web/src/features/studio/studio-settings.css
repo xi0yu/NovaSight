@@ -1459,6 +1459,185 @@
   padding: var(--space-4);
 }
 
+.control-chain-settings {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.control-chain-setting {
+  display: grid;
+  grid-template-columns: 34px minmax(132px, 0.42fr) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.control-chain-setting.output-enabled {
+  border-color: var(--status-success-border);
+}
+
+.control-chain-setting.output-paused {
+  border-color: var(--status-warning-border);
+}
+
+.control-chain-step {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-3);
+  background: var(--bg-subtle);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+}
+
+.control-chain-setting-title {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.control-chain-setting-title b {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.control-chain-setting-title span {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.control-chain-setting-controls {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.trigger-mode-options {
+  width: min(100%, 300px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-self: end;
+  padding: 3px;
+  border: 1px solid var(--control-field-border);
+  border-radius: var(--radius-3);
+  background: var(--bg-subtle);
+}
+
+.trigger-mode-options > button {
+  min-height: 32px;
+  border: 0;
+  border-radius: calc(var(--radius-3) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.trigger-mode-options > button.active {
+  background: var(--button-primary-bg);
+  color: var(--button-primary-fg);
+  box-shadow: var(--shadow-card);
+}
+
+.trigger-mode-options > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.control-chain-setting-controls.split {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.control-chain-setting-controls.recoil {
+  grid-template-columns: repeat(2, minmax(132px, 1fr));
+}
+
+.module-switch.compact {
+  min-height: 38px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-3);
+}
+
+.module-switch.compact b {
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.module-switch.compact i {
+  min-width: 31px;
+  padding: 4px 7px;
+  font-size: 10px;
+}
+
+.control-chain-inline-field {
+  min-width: 0;
+  display: grid !important;
+  grid-template-columns: auto minmax(68px, 110px) auto;
+  align-items: center;
+  gap: 7px;
+  margin: 0 !important;
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.control-chain-inline-field i {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 600;
+}
+
+.parameter-support-details {
+  margin: 0 0 var(--space-3);
+}
+
+.parameter-support-content {
+  padding: var(--space-3);
+}
+
+.parameter-support-content > .class-config-summary-card {
+  margin-bottom: var(--space-3);
+}
+
+@media (max-width: 760px) {
+  .control-chain-setting {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .trigger-mode-options,
+  .control-chain-setting > .module-switch,
+  .control-chain-setting-controls {
+    width: 100%;
+    grid-column: 2;
+    justify-self: stretch;
+  }
+
+  .control-chain-setting-controls,
+  .control-chain-setting-controls.split,
+  .control-chain-setting-controls.recoil {
+    grid-template-columns: 1fr;
+  }
+}
+
 .class-config-summary-main {
   min-width: 0;
   display: flex;

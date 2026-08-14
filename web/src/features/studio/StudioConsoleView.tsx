@@ -117,7 +117,6 @@ import "./studio-settings.css";
 
 const DEFAULT_CONTROL_ALGORITHM = "continuous_atan_predictive_v1";
 const CONTROL_ALGORITHM_LABEL = "连续 Atan 控制";
-const CONTROL_ALGORITHM_DESCRIPTION = "当前链路：选择主要目标、目标速度预测、连续非线性控制、跟踪限幅、输出门控、压枪叠加、命令输出。";
 const CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX = "配置 schema 与 Studio 参数不一致";
 type KmnetTestMessageTone = "success" | "warning";
 const loadModelManagerDialog = () => import("../models/ModelManagerDialog");
@@ -422,9 +421,9 @@ function crosshairStateLabel(value: string): string {
 
 function triggerModeLabel(value: string): string {
   if (value === "always") {
-    return "检测目标自动控制";
+    return "直接触发";
   }
-  return "kmNet 硬件触发";
+  return "按键触发";
 }
 
 const NO_SAMPLE = "—";
@@ -1392,12 +1391,6 @@ export function StudioConsoleView({
   const recoilFireDelayMs = readNumber(recoilConfig.fire_delay_ms, 0);
   const recoilYCounts = readNumber(recoilConfig.y_counts, 1);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
-  const triggerModeSchemaApplyMode = configFieldIndex?.get("control.trigger_mode")?.apply_mode;
-  const triggerModeApplyMode = triggerModeSchemaApplyMode === "hot_update"
-    ? "live"
-    : triggerModeSchemaApplyMode === "epoch_reload"
-      ? "reload"
-      : "restart";
   const controlAlgorithmId = readString(configSchema?.algorithm?.id, DEFAULT_CONTROL_ALGORITHM);
   const controlAlgorithmLabel = readString(configSchema?.algorithm?.label, CONTROL_ALGORITHM_LABEL);
   const algorithmAtanScaleCounts = readNumber(
@@ -4160,7 +4153,7 @@ export function StudioConsoleView({
               <div className="console-card">
                 <SectionTitle title="输出限幅与命令" />
                 <div className="console-kv">
-                  <span>控制模式</span><b>{controlModeLabel}</b>
+                  <span>控制算法</span><b>{controlModeLabel}</b>
                   <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
                   <span>响应阶段</span><b>{formatResponseStage(controlPipeline.mode)}</b>
                   <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
@@ -4202,122 +4195,204 @@ export function StudioConsoleView({
           <section className="console-page">
           {activePage === "params" ? (
           <>
-            <ProductConfigProfilePanel
-              busy={busy !== null}
-              onAction={handleProductConfigAction}
-              profile={productConfigProfile!}
-            />
-            <div className={outputEnabled ? "console-card control-output-gate-card enabled" : "console-card control-output-gate-card paused"}>
-              <div className="control-output-gate-identity">
-                <span className="control-output-gate-icon" aria-hidden="true">
-                  <NovaIcon name={outputEnabled ? "device-send" : "pause-output"} size={21} strokeWidth={1.8} />
-                </span>
-                <div>
-                  <span className="class-config-eyebrow">输出总开关</span>
-                  <h3>{outputEnabled ? "允许发送偏移控制量" : "偏移输出已暂停"}</h3>
-                  <p>只控制最终鼠标位移是否交付；不会断开 KMNet，也不会停止采集、推理、目标选择和控制量计算。</p>
+            <ol className="control-chain-settings" aria-label="鼠标控制参数链">
+              <li className="console-card control-chain-setting">
+                <span className="control-chain-step" aria-hidden="true">01</span>
+                <div className="control-chain-setting-title">
+                  <b>触发方式</b>
                 </div>
-              </div>
-              <ModuleSwitch
-                label="发送偏移控制量"
-                detail={outputEnabled
-                  ? kmnetRestartRequired
-                    ? "kmNet 新配置等待当前进程重载；需要立即停发时请断开 kmNet"
-                    : "关闭后立即清空被取代命令"
-                  : kmnetRestartRequired
-                    ? "等待当前进程完成 kmNet 适配器重载后才能打开输出"
-                    : !kmnetAutoConnect
-                    ? "请先启用并保存 kmNet 自动连接配置"
-                    : !kmnetExecutorAvailable
-                      ? "当前没有可用的硬件输出适配器"
-                      : !kmnetRuntimeConnected
-                        ? "请先连接 kmNet，再打开偏移输出"
-                        : "开启后只发送新的实时观测"}
-                disabled={busy !== null || kmnetRestartRequired || (!outputEnabled && (!kmnetAutoConnect || !kmnetExecutorAvailable || !kmnetRuntimeConnected))}
-                enabled={outputEnabled}
-                optimistic={false}
-                onToggle={requestOutputGateChange}
-              />
-            </div>
-            <div className="console-card motion-control-mode-card static">
-              <div className="motion-control-mode-copy">
-                  <span className="class-config-eyebrow">控制算法</span>
-                <h3>目标到命令控制链</h3>
-                <p>{controlPredictionEnabled ? "已选目标先按 aim 点速度给出提前瞄点，再进入连续非线性控制、输出限幅和量化。" : "设备输出只由当前测量误差、连续非线性控制、输出限幅和量化产生。"}</p>
-              </div>
-              <ModuleSwitch
-                label="启用 X / Y 目标速度预测"
-                detail="只预测 Tracker 已选中的唯一目标；切换目标、时间戳异常或历史不足时自动归零。修改后即时进入实时控制配置。"
-                enabled={controlPredictionEnabled}
-                onToggle={(enabled) => updateControlPipelineField("prediction_enabled", enabled)}
-              />
-            </div>
-            <div className="console-card class-config-summary-card">
-              <div className="class-config-summary-main">
-                <div className="class-config-summary-icon" aria-hidden="true">
-                  <NovaIcon name="target" size={20} strokeWidth={1.8} />
+                <div className="trigger-mode-options" role="group" aria-label="触发方式">
+                  <button
+                    aria-pressed={triggerMode === "hardware"}
+                    className={triggerMode === "hardware" ? "active" : ""}
+                    disabled={busy !== null}
+                    onClick={() => void updateConfigField("control", "trigger_mode", "hardware")}
+                    type="button"
+                  >
+                    按键触发
+                  </button>
+                  <button
+                    aria-pressed={triggerMode === "always"}
+                    className={triggerMode === "always" ? "active" : ""}
+                    disabled={busy !== null}
+                    onClick={() => void updateConfigField("control", "trigger_mode", "always")}
+                    type="button"
+                  >
+                    直接触发
+                  </button>
                 </div>
-                <div>
-                  <span className="class-config-eyebrow">类别配置</span>
-                  <h3>{activeDetectionProfile}</h3>
-                  <p>类别名称、选择顺序、瞄点类型与三条共享瞄点线在独立靶场统一管理。</p>
+              </li>
+
+              <li className="console-card control-chain-setting">
+                <span className="control-chain-step" aria-hidden="true">02</span>
+                <div className="control-chain-setting-title">
+                  <b>开火延迟</b>
+                  <span>{recoilFireDelayEnabled ? `${recoilFireDelayMs.toFixed(0)} ms` : "关闭"}</span>
                 </div>
-              </div>
-              <button type="button"
-                className="console-button primary"
-                disabled={configDialogSaving}
-                onClick={() => openConfigDialog("class-config")}
-              >
-                <NovaIcon name="settings" size={16} />
-                管理类别配置
-              </button>
-            </div>
-            <div className="console-grid2 params-control-grid compact-content-grid" data-algorithm-page={controlAlgorithmId}>
-              <div className="console-card">
-                <SectionTitle title="控制模式" />
-                <div className="console-kv compact-kv" aria-label="控制模式">
-                  <span>当前控制器</span><b>{controlModeLabel}</b>
+                <div className="control-chain-setting-controls">
+                  <ModuleSwitch
+                    compact
+                    label="压枪首发延迟"
+                    enabled={recoilFireDelayEnabled}
+                    onToggle={(enabled) => updateControlGroupField("recoil", "fire_delay_enabled", enabled)}
+                  />
+                  {recoilFireDelayEnabled ? (
+                    <label className="control-chain-inline-field">
+                      <span>延迟</span>
+                      <InlineNumberControl
+                        ariaLabel="首次压枪延迟"
+                        value={recoilFireDelayMs}
+                        onCommit={(value) => updateControlGroupField("recoil", "fire_delay_ms", Math.max(0, Math.min(5000, Math.round(value))))}
+                      />
+                      <i>ms</i>
+                    </label>
+                  ) : null}
                 </div>
-                <p className="console-section-note">{CONTROL_ALGORITHM_DESCRIPTION}</p>
-                <SelectControl
-                  label="触发方式"
-                  detail="硬件触发使用 NovaSight 缓存的 kmNet 按键状态；自动控制只要求存在合格目标。"
-                  value={triggerMode}
-                  applyMode={triggerModeApplyMode}
-                  options={[
-                    { value: "hardware", label: "kmNet 硬件按键触发" },
-                    { value: "always", label: "检测到目标后自动控制" }
-                  ]}
-                  onCommit={(value) => updateConfigField("control", "trigger_mode", value)}
+              </li>
+
+              <li className="console-card control-chain-setting">
+                <span className="control-chain-step" aria-hidden="true">03</span>
+                <div className="control-chain-setting-title">
+                  <b>算法配置</b>
+                  <span>{controlPredictionEnabled ? "预测开启" : "预测关闭"}</span>
+                </div>
+                <div className="control-chain-setting-controls split">
+                  <ModuleSwitch
+                    compact
+                    label="目标速度预测"
+                    enabled={controlPredictionEnabled}
+                    onToggle={(enabled) => updateControlPipelineField("prediction_enabled", enabled)}
+                  />
+                  <button
+                    className="console-button"
+                    disabled={configDialogSaving}
+                    onClick={() => openConfigDialog("algorithm")}
+                    type="button"
+                  >
+                    <NovaIcon name="settings" size={15} />
+                    算法参数
+                  </button>
+                </div>
+              </li>
+
+              <li className="console-card control-chain-setting">
+                <span className="control-chain-step" aria-hidden="true">04</span>
+                <div className="control-chain-setting-title">
+                  <b>压枪</b>
+                  <span>{recoilEnabled ? "开启" : "关闭"}</span>
+                </div>
+                <div className="control-chain-setting-controls recoil">
+                  <ModuleSwitch compact label="启用压枪" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
+                  <ModuleSwitch compact label="仅有目标时" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
+                  {recoilEnabled ? (
+                    <>
+                      <label className="control-chain-inline-field">
+                        <span>间隔</span>
+                        <InlineNumberControl
+                          ariaLabel="压枪叠加间隔"
+                          value={recoilIntervalMs}
+                          onCommit={(value) => updateControlGroupField("recoil", "interval_ms", Math.max(1, Math.min(5000, Math.round(value))))}
+                        />
+                        <i>ms</i>
+                      </label>
+                      <label className="control-chain-inline-field">
+                        <span>每次 +Y</span>
+                        <InlineNumberControl
+                          ariaLabel="每次压枪叠加 Y"
+                          value={recoilYCounts}
+                          onCommit={(value) => updateControlGroupField("recoil", "y_counts", Math.max(1, Math.min(32767, Math.round(value))))}
+                        />
+                        <i>counts</i>
+                      </label>
+                    </>
+                  ) : null}
+                </div>
+              </li>
+
+              <li className="console-card control-chain-setting">
+                <span className="control-chain-step" aria-hidden="true">05</span>
+                <div className="control-chain-setting-title">
+                  <b>限幅</b>
+                  <span>{controlMaxCounts.toFixed(0)} counts</span>
+                </div>
+                <div className="control-chain-setting-controls split">
+                  <label className="control-chain-inline-field">
+                    <span>单轴上限</span>
+                    <InlineNumberControl
+                      ariaLabel="跟踪单轴限幅"
+                      value={controlMaxCounts}
+                      onCommit={(value) => updateControlPipelineField("max_counts_per_update", Math.max(1, Math.min(32767, Math.round(value))))}
+                    />
+                    <i>counts</i>
+                  </label>
+                  <button
+                    className="console-button"
+                    disabled={configDialogSaving}
+                    onClick={() => {
+                      openConfigDialog("algorithm");
+                      setAlgorithmSettingsSection("stability");
+                    }}
+                    type="button"
+                  >
+                    <NovaIcon name="settings" size={15} />
+                    更多限幅
+                  </button>
+                </div>
+              </li>
+
+              <li className={outputEnabled ? "console-card control-chain-setting output-enabled" : "console-card control-chain-setting output-paused"}>
+                <span className="control-chain-step" aria-hidden="true">06</span>
+                <div className="control-chain-setting-title">
+                  <b>输出</b>
+                  <span>{outputEnabled ? "允许" : "暂停"}</span>
+                </div>
+                <ModuleSwitch
+                  compact
+                  label="发送鼠标偏移"
+                  detail={!outputEnabled && kmnetRestartRequired
+                    ? "kmNet 正在重载"
+                    : !outputEnabled && !kmnetAutoConnect
+                      ? "请先启用 kmNet"
+                      : !outputEnabled && !kmnetRuntimeConnected
+                        ? "请先连接 kmNet"
+                        : undefined}
+                  disabled={busy !== null || kmnetRestartRequired || (!outputEnabled && (!kmnetAutoConnect || !kmnetExecutorAvailable || !kmnetRuntimeConnected))}
+                  enabled={outputEnabled}
+                  optimistic={false}
+                  onToggle={requestOutputGateChange}
                 />
-                <div className="control-aim-source-note">
-                  <span>
-                    <b>瞄点规则由三种类型统一提供</b>
-                    <small>头 {Math.round(aimRoleRatios.head * 100)}%、身体 {Math.round(aimRoleRatios.body * 100)}%、其他 {Math.round(aimRoleRatios.other * 100)}%；未映射类别自动使用“其他”。</small>
-                  </span>
-                  <div className="role-aim-mini-preview" aria-hidden="true">
-                    <i className="head" style={{ top: `${aimRoleRatios.head * 100}%` }} />
-                    <i className="body" style={{ top: `${aimRoleRatios.body * 100}%` }} />
-                    <i className="other" style={{ top: `${aimRoleRatios.other * 100}%` }} />
+              </li>
+            </ol>
+            <details className="studio-diagnostic-details parameter-support-details">
+              <summary>
+                <span>
+                  <b>目标与识别设置</b>
+                  <small>类别、准星、目标选择与跟踪</small>
+                </span>
+                <i>展开</i>
+              </summary>
+              <div className="parameter-support-content">
+                <div className="console-card class-config-summary-card">
+                  <div className="class-config-summary-main">
+                    <div className="class-config-summary-icon" aria-hidden="true">
+                      <NovaIcon name="target" size={20} strokeWidth={1.8} />
+                    </div>
+                    <div>
+                      <span className="class-config-eyebrow">类别配置</span>
+                      <h3>{activeDetectionProfile}</h3>
+                      <p>类别名称、选择顺序、瞄点类型与三条共享瞄点线在独立靶场统一管理。</p>
+                    </div>
                   </div>
+                  <button type="button"
+                    className="console-button primary"
+                    disabled={configDialogSaving}
+                    onClick={() => openConfigDialog("class-config")}
+                  >
+                    <NovaIcon name="settings" size={16} />
+                    管理类别配置
+                  </button>
                 </div>
-              </div>
-
-              <div className="console-card">
-                <SectionTitle title={`控制算法 · ${controlModeLabel}`} />
-                <p className="console-section-note">当前跟踪控制链路使用投影、增益、Atan 响应曲线和单次限幅；压枪 +Y 在设备边界另行叠加。</p>
-                <div className="advanced-settings-summary">
-                  <div><span>FOVX</span><b>{controlFovX.toFixed(STANDARD_DECIMAL_DIGITS)}°</b></div>
-                  <div><span>K_base 基础响应</span><b>{pResponseScale.toFixed(3)}</b></div>
-                  <div><span>B 动态增强</span><b>{pResponseBoost.toFixed(2)}</b></div>
-                  <div><span>目标速度预测</span><b>{controlPredictionEnabled ? "二维 aim 已启用" : "已关闭"}</b></div>
-                </div>
-                <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("algorithm")}              >
-                  <NovaIcon name="settings" size={15} />
-                  调整控制算法
-                </button>
-              </div>
-
+                <div className="console-grid2 params-control-grid compact-content-grid" data-algorithm-page={controlAlgorithmId}>
               <div className="console-card crosshair-reference-card">
                 <SectionTitle title="视觉准星基准" />
                 <p className="console-section-note">
@@ -4430,69 +4505,6 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                <SectionTitle title="Y 轴压枪" />
-                <ModuleSwitch label="启用压枪" detail="真实左键按下后按设定间隔，把 +Y 与最新安全画面的跟踪量合并；每张画面最多发送一条 move。" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
-                <ModuleSwitch label="只在存在目标时压枪" detail="开启后要求当前有效目标；单帧漏检时沿用“目标丢失保持”窗口，但不会用预测框继续跟踪。关闭后，无目标时到期压枪量也能组成当轮唯一 move。" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
-                <ModuleSwitch label="延迟开火（压枪首发）" detail="开启后，在真实左键按下后额外等待设定时长，再允许第一次压枪 +Y 进入输出。它不会延迟或伪造真实左键事件。" enabled={recoilFireDelayEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "fire_delay_enabled", enabled)} />
-                {recoilFireDelayEnabled ? (
-                  <div className="advanced-settings-grid">
-                    <ParameterNumberControl
-                      label="首次压枪额外延迟"
-                      detail="第一次有效左键压枪前额外等待该时长，后续仍按叠加间隔发第二次及之后。"
-                      value={recoilFireDelayMs}
-                      min={0}
-                      max={5000}
-                      recommendedMin={0}
-                      recommendedMax={250}
-                      step={1}
-                      unit="ms"
-                      kind="stepper"
-                      riskLevel="advanced"
-                      onCommit={(value) =>
-                        updateControlGroupField("recoil", "fire_delay_ms", Math.round(value))
-                      }
-                    />
-                  </div>
-                ) : null}
-                {recoilEnabled ? (
-                <details className="crosshair-advanced-settings">
-                    <summary>间隔叠加参数</summary>
-                    <p className="console-section-note">首次开火先等待一个完整间隔；达到间隔后只叠加一次，不补发错过的次数。发送失败也不会提前消耗本次压枪机会。</p>
-                    <div className="advanced-settings-grid">
-                      <ParameterNumberControl
-                        label="压枪叠加间隔"
-                        detail="距离上一次成功包含压枪量的 move 达到该时长后，在下一张安全新画面中再次叠加；不会用独立定时器补发。"
-                        value={recoilIntervalMs}
-                        min={1}
-                        max={5000}
-                        recommendedMin={1}
-                        recommendedMax={250}
-                        step={1}
-                        unit="ms"
-                        kind="stepper"
-                        riskLevel="advanced"
-                        onCommit={(value) => updateControlGroupField("recoil", "interval_ms", Math.round(value))}
-                      />
-                      <ParameterNumberControl
-                        label="每次叠加 +Y"
-                        detail="达到间隔时合入当轮 Y 输出的正向压枪量。"
-                        value={recoilYCounts}
-                        min={1}
-                        max={32767}
-                        recommendedMin={1}
-                        recommendedMax={200}
-                        step={1}
-                        unit="counts"
-                        kind="stepper"
-                        riskLevel="advanced"
-                        onCommit={(value) => updateControlGroupField("recoil", "y_counts", Math.round(value))}
-                      />
-                    </div>
-                  </details>
-                ) : null}
-              </div>
-
-              <div className="console-card">
                 <SectionTitle title="目标选择与切换 · 通用参数" />
                 <ParameterNumberControl
                   label="目标选择半径（640 基准）"
@@ -4547,7 +4559,25 @@ export function StudioConsoleView({
                   管理 Tracker
                 </button>
               </div>
-            </div>
+                </div>
+              </div>
+            </details>
+            <details className="studio-diagnostic-details parameter-support-details">
+              <summary>
+                <span>
+                  <b>配置生效状态</b>
+                  <small>采集、模型、控制与设备</small>
+                </span>
+                <i>{productConfigProfile!.attentionCount > 0 ? `${productConfigProfile!.attentionCount} 项需处理` : "正常"}</i>
+              </summary>
+              <div className="parameter-support-content">
+                <ProductConfigProfilePanel
+                  busy={busy !== null}
+                  onAction={handleProductConfigAction}
+                  profile={productConfigProfile!}
+                />
+              </div>
+            </details>
           </>
           ) : (
           <>
@@ -4958,7 +4988,7 @@ export function StudioConsoleView({
                 <h3 id="algorithm-settings-stability-title">跟踪输出与到位保持</h3>
                 <p>这些参数不改变目标位置。M 限制每轮跟踪控制的 counts，压枪 +Y 在设备边界另行叠加；D 决定到位停止，Q_res 只保留不足 1 count 的小数余量。</p>
               </header>
-              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低跟踪单次限幅，再检查到位半径；压枪叠加量在“Y 轴压枪”中单独调整</span></div>
+              <div className="algorithm-tuning-order"><b>过冲排查</b><span>先降低跟踪单次限幅，再检查到位半径；压枪叠加量在参数页“压枪”中调整</span></div>
               <div className="advanced-settings-grid two-column">
                 {stabilityParameters.map(renderAlgorithmNumberParameter)}
               </div>
@@ -5666,13 +5696,15 @@ function LaunchStepIndicator({ state }: { state: MainlineLaunchStepState }) {
 function ModuleSwitch({
   label,
   detail,
+  compact = false,
   enabled,
   disabled = false,
   optimistic = true,
   onToggle
 }: {
   label: string;
-  detail: string;
+  detail?: string;
+  compact?: boolean;
   enabled: boolean;
   disabled?: boolean;
   optimistic?: boolean;
@@ -5712,13 +5744,13 @@ function ModuleSwitch({
     <button type="button"
       aria-busy={pending}
       aria-pressed={visualEnabled}
-      className={visualEnabled ? "module-switch on" : "module-switch"}
+      className={`module-switch${visualEnabled ? " on" : ""}${compact ? " compact" : ""}`}
       onClick={() => void toggle()}
       disabled={pending || disabled}
     >
       <span>
         <b>{label}</b>
-        <small>{detail}</small>
+        {detail ? <small>{detail}</small> : null}
       </span>
       <i aria-hidden="true">{pending ? "处理中" : visualEnabled ? "开" : "关"}</i>
     </button>
