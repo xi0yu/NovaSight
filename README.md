@@ -161,6 +161,9 @@ in `data/novasight.yaml` and is not read or rewritten by the HMR daemon. On a
 headless Jetson, open `http://<Jetson-LAN-IP>:7351/` from another machine on the
 same LAN. The launcher prints the resolved LAN URL and `Ctrl+C` stops both
 processes. It does not run Cargo, install packages, or build the Web UI.
+If the existing daemon binary predates `--frontend-dev`, the launcher stops
+before startup and prints the exact explicit Cargo command required to refresh
+it.
 
 ## Local Control CLI
 

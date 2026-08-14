@@ -130,7 +130,9 @@ Both processes resolve their endpoint roles from
 keeps the Rust API at `127.0.0.1:5174`. It does not reuse or mutate
 `data/novasight.yaml`, invoke Cargo, install packages, or build Web assets. The
 launcher prints the LAN URL for a browser on another machine and `Ctrl+C` stops
-both child processes.
+both child processes. Before startup it checks that the existing daemon supports
+`--frontend-dev`; an older binary produces a focused rebuild instruction instead
+of a delayed readiness failure and historical-log dump.
 
 ## Same-Path Testing
 

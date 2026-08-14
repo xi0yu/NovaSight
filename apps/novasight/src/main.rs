@@ -26,7 +26,7 @@ const CONTROL_SOCKET: &str = "run/novasightd.sock";
 const READY_FILE: &str = "run/ready.json";
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
-const DAEMON_LOG_TAIL_BYTES: u64 = 12 * 1024;
+const DAEMON_LOG_TAIL_BYTES: u64 = 3 * 1024;
 
 #[derive(Parser, Debug)]
 #[command(name = "novasight", about = "NovaSight portable launcher")]
@@ -353,8 +353,6 @@ fn spawn_daemon(layout: &PortableLayout) -> Result<Child> {
         .with_context(|| format!("clone {}", layout.daemon_log.display()))?;
     let mut command = Command::new(&layout.daemon);
     command
-        .arg("--config")
-        .arg(&layout.config)
         .current_dir(&layout.root)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(log));

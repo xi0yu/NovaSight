@@ -1,7 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Command as StdCommand, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -98,7 +98,24 @@ fn validate_artifacts(layout: &PortableLayout) -> Result<()> {
             missing.join("\n")
         );
     }
+    validate_daemon_capability(layout)?;
     Ok(())
+}
+
+fn validate_daemon_capability(layout: &PortableLayout) -> Result<()> {
+    let output = StdCommand::new(&layout.daemon)
+        .arg("--help")
+        .current_dir(&layout.root)
+        .output()
+        .with_context(|| format!("inspect {} capabilities", layout.daemon.display()))?;
+    let help = String::from_utf8_lossy(&output.stdout);
+    if output.status.success() && help.contains("--frontend-dev") {
+        return Ok(());
+    }
+    bail!(
+        "novasightd is older than the unified frontend-development launcher: {}\nrebuild it explicitly with: cargo build --locked -p novasightd -p novasightctl",
+        layout.daemon.display()
+    )
 }
 
 fn vite_executable(layout: &PortableLayout) -> PathBuf {
