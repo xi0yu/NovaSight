@@ -18,11 +18,13 @@ latest DetectionBatch
 -> shared bbox aim point
 -> frozen crosshair/geometry reference
 -> current measured ROI error
--> bounded four-point / three-segment velocity prediction
+-> four-point / three-segment vector-medoid velocity prediction
 -> source/FOV/counts projection
 -> continuous counts-domain Atan response
--> device-count limiter and truncating quantizer
+-> truncating device-count quantizer
 -> capacity-one latest-replace slot
+-> recoil composition
+-> fixed X/Y device-boundary clamp
 -> MouseCommandExecutor
 -> at most one move(dx, dy) per output tick
 ```
@@ -47,11 +49,10 @@ different target point from the controller.
 
 ```text
 e_meas = current measured aim - crosshair
-profile = classify_motion(last three aim-position segments)
-v = profile_velocity(profile)
-motion_strength = profile_strength(profile)
+v1, v2, v3 = adjacent aim-position velocities
+v = vector_medoid(v1, v2, v3)
 horizon = frame_age + actuation_delay + prediction_lead_ms
-prediction = vector_clamp((v * horizon) * motion_strength, prediction_cap_px)
+prediction = vector_clamp(v * horizon, prediction_cap_px)
 e_ctrl = e_meas + prediction
 
 source_error = e_ctrl * roi_size / observation_size
@@ -62,21 +63,21 @@ rho = hypot(full_counts_x, full_counts_y)
 S = 256 counts
 r = rho / S
 curve = 1 - exp(-(r ^ response_curve_shape))
-R = 1 + response_boost * curve * (0.35 + 0.65 * motion_strength)
+R = 1 + response_boost * curve
 response_gain = response_scale * R
 u = response_gain * S * atan(full_counts / S)
-u_x = clamp(u_x, -max_output_x_counts, max_output_x_counts)
-u_y = clamp(u_y, -max_output_y_counts, max_output_y_counts)
+tracking = truncating_quantize(u)
+out_x = clamp(tracking_x, -max_output_x_counts, max_output_x_counts)
+out_y = clamp(tracking_y + recoil_y, -max_output_y_counts, max_output_y_counts)
 ```
 
 `response_scale` is the base response strength. `response_boost` controls how
 much extra strength appears as error grows. `response_curve_shape` controls when
-that extra strength appears. `motion_strength` comes from the same motion profile
-that gates prediction: static acquisition keeps 35% of the boost, stable motion
-can use all of it, and reverse/peek/jittered motion receives little or none.
+that extra strength appears. Prediction changes only the future aim point and
+does not modify response gain.
 `S` is an internal fixed Atan scale and is not a user-facing configuration field.
-Prediction is bounded before projection; the per-update count limit still owns
-the final device output ceiling.
+Prediction is bounded before projection; fixed per-axis limits own the final
+device output ceiling after recoil is composed.
 
 ## Quantization And Latest-Replace Delivery
 
@@ -86,8 +87,9 @@ integer_count = trunc(accumulator)
 accumulator -= integer_count
 ```
 
-The dedicated limiter owns the per-update count ceiling, integer conversion and
-fractional residual. Direction changes clear opposite-direction residual.
+The quantizer owns integer conversion and fractional residual. Direction
+changes clear opposite-direction residual. The only count ceiling is the final
+fixed X/Y clamp after recoil composition.
 Trigger-inactive or blocked observations clear the limiter and cannot bank
 historical movement.
 
@@ -99,7 +101,7 @@ range. It does not merge pending counts or split one command into a trajectory.
 ## Production Configuration
 
 ```yaml
-schema_version: 12
+schema_version: 13
 pipeline:
   p_response_scale: 0.20
   p_response_boost: 0.50
@@ -111,7 +113,7 @@ pipeline:
   prediction_cap_px: 10.0
 ```
 
-The Rust root schema is version 12 and uses `pipeline.prediction_enabled: true`.
+The Rust root schema is version 13 and uses `pipeline.prediction_enabled: true`.
 Retired response fields are rejected rather than silently mapped into the new
 control model.
 

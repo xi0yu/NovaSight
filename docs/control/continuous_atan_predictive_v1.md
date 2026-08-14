@@ -1,6 +1,6 @@
 # Continuous Atan Control
 
-Formal algorithm ID: `continuous_atan_predictive_v1`
+Formal algorithm ID: `continuous_atan_medoid_v2`
 
 Current production name: 连续非线性 Atan 控制
 
@@ -48,11 +48,9 @@ rho = hypot(full_counts_x, full_counts_y)
 S_counts = 256
 r = rho / S_counts
 curve = 1 - exp(-(r ^ response_curve_shape))
-R = 1 + response_boost * curve * (0.35 + 0.65 * motion_strength)
+R = 1 + response_boost * curve
 K = response_scale * R
 u = K * S_counts * atan(full_counts / S_counts)
-u_x = clamp(u_x, -max_output_x_counts, max_output_x_counts)
-u_y = clamp(u_y, -max_output_y_counts, max_output_y_counts)
 ```
 
 The first Atan converts image displacement into view angle. The second is the
@@ -62,11 +60,10 @@ derivative controller: no historical difference participates in `u`.
 `response_scale` is the base response strength. `response_boost` controls the
 bounded amount of extra strength available as normalized error grows.
 `response_curve_shape` controls how early or late that extra strength appears.
-`motion_strength` comes from the prediction profile: large static errors retain
-35% of the configured acquisition boost, while stable motion can use the full
-boost. `S_counts` is the fixed internal Atan scale and is not user configurable.
-`max_output_x_counts` and `max_output_y_counts` are device-count limits; they
-are not part of prediction.
+Prediction changes the predicted error only; it does not modify this gain.
+`S_counts` is the fixed internal Atan scale and is not user configurable.
+`max_output_x_counts` and `max_output_y_counts` are fixed device-boundary limits
+applied after recoil; they are not part of prediction.
 `prediction_cap_px` is a vector cap on future aim-point displacement; it is not a
 mouse-count limiter.
 

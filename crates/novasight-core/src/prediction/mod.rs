@@ -20,23 +20,10 @@ pub enum PredictionMotionState {
     Unavailable,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MotionProfile {
-    Stable,
-    Stationary,
-    Decelerating,
-    Reverse,
-    Oscillation,
-    Jitter,
-    Unstable,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SingleTargetPredictionConfig {
     pub enabled: bool,
     pub history_reset_gap_ms: f64,
-    pub spread_base_px_ms: f64,
-    pub spread_relative: f64,
     /// Command-to-visible-response delay included in the capture-to-actuation
     /// prediction horizon before the optional time lead.
     pub actuation_delay_ms: f64,
@@ -51,10 +38,6 @@ impl SingleTargetPredictionConfig {
         }
         self.history_reset_gap_ms.is_finite()
             && self.history_reset_gap_ms > 0.0
-            && self.spread_base_px_ms.is_finite()
-            && self.spread_base_px_ms > 0.0
-            && self.spread_relative.is_finite()
-            && self.spread_relative >= 0.0
             && self.actuation_delay_ms.is_finite()
             && self.actuation_delay_ms >= 0.0
             && self.lead_ms.is_finite()
@@ -74,8 +57,6 @@ pub struct FocusTargetObservation {
     /// calculation. Prediction starts at capture time, so this measured age
     /// must be covered before any configured extra time lead is added.
     pub observation_age_ms: f64,
-    pub detection_confidence: f64,
-    pub identity_confidence: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -176,8 +157,6 @@ impl SingleTargetPredictor {
             observation.aim_x,
             observation.aim_y,
             observation.capture_ts_ns,
-            observation.detection_confidence,
-            observation.identity_confidence,
         ) else {
             return self.unavailable();
         };
@@ -190,13 +169,8 @@ impl SingleTargetPredictor {
         } else {
             0.0
         };
-        let prediction_strength = if allowed {
-            estimate.motion_confidence.clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
         let raw_offset = estimate.velocity.scale(horizon_ms);
-        let weighted_offset = raw_offset.scale(prediction_strength);
+        let weighted_offset = raw_offset;
         let allowed_cap = self.allowed_cap();
         let safe_offset = clamp_vector_magnitude(weighted_offset, allowed_cap);
 
@@ -251,7 +225,6 @@ struct RobustAimVelocityEstimator {
     config: SingleTargetPredictionConfig,
     target_id: Option<u64>,
     samples: VecDeque<PositionSample>,
-    complete_window_updates: u64,
 }
 
 impl RobustAimVelocityEstimator {
@@ -260,7 +233,6 @@ impl RobustAimVelocityEstimator {
             config,
             target_id: None,
             samples: VecDeque::with_capacity(VELOCITY_POSITION_COUNT),
-            complete_window_updates: 0,
         }
     }
 
@@ -275,7 +247,6 @@ impl RobustAimVelocityEstimator {
     fn reset(&mut self, target_id: Option<u64>) {
         self.target_id = target_id;
         self.samples.clear();
-        self.complete_window_updates = 0;
     }
 
     fn update(
@@ -284,8 +255,6 @@ impl RobustAimVelocityEstimator {
         aim_x: f64,
         aim_y: f64,
         capture_ts_ns: u64,
-        detection_confidence: f64,
-        track_confidence: f64,
     ) -> Option<VectorVelocityEstimate> {
         if !aim_x.is_finite() || !aim_y.is_finite() || capture_ts_ns == 0 {
             return None;
@@ -345,51 +314,23 @@ impl RobustAimVelocityEstimator {
         let window_dt_ms = intervals_ms.iter().sum::<f64>();
         let reference_dt_ms = window_dt_ms / 3.0;
         let straightness = trajectory_straightness(displacements);
-        let direction_consistency =
-            direction_consistency(velocities, self.config.spread_base_px_ms);
-        let speed_stability = speed_stability(
-            speed_spread,
-            mean_speed,
-            self.config.spread_base_px_ms,
-            self.config.spread_relative,
-        );
-        let motion_consistency =
-            (straightness.min(direction_consistency) * speed_stability).clamp(0.0, 1.0);
-        let profile = classify_motion_profile(MotionProfileInputs {
-            velocities,
-            mean_velocity,
-            medoid_velocity,
-            mean_speed,
-            speed_stability,
-            straightness,
-            direction_consistency,
-            motion_consistency,
-            base_deadband: self.config.spread_base_px_ms,
-        });
-        let motion_state = profile.motion_state();
-
-        self.complete_window_updates += 1;
-        let history_quality = (self.complete_window_updates as f64 / 2.0).min(1.0);
-        let gate_open = detection_confidence.clamp(0.0, 1.0) > f64::EPSILON
-            && track_confidence.clamp(0.0, 1.0) > f64::EPSILON;
-        let motion_confidence = if gate_open {
-            history_quality * profile.prediction_strength
+        let motion_state = if medoid_velocity.magnitude() <= f64::EPSILON {
+            PredictionMotionState::Stationary
         } else {
-            0.0
-        }
-        .clamp(0.0, 1.0);
+            PredictionMotionState::Continuous
+        };
         let acceleration_px_ms2 = mean_acceleration(velocities, intervals_ms);
 
         Some(VectorVelocityEstimate {
             raw_velocities: velocities,
             mean_velocity,
             medoid_velocity,
-            velocity: profile.velocity,
+            velocity: medoid_velocity,
             motion_state,
-            trend_consistency: direction_consistency,
+            trend_consistency: straightness,
             acceleration_px_ms2,
             speed_spread,
-            motion_confidence,
+            motion_confidence: 1.0,
             measurement_dt_ms: latest_dt_ms,
             reference_dt_ms,
         })
@@ -430,35 +371,6 @@ impl AxisPredictionProjection {
             allowed_cap: self.allowed_cap,
             safe_offset: axis.component(self.safe_offset),
             allowed: self.allowed,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct MotionProfileEstimate {
-    profile: MotionProfile,
-    velocity: Vector2,
-    prediction_strength: f64,
-}
-
-impl MotionProfileEstimate {
-    fn new(profile: MotionProfile, velocity: Vector2, prediction_strength: f64) -> Self {
-        Self {
-            profile,
-            velocity,
-            prediction_strength: prediction_strength.clamp(0.0, 1.0),
-        }
-    }
-
-    fn motion_state(self) -> PredictionMotionState {
-        match self.profile {
-            MotionProfile::Stable | MotionProfile::Decelerating => {
-                PredictionMotionState::Continuous
-            }
-            MotionProfile::Stationary | MotionProfile::Jitter => PredictionMotionState::Stationary,
-            MotionProfile::Reverse | MotionProfile::Oscillation | MotionProfile::Unstable => {
-                PredictionMotionState::Unstable
-            }
         }
     }
 }
@@ -505,10 +417,6 @@ impl Vector2 {
         Self::new(self.x * scalar, self.y * scalar)
     }
 
-    fn dot(self, other: Self) -> f64 {
-        self.x * other.x + self.y * other.y
-    }
-
     fn magnitude(self) -> f64 {
         self.x.hypot(self.y)
     }
@@ -526,75 +434,6 @@ fn mean_acceleration(velocities: [Vector2; 3], intervals_ms: [f64; 3]) -> Vector
     acceleration_1.add(acceleration_2).scale(0.5)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct MotionProfileInputs {
-    velocities: [Vector2; 3],
-    mean_velocity: Vector2,
-    medoid_velocity: Vector2,
-    mean_speed: f64,
-    speed_stability: f64,
-    straightness: f64,
-    direction_consistency: f64,
-    motion_consistency: f64,
-    base_deadband: f64,
-}
-
-fn classify_motion_profile(inputs: MotionProfileInputs) -> MotionProfileEstimate {
-    let MotionProfileInputs {
-        velocities,
-        mean_velocity,
-        medoid_velocity,
-        mean_speed,
-        speed_stability,
-        straightness,
-        direction_consistency,
-        motion_consistency,
-        base_deadband,
-    } = inputs;
-    let deadband = (base_deadband.abs() * 0.25).max(1e-9);
-    let jitter_band = base_deadband.abs().max(deadband);
-    let speeds = velocities.map(Vector2::magnitude);
-    let latest_speed = speeds[2];
-    let previous_speed = speeds[1];
-    let early_reverse = direction_reversed(velocities[0], velocities[1], deadband);
-    let latest_reverse = direction_reversed(velocities[1], velocities[2], deadband);
-
-    if mean_speed <= deadband && latest_speed <= deadband {
-        return MotionProfileEstimate::new(MotionProfile::Stationary, Vector2::zero(), 0.0);
-    }
-    if mean_speed <= jitter_band && straightness < 0.75 {
-        return MotionProfileEstimate::new(MotionProfile::Jitter, Vector2::zero(), 0.0);
-    }
-    if early_reverse && latest_reverse {
-        return MotionProfileEstimate::new(MotionProfile::Oscillation, Vector2::zero(), 0.0);
-    }
-    if latest_reverse {
-        let strength = (0.20 + 0.30 * speed_stability).min(0.45);
-        return MotionProfileEstimate::new(MotionProfile::Reverse, velocities[2], strength);
-    }
-
-    let decelerating = direction_consistency >= 0.70
-        && previous_speed > deadband
-        && latest_speed < previous_speed * 0.65;
-    if decelerating {
-        let strength = 0.25 + 0.35 * speed_stability.min(straightness);
-        return MotionProfileEstimate::new(MotionProfile::Decelerating, velocities[2], strength);
-    }
-
-    if direction_consistency >= 0.85 && straightness >= 0.85 {
-        let velocity = if speed_stability >= 0.70 {
-            mean_velocity
-        } else {
-            medoid_velocity
-        };
-        let strength = 0.80 + 0.20 * speed_stability;
-        return MotionProfileEstimate::new(MotionProfile::Stable, velocity, strength);
-    }
-
-    let strength = 0.20 * motion_consistency.min(speed_stability);
-    MotionProfileEstimate::new(MotionProfile::Unstable, medoid_velocity, strength)
-}
-
 fn trajectory_straightness(displacements: [Vector2; 3]) -> f64 {
     let path_length = displacements
         .into_iter()
@@ -608,44 +447,6 @@ fn trajectory_straightness(displacements: [Vector2; 3]) -> f64 {
         .fold(Vector2::zero(), Vector2::add)
         .magnitude();
     (net / path_length).clamp(0.0, 1.0)
-}
-
-fn direction_reversed(left: Vector2, right: Vector2, deadband: f64) -> bool {
-    let left_speed = left.magnitude();
-    let right_speed = right.magnitude();
-    left_speed > deadband && right_speed > deadband && left.dot(right) < 0.0
-}
-
-fn direction_consistency(velocities: [Vector2; 3], base_deadband: f64) -> f64 {
-    let deadband = (base_deadband.abs() * 0.25).max(1e-9);
-    let pairs = [(0, 1), (1, 2), (0, 2)];
-    let mut total = 0.0;
-    let mut count = 0_u32;
-    for (left, right) in pairs {
-        let left_speed = velocities[left].magnitude();
-        let right_speed = velocities[right].magnitude();
-        if left_speed <= deadband || right_speed <= deadband {
-            continue;
-        }
-        let cosine =
-            (velocities[left].dot(velocities[right]) / (left_speed * right_speed)).clamp(-1.0, 1.0);
-        total += cosine.max(0.0);
-        count += 1;
-    }
-    if count == 0 {
-        return 1.0;
-    }
-    (total / f64::from(count)).clamp(0.0, 1.0)
-}
-
-fn speed_stability(
-    speed_spread: f64,
-    mean_speed: f64,
-    spread_base_px_ms: f64,
-    spread_relative: f64,
-) -> f64 {
-    let spread_scale = spread_base_px_ms + spread_relative * mean_speed;
-    (1.0 / (1.0 + speed_spread / spread_scale.max(1e-9))).clamp(0.0, 1.0)
 }
 
 fn mean_three(values: [f64; 3]) -> f64 {
@@ -695,8 +496,6 @@ mod tests {
         SingleTargetPredictionConfig {
             enabled: true,
             history_reset_gap_ms: 80.0,
-            spread_base_px_ms: 0.12,
-            spread_relative: 0.50,
             actuation_delay_ms: 4.0,
             lead_ms: 10.0,
             cap_px: 10.0,
@@ -710,8 +509,6 @@ mod tests {
             aim_y,
             capture_ts_ns: 1_000_000_000 + elapsed_ms * 1_000_000,
             observation_age_ms: 8.0,
-            detection_confidence: 1.0,
-            identity_confidence: 1.0,
         }
     }
 
@@ -789,13 +586,13 @@ mod tests {
 
         assert_eq!(prediction.x.motion_state, PredictionMotionState::Stationary);
         assert_eq!(prediction.x.velocity, 0.0);
-        assert_eq!(prediction.x.motion_confidence, 0.0);
+        assert_eq!(prediction.x.motion_confidence, 1.0);
         assert_eq!(prediction.x.safe_offset, 0.0);
         assert_eq!(prediction.y.safe_offset, 0.0);
     }
 
     #[test]
-    fn stable_motion_uses_three_segment_average_when_consistent() {
+    fn stable_motion_uses_three_segment_medoid() {
         let prediction = feed_points(
             high_cap_config(),
             &[
@@ -811,13 +608,13 @@ mod tests {
             prediction.x.velocity_samples,
             [Some(1.0), Some(1.5), Some(1.5)]
         );
-        assert!((prediction.x.velocity - (4.0 / 3.0)).abs() < 1e-12);
-        assert!(prediction.x.motion_confidence > 0.45);
+        assert!((prediction.x.velocity - 1.5).abs() < 1e-12);
+        assert_eq!(prediction.x.motion_confidence, 1.0);
         assert!(prediction.x.safe_offset > 0.0);
     }
 
     #[test]
-    fn latest_reverse_prefers_latest_segment_with_lower_strength() {
+    fn latest_reverse_does_not_override_the_medoid() {
         let prediction = feed_points(
             high_cap_config(),
             &[
@@ -828,19 +625,18 @@ mod tests {
             ],
         );
 
-        assert_eq!(prediction.x.motion_state, PredictionMotionState::Unstable);
+        assert_eq!(prediction.x.motion_state, PredictionMotionState::Continuous);
         assert_eq!(
             prediction.x.velocity_samples,
             [Some(1.0), Some(1.0), Some(-0.5)]
         );
-        assert!((prediction.x.velocity + 0.5).abs() < 1e-12);
-        assert!(prediction.x.motion_confidence > 0.0);
-        assert!(prediction.x.motion_confidence < 0.25);
-        assert!(prediction.x.safe_offset < 0.0);
+        assert!((prediction.x.velocity - 1.0).abs() < 1e-12);
+        assert_eq!(prediction.x.motion_confidence, 1.0);
+        assert!(prediction.x.safe_offset > 0.0);
     }
 
     #[test]
-    fn oscillating_peek_suppresses_prediction() {
+    fn repeated_direction_is_selected_by_the_medoid() {
         let prediction = feed_points(
             high_cap_config(),
             &[
@@ -851,14 +647,14 @@ mod tests {
             ],
         );
 
-        assert_eq!(prediction.x.motion_state, PredictionMotionState::Unstable);
+        assert_eq!(prediction.x.motion_state, PredictionMotionState::Continuous);
         assert_eq!(
             prediction.x.velocity_samples,
             [Some(1.0), Some(-1.0), Some(1.0)]
         );
-        assert_eq!(prediction.x.velocity, 0.0);
-        assert_eq!(prediction.x.motion_confidence, 0.0);
-        assert_eq!(prediction.x.safe_offset, 0.0);
+        assert_eq!(prediction.x.velocity, 1.0);
+        assert_eq!(prediction.x.motion_confidence, 1.0);
+        assert!(prediction.x.safe_offset > 0.0);
     }
 
     #[test]
@@ -879,7 +675,7 @@ mod tests {
         assert!((prediction.y.mean_velocity.expect("mean") + (3.4 / 3.0)).abs() < 1e-12);
         assert!((prediction.x.medoid_velocity.expect("medoid") - 1.0).abs() < 1e-12);
         assert!((prediction.y.medoid_velocity.expect("medoid") - 0.3).abs() < 1e-12);
-        assert!(prediction.x.motion_confidence < 0.25);
+        assert_eq!(prediction.x.motion_confidence, 1.0);
     }
 
     #[test]
@@ -904,29 +700,6 @@ mod tests {
         assert!((prediction.y.allowed_cap - 5.0).abs() < 1e-12);
         assert!((safe_magnitude - 5.0).abs() < 1e-12);
         assert!((prediction.x.safe_offset / prediction.y.safe_offset - 2.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn identity_gate_suppresses_offsets_without_hiding_velocity() {
-        let mut predictor = SingleTargetPredictor::new(high_cap_config());
-        let mut prediction = Default::default();
-        for (elapsed_ms, aim_x, aim_y) in [
-            (0, 100.0, 100.0),
-            (10, 104.0, 102.0),
-            (20, 108.0, 104.0),
-            (30, 112.0, 106.0),
-            (40, 116.0, 108.0),
-        ] {
-            let mut sample = observation_at(elapsed_ms, aim_x, aim_y);
-            sample.identity_confidence = 0.0;
-            prediction = predictor.predict(sample);
-        }
-
-        assert!((prediction.x.velocity - 0.4).abs() < 1e-12);
-        assert!((prediction.y.velocity - 0.2).abs() < 1e-12);
-        assert_eq!(prediction.x.motion_confidence, 0.0);
-        assert_eq!(prediction.x.weighted_offset, 0.0);
-        assert_eq!(prediction.y.safe_offset, 0.0);
     }
 
     #[test]

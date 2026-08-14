@@ -87,7 +87,7 @@ pipeline:
 }
 
 #[test]
-fn retired_velocity_change_field_migrates_on_load_and_save() {
+fn retired_velocity_change_fields_are_removed_on_load_and_save() {
     let directory = TempDirectory::new();
     let path = directory.join("retired-velocity-change.yaml");
     fs::write(
@@ -106,22 +106,20 @@ pipeline:
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.pipeline.velocity_spread_base_px_ms, 0.42);
-    assert_eq!(config.pipeline.velocity_spread_relative, 0.61);
     assert!(config.pipeline.extra.is_empty());
 
     YamlConfigRepository::new(&path)
         .save_field("pipeline", "max_output_x_counts", Value::from(128.0), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["pipeline"]["velocity_spread_base_px_ms"], 0.42);
-    assert_eq!(persisted["pipeline"]["velocity_spread_relative"], 0.61);
+    assert!(persisted["pipeline"]["velocity_spread_base_px_ms"].is_null());
+    assert!(persisted["pipeline"]["velocity_spread_relative"].is_null());
     assert!(persisted["pipeline"]["velocity_change_base_px_ms"].is_null());
     assert!(persisted["pipeline"]["velocity_change_relative"].is_null());
 }
 
 #[test]
-fn retired_velocity_change_field_migrates_on_replacement() {
+fn retired_velocity_change_fields_are_removed_on_replacement() {
     let directory = TempDirectory::new();
     let path = directory.join("replace-retired-velocity-change.yaml");
     YamlConfigRepository::initialize_default(&path).unwrap();
@@ -138,12 +136,10 @@ pipeline:
         .replace_document(replacement, 0)
         .unwrap();
 
-    assert_eq!(config.pipeline.velocity_spread_base_px_ms, 0.37);
-    assert_eq!(config.pipeline.velocity_spread_relative, 0.58);
     assert!(config.pipeline.extra.is_empty());
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["pipeline"]["velocity_spread_base_px_ms"], 0.37);
-    assert_eq!(persisted["pipeline"]["velocity_spread_relative"], 0.58);
+    assert!(persisted["pipeline"]["velocity_spread_base_px_ms"].is_null());
+    assert!(persisted["pipeline"]["velocity_spread_relative"].is_null());
     assert!(persisted["pipeline"]["velocity_change_base_px_ms"].is_null());
     assert!(persisted["pipeline"]["velocity_change_relative"].is_null());
 }

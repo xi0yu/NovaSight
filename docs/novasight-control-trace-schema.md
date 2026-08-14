@@ -120,7 +120,7 @@ control:{detection_generation}:{frame_id}:{capture_ts_ns}
 
 ## algorithm_decision
 
-版本 3 新增专用算法决策块。当前 `continuous_atan_predictive_v1` 记录 measured error、四点短窗速度、毫秒级预测提前量与后坐力前馈。算法决策至少记录：
+版本 3 新增专用算法决策块。当前 `continuous_atan_medoid_v2` 记录 measured error、四点短窗 medoid 速度、毫秒级预测提前量与后坐力前馈。算法决策至少记录：
 
 ```text
 algorithm_id / phase / measurement_dt_ms

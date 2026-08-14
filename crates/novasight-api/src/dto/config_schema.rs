@@ -1,7 +1,4 @@
-use novasight_core::controller::{
-    ATAN_RESPONSE_MOTION_BOOST_FRACTION, ATAN_RESPONSE_STATIC_BOOST_FRACTION,
-    DEFAULT_ATAN_SCALE_COUNTS,
-};
+use novasight_core::controller::DEFAULT_ATAN_SCALE_COUNTS;
 use novasight_runtime::{AppConfig, ConfigApplyMode};
 use serde::Serialize;
 use serde_json::Value;
@@ -27,8 +24,6 @@ struct ConfigAlgorithmResponseSchema {
     formula: &'static str,
     radial_multiplier_formula: &'static str,
     atan_scale_counts: f64,
-    static_acquisition_boost_fraction: f64,
-    motion_boost_fraction: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -70,17 +65,15 @@ impl ConfigSchemaResponse {
         Self {
             version: config.schema_version,
             algorithm: ConfigAlgorithmSchema {
-                id: "continuous_atan_predictive_v1",
+                id: "continuous_atan_medoid_v2",
                 label: "连续 Atan 控制",
                 response: ConfigAlgorithmResponseSchema {
-                    formula: "u = K_base * R(r, motion_strength) * S * atan(e_pred / S)",
-                    radial_multiplier_formula: "R = 1 + B * (static + motion * motion_strength) * (1 - exp(-(r ^ gamma)))",
+                    formula: "u = K_base * R(r) * S * atan(e_pred / S)",
+                    radial_multiplier_formula: "R = 1 + B * (1 - exp(-(r ^ gamma)))",
                     atan_scale_counts: DEFAULT_ATAN_SCALE_COUNTS,
-                    static_acquisition_boost_fraction: ATAN_RESPONSE_STATIC_BOOST_FRACTION,
-                    motion_boost_fraction: ATAN_RESPONSE_MOTION_BOOST_FRACTION,
                 },
                 prediction: ConfigAlgorithmPredictionSchema {
-                    model: "motion-gated four-point velocity",
+                    model: "four-point vector medoid velocity",
                     aim_history_points: 4,
                     velocity_segments: 3,
                 },
@@ -286,20 +279,6 @@ impl ConfigSchemaResponse {
                             0.000_001,
                             10_000.0,
                             Some("ms"),
-                        ),
-                        float(
-                            "pipeline.velocity_spread_base_px_ms",
-                            "二维速度离散基础容差",
-                            0.000_001,
-                            10_000.0,
-                            Some("px/ms"),
-                        ),
-                        float(
-                            "pipeline.velocity_spread_relative",
-                            "二维速度离散相对容差",
-                            0.0,
-                            100.0,
-                            None,
                         ),
                         float(
                             "pipeline.prediction_lead_ms",
@@ -811,16 +790,8 @@ mod tests {
         let value = serde_json::to_value(schema).unwrap();
 
         assert_eq!(value["version"], 13);
-        assert_eq!(value["algorithm"]["id"], "continuous_atan_predictive_v1");
+        assert_eq!(value["algorithm"]["id"], "continuous_atan_medoid_v2");
         assert_eq!(value["algorithm"]["response"]["atan_scale_counts"], 256.0);
-        assert_eq!(
-            value["algorithm"]["response"]["static_acquisition_boost_fraction"],
-            0.35
-        );
-        assert_eq!(
-            value["algorithm"]["response"]["motion_boost_fraction"],
-            0.65
-        );
         assert_eq!(value["algorithm"]["prediction"]["aim_history_points"], 4);
         assert_eq!(value["algorithm"]["prediction"]["velocity_segments"], 3);
         assert_eq!(value["values"]["server"]["port"], 5174);
@@ -888,8 +859,6 @@ mod tests {
             "pipeline.max_output_y_counts",
             "pipeline.prediction_enabled",
             "pipeline.velocity_history_reset_gap_ms",
-            "pipeline.velocity_spread_base_px_ms",
-            "pipeline.velocity_spread_relative",
             "pipeline.prediction_lead_ms",
             "pipeline.prediction_cap_px",
             "pipeline.actuation_feedback_delay_ms",

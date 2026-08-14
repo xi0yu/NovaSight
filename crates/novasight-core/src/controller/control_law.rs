@@ -6,8 +6,6 @@
 //! delivery.
 
 pub const DEFAULT_ATAN_SCALE_COUNTS: f64 = 256.0;
-pub const ERROR_ACQUISITION_BOOST_FRACTION: f64 = 0.35;
-pub const MOTION_BOOST_FRACTION: f64 = 1.0 - ERROR_ACQUISITION_BOOST_FRACTION;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AxisPair {
@@ -47,7 +45,6 @@ pub struct AimControlParameters {
 pub struct AimControlInput {
     pub measured_error_px: AxisPair,
     pub predicted_offset_px: AxisPair,
-    pub motion_strength: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -91,10 +88,7 @@ impl AimControlLaw {
     }
 
     pub fn evaluate(self, input: AimControlInput) -> Option<AimControlResult> {
-        if !input.measured_error_px.finite()
-            || !input.predicted_offset_px.finite()
-            || !input.motion_strength.is_finite()
-        {
+        if !input.measured_error_px.finite() || !input.predicted_offset_px.finite() {
             return None;
         }
 
@@ -109,7 +103,6 @@ impl AimControlLaw {
             normalized_error,
             self.parameters.response_boost,
             self.parameters.response_curve_shape,
-            input.motion_strength,
         );
         let effective_gain = self.parameters.response_scale * multiplier;
         let demand_counts = AxisPair::new(
@@ -155,12 +148,10 @@ fn atan_response(error_counts: f64, gain: f64) -> f64 {
     gain * DEFAULT_ATAN_SCALE_COUNTS * (error_counts / DEFAULT_ATAN_SCALE_COUNTS).atan()
 }
 
-fn response_multiplier(normalized_error: f64, boost: f64, shape: f64, motion_strength: f64) -> f64 {
+fn response_multiplier(normalized_error: f64, boost: f64, shape: f64) -> f64 {
     let radius = normalized_error.max(0.0);
     let gamma = shape.clamp(0.5, 4.0);
-    let scheduled_fraction =
-        ERROR_ACQUISITION_BOOST_FRACTION + MOTION_BOOST_FRACTION * motion_strength.clamp(0.0, 1.0);
-    1.0 + boost * scheduled_fraction * (1.0 - (-radius.powf(gamma)).exp())
+    1.0 + boost * (1.0 - (-radius.powf(gamma)).exp())
 }
 
 #[cfg(test)]
@@ -169,21 +160,15 @@ mod tests {
 
     #[test]
     fn response_multiplier_approaches_configured_boost() {
-        let boosted = response_multiplier(64.0, 0.5, 1.0, 1.0);
+        let boosted = response_multiplier(64.0, 0.5, 1.0);
         assert!((boosted - 1.5).abs() < 1e-12);
     }
 
     #[test]
-    fn response_multiplier_retains_static_acquisition_boost() {
-        let boosted = response_multiplier(64.0, 0.5, 1.0, 0.0);
-        assert!((boosted - 1.175).abs() < 1e-12);
-    }
-
-    #[test]
     fn response_shape_adjusts_transition_without_leaving_bounds() {
-        let early = response_multiplier(0.25, 0.5, 0.5, 1.0);
-        let neutral = response_multiplier(0.25, 0.5, 1.0, 1.0);
-        let late = response_multiplier(0.25, 0.5, 2.0, 1.0);
+        let early = response_multiplier(0.25, 0.5, 0.5);
+        let neutral = response_multiplier(0.25, 0.5, 1.0);
+        let late = response_multiplier(0.25, 0.5, 2.0);
 
         assert!(early > neutral);
         assert!(neutral > late);

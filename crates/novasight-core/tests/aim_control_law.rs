@@ -20,7 +20,6 @@ fn prediction_is_applied_before_projection_and_nonlinear_response() {
         .evaluate(AimControlInput {
             measured_error_px: AxisPair::new(24.0, -12.0),
             predicted_offset_px: AxisPair::new(8.0, 4.0),
-            motion_strength: 0.75,
         })
         .expect("finite control result");
 

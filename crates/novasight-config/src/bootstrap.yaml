@@ -29,8 +29,6 @@ pipeline:
   max_output_x_counts: 127.0
   max_output_y_counts: 127.0
   velocity_history_reset_gap_ms: 80.0
-  velocity_spread_base_px_ms: 0.12
-  velocity_spread_relative: 0.50
   prediction_enabled: true
   prediction_lead_ms: 16.0
   prediction_cap_px: 10.0

@@ -478,10 +478,6 @@ pub struct PipelineRuntimeConfig {
     pub max_output_y_counts: f64,
     #[serde(default = "default_velocity_history_reset_gap_ms")]
     pub velocity_history_reset_gap_ms: f64,
-    #[serde(default = "default_velocity_spread_base_px_ms")]
-    pub velocity_spread_base_px_ms: f64,
-    #[serde(default = "default_velocity_spread_relative")]
-    pub velocity_spread_relative: f64,
     #[serde(default = "default_prediction_enabled")]
     pub prediction_enabled: bool,
     #[serde(default = "default_prediction_lead_ms")]
@@ -562,8 +558,6 @@ impl Default for PipelineRuntimeConfig {
             max_output_x_counts: default_max_output_counts(),
             max_output_y_counts: default_max_output_counts(),
             velocity_history_reset_gap_ms: default_velocity_history_reset_gap_ms(),
-            velocity_spread_base_px_ms: default_velocity_spread_base_px_ms(),
-            velocity_spread_relative: default_velocity_spread_relative(),
             prediction_enabled: default_prediction_enabled(),
             prediction_lead_ms: default_prediction_lead_ms(),
             prediction_cap_px: default_prediction_cap_px(),
@@ -665,18 +659,6 @@ impl PipelineRuntimeConfig {
             self.velocity_history_reset_gap_ms,
             0.000_001,
             10_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.velocity_spread_base_px_ms",
-            self.velocity_spread_base_px_ms,
-            0.000_001,
-            10_000.0,
-        )?;
-        validate_finite_range(
-            "pipeline.velocity_spread_relative",
-            self.velocity_spread_relative,
-            0.0,
-            100.0,
         )?;
         validate_finite_range(
             "pipeline.prediction_lead_ms",
@@ -1006,14 +988,6 @@ const fn default_p_response_boost() -> f64 {
 
 const fn default_velocity_history_reset_gap_ms() -> f64 {
     80.0
-}
-
-const fn default_velocity_spread_base_px_ms() -> f64 {
-    0.12
-}
-
-const fn default_velocity_spread_relative() -> f64 {
-    0.50
 }
 
 const fn default_prediction_enabled() -> bool {

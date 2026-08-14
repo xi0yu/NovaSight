@@ -575,8 +575,6 @@ export type ConfigAlgorithmResponseSchema = {
   formula: string;
   radial_multiplier_formula: string;
   atan_scale_counts: number;
-  static_acquisition_boost_fraction: number;
-  motion_boost_fraction: number;
 };
 
 export type ConfigAlgorithmPredictionSchema = {

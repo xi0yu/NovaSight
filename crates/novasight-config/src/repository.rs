@@ -28,15 +28,13 @@ const CONFIG_LOCK_WAIT: Duration = Duration::from_millis(250);
 const CONFIG_LOCK_RETRY: Duration = Duration::from_millis(2);
 const DEFAULT_RUNTIME_CONFIG: &str = include_str!("bootstrap.yaml");
 const RESPONSIVE_TARGET_TRACK_MAX_AGE: u64 = 5;
-const RETIRED_PIPELINE_NUMERIC_ALIASES: &[(&str, &str)] = &[
-    ("velocity_change_base_px_ms", "velocity_spread_base_px_ms"),
-    ("velocity_change_relative", "velocity_spread_relative"),
-];
 const RETIRED_PIPELINE_FIELDS: &[&str] = &[
     "projection_invert_y",
     "atan_scale_counts",
     "velocity_change_base_px_ms",
     "velocity_change_relative",
+    "velocity_spread_base_px_ms",
+    "velocity_spread_relative",
     "target_selection_class_weight",
     "target_selection_distance_weight",
     "target_sticky_bias",
@@ -442,7 +440,6 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
             source,
         })?;
     normalize_root_alias(path, &mut document, "device", "hardware")?;
-    migrate_retired_pipeline_aliases(&mut document);
     migrate_output_limits(&mut document);
     let mut config: AppConfig =
         serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Parse {
@@ -477,8 +474,13 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     config.pipeline.extra.remove("atan_scale_counts");
     config.pipeline.extra.remove("arrival_radius_counts");
     config.pipeline.extra.remove("residual_cap");
-    for (retired_key, _) in RETIRED_PIPELINE_NUMERIC_ALIASES {
-        config.pipeline.extra.remove(*retired_key);
+    for retired_key in [
+        "velocity_change_base_px_ms",
+        "velocity_change_relative",
+        "velocity_spread_base_px_ms",
+        "velocity_spread_relative",
+    ] {
+        config.pipeline.extra.remove(retired_key);
     }
     let mut removed_retired_recoil = false;
     for field in [
@@ -649,12 +651,6 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     }
 }
 
-fn migrate_retired_pipeline_aliases(document: &mut Value) {
-    for (retired_key, current_key) in RETIRED_PIPELINE_NUMERIC_ALIASES {
-        migrate_pipeline_numeric_alias(document, retired_key, current_key);
-    }
-}
-
 fn migrate_output_limits(document: &mut Value) {
     let Value::Mapping(root) = document else {
         return;
@@ -675,29 +671,6 @@ fn migrate_output_limits(document: &mut Value) {
     }
 }
 
-fn migrate_pipeline_numeric_alias(document: &mut Value, retired_key: &str, current_key: &str) {
-    let Value::Mapping(root) = document else {
-        return;
-    };
-    let Some(Value::Mapping(pipeline)) = root.get_mut(Value::String("pipeline".to_owned())) else {
-        return;
-    };
-    let Some(retired_value) = pipeline.remove(Value::String(retired_key.to_owned())) else {
-        return;
-    };
-    let current_key = Value::String(current_key.to_owned());
-    if pipeline.contains_key(&current_key) {
-        return;
-    }
-    let Some(value) = retired_value.as_f64().filter(|value| value.is_finite()) else {
-        return;
-    };
-    pipeline.insert(
-        current_key,
-        serde_yaml::to_value(value).expect("finite pipeline alias migration value"),
-    );
-}
-
 fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRuntimeConfig) {
     for (key, value) in [
         ("p_response_scale", config.p_response_scale),
@@ -709,11 +682,6 @@ fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRunti
             "velocity_history_reset_gap_ms",
             config.velocity_history_reset_gap_ms,
         ),
-        (
-            "velocity_spread_base_px_ms",
-            config.velocity_spread_base_px_ms,
-        ),
-        ("velocity_spread_relative", config.velocity_spread_relative),
         ("prediction_lead_ms", config.prediction_lead_ms),
         ("prediction_cap_px", config.prediction_cap_px),
         (
@@ -1173,7 +1141,6 @@ fn replace_document(
         mapping.remove(Value::String("revision".to_owned()));
         mapping.remove(Value::String("schema_version".to_owned()));
     }
-    migrate_retired_pipeline_aliases(&mut replacement);
     migrate_output_limits(&mut replacement);
     merge_value(&mut document, replacement);
     let root =

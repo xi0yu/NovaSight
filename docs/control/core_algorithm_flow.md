@@ -127,17 +127,14 @@ horizon_ms = frame_age_ms + actuation_delay_ms + prediction_lead_ms
 Then:
 
 ```text
-motion_profile = classify(v1, v2, v3)
-prediction_velocity = profile_velocity(motion_profile)
-motion_strength = profile_strength(motion_profile)
-predicted_offset = prediction_velocity * horizon_ms * motion_strength
+prediction_velocity = vector_medoid(v1, v2, v3)
+predicted_offset = prediction_velocity * horizon_ms
 ```
 
 The offset is then gated and capped:
 
 ```text
-profile-aware velocity-time offset
--> motion strength gate
+vector-medoid velocity-time offset
 -> prediction_cap_px vector cap
 -> safe prediction offset
 ```
@@ -188,7 +185,7 @@ rho = hypot(error_counts_x, error_counts_y)
 S = 256 counts
 r = rho / S
 curve = 1 - exp(-(r ^ response_curve_shape))
-R = 1 + response_boost * curve * (0.35 + 0.65 * motion_strength)
+R = 1 + response_boost * curve
 gain = response_scale * R
 demand = gain * S * atan(error_counts / S)
 limit_x = max_output_x_counts

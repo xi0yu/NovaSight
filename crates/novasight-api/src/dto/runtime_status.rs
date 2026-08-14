@@ -1087,7 +1087,7 @@ impl RuntimeStatusState {
                         measurement_dt_s: control.measurement_dt_ms.map(|value| value / 1_000.0),
                     },
                     pipeline: ControlPipelineState {
-                        control_mode: "continuous_atan_predictive_v1",
+                        control_mode: "continuous_atan_medoid_v2",
                         movement_strategy: "latest_replace",
                         prediction_truth: snapshot.pipeline_metrics.prediction_truth.clone(),
                         mode: control_sample.then_some(control_mode_label(control.mode)),
@@ -1710,7 +1710,7 @@ mod tests {
         assert_eq!(value["vision"]["inference"]["generation"], 9);
         assert_eq!(value["vision"]["detection_items"][0]["object_id"], 91);
         assert_eq!(value["vision"]["detection_items"][0]["cx"], 330.0);
-        assert_eq!(pipeline["control_mode"], "continuous_atan_predictive_v1");
+        assert_eq!(pipeline["control_mode"], "continuous_atan_medoid_v2");
         assert_eq!(pipeline["mode"], "CONTINUOUS");
         assert_eq!(pipeline["prediction_truth"]["total_samples"], 12);
         assert_eq!(pipeline["prediction_truth"]["valid_position_samples"], 10);

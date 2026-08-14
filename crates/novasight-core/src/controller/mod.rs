@@ -16,6 +16,4 @@ pub use algorithm::{
 pub use control_law::{
     AimControlInput, AimControlLaw, AimControlParameters, AimControlResult, AxisPair,
     DEFAULT_ATAN_SCALE_COUNTS,
-    ERROR_ACQUISITION_BOOST_FRACTION as ATAN_RESPONSE_STATIC_BOOST_FRACTION,
-    MOTION_BOOST_FRACTION as ATAN_RESPONSE_MOTION_BOOST_FRACTION,
 };

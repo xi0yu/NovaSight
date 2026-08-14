@@ -38,8 +38,6 @@ export const CONTROL_PIPELINE_FIELDS = [
   "max_output_y_counts",
   "prediction_enabled",
   "velocity_history_reset_gap_ms",
-  "velocity_spread_base_px_ms",
-  "velocity_spread_relative",
   "prediction_lead_ms",
   "prediction_cap_px",
   "actuation_feedback_delay_ms"
@@ -131,12 +129,6 @@ export function validateStudioConfigSchema(schema: ConfigSchemaResponse): Studio
     if (!isFiniteNumber(schema.algorithm.response.atan_scale_counts) || schema.algorithm.response.atan_scale_counts <= 0) {
       issues.push({ path: "algorithm.response.atan_scale_counts", reason: "Atan scale must be a positive number" });
     }
-    if (
-      !isFiniteNumber(schema.algorithm.response.static_acquisition_boost_fraction)
-      || !isFiniteNumber(schema.algorithm.response.motion_boost_fraction)
-    ) {
-      issues.push({ path: "algorithm.response", reason: "response boost fractions must be numeric" });
-    }
     if (schema.algorithm.prediction.aim_history_points !== 4 || schema.algorithm.prediction.velocity_segments !== 3) {
       issues.push({ path: "algorithm.prediction", reason: "Studio prediction display expects 4 aim points and 3 velocity segments" });
     }
@@ -213,8 +205,6 @@ export type AlgorithmParameterValues = {
   actuationFeedbackDelayMs: number;
   controlPredictionLeadMs: number;
   controlPredictionHistoryResetGapMs: number;
-  velocitySpreadBasePxMs: number;
-  velocitySpreadRelative: number;
   controlPredictionCapPx: number;
   controlFovX: number;
   controlCountsPer360: number;
@@ -224,7 +214,6 @@ export type AlgorithmParameterValues = {
 export type AlgorithmParameterGroups = {
   responseParameters: AlgorithmNumberParameter[];
   predictionCoreParameters: AlgorithmNumberParameter[];
-  predictionConfidenceParameters: AlgorithmNumberParameter[];
   predictionCapParameters: AlgorithmNumberParameter[];
   calibrationParameters: AlgorithmNumberParameter[];
 };
@@ -282,7 +271,7 @@ export function buildAlgorithmParameterGroups(
         key: "p_response_boost",
         label: "动态增强 B",
         formula: "B / p_response_boost",
-        detail: "写入 pipeline.p_response_boost，控制 R(r,motion) 里最多额外放大多少。高速稳定目标跟不上时提高它；静止、急停和晃动时会被运动强度调度压低。",
+        detail: "写入 pipeline.p_response_boost，控制 R(r) 随误差距离最多额外放大多少。远距离响应不足时小幅提高；过高会让中远距离变冲。",
         value: values.pResponseBoost,
         min: 0,
         max: 100,
@@ -333,35 +322,6 @@ export function buildAlgorithmParameterGroups(
         step: 0.1,
         unit: "ms",
         applyMode: "live"
-      }
-    ],
-    predictionConfidenceParameters: [
-      {
-        key: "velocity_spread_base_px_ms",
-        label: "二维速度离散基础容差",
-        formula: "spread0",
-        detail: "3 段二维 aim 速度的幅度离散超过基础值加相对值后，预测可信度会降低。",
-        value: values.velocitySpreadBasePxMs,
-        min: 0.000001,
-        max: 10000,
-        recommendedMin: 0.01,
-        recommendedMax: 2,
-        step: 0.01,
-        unit: "px/ms",
-        riskLevel: "advanced"
-      },
-      {
-        key: "velocity_spread_relative",
-        label: "二维速度离散相对容差",
-        formula: "spread%",
-        detail: "按当前二维速度幅度放宽离散容差，避免高速目标被固定阈值误判。",
-        value: values.velocitySpreadRelative,
-        min: 0,
-        max: 100,
-        recommendedMin: 0,
-        recommendedMax: 3,
-        step: 0.01,
-        riskLevel: "advanced"
       }
     ],
     predictionCapParameters: [
@@ -444,7 +404,6 @@ export function buildAlgorithmParameterGroups(
   return {
     responseParameters: schemaBackedNumberParameters(schemaIndex, groups.responseParameters),
     predictionCoreParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionCoreParameters),
-    predictionConfidenceParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionConfidenceParameters),
     predictionCapParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionCapParameters),
     calibrationParameters: schemaBackedNumberParameters(schemaIndex, groups.calibrationParameters)
   };

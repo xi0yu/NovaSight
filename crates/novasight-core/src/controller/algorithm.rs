@@ -61,8 +61,6 @@ pub struct AimAlgorithmConfig {
     pub max_output_x_counts: f64,
     pub max_output_y_counts: f64,
     pub velocity_history_reset_gap_ms: f64,
-    pub velocity_spread_base_px_ms: f64,
-    pub velocity_spread_relative: f64,
     pub prediction_enabled: bool,
     /// Command-to-visible-response delay used by target prediction.
     pub prediction_actuation_delay_ms: f64,
@@ -87,8 +85,6 @@ impl Default for AimAlgorithmConfig {
             max_output_x_counts: 127.0,
             max_output_y_counts: 127.0,
             velocity_history_reset_gap_ms: 80.0,
-            velocity_spread_base_px_ms: 0.12,
-            velocity_spread_relative: 0.50,
             prediction_enabled: true,
             prediction_actuation_delay_ms: 4.0,
             prediction_lead_ms: 16.0,
@@ -122,8 +118,6 @@ impl AimAlgorithmConfig {
         SingleTargetPredictionConfig {
             enabled: self.prediction_enabled,
             history_reset_gap_ms: self.velocity_history_reset_gap_ms,
-            spread_base_px_ms: self.velocity_spread_base_px_ms,
-            spread_relative: self.velocity_spread_relative,
             actuation_delay_ms: self.prediction_actuation_delay_ms,
             lead_ms: self.prediction_lead_ms,
             cap_px: self.prediction_cap_px,
@@ -404,23 +398,15 @@ impl AimAlgorithm {
                 aim_y,
                 capture_ts_ns: observation.capture_ts_ns,
                 observation_age_ms: frame_age_ms,
-                detection_confidence: observation.detection_confidence,
-                identity_confidence: observation.track_confidence,
             })
         };
         let predicted_offset_x = prediction.x.safe_offset;
         let predicted_offset_y = prediction.y.safe_offset;
-        let motion_strength = prediction
-            .x
-            .motion_confidence
-            .max(prediction.y.motion_confidence)
-            .clamp(0.0, 1.0);
         let mode = ControlMode::Continuous;
         let Some(control_result) = self.control_law.and_then(|law| {
             law.evaluate(AimControlInput {
                 measured_error_px: AxisPair::new(error_x, error_y),
                 predicted_offset_px: AxisPair::new(predicted_offset_x, predicted_offset_y),
-                motion_strength,
             })
         }) else {
             self.release_trigger();
@@ -534,7 +520,7 @@ mod tests {
     use crate::prediction::PredictionMotionState;
 
     #[test]
-    fn confidence_weighted_vector_prediction_respects_single_cap() {
+    fn vector_medoid_prediction_respects_single_cap() {
         let config = AimAlgorithmConfig {
             prediction_enabled: true,
             prediction_lead_ms: 2.0,
@@ -577,7 +563,7 @@ mod tests {
         assert!((decision.reference_dt_ms - 10.0).abs() < 1e-12);
         assert!((decision.prediction_horizon_ms - 14.0).abs() < 1e-12);
         assert!((decision.prediction_raw_offset_x - 5.6).abs() < 1e-12);
-        assert!((decision.prediction_weighted_offset_x - 2.8).abs() < 1e-12);
+        assert!((decision.prediction_weighted_offset_x - 5.6).abs() < 1e-12);
         assert_eq!(
             decision.prediction_allowed_cap_x,
             decision.prediction_allowed_cap_y
@@ -601,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn track_confidence_zero_suppresses_prediction_without_hiding_velocity() {
+    fn admitted_target_confidence_does_not_rescale_prediction() {
         let mut control = AimAlgorithm::new(AimAlgorithmConfig {
             prediction_enabled: true,
             ..AimAlgorithmConfig::default()
@@ -628,9 +614,9 @@ mod tests {
         let decision = decision.expect("last decision");
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
         assert_eq!(decision.motion_state, PredictionMotionState::Continuous);
-        assert_eq!(decision.motion_confidence, 0.0);
-        assert_eq!(decision.predicted_offset_x, 0.0);
-        assert_eq!(decision.filtered_error_x, 52.0);
+        assert_eq!(decision.motion_confidence, 1.0);
+        assert!((decision.predicted_offset_x - 4.8).abs() < 1e-12);
+        assert!((decision.filtered_error_x - 56.8).abs() < 1e-12);
     }
 
     #[test]
