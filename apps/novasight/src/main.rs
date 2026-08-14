@@ -13,6 +13,8 @@ use serde_yaml::{Mapping, Number, Value};
 use tokio::process::{Child, Command};
 use tokio::time;
 
+mod frontend_dev;
+
 const CONFIG_PATH: &str = "data/novasight.yaml";
 const DATA_DIR: &str = "data";
 const MODEL_DIR: &str = "data/models";
@@ -28,7 +30,11 @@ const DAEMON_LOG_TAIL_BYTES: u64 = 12 * 1024;
 
 #[derive(Parser, Debug)]
 #[command(name = "novasight", about = "NovaSight portable launcher")]
-struct Args {}
+struct Args {
+    /// Run the internal Rust API and browser-facing Vite UI together.
+    #[arg(long)]
+    frontend_dev: bool,
+}
 
 #[derive(Clone, Debug)]
 struct PortableLayout {
@@ -70,9 +76,12 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<()> {
-    let _args = Args::parse();
+    let args = Args::parse();
     let layout = PortableLayout::discover()?;
     prepare_layout(&layout)?;
+    if args.frontend_dev {
+        return frontend_dev::run(&layout).await;
+    }
     validate_developer_artifacts(&layout)?;
     std::env::set_current_dir(&layout.root)
         .with_context(|| format!("set bundle root {}", layout.root.display()))?;
@@ -534,14 +543,18 @@ fn health_check(address: &str) -> bool {
 }
 
 fn open_studio(ready: &ReadyDocument) {
-    for message in studio_ready_messages(ready, detect_lan_ip()) {
-        println!("{message}");
-    }
+    print_studio_urls(ready);
     let url = browser_open_url(ready);
     if let Err(error) = open_browser(&url) {
         eprintln!(
             "NOVASIGHT_BROWSER_OPEN_SKIPPED: {error:#}; open the NovaSight Studio Web UI URL above manually"
         );
+    }
+}
+
+fn print_studio_urls(ready: &ReadyDocument) {
+    for message in studio_ready_messages(ready, detect_lan_ip()) {
+        println!("{message}");
     }
 }
 

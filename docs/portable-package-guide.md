@@ -118,21 +118,19 @@ directory, it treats the workspace root as the runtime root. It uses source-tree
 daemon. Missing artifacts fail with an explicit message and never trigger a
 hidden Cargo or Pnpm build.
 
-For React HMR, use a separate daemon configuration and keep the Rust process
-API-only:
+For React HMR, the source launcher owns the API-only Rust daemon and Vite as one
+development session:
 
 ```bash
-# terminal 1
-cargo run -p novasightd -- --frontend-dev
-
-# terminal 2
-pnpm --dir web dev
+out/cargo/debug/novasight --frontend-dev
 ```
 
 Both processes resolve their endpoint roles from
 `deploy/studio-endpoints.json`. This mode exposes Vite at `0.0.0.0:7351` and
 keeps the Rust API at `127.0.0.1:5174`. It does not reuse or mutate
-`data/novasight.yaml`.
+`data/novasight.yaml`, invoke Cargo, install packages, or build Web assets. The
+launcher prints the LAN URL for a browser on another machine and `Ctrl+C` stops
+both child processes.
 
 ## Same-Path Testing
 

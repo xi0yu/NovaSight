@@ -144,15 +144,12 @@ developer convenience path; the user-facing path remains
 
 ## Frontend HMR Development
 
-Frontend development is a separate, explicit two-process mode. It never shares
-the product runtime configuration file:
+Frontend development has one process owner and never shares the product runtime
+configuration file. After preparing the Rust binaries and `web/node_modules`,
+start both the internal daemon and Vite with one command:
 
 ```bash
-# terminal 1: internal Rust API only
-cargo run -p novasightd -- --frontend-dev
-
-# terminal 2: browser-facing Vite UI
-pnpm --dir web dev
+out/cargo/debug/novasight --frontend-dev
 ```
 
 Both processes read their endpoint roles from `deploy/studio-endpoints.json`.
@@ -160,7 +157,10 @@ Vite listens on `0.0.0.0:7351` with strict port ownership and proxies API,
 health, and WebSocket traffic to the Rust daemon at `127.0.0.1:5174`. The
 dedicated frontend-development configuration is initialized with the Rust
 development defaults on first use. Product/source-launcher configuration stays
-in `data/novasight.yaml` and is not read or rewritten by the HMR daemon.
+in `data/novasight.yaml` and is not read or rewritten by the HMR daemon. On a
+headless Jetson, open `http://<Jetson-LAN-IP>:7351/` from another machine on the
+same LAN. The launcher prints the resolved LAN URL and `Ctrl+C` stops both
+processes. It does not run Cargo, install packages, or build the Web UI.
 
 ## Local Control CLI
 
