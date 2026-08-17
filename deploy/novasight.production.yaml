@@ -1,4 +1,4 @@
-schema_version: 15
+schema_version: 16
 revision: 0
 server:
   host: 0.0.0.0
@@ -21,6 +21,8 @@ pipeline:
   p_response_curve_shape: 1.0
   max_output_x_counts: 127.0
   max_output_y_counts: 127.0
+  fire_delay_enabled: false
+  fire_delay_ms: 0
   velocity_history_reset_gap_ms: 80.0
   prediction_enabled: true
   prediction_lead_ms: 16.0

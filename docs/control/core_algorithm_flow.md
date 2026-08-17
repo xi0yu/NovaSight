@@ -14,6 +14,7 @@ DeepStream capture/inference
 -> latest-only ingress
 -> target tracking and selection
 -> selected aim_x / aim_y
+-> hardware trigger hold threshold
 -> aim-point velocity prediction
 -> continuous Atan control
 -> per-axis output limit
@@ -61,6 +62,10 @@ targeting worker
 control worker
 device worker
 ```
+
+In hardware-trigger mode the control worker does not invoke the prediction or
+control algorithm until the observed button hold duration exceeds the configured
+fire delay. Short presses therefore never create an `OutputPlan`.
 
 The consequence is simple: every control command should represent the freshest
 available target state, not a replay of old frames.

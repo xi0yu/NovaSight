@@ -5,7 +5,7 @@ use novasight_core::tracking::KalmanConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 15;
+pub const CURRENT_SCHEMA_VERSION: u32 = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -236,10 +236,6 @@ pub struct RecoilConfig {
     pub require_target: bool,
     #[serde(default = "default_recoil_interval_ms")]
     pub interval_ms: u64,
-    #[serde(default)]
-    pub fire_delay_enabled: bool,
-    #[serde(default = "default_recoil_fire_delay_ms")]
-    pub fire_delay_ms: u64,
     #[serde(default = "default_recoil_y_counts")]
     pub y_counts: i32,
     #[serde(default, flatten)]
@@ -252,8 +248,6 @@ impl Default for RecoilConfig {
             enabled: false,
             require_target: default_recoil_require_target(),
             interval_ms: default_recoil_interval_ms(),
-            fire_delay_enabled: false,
-            fire_delay_ms: default_recoil_fire_delay_ms(),
             y_counts: default_recoil_y_counts(),
             extra: BTreeMap::new(),
         }
@@ -266,12 +260,6 @@ impl RecoilConfig {
             return Err(ConfigValidationError::new(
                 "control.recoil.interval_ms",
                 "must be within 1..=5000 ms",
-            ));
-        }
-        if self.fire_delay_ms > 5_000 {
-            return Err(ConfigValidationError::new(
-                "control.recoil.fire_delay_ms",
-                "must be within 0..=5000 ms",
             ));
         }
         if !(1..=i16::MAX as i32).contains(&self.y_counts) {
@@ -289,9 +277,6 @@ const fn default_recoil_require_target() -> bool {
 }
 const fn default_recoil_interval_ms() -> u64 {
     16
-}
-const fn default_recoil_fire_delay_ms() -> u64 {
-    0
 }
 const fn default_recoil_y_counts() -> i32 {
     1
@@ -476,6 +461,12 @@ pub struct PipelineRuntimeConfig {
     pub max_output_x_counts: f64,
     #[serde(default = "default_max_output_counts")]
     pub max_output_y_counts: f64,
+    /// Required continuous hardware-trigger hold time before the control
+    /// algorithm is allowed to consume target observations.
+    #[serde(default)]
+    pub fire_delay_enabled: bool,
+    #[serde(default = "default_fire_delay_ms")]
+    pub fire_delay_ms: u64,
     #[serde(default = "default_velocity_history_reset_gap_ms")]
     pub velocity_history_reset_gap_ms: f64,
     #[serde(default = "default_prediction_enabled")]
@@ -558,6 +549,8 @@ impl Default for PipelineRuntimeConfig {
             p_response_curve_shape: default_response_curve_shape(),
             max_output_x_counts: default_max_output_counts(),
             max_output_y_counts: default_max_output_counts(),
+            fire_delay_enabled: false,
+            fire_delay_ms: default_fire_delay_ms(),
             velocity_history_reset_gap_ms: default_velocity_history_reset_gap_ms(),
             prediction_enabled: default_prediction_enabled(),
             prediction_lead_ms: default_prediction_lead_ms(),
@@ -654,6 +647,12 @@ impl PipelineRuntimeConfig {
             1.0,
             f64::from(i16::MAX),
         )?;
+        if self.fire_delay_ms > 5_000 {
+            return Err(ConfigValidationError::new(
+                "pipeline.fire_delay_ms",
+                "must be within 0..=5000 ms",
+            ));
+        }
         validate_finite_range(
             "pipeline.velocity_history_reset_gap_ms",
             self.velocity_history_reset_gap_ms,
@@ -994,6 +993,10 @@ const fn default_prediction_lead_ms() -> f64 {
 
 const fn default_max_output_counts() -> f64 {
     127.0
+}
+
+const fn default_fire_delay_ms() -> u64 {
+    0
 }
 
 const fn default_prediction_cap_px() -> f64 {
@@ -1899,14 +1902,15 @@ mod tests {
     }
 
     #[test]
-    fn recoil_configuration_is_typed_and_bounded() {
+    fn recoil_and_fire_delay_configuration_are_typed_and_bounded() {
         let mut config: AppConfig = serde_yaml::from_str(
-            "control:\n  recoil:\n    enabled: true\n    interval_ms: 20\n    fire_delay_ms: 40\n    y_counts: 3\n",
+            "pipeline:\n  fire_delay_enabled: true\n  fire_delay_ms: 40\ncontrol:\n  recoil:\n    enabled: true\n    interval_ms: 20\n    y_counts: 3\n",
         )
         .unwrap();
         assert!(config.control.recoil.enabled);
         assert_eq!(config.control.recoil.interval_ms, 20);
-        assert_eq!(config.control.recoil.fire_delay_ms, 40);
+        assert!(config.pipeline.fire_delay_enabled);
+        assert_eq!(config.pipeline.fire_delay_ms, 40);
         assert_eq!(config.control.recoil.y_counts, 3);
         config.validate_configured_adapters().unwrap();
 

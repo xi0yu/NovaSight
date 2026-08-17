@@ -191,21 +191,10 @@ impl ConfigSchemaResponse {
                     vec![
                         boolean("control.recoil.enabled", "启用独立 Y 轴压枪"),
                         boolean("control.recoil.require_target", "只在存在目标时压枪"),
-                        boolean(
-                            "control.recoil.fire_delay_enabled",
-                            "启用延迟开火（压枪首发）",
-                        ),
                         integer(
                             "control.recoil.interval_ms",
                             "压枪叠加间隔",
                             1.0,
-                            5_000.0,
-                            Some("ms"),
-                        ),
-                        integer(
-                            "control.recoil.fire_delay_ms",
-                            "首次压枪延迟",
-                            0.0,
                             5_000.0,
                             Some("ms"),
                         ),
@@ -271,6 +260,14 @@ impl ConfigSchemaResponse {
                             1.0,
                             i16::MAX as f64,
                             Some("count"),
+                        ),
+                        boolean("pipeline.fire_delay_enabled", "启用按键持续延迟"),
+                        integer(
+                            "pipeline.fire_delay_ms",
+                            "开火延迟",
+                            0.0,
+                            5_000.0,
+                            Some("ms"),
                         ),
                         boolean("pipeline.prediction_enabled", "启用目标速度预测"),
                         float(
@@ -782,7 +779,7 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 15);
+        assert_eq!(value["version"], 16);
         assert_eq!(value["algorithm"]["id"], "continuous_atan_medoid_v2");
         assert_eq!(value["algorithm"]["response"]["atan_scale_counts"], 256.0);
         assert_eq!(value["algorithm"]["prediction"]["aim_history_points"], 4);
@@ -815,9 +812,9 @@ mod tests {
                 })
         }));
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
-            section["id"] == "control.recoil"
+            section["id"] == "pipeline"
                 && section["fields"].as_array().unwrap().iter().any(|field| {
-                    field["path"] == "control.recoil.fire_delay_ms"
+                    field["path"] == "pipeline.fire_delay_ms"
                         && field["min"] == 0.0
                         && field["max"] == 5_000.0
                         && field["restart_required"] == false

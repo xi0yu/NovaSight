@@ -387,6 +387,8 @@ impl RuntimeDependencies {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         pipeline.targeting.clone_from(&live.targeting);
         pipeline.control = live.control;
+        pipeline.output_limits = live.output_limits;
+        pipeline.trigger_hold_delay_ms = live.trigger_hold_delay_ms;
         Ok(live)
     }
 
@@ -3048,8 +3050,6 @@ fn runtime_recoil_config(config: &ConfigRecoilConfig) -> RecoilConfig {
         enabled: config.enabled,
         require_target: config.require_target,
         interval_ms: config.interval_ms,
-        fire_delay_enabled: config.fire_delay_enabled,
-        fire_delay_ms: config.fire_delay_ms,
         y_counts: config.y_counts,
     }
 }

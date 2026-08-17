@@ -36,6 +36,8 @@ export const CONTROL_PIPELINE_FIELDS = [
   "p_response_curve_shape",
   "max_output_x_counts",
   "max_output_y_counts",
+  "fire_delay_enabled",
+  "fire_delay_ms",
   "prediction_enabled",
   "velocity_history_reset_gap_ms",
   "prediction_lead_ms",
@@ -139,7 +141,7 @@ export function validateStudioConfigSchema(schema: ConfigSchemaResponse): Studio
       issues.push({ path, reason: "Studio control parameter is not exposed by backend schema" });
       continue;
     }
-    if (key === "prediction_enabled") {
+    if (key === "prediction_enabled" || key === "fire_delay_enabled") {
       if (field.type !== "bool") {
         issues.push({ path, reason: `expected bool schema field, got ${field.type}` });
       }

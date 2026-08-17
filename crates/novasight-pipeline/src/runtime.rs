@@ -119,6 +119,9 @@ pub struct PipelineConfig {
     /// Runtime activation policy. `Always` still respects the
     /// output gate, device connection, freshness, and target-validity guards.
     pub trigger_mode: TriggerMode,
+    /// Effective continuous hardware-trigger hold threshold. Zero bypasses
+    /// the delay. The control worker snapshots it at each trigger rising edge.
+    pub trigger_hold_delay_ms: u64,
     /// Optional vision-verified control origin. The hub owns its template and
     /// observation state; targeting only performs a cheap resolved-point read.
     pub crosshair: Option<CrosshairHub>,
@@ -133,6 +136,7 @@ pub struct PipelineLiveConfig {
     pub targeting: TargetingConfig,
     pub control: AimAlgorithmConfig,
     pub output_limits: OutputLimitConfig,
+    pub trigger_hold_delay_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -156,6 +160,7 @@ impl From<&PipelineConfig> for PipelineLiveConfig {
             targeting: config.targeting.clone(),
             control: config.control,
             output_limits: config.output_limits,
+            trigger_hold_delay_ms: config.trigger_hold_delay_ms,
         }
     }
 }
@@ -181,6 +186,7 @@ impl Default for PipelineConfig {
             output_limits: OutputLimitConfig::default(),
             trigger_poll_interval_ms: None,
             trigger_mode: TriggerMode::Always,
+            trigger_hold_delay_ms: 0,
             crosshair: None,
             recoil: RecoilConfig::default(),
         }
@@ -222,7 +228,16 @@ pub struct PipelineMetrics {
     pub detections: DetectionTelemetry,
     pub target_selection: TargetSelection,
     pub control: AimResult,
+    pub trigger_delay: TriggerDelayTelemetry,
     pub recoil: RecoilDecision,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TriggerDelayTelemetry {
+    pub pending: bool,
+    pub configured_ms: Option<u64>,
+    pub elapsed_ms: Option<f64>,
+    pub remaining_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -289,6 +304,7 @@ struct AtomicMetrics {
     vision: Mutex<VisionTelemetry>,
     last_device_receipt: AtomicDeviceReceipt,
     control: Mutex<AimResult>,
+    trigger_delay: Mutex<TriggerDelayTelemetry>,
     recoil: Mutex<RecoilDecision>,
 }
 
@@ -394,6 +410,16 @@ struct SharedState {
     output_gate_min_generation: AtomicU64,
     hardware_trigger_required: AtomicBool,
     trigger_active: AtomicBool,
+    /// Advances on every trigger or trigger-policy transition so the control
+    /// worker can detect a release/re-press that occurred between frames.
+    trigger_epoch: AtomicU64,
+    /// Monotonic timestamp captured when the trigger worker first observes a
+    /// rising edge, encoded as `timestamp + 1` so zero remains "unknown".
+    trigger_started_at_ns: AtomicU64,
+    trigger_hold_delay_ns: AtomicU64,
+    /// Effective delay captured at the rising edge for the current trigger
+    /// cycle. Live edits only replace `trigger_hold_delay_ns` for the next one.
+    trigger_cycle_delay_ns: AtomicU64,
     buttons_available: AtomicBool,
     button_left: AtomicBool,
     button_left_epoch: AtomicU64,
@@ -450,6 +476,12 @@ impl SharedState {
             output_gate_min_generation: AtomicU64::new(0),
             hardware_trigger_required: AtomicBool::new(trigger_mode == TriggerMode::Hardware),
             trigger_active: AtomicBool::new(false),
+            trigger_epoch: AtomicU64::new(1),
+            trigger_started_at_ns: AtomicU64::new(0),
+            trigger_hold_delay_ns: AtomicU64::new(
+                live_config.trigger_hold_delay_ms.saturating_mul(1_000_000),
+            ),
+            trigger_cycle_delay_ns: AtomicU64::new(0),
             buttons_available: AtomicBool::new(false),
             button_left: AtomicBool::new(false),
             button_left_epoch: AtomicU64::new(1),
@@ -524,14 +556,64 @@ impl SharedState {
         }
     }
 
+    fn set_trigger_state(&self, active: bool, observed_at_ns: Option<u64>) {
+        let previous = self.trigger_active.load(Ordering::Acquire);
+        if active {
+            if !previous {
+                let encoded = observed_at_ns.map_or(0, |value| value.saturating_add(1));
+                // Publish the rising-edge time before publishing the active
+                // state so the control worker never starts a fresh hold cycle
+                // from a later fallback timestamp.
+                self.trigger_started_at_ns.store(encoded, Ordering::Release);
+                let delay_ns = self.trigger_hold_delay_ns.load(Ordering::Acquire);
+                self.trigger_cycle_delay_ns
+                    .store(delay_ns, Ordering::Release);
+                let hardware_required = self.hardware_trigger_required.load(Ordering::Acquire);
+                if hardware_required {
+                    self.trigger_epoch.fetch_add(1, Ordering::Release);
+                }
+                self.trigger_active.store(true, Ordering::Release);
+                if hardware_required && delay_ns > 0 {
+                    self.record_trigger_delay(TriggerDelayTelemetry {
+                        pending: true,
+                        configured_ms: Some(delay_ns / 1_000_000),
+                        elapsed_ms: Some(0.0),
+                        remaining_ms: Some(delay_ns as f64 / 1_000_000.0),
+                    });
+                }
+            } else {
+                self.trigger_active.store(true, Ordering::Release);
+            }
+        } else {
+            self.trigger_active.store(false, Ordering::Release);
+            self.trigger_started_at_ns.store(0, Ordering::Release);
+            if previous {
+                if self.hardware_trigger_required.load(Ordering::Acquire) {
+                    self.trigger_epoch.fetch_add(1, Ordering::Release);
+                }
+                self.record_trigger_delay(TriggerDelayTelemetry::default());
+            }
+        }
+    }
+
     /// Telemetry must never stall the realtime control lane. A concurrent
     /// status snapshot may keep the previous complete sample for one poll.
-    fn record_control_decision(&self, value: AimResult) {
+    fn try_record_control_decision(&self, value: AimResult) -> bool {
         match self.metrics.control.try_lock() {
-            Ok(mut telemetry) => *telemetry = value,
-            Err(TryLockError::WouldBlock) => {}
-            Err(TryLockError::Poisoned(poisoned)) => *poisoned.into_inner() = value,
+            Ok(mut telemetry) => {
+                *telemetry = value;
+                true
+            }
+            Err(TryLockError::WouldBlock) => false,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                *poisoned.into_inner() = value;
+                true
+            }
         }
+    }
+
+    fn record_control_decision(&self, value: AimResult) {
+        let _ = self.try_record_control_decision(value);
     }
 
     fn record_vision(&self, batch: &DetectionBatch, selection: &TargetSelection) {
@@ -593,8 +675,27 @@ impl SharedState {
         }
     }
 
+    fn try_record_trigger_delay(&self, value: TriggerDelayTelemetry) -> bool {
+        match self.metrics.trigger_delay.try_lock() {
+            Ok(mut telemetry) => {
+                *telemetry = value;
+                true
+            }
+            Err(TryLockError::WouldBlock) => false,
+            Err(TryLockError::Poisoned(poisoned)) => {
+                *poisoned.into_inner() = value;
+                true
+            }
+        }
+    }
+
+    fn record_trigger_delay(&self, value: TriggerDelayTelemetry) {
+        let _ = self.try_record_trigger_delay(value);
+    }
+
     fn clear_control_telemetry(&self) {
         self.record_control_decision(AimResult::default());
+        self.record_trigger_delay(TriggerDelayTelemetry::default());
         self.record_recoil(RecoilDecision::default());
     }
 
@@ -602,7 +703,7 @@ impl SharedState {
         let message = message.into();
         self.output_gate.store(false, Ordering::Release);
         self.set_output_delivery_state(OutputDeliveryState::GateClosed);
-        self.trigger_active.store(false, Ordering::Release);
+        self.set_trigger_state(false, None);
         self.buttons_available.store(false, Ordering::Release);
         self.set_button_left(false);
         self.button_right.store(false, Ordering::Release);
@@ -627,7 +728,7 @@ impl SharedState {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.output_gate.store(false, Ordering::Release);
         self.set_output_delivery_state(OutputDeliveryState::GateClosed);
-        self.trigger_active.store(false, Ordering::Release);
+        self.set_trigger_state(false, None);
         self.buttons_available.store(false, Ordering::Release);
         self.set_button_left(false);
         self.button_right.store(false, Ordering::Release);
@@ -717,7 +818,7 @@ impl SharedState {
     fn record_manual_device_disconnect(&self) {
         self.device_connected.store(false, Ordering::Release);
         self.monitor_error_streak.store(0, Ordering::Release);
-        self.trigger_active.store(false, Ordering::Release);
+        self.set_trigger_state(false, None);
         self.buttons_available.store(false, Ordering::Release);
         self.set_button_left(false);
         self.button_right.store(false, Ordering::Release);
@@ -814,7 +915,7 @@ impl PipelineIngress {
         self.shared.output_gate.store(false, Ordering::Release);
         self.shared
             .set_output_delivery_state(OutputDeliveryState::GateClosed);
-        self.shared.trigger_active.store(false, Ordering::Release);
+        self.shared.set_trigger_state(false, None);
         self.shared
             .buttons_available
             .store(false, Ordering::Release);
@@ -833,7 +934,7 @@ impl PipelineIngress {
     /// Update the live trigger cache. Output is disabled by default and
     /// the device lane rechecks this value immediately before sending.
     pub fn set_trigger_active(&self, active: bool) {
-        self.shared.trigger_active.store(active, Ordering::Release);
+        self.shared.set_trigger_state(active, None);
         self.shared.buttons_available.store(true, Ordering::Release);
         self.shared.set_button_left(active);
         self.shared.button_right.store(false, Ordering::Release);
@@ -844,14 +945,15 @@ impl PipelineIngress {
                 .set_output_delivery_state(OutputDeliveryState::TriggerInactive);
         }
         if !active {
+            self.shared.clear_control_telemetry();
             // Returning from trigger release is a synchronization point:
             // no device send from the previous active interval remains.
-            drop(
-                self.shared
-                    .device_lane
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            );
+            let _lane = self
+                .shared
+                .device_lane
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _ = self.command_slot.try_take();
         }
     }
 
@@ -860,16 +962,46 @@ impl PipelineIngress {
     /// in-flight unconditional command before returning.
     pub fn set_trigger_mode(&self, mode: TriggerMode) {
         let hardware_required = mode == TriggerMode::Hardware;
-        self.shared
+        let _lane = self
+            .shared
+            .device_lane
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = self
+            .shared
             .hardware_trigger_required
-            .store(hardware_required, Ordering::Release);
-        if hardware_required {
-            drop(
+            .load(Ordering::Acquire);
+        if previous != hardware_required {
+            if hardware_required {
+                // Treat entering hardware mode as a new trigger cycle even if
+                // the physical button was already held in direct mode.
                 self.shared
-                    .device_lane
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
-            );
+                    .trigger_started_at_ns
+                    .store(0, Ordering::Release);
+                let delay_ns = self.shared.trigger_hold_delay_ns.load(Ordering::Acquire);
+                self.shared
+                    .trigger_cycle_delay_ns
+                    .store(delay_ns, Ordering::Release);
+            }
+            self.shared
+                .hardware_trigger_required
+                .store(hardware_required, Ordering::Release);
+            self.shared.trigger_epoch.fetch_add(1, Ordering::Release);
+            if hardware_required {
+                let delay_ns = self.shared.trigger_cycle_delay_ns.load(Ordering::Acquire);
+                if self.shared.trigger_active.load(Ordering::Acquire) && delay_ns > 0 {
+                    self.shared.record_trigger_delay(TriggerDelayTelemetry {
+                        pending: true,
+                        configured_ms: Some(delay_ns / 1_000_000),
+                        elapsed_ms: Some(0.0),
+                        remaining_ms: Some(delay_ns as f64 / 1_000_000.0),
+                    });
+                }
+            } else {
+                self.shared
+                    .record_trigger_delay(TriggerDelayTelemetry::default());
+            }
+            let _ = self.command_slot.try_take();
         }
         self.shared.refresh_output_delivery_readiness();
     }
@@ -958,6 +1090,10 @@ impl PipelineIngress {
         self.shared
             .max_output_y_counts
             .store(next_limit_y, Ordering::Release);
+        self.shared.trigger_hold_delay_ns.store(
+            config.trigger_hold_delay_ms.saturating_mul(1_000_000),
+            Ordering::Release,
+        );
         if targeting_changed {
             self.shared
                 .targeting_config_version
@@ -1075,6 +1211,7 @@ struct TargetedObservation {
 struct OutputPlan {
     command: DeviceCommand,
     recoil_target_valid: bool,
+    trigger_epoch: u64,
 }
 
 /// Owns the post-inference real-time lanes. Capture/DeepStream keeps
@@ -1223,7 +1360,7 @@ impl PipelineRuntime {
         let device_handle = match spawn_device_worker(
             command_slot.clone(),
             Arc::clone(&shared),
-            clock,
+            Arc::clone(&clock),
             Arc::clone(&device),
             DeviceWorkerConfig {
                 epoch: config.epoch,
@@ -1240,16 +1377,20 @@ impl PipelineRuntime {
         workers.push(device_handle);
 
         if let Some(interval_ms) = config.trigger_poll_interval_ms {
-            let trigger_handle =
-                match spawn_trigger_worker(Arc::clone(&shared), Arc::clone(&device), interval_ms) {
-                    Ok(handle) => handle,
-                    Err(error) => {
-                        shared.status.store(STATUS_STOPPING, Ordering::Release);
-                        close_slots(&batch_slot, &target_slot, &command_slot);
-                        join_workers(&mut workers);
-                        return Err(error);
-                    }
-                };
+            let trigger_handle = match spawn_trigger_worker(
+                Arc::clone(&shared),
+                Arc::clone(&device),
+                clock,
+                interval_ms,
+            ) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    shared.status.store(STATUS_STOPPING, Ordering::Release);
+                    close_slots(&batch_slot, &target_slot, &command_slot);
+                    join_workers(&mut workers);
+                    return Err(error);
+                }
+            };
             workers.push(trigger_handle);
         }
 
@@ -1420,6 +1561,7 @@ impl Drop for DeviceConnectionGuard {
 fn spawn_trigger_worker(
     shared: Arc<SharedState>,
     device: Arc<dyn PointerDevice>,
+    clock: Arc<dyn Clock>,
     interval_ms: u64,
 ) -> Result<JoinHandle<()>, PipelineError> {
     thread::Builder::new()
@@ -1440,7 +1582,7 @@ fn spawn_trigger_worker(
                         Ok(Some(buttons)) => {
                             let recovered = shared.record_device_success();
                             let active = buttons.trigger_active();
-                            shared.trigger_active.store(active, Ordering::Release);
+                            shared.set_trigger_state(active, Some(clock.now().0));
                             shared.buttons_available.store(true, Ordering::Release);
                             shared.set_button_left(buttons.left);
                             shared.button_right.store(buttons.right, Ordering::Release);
@@ -1474,7 +1616,7 @@ fn spawn_trigger_worker(
                         }
                         Err(error) => {
                             shared.record_device_error(&error);
-                            shared.trigger_active.store(false, Ordering::Release);
+                            shared.set_trigger_state(false, None);
                             shared.clear_control_telemetry();
                             shared.buttons_available.store(false, Ordering::Release);
                             shared.set_button_left(false);
@@ -1637,6 +1779,10 @@ fn spawn_control_worker(
                 let mut algorithm = AimAlgorithm::new(config.control);
                 let mut config_version = shared.control_config_version.load(Ordering::Acquire);
                 let mut next_telemetry_at_ns = 0;
+                let mut trigger_started_at_ns: Option<u64> = None;
+                let mut trigger_deadline_ns: Option<u64> = None;
+                let mut trigger_delay_was_pending = false;
+                let mut trigger_epoch = shared.trigger_epoch.load(Ordering::Acquire);
                 while let Some(target) = input.wait_take() {
                     if shared.status() != PipelineStatus::Running {
                         break;
@@ -1653,8 +1799,93 @@ fn spawn_control_worker(
                     }
                     let control_now_ns = clock.now().0;
                     let target_id = target.target_id.unwrap_or(0);
-                    let trigger_active = !shared.hardware_trigger_required.load(Ordering::Acquire)
-                        || shared.trigger_active.load(Ordering::Acquire);
+                    let hardware_trigger_required =
+                        shared.hardware_trigger_required.load(Ordering::Acquire);
+                    let raw_trigger_active = shared.trigger_active.load(Ordering::Acquire);
+                    let current_trigger_epoch = shared.trigger_epoch.load(Ordering::Acquire);
+                    if current_trigger_epoch != trigger_epoch {
+                        algorithm.reset_target_state();
+                        trigger_started_at_ns = None;
+                        trigger_deadline_ns = None;
+                        trigger_delay_was_pending = false;
+                        trigger_epoch = current_trigger_epoch;
+                    }
+                    let mut first_admitted_trigger_sample = false;
+                    if hardware_trigger_required && !raw_trigger_active {
+                        if trigger_started_at_ns.take().is_some() {
+                            algorithm.reset_target_state();
+                        }
+                        trigger_deadline_ns = None;
+                        trigger_delay_was_pending = false;
+                        shared.record_trigger_delay(TriggerDelayTelemetry::default());
+                        if control_now_ns >= next_telemetry_at_ns {
+                            shared.record_control_decision(AimResult::blocked(
+                                novasight_core::controller::BlockReason::TriggerInactive,
+                            ));
+                            next_telemetry_at_ns =
+                                control_now_ns.saturating_add(CONTROL_TELEMETRY_MIN_INTERVAL_NS);
+                        }
+                        continue;
+                    }
+                    if hardware_trigger_required {
+                        let new_trigger_cycle = trigger_started_at_ns.is_none();
+                        let started_at_ns = *trigger_started_at_ns.get_or_insert_with(|| {
+                            algorithm.reset_target_state();
+                            shared
+                                .trigger_started_at_ns
+                                .load(Ordering::Acquire)
+                                .checked_sub(1)
+                                .unwrap_or(control_now_ns)
+                                .min(control_now_ns)
+                        });
+                        let deadline_ns = *trigger_deadline_ns.get_or_insert_with(|| {
+                            started_at_ns.saturating_add(
+                                shared.trigger_cycle_delay_ns.load(Ordering::Acquire),
+                            )
+                        });
+                        if new_trigger_cycle && deadline_ns > started_at_ns {
+                            // The rising edge may have published pending state
+                            // before the first target arrived. Preserve that
+                            // transition even when the first target arrives
+                            // only after the deadline has already elapsed.
+                            trigger_delay_was_pending = true;
+                        }
+                        if deadline_ns > started_at_ns && control_now_ns <= deadline_ns {
+                            trigger_delay_was_pending = true;
+                            let elapsed_ns = control_now_ns.saturating_sub(started_at_ns);
+                            let remaining_ns = deadline_ns.saturating_sub(control_now_ns);
+                            if shared.trigger_epoch.load(Ordering::Acquire) != trigger_epoch {
+                                continue;
+                            }
+                            shared.record_trigger_delay(TriggerDelayTelemetry {
+                                pending: true,
+                                configured_ms: Some(
+                                    deadline_ns.saturating_sub(started_at_ns) / 1_000_000,
+                                ),
+                                elapsed_ms: Some(elapsed_ns as f64 / 1_000_000.0),
+                                remaining_ms: Some(remaining_ns as f64 / 1_000_000.0),
+                            });
+                            if new_trigger_cycle || control_now_ns >= next_telemetry_at_ns {
+                                let mut blocked = AimResult::blocked(
+                                    novasight_core::controller::BlockReason::TriggerDelayPending,
+                                );
+                                blocked.trigger_active = true;
+                                shared.record_control_decision(blocked);
+                                next_telemetry_at_ns = control_now_ns
+                                    .saturating_add(CONTROL_TELEMETRY_MIN_INTERVAL_NS);
+                            }
+                            continue;
+                        }
+                        first_admitted_trigger_sample =
+                            new_trigger_cycle || trigger_delay_was_pending;
+                    } else {
+                        if trigger_started_at_ns.take().is_some() {
+                            algorithm.reset_target_state();
+                        }
+                        trigger_deadline_ns = None;
+                        trigger_delay_was_pending = false;
+                        shared.record_trigger_delay(TriggerDelayTelemetry::default());
+                    }
                     let observation = AimSample {
                         generation: target.stamp.generation.0,
                         target_id,
@@ -1665,16 +1896,37 @@ fn spawn_control_worker(
                         crosshair_x: target.crosshair_x,
                         crosshair_y: target.crosshair_y,
                         target_valid: target.target_id.is_some(),
-                        trigger_active,
+                        trigger_active: true,
                     };
                     if target.track_rebuilt {
                         algorithm.reset_target_state();
                     }
                     let decision = algorithm.step(observation);
-                    if control_now_ns >= next_telemetry_at_ns {
-                        shared.record_control_decision(decision);
+                    if shared.trigger_epoch.load(Ordering::Acquire) != trigger_epoch {
+                        // Trigger or policy changed during calculation. The
+                        // decision belongs to the retired cycle and must not
+                        // update telemetry or enter the device lane.
+                        continue;
+                    }
+                    let publish_control_telemetry =
+                        first_admitted_trigger_sample || control_now_ns >= next_telemetry_at_ns;
+                    let control_telemetry_published =
+                        publish_control_telemetry && shared.try_record_control_decision(decision);
+                    if control_telemetry_published {
                         next_telemetry_at_ns =
                             control_now_ns.saturating_add(CONTROL_TELEMETRY_MIN_INTERVAL_NS);
+                    }
+                    if hardware_trigger_required {
+                        // Publish the first post-delay decision before clearing
+                        // the waiting state so status snapshots cannot observe
+                        // a transient IDLE gap between the two semantic states.
+                        if !trigger_delay_was_pending
+                            || (control_telemetry_published
+                                && shared
+                                    .try_record_trigger_delay(TriggerDelayTelemetry::default()))
+                        {
+                            trigger_delay_was_pending = false;
+                        }
                     }
                     shared
                         .metrics
@@ -1716,6 +1968,11 @@ fn spawn_control_worker(
                         .publish(OutputPlan {
                             command,
                             recoil_target_valid: target.recoil_target_valid,
+                            // Bind the plan to the trigger cycle observed
+                            // before running the algorithm. A release/re-press
+                            // during calculation must not retag this old result
+                            // as belonging to the new cycle.
+                            trigger_epoch,
                         })
                         .is_err()
                     {
@@ -1783,6 +2040,10 @@ fn spawn_device_worker(
                         .device_lane
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if plan.trigger_epoch != shared.trigger_epoch.load(Ordering::Acquire) {
+                        shared.set_output_delivery_state(OutputDeliveryState::Superseded);
+                        continue;
+                    }
                     if shared.recoil_config_version.load(Ordering::Acquire) != recoil_config_version
                     {
                         shared.set_output_delivery_state(OutputDeliveryState::Superseded);
@@ -1888,7 +2149,7 @@ fn spawn_device_worker(
                         Err(error) => {
                             shared.record_recoil(recoil_decision);
                             shared.record_device_error(&error);
-                            shared.trigger_active.store(false, Ordering::Release);
+                            shared.set_trigger_state(false, None);
                             shared.set_button_left(false);
                             shared.clear_control_telemetry();
                             shared.set_output_delivery_state(OutputDeliveryState::SendFailed);
@@ -2006,6 +2267,11 @@ fn snapshot_metrics(
         control: *shared
             .metrics
             .control
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        trigger_delay: *shared
+            .metrics
+            .trigger_delay
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         recoil: *shared

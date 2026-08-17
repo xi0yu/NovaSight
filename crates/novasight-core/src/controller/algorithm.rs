@@ -42,6 +42,9 @@ pub enum BlockReason {
     GeometryInvalid,
     /// Trigger not held; no command is emitted this step.
     TriggerInactive,
+    /// Hardware trigger is held but has not yet crossed its configured
+    /// continuous-hold threshold. The algorithm was not executed.
+    TriggerDelayPending,
     /// No device count is actionable at the current position.
     DeadZone,
     /// Demand converted to a count out of signed 32-bit range.

@@ -17,6 +17,7 @@ latest DetectionBatch
 -> TargetSelector / Tracker identity
 -> shared bbox aim point
 -> frozen crosshair/geometry reference
+-> hardware trigger continuous-hold delay
 -> current measured ROI error
 -> four-point / three-segment vector-medoid velocity prediction
 -> source/FOV/counts projection
@@ -32,6 +33,11 @@ latest DetectionBatch
 The controller predicts only the current selected target. A new observation
 replaces an unsent older command, so prediction changes the next aim error
 instead of creating a queued trajectory.
+
+In hardware-trigger mode, capture, inference, tracking and target selection
+continue while the button is held below `fire_delay_ms`, but the control worker
+does not call `AimAlgorithm::step`. Once the held duration exceeds the threshold,
+only the newest target observation starts a fresh prediction/control state.
 
 ## Target And Aim Inputs
 
@@ -101,19 +107,21 @@ range. It does not merge pending counts or split one command into a trajectory.
 ## Production Configuration
 
 ```yaml
-schema_version: 15
+schema_version: 16
 pipeline:
   p_response_scale: 0.20
   p_response_boost: 0.50
   p_response_curve_shape: 1.0
   max_output_x_counts: 127.0
   max_output_y_counts: 127.0
+  fire_delay_enabled: false
+  fire_delay_ms: 0
   prediction_enabled: true
   prediction_lead_ms: 16.0
   prediction_cap_px: 10.0
 ```
 
-The Rust root schema is version 15 and uses `pipeline.prediction_enabled: true`.
+The Rust root schema is version 16 and uses `pipeline.prediction_enabled: true`.
 Retired response fields are rejected rather than silently mapped into the new
 control model.
 

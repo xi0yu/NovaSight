@@ -332,7 +332,9 @@ fn pipeline_hot_trigger_mode_blocks_until_trigger_is_explicitly_active() {
 
     thread::sleep(Duration::from_millis(20));
     assert!(device.receipts().is_empty());
-    assert_eq!(runtime.metrics().blocked_decisions, 1);
+    let waiting_metrics = runtime.metrics();
+    assert_eq!(waiting_metrics.control_decisions, 0);
+    assert_eq!(waiting_metrics.blocked_decisions, 0);
 
     ingress.set_trigger_active(true);
     ingress
@@ -488,8 +490,6 @@ fn recoil_is_added_to_an_existing_tracking_command_after_its_interval() {
                 enabled: true,
                 require_target: true,
                 interval_ms: 8,
-                fire_delay_enabled: false,
-                fire_delay_ms: 0,
                 y_counts: 2,
             },
             ..PipelineConfig::default()
@@ -566,8 +566,6 @@ fn due_recoil_emits_when_tracking_demand_is_zero() {
                 enabled: true,
                 require_target: true,
                 interval_ms: 8,
-                fire_delay_enabled: false,
-                fire_delay_ms: 0,
                 y_counts: 2,
             },
             ..PipelineConfig::default()
@@ -646,8 +644,6 @@ fn recoil_without_target_uses_fresh_observations_when_target_guard_is_disabled()
                 enabled: true,
                 require_target: false,
                 interval_ms: 8,
-                fire_delay_enabled: false,
-                fire_delay_ms: 0,
                 y_counts: 2,
             },
             ..PipelineConfig::default()
@@ -703,8 +699,6 @@ fn target_guard_uses_the_existing_tracker_loss_grace_without_predicted_control()
                 enabled: true,
                 require_target: true,
                 interval_ms: 8,
-                fire_delay_enabled: false,
-                fire_delay_ms: 0,
                 y_counts: 2,
             },
             ..PipelineConfig::default()
@@ -800,8 +794,6 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
                 enabled: true,
                 require_target: true,
                 interval_ms: 8,
-                fire_delay_enabled: false,
-                fire_delay_ms: 0,
                 y_counts: 2,
             },
             ..PipelineConfig::default()

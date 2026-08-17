@@ -443,6 +443,7 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
     normalize_root_alias(path, &mut document, "device", "hardware")?;
     migrate_output_limits(&mut document);
     migrate_prediction_actuation_delay(&mut document);
+    migrate_recoil_fire_delay(&mut document);
     let mut config: AppConfig =
         serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Parse {
             path: path.to_owned(),
@@ -464,11 +465,6 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     let schema_version = config.schema_version;
     let interval_recoil_explicit =
         nested_section_has_fields(document, "control", "recoil", &["interval_ms", "y_counts"]);
-    let fire_delay_toggle_explicit =
-        nested_section_has_fields(document, "control", "recoil", &["fire_delay_enabled"]);
-    if schema_version < 13 && !fire_delay_toggle_explicit {
-        config.control.recoil.fire_delay_enabled = config.control.recoil.fire_delay_ms > 0;
-    }
     let removed_humanized_motion = config.control.extra.remove("humanized_motion").is_some();
     config.pipeline.extra.remove("projection_invert_y");
     config.pipeline.extra.remove("target_debounce_distance_px");
@@ -577,6 +573,8 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
             "fast_add_gain_counts_s",
             "max_fast_add_ratio",
             "stale_threshold_ms",
+            "fire_delay_enabled",
+            "fire_delay_ms",
         ],
     );
     remove_section_fields(
@@ -640,12 +638,6 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
                 .entry(Value::String("interval_ms".to_owned()))
                 .or_insert_with(|| Value::Number(config.control.recoil.interval_ms.into()));
             recoil
-                .entry(Value::String("fire_delay_enabled".to_owned()))
-                .or_insert_with(|| Value::Bool(config.control.recoil.fire_delay_enabled));
-            recoil
-                .entry(Value::String("fire_delay_ms".to_owned()))
-                .or_insert_with(|| Value::Number(config.control.recoil.fire_delay_ms.into()));
-            recoil
                 .entry(Value::String("y_counts".to_owned()))
                 .or_insert_with(|| Value::Number(config.control.recoil.y_counts.into()));
         }
@@ -686,7 +678,63 @@ fn migrate_prediction_actuation_delay(document: &mut Value) {
     }
 }
 
+/// Move the historical recoil-coupled delay into the control-pipeline trigger
+/// gate before deserializing typed configuration. A canonical pipeline value
+/// wins when both forms are present; legacy recoil keys are always retired.
+fn migrate_recoil_fire_delay(document: &mut Value) {
+    let Value::Mapping(root) = document else {
+        return;
+    };
+    let (legacy_enabled, legacy_ms) = root
+        .get_mut(Value::String("control".to_owned()))
+        .and_then(Value::as_mapping_mut)
+        .and_then(|control| {
+            control
+                .get_mut(Value::String("recoil".to_owned()))
+                .and_then(Value::as_mapping_mut)
+        })
+        .map_or((None, None), |recoil| {
+            (
+                recoil.remove(Value::String("fire_delay_enabled".to_owned())),
+                recoil.remove(Value::String("fire_delay_ms".to_owned())),
+            )
+        });
+    if legacy_enabled.is_none() && legacy_ms.is_none() {
+        return;
+    }
+    let pipeline = root
+        .entry(Value::String("pipeline".to_owned()))
+        .or_insert_with(|| Value::Mapping(Default::default()));
+    let Value::Mapping(pipeline) = pipeline else {
+        return;
+    };
+    if let Some(value) = legacy_ms {
+        pipeline
+            .entry(Value::String("fire_delay_ms".to_owned()))
+            .or_insert(value);
+    }
+    let inferred_enabled = legacy_enabled.or_else(|| {
+        pipeline
+            .get(Value::String("fire_delay_ms".to_owned()))
+            .and_then(Value::as_u64)
+            .map(|milliseconds| Value::Bool(milliseconds > 0))
+    });
+    if let Some(value) = inferred_enabled {
+        pipeline
+            .entry(Value::String("fire_delay_enabled".to_owned()))
+            .or_insert(value);
+    }
+}
+
 fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRuntimeConfig) {
+    pipeline.insert(
+        Value::String("fire_delay_enabled".to_owned()),
+        Value::Bool(config.fire_delay_enabled),
+    );
+    pipeline.insert(
+        Value::String("fire_delay_ms".to_owned()),
+        Value::Number(config.fire_delay_ms.into()),
+    );
     for (key, value) in [
         ("p_response_scale", config.p_response_scale),
         ("p_response_boost", config.p_response_boost),
@@ -786,6 +834,8 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "p_response_curve_shape",
             "max_output_x_counts",
             "max_output_y_counts",
+            "fire_delay_enabled",
+            "fire_delay_ms",
             "velocity_history_reset_gap_ms",
             "prediction_enabled",
             "prediction_lead_ms",
@@ -1163,6 +1213,8 @@ fn replace_document(
         mapping.remove(Value::String("schema_version".to_owned()));
     }
     migrate_output_limits(&mut replacement);
+    migrate_prediction_actuation_delay(&mut replacement);
+    migrate_recoil_fire_delay(&mut replacement);
     merge_value(&mut document, replacement);
     let root =
         document

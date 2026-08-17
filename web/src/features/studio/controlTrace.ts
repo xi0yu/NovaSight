@@ -5,6 +5,7 @@ export type ControlTraceState = "ready" | "blocked" | "waiting" | "idle";
 export type ControlTraceStepId =
   | "batch"
   | "target"
+  | "trigger"
   | "aim"
   | "controller"
   | "limiter"
@@ -70,8 +71,13 @@ export type BuildControlTraceInput = {
   maxOutputXCounts?: number | null;
   maxOutputYCounts?: number | null;
   integerCommand: string;
+  hardwareTriggerRequired: boolean;
+  fireDelayEnabled: boolean;
+  fireDelayConfiguredMs: number;
+  fireDelayPending: boolean;
+  fireDelayElapsedMs: number | null;
+  fireDelayRemainingMs: number | null;
   recoilEnabled?: boolean;
-  recoilFireDelayEnabled?: boolean;
   recoilState?: string;
   recoilStatus?: string;
   recoilRemainingMs?: number | null;
@@ -295,21 +301,64 @@ function buildLimiterStep(input: BuildControlTraceInput): ControlTraceStep {
   };
 }
 
+function buildTriggerDelayStep(input: BuildControlTraceInput): ControlTraceStep {
+  if (!input.hardwareTriggerRequired) {
+    return {
+      id: "trigger",
+      label: "触发与开火延迟",
+      state: "ready",
+      value: "直接触发",
+      detail: "直接触发模式不等待鼠标按键持续时间。",
+      evidence: "trigger_mode=always"
+    };
+  }
+  if (input.triggerActive !== true) {
+    return {
+      id: "trigger",
+      label: "触发与开火延迟",
+      state: "waiting",
+      value: "等待按键",
+      detail: "鼠标按键未按下，控制算法保持未启动。",
+      evidence: "trigger_active=false"
+    };
+  }
+  if (input.fireDelayPending) {
+    return {
+      id: "trigger",
+      label: "触发与开火延迟",
+      state: "waiting",
+      value: "持续按住",
+      detail: "按住时间尚未超过开火延迟，预测和控制算法均未执行。",
+      evidence: `elapsed=${formatNumber(input.fireDelayElapsedMs, 2, "ms")} · remaining=${formatNumber(input.fireDelayRemainingMs, 2, "ms")}`
+    };
+  }
+  return {
+    id: "trigger",
+    label: "触发与开火延迟",
+    state: "ready",
+    value: input.fireDelayEnabled ? "门槛已通过" : "立即启动",
+    detail: input.fireDelayEnabled
+      ? "按键持续时间已超过门槛，当前最新目标可以进入控制算法。"
+      : "开火延迟已关闭，按键按下后立即启动控制算法。",
+    evidence: `configured=${formatNumber(input.fireDelayConfiguredMs, 0, "ms")}`
+  };
+}
+
 function buildRecoilStep(input: BuildControlTraceInput): ControlTraceStep {
   if (!input.outputEnabled) {
     return {
       id: "recoil",
-      label: "压枪延迟叠加",
+      label: "压枪叠加",
       state: "idle",
       value: "未计算",
-      detail: "物理输出门关闭，设备边界不会推进压枪延迟或叠加节拍。",
+      detail: "物理输出门关闭，设备边界不会推进压枪叠加节拍。",
       evidence: "output_enabled=false"
     };
   }
   if (input.triggerActive === false || !input.kmnetRuntimeConnected) {
     return {
       id: "recoil",
-      label: "压枪延迟叠加",
+      label: "压枪叠加",
       state: "waiting",
       value: "等待输出条件",
       detail: input.triggerActive === false
@@ -321,7 +370,7 @@ function buildRecoilStep(input: BuildControlTraceInput): ControlTraceStep {
   if (!input.recoilEnabled) {
     return {
       id: "recoil",
-      label: "压枪延迟叠加",
+      label: "压枪叠加",
       state: "ready",
       value: "关闭（旁路）",
       detail: "独立压枪未启用，已准入的跟踪命令在设备边界保持不变。",
@@ -331,21 +380,19 @@ function buildRecoilStep(input: BuildControlTraceInput): ControlTraceStep {
   if (!input.controllerActive || !input.recoilState) {
     return {
       id: "recoil",
-      label: "压枪延迟叠加",
+      label: "压枪叠加",
       state: input.hasTarget ? "waiting" : "idle",
       value: "等待样本",
-      detail: "等待设备边界报告真实左键、首发延迟和压枪叠加结果。",
+      detail: "等待设备边界报告真实左键和压枪叠加结果。",
       evidence: `remaining=${formatNumber(input.recoilRemainingMs ?? null, 2, "ms")}`
     };
   }
   return {
     id: "recoil",
-    label: "压枪延迟叠加",
+    label: "压枪叠加",
     state: "ready",
     value: input.recoilStatus || input.recoilState,
-    detail: input.recoilFireDelayEnabled
-      ? "延迟开火已启用：该阶段只延后首次压枪 +Y，不会延迟或伪造真实左键事件，也不会延迟跟踪控制命令。"
-      : "延迟开火已关闭：首次压枪只等待基础叠加间隔；不会延迟或伪造真实左键事件。",
+    detail: "压枪只在控制算法启动后按独立间隔叠加 +Y。",
     evidence: `state=${input.recoilState} · remaining=${formatNumber(input.recoilRemainingMs ?? null, 2, "ms")} · requested/emitted=${formatInteger(input.recoilRequestedY ?? null)}/${formatInteger(input.recoilEmittedY ?? null)}`
   };
 }
@@ -378,7 +425,7 @@ function buildGateStep(input: BuildControlTraceInput): ControlTraceStep {
       label: "输出门控",
       state: "idle",
       value: "暂停",
-      detail: "物理输出关闭；算法继续计算，但不会发送鼠标偏移。",
+      detail: "物理输出关闭，不会发送鼠标偏移。",
       evidence: input.noSendReason || "output_enabled=false"
     };
   }
@@ -448,6 +495,7 @@ export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSu
   const steps = [
     buildBatchStep(input),
     buildTargetStep(input),
+    buildTriggerDelayStep(input),
     buildAimStep(input),
     buildControllerStep(input),
     buildLimiterStep(input),

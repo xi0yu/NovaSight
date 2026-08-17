@@ -71,6 +71,8 @@ to `AimSample` and do not multiply controller demand.
   the next observation.
 - Fixed output limits are atomically read at the device seam and do not rebuild
   prediction state.
+- Fire delay is sampled on each hardware-trigger rising edge and prevents
+  `AimAlgorithm::step` until the continuous hold duration exceeds the threshold.
 - Recoil configuration is versioned independently and applied without restarting
   capture or inference.
 - Saved YAML and live runtime use the same canonical `pipeline.*` fields.

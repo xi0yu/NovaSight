@@ -82,6 +82,11 @@ pub fn compose_pipeline_config(
             x_counts: adapters.pipeline.max_output_x_counts,
             y_counts: adapters.pipeline.max_output_y_counts,
         },
+        trigger_hold_delay_ms: if adapters.pipeline.fire_delay_enabled {
+            adapters.pipeline.fire_delay_ms
+        } else {
+            0
+        },
         trigger_poll_interval_ms,
         trigger_mode: match config.control.trigger_mode {
             novasight_store::config::TriggerMode::Always => TriggerMode::Always,
@@ -91,8 +96,6 @@ pub fn compose_pipeline_config(
             enabled: config.control.recoil.enabled,
             require_target: config.control.recoil.require_target,
             interval_ms: config.control.recoil.interval_ms,
-            fire_delay_enabled: config.control.recoil.fire_delay_enabled,
-            fire_delay_ms: config.control.recoil.fire_delay_ms,
             y_counts: config.control.recoil.y_counts,
         },
         ..PipelineConfig::default()

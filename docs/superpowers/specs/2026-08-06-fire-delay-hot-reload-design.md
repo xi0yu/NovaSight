@@ -1,8 +1,8 @@
-# NovaSight 开火首发延迟与运行时热更新设计
+# NovaSight 开火延迟与运行时热更新设计
 
 - 日期：2026-08-06
-- 状态：设计已获口头确认，待用户审阅规格
-- 范围：开火首发延迟的前后端协同实现；说明并约束现有 manifest 模型切换行为
+- 状态：语义已确认并实现
+- 范围：开火延迟的前后端协同实现；说明并约束现有 manifest 模型切换行为
 
 ## 1. 背景与目标
 
@@ -10,7 +10,7 @@ NovaSight 已支持部分参数在运行中的主链内热更新，但当前没�
 
 本次目标：
 
-1. 增加 `pipeline.fire_delay_ms`，表达硬件扳机按下后的首个物理输出等待时间。
+1. 增加 `pipeline.fire_delay_enabled` 与 `pipeline.fire_delay_ms`，表达硬件按键必须持续按住多久才允许启动控制算法。
 2. 在 Studio“参数设置”调整该值。
 3. 前端、HTTP API、配置事务、RuntimeSupervisor 和 PipelineRuntime 完成同一条热更新闭环。
 4. 运行中的配置调整不重启 `novasightd`，不停止采集、推理、跟踪或控制线程。
@@ -20,6 +20,7 @@ NovaSight 已支持部分参数在运行中的主链内热更新，但当前没�
 ## 2. 非目标
 
 - 不把开火延迟并入压枪间隔、视觉反馈等待或硬件轮询间隔。
+- 延迟期间不调用 `AimAlgorithm::step`，不积累预测历史，也不产生压枪或输出计划。
 - 不改变 `control.trigger_mode` 的 `always` / `hardware` 语义。
 - 不在本次改动中实现真正的模型双管线热切换。
 - 不改变 manifest 的格式、fingerprint 算法、inspect/profile/probe/publish 顺序。
@@ -30,16 +31,17 @@ NovaSight 已支持部分参数在运行中的主链内热更新，但当前没�
 新增字段：
 
 ```text
+pipeline.fire_delay_enabled
 pipeline.fire_delay_ms
 ```
 
-默认值为 `0 ms`，范围为 `0..=1000 ms`，单位为毫秒。默认值保证升级后不改变已有行为。
+默认值为 `0 ms`，范围为 `0..=5000 ms`，单位为毫秒。默认值保证升级后不改变已有行为。
 
 当 `control.trigger_mode = hardware` 时：
 
-- 扳机从未按下变为按下：记录本次触发周期的开始时间，并等待 `fire_delay_ms`。
-- 延迟期间继续运行采集、推理、目标选择、跟踪和控制计算，但不产生设备副作用。
-- 延迟到期后，只允许最新 generation 且通过既有输出门、设备连接、触发状态、反馈等待和 epoch 校验的命令发送。
+- 扳机从未按下变为按下：记录本次触发周期的开始时间，并等待持续按住时间超过 `fire_delay_ms`。
+- 延迟期间继续运行采集、推理、目标选择和跟踪，但不调用预测或控制算法。
+- 延迟到期后，只把当前最新 generation 和目标位置送入算法；等待期间的旧目标不补算、不补发。
 - 扳机松开立即取消等待、清空 command slot、清除控制遥测和待发送状态。
 - 如果参数在等待期间被修改，新值只影响下一次扳机上升沿；当前周期使用上升沿时读取的截止时间，避免拖动参数导致当前等待跳变。
 
@@ -47,23 +49,23 @@ pipeline.fire_delay_ms
 
 Studio 控件显示“即时生效”，并明确说明：
 
-> 硬件扳机按下后等待该时间再发送首个物理控制量；松开立即取消。
+> 硬件按键持续按住超过该时间后，才使用最新目标启动预测和控制；松开立即取消。
 
-延迟等待期间的运行状态使用明确的阻断码 `FIRE_DELAY_PENDING`，并显示剩余毫秒，避免把“配置已保存”误认为“运行时已生效”。
+延迟等待期间的运行状态使用明确的阻断码 `TRIGGER_DELAY_PENDING`，并显示剩余毫秒，避免把“配置已保存”误认为“运行时已生效”。
 
 ## 4. 方案与决策
 
 ### 方案 A：在 AimAlgorithm 内延迟
 
-让算法状态机观察触发上升沿并延迟产生 `AimResult`。改动集中，但算法并不拥有最终设备发送权；已有 command slot 可能在算法之外排队，难以保证延迟和松开都不泄漏旧命令。
+让算法内部观察触发上升沿。该方案会让“是否启动算法”的策略污染数学控制器，并且仍会调用 `AimAlgorithm::step`，不符合延迟期间完全不计算的语义。
 
 ### 方案 B：复用 `control.recoil.interval_ms`
 
 可以快速复用配置和前端控件，但会把首发时序与压枪节奏耦合，无法表达“瞄准移动首次输出也等待、压枪仍按自己的间隔”这两个不同概念。
 
-### 方案 C：在 PipelineRuntime 的设备输出门前延迟（采用）
+### 方案 C：在控制 worker 调用算法之前延迟（采用）
 
-设备 worker 是物理副作用的最终门控点。在该处处理触发上升沿、截止时间和 command slot，可阻断旧命令，并复用现有 `device_lane` 锁、`set_trigger_active(false)` 清理、`output_gate_min_generation` 和 epoch 校验。热更新只扩展 `PipelineLiveConfig`，不重建任何 worker。
+控制 worker 是目标位置进入 `AimAlgorithm::step` 的唯一入口。在这里处理触发上升沿和持续时间门槛，可以保证延迟期间不执行预测、控制、量化、压枪或输出，同时让采集、推理、目标选择和跟踪继续保持实时。热更新只扩展 `PipelineLiveConfig`，不重建任何 worker。
 
 ## 5. 后端架构与数据流
 
@@ -75,10 +77,10 @@ Studio 控件显示“即时生效”，并明确说明：
 
 ```text
 path: pipeline.fire_delay_ms
-label: 开火首发延迟
-type: float
+label: 开火延迟
+type: integer
 min: 0
-max: 1000
+max: 5000
 unit: ms
 restart_required: false
 ```
@@ -101,13 +103,13 @@ Studio 控件
   → PipelineIngress::set_live_config
 ```
 
-`PipelineLiveConfig` 增加 `fire_delay_ns`。`set_live_config` 在已有 `device_lane` 锁保护下校验并发布该值；配置版本发布后清除 command slot，使新的参数边界不会让旧命令泄漏。持久化失败或运行时安装失败时，返回错误并保持旧运行时配置。
+`PipelineLiveConfig` 增加有效的 `trigger_hold_delay_ms`；关闭开关时有效值为零。`set_live_config` 在已有配置事务中原子发布该值。控制 worker 只在新按键周期开始时读取一次，因此调整参数不会改变正在进行的按键周期。
 
 无需新增第二套配置保存协议。`/api/v1/config`、`novasight-client` 和 CLI 继续使用现有字段更新契约；如需要 CLI 暴露便捷参数，调用既有 `update_config_field`。
 
 ### 5.3 触发时序
 
-`SharedState` 增加热发布的 `fire_delay_ns`，以及设备 worker 独占的当前触发周期状态：
+`SharedState` 增加热发布的 `trigger_hold_delay_ns` 和按键上升沿时间；控制 worker 独占当前触发周期状态：
 
 - `trigger_started_at_ns: Option<u64>`
 - `trigger_deadline_ns: Option<u64>`
@@ -115,19 +117,19 @@ Studio 控件
 
 触发状态的读写遵守以下规则：
 
-1. 硬件触发从 false 变 true 时，在 device worker 观察到上升沿的当前单调时钟上记录开始时间，并以当前 `fire_delay_ns` 计算固定 deadline。
-2. 在 deadline 之前保留 command slot 中最新的 `OutputPlan`，不发送也不丢弃；设备 worker 使用 `LatestSlot::wait_take_or_timeout` 等待新 plan 或 deadline 到期。新 plan 到达时替换旧待发 plan，避免积累多个 move。
-3. deadline 到期后，取当前最新 plan，继续执行现有发送前检查；只发送最新 generation。若 deadline 到期时没有 plan，继续等待下一条最新 plan，不创建独立补发任务。
-4. false 状态优先级最高：清空周期状态、清空 command slot、清除控制遥测和当前待发 plan。
+1. trigger worker 观察到 false→true 时记录单调时钟；控制 worker 第一次看到该周期时锁定 deadline。
+2. 持续时间没有超过 deadline 时，直接跳过 `AimAlgorithm::step`，不创建 `OutputPlan`。
+3. 超过 deadline 后，只把当轮最新 `TargetedObservation` 送入算法，等待期间的观测不回放。
+4. false 状态优先级最高：清空周期状态、算法目标相对状态、控制遥测和延迟状态。
 5. 非硬件模式不建立等待周期。
-6. `fire_delay_ns = 0` 立即通过现有输出检查，不增加等待。
+6. 有效延迟为 0 时，当前最新观测立即进入算法。
 7. 配置热更新不修改已有周期 deadline；下一次上升沿读取新值。
 
-这里的等待只限制设备副作用，不阻塞上游实时链。不会调用 `stop_state`、不会关闭 DeepStream、不会清理 tracker，也不会创建独立定时器补发命令；`wait_take_or_timeout` 只是设备 worker 已有 slot 消费循环的超时等待。
+这里的等待不阻塞上游实时链，不停止 DeepStream，不清理 tracker，也不创建独立补发任务；它只阻止目标观测进入预测和控制算法。
 
 ### 5.4 运行时状态与 trace
 
-`fire_delay_pending` 与剩余时间是设备 worker 产生的运行时事实，需要通过 `PipelineMetrics`/`RuntimeSnapshot` 发布；不能仅由 API 根据 `trigger_active` 和配置值推断。为避免 status 读取阻塞设备 worker，发布使用已有轻量原子/快照机制。
+`fire_delay_pending` 与剩余时间是控制 worker 产生的运行时事实，需要通过 `PipelineMetrics`/`RuntimeSnapshot` 发布；不能仅由 API 根据 `trigger_active` 和配置值推断。
 
 为验证端到端生效，在 runtime control/prediction 状态中增加：
 
@@ -135,9 +137,9 @@ Studio 控件
 - `fire_delay_pending`
 - `fire_delay_remaining_ms`
 
-新增阻断原因 `FIRE_DELAY_PENDING`，映射到已有 runtime status / control trace DTO 与前端文案。字段没有值时使用 `null`，而不是伪造 `0`；非硬件模式可报告 `pending=false`。
+新增阻断原因 `TRIGGER_DELAY_PENDING`，映射到已有 runtime status / control trace DTO 与前端文案。字段没有值时使用 `null`，而不是伪造 `0`；非硬件模式报告 `pending=false`。
 
-状态是诊断信息，不作为设备 worker 的第二套决策源。设备 worker 的 deadline 是唯一输出门控事实。
+状态是诊断信息，不作为第二套决策源。控制 worker 持有的当前周期 deadline 是唯一算法启动门槛。
 
 ## 6. 前端实现
 
@@ -149,14 +151,13 @@ Studio 控件
 
 `web/src/features/studio/algorithmParameterModel.ts`：
 
-- 将 `fire_delay_ms` 加入 `CONTROL_PIPELINE_FIELDS`。
-- 在 `AlgorithmParameterValues` 增加对应值。
-- 在控制参数组中增加参数元数据：范围 `0..1000`、单位 `ms`、`applyMode: "live"`、高级风险等级。
+- 将 `fire_delay_enabled` 和 `fire_delay_ms` 加入 `CONTROL_PIPELINE_FIELDS`。
+- 保持它们只出现在参数页的“开火延迟”步骤，不塞入算法高级参数弹窗。
 - 更新 schema 一致性测试，确保字段存在、数值类型正确且 `restart_required=false`。
 
 ### 6.3 Studio 控件
 
-`web/src/features/studio/StudioConsoleView.tsx` 在“控制模式”区域加入 `ParameterNumberControl`。提交调用：
+`web/src/features/studio/StudioConsoleView.tsx` 在“触发方式”之后提供独立开关和毫秒值，沿用参数页统一草稿保存。
 
 ```ts
 updateConfigField("pipeline", "fire_delay_ms", value)
@@ -175,7 +176,7 @@ updateConfigField("pipeline", "fire_delay_ms", value)
 
 ### 6.4 状态文案
 
-`web/src/features/studio/controlTrace.ts` 与共享 runtime 状态映射新增 `FIRE_DELAY_PENDING`；延迟期间显示“正在等待开火首发延迟”和剩余时间。配置响应 `applied=true` 且 `restart_required=false` 时显示即时生效；若后端返回重启要求，前端不得将其标为 live。
+`web/src/features/studio/controlTrace.ts` 与共享 runtime 状态映射新增 `TRIGGER_DELAY_PENDING`；延迟期间明确显示预测和控制算法尚未执行。配置响应 `applied=true` 且 `restart_required=false` 时显示即时生效。
 
 ## 7. Manifest 模型切换边界
 
@@ -220,17 +221,15 @@ publish 由 `RuntimeSupervisor::activate_model_state` 执行：
 - revision 冲突返回现有配置冲突错误，前端保留服务器新值并提示刷新。
 - 持久化成功但 live install 失败时不报告成功；保留旧 runtime 值，并按现有配置事务错误路径处理 desired/effective 差异。
 - 扳机松开、output gate 关闭、切入 hardware 模式和 runtime stop 都必须 fail-closed，清空 command slot。
-- 延迟期间不创建补发定时器，不积累多个待发 move，不跨 epoch 发送。
+- 延迟期间不创建输出计划，不积累预测历史，不补算旧目标。
 - 开火延迟只增加等待，不改变现有 freshness、feedback、device connection 和 output gate 保护。
 
 ## 9. 验证计划
 
-遵循 TDD：每个新行为先写失败测试，确认失败原因是缺少 `fire_delay` 行为，再写最小实现。
-
 ### Rust 配置与 schema
 
 - 默认值、序列化/反序列化和 YAML 映射。
-- 0 与 1000 合法；负数、超范围、NaN、Infinity 拒绝。
+- 0 与 5000 合法；负数和超范围拒绝。
 - schema 字段存在且 `restart_required=false`。
 - pipeline 更新返回 `applied=true`、`restart_required=false`。
 
@@ -238,8 +237,8 @@ publish 由 `RuntimeSupervisor::activate_model_state` 执行：
 
 使用现有 fake clock / fake pointer device 约定：
 
-- 硬件触发上升沿后 deadline 前无设备发送。
-- deadline 到期后发送最新 command。
+- 硬件触发上升沿后 deadline 前不调用 `AimAlgorithm::step`。
+- deadline 到期后只计算最新目标观测。
 - 扳机松开立即取消等待且无残留发送。
 - 上升沿前 command 不会在 deadline 后泄漏。
 - 等待中更新配置不改变当前 deadline。
@@ -254,7 +253,7 @@ publish 由 `RuntimeSupervisor::activate_model_state` 执行：
 - 提交使用 `/api/config` 的 pipeline field update。
 - 成功响应更新 revision、draft 和 runtime config。
 - 失败响应回滚 draft 并显示错误。
-- trace/status 的 `FIRE_DELAY_PENDING` 和剩余时间正确展示。
+- trace/status 的 `TRIGGER_DELAY_PENDING` 和剩余时间正确展示。
 
 ### Manifest 回归
 

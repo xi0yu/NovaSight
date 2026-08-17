@@ -511,13 +511,16 @@ pub(crate) struct ControlPipelineState {
     pub quantizer_residual_x: Option<f64>,
     pub quantizer_residual_y: Option<f64>,
     pub block_reason: Option<&'static str>,
+    pub fire_delay_enabled: bool,
+    pub fire_delay_configured_ms: u64,
+    pub fire_delay_pending: bool,
+    pub fire_delay_elapsed_ms: Option<f64>,
+    pub fire_delay_remaining_ms: Option<f64>,
     pub recoil_mode: &'static str,
     pub recoil_enabled: bool,
     pub recoil_active: bool,
     pub recoil_state: RecoilState,
     pub recoil_interval_ms: u64,
-    pub recoil_fire_delay_enabled: bool,
-    pub recoil_configured_fire_delay_ms: u64,
     pub recoil_y_counts: i32,
     pub recoil_elapsed_since_output_ms: Option<f64>,
     pub recoil_remaining_ms: f64,
@@ -615,7 +618,27 @@ impl RuntimeStatusState {
             .map(|config| config.pipeline.target_class_filter.clone())
             .unwrap_or_else(|| "all".to_owned());
         let control_sample = control.sample_available;
-        let control_reason = control_sample.then_some(block_reason_label(control.block_reason));
+        let trigger_delay_pending = snapshot.pipeline_metrics.trigger_delay.pending;
+        let control_reason = if trigger_delay_pending {
+            Some("TRIGGER_DELAY_PENDING")
+        } else {
+            control_sample.then_some(block_reason_label(control.block_reason))
+        };
+        let hardware_trigger_required = config.is_some_and(|config| {
+            matches!(
+                config.control.trigger_mode,
+                novasight_store::config::TriggerMode::Hardware
+            )
+        });
+        let observed_trigger_active = if snapshot.pipeline.state != PipelineState::Running {
+            None
+        } else if hardware_trigger_required {
+            snapshot.pipeline_metrics.buttons_available.then_some(
+                snapshot.pipeline_metrics.button_left || snapshot.pipeline_metrics.button_right,
+            )
+        } else {
+            Some(true)
+        };
         let running = snapshot.pipeline.state == PipelineState::Running;
         let source = capture_config
             .map(|capture| capture.device.to_string_lossy().into_owned())
@@ -1032,14 +1055,24 @@ impl RuntimeStatusState {
                 target_pipeline,
                 output_trace,
                 control: VisionControlState {
-                    global_state: if control_sample { "CALCULATED" } else { "IDLE" },
+                    global_state: if trigger_delay_pending {
+                        "WAITING_TRIGGER_DELAY"
+                    } else if control_sample {
+                        "CALCULATED"
+                    } else {
+                        "IDLE"
+                    },
                     output_enabled: snapshot.pipeline_metrics.output_gate_open,
                     aim_x: control_sample.then_some(control.aim_x + control.predicted_offset_x),
                     aim_y: control_sample.then_some(control.aim_y + control.predicted_offset_y),
                     dx: control_sample.then_some(control.dx),
                     dy: control_sample.then_some(control.dy),
-                    will_emit: control_sample.then_some(control.emit_allowed),
-                    trigger_active: control_sample.then_some(control.trigger_active),
+                    will_emit: if trigger_delay_pending {
+                        Some(false)
+                    } else {
+                        control_sample.then_some(control.emit_allowed)
+                    },
+                    trigger_active: observed_trigger_active,
                     reason: control_reason,
                     no_send_reason: control_reason.filter(|reason| !reason.is_empty()),
                     candidates: target_selection.inside_fov,
@@ -1135,6 +1168,21 @@ impl RuntimeStatusState {
                         quantizer_residual_y: control_sample
                             .then_some(control.quantizer_residual_y),
                         block_reason: control_reason,
+                        fire_delay_enabled: config
+                            .is_some_and(|config| config.pipeline.fire_delay_enabled),
+                        fire_delay_configured_ms: snapshot
+                            .pipeline_metrics
+                            .trigger_delay
+                            .configured_ms
+                            .unwrap_or_else(|| {
+                                config.map_or(0, |config| config.pipeline.fire_delay_ms)
+                            }),
+                        fire_delay_pending: snapshot.pipeline_metrics.trigger_delay.pending,
+                        fire_delay_elapsed_ms: snapshot.pipeline_metrics.trigger_delay.elapsed_ms,
+                        fire_delay_remaining_ms: snapshot
+                            .pipeline_metrics
+                            .trigger_delay
+                            .remaining_ms,
                         recoil_mode: config.map_or("interval_additive", |config| {
                             if config.control.recoil.require_target {
                                 "target_guarded_interval_additive"
@@ -1146,12 +1194,6 @@ impl RuntimeStatusState {
                         recoil_active: snapshot.pipeline_metrics.recoil.engaged(),
                         recoil_state: snapshot.pipeline_metrics.recoil.state,
                         recoil_interval_ms: snapshot.pipeline_metrics.recoil.interval_ms,
-                        recoil_fire_delay_enabled: config
-                            .is_some_and(|config| config.control.recoil.fire_delay_enabled),
-                        recoil_configured_fire_delay_ms: snapshot
-                            .pipeline_metrics
-                            .recoil
-                            .configured_fire_delay_ms,
                         recoil_y_counts: snapshot.pipeline_metrics.recoil.configured_y_counts,
                         recoil_elapsed_since_output_ms: snapshot
                             .pipeline_metrics
@@ -1458,6 +1500,7 @@ const fn block_reason_label(reason: BlockReason) -> &'static str {
         BlockReason::TargetInvalid => "TARGET_INVALID",
         BlockReason::GeometryInvalid => "GEOMETRY_INVALID",
         BlockReason::TriggerInactive => "TRIGGER_INACTIVE",
+        BlockReason::TriggerDelayPending => "TRIGGER_DELAY_PENDING",
         BlockReason::DeadZone => "DEAD_ZONE",
         BlockReason::DemandOutOfRange => "DEMAND_OUT_OF_RANGE",
         BlockReason::None => "",
@@ -1596,7 +1639,6 @@ mod tests {
         snapshot.pipeline_metrics.recoil = RecoilDecision {
             state: RecoilState::Applied,
             interval_ms: 16,
-            configured_fire_delay_ms: 8,
             configured_y_counts: 2,
             elapsed_since_output_ms: Some(17.0),
             remaining_ms: 0.0,
@@ -1694,7 +1736,6 @@ mod tests {
         assert_eq!(pipeline["recoil_state"], "APPLIED");
         assert_eq!(pipeline["recoil_active"], true);
         assert_eq!(pipeline["recoil_interval_ms"], 16);
-        assert_eq!(pipeline["recoil_configured_fire_delay_ms"], 8);
         assert_eq!(pipeline["recoil_y_counts"], 2);
         assert_eq!(pipeline["recoil_emitted_counts_y"], 2);
         assert_eq!(pipeline["recoil_source_generation"], 9);

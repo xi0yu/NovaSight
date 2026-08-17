@@ -375,7 +375,6 @@ function formatRecoilBlockReason(value: unknown): string {
     FIRING_INACTIVE: "等待真实左键",
     TARGET_REQUIRED: "等待有效目标",
     INTERVAL_PENDING: "等待压枪间隔",
-    FIRE_DELAY: "等待左键压枪延迟",
     OUTPUT_SATURATED: "设备范围已饱和"
   };
   return labels[reason] ?? (reason || "等待真实左键或有效目标");
@@ -1344,8 +1343,8 @@ export function StudioConsoleView({
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
   const recoilRequireTarget = readBoolean(recoilConfig.require_target, true);
   const recoilIntervalMs = readNumber(recoilConfig.interval_ms, 16);
-  const recoilFireDelayEnabled = readBoolean(recoilConfig.fire_delay_enabled, false);
-  const recoilFireDelayMs = readNumber(recoilConfig.fire_delay_ms, 0);
+  const fireDelayEnabled = readBoolean(rustPipelineConfig.fire_delay_enabled, false);
+  const fireDelayMs = readNumber(rustPipelineConfig.fire_delay_ms, 0);
   const recoilYCounts = readNumber(recoilConfig.y_counts, 1);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
   const controlAlgorithmId = readString(configSchema?.algorithm?.id, DEFAULT_CONTROL_ALGORITHM);
@@ -1607,10 +1606,14 @@ export function StudioConsoleView({
     .filter((classId) => recoveryClassIdSet.has(classId))
     .join(",");
   const controlPipeline = asRecord(asRecord(vision.control).pipeline);
+  const fireDelayPending = readBoolean(controlPipeline.fire_delay_pending, false);
+  const runtimeFireDelayMs = readNumber(controlPipeline.fire_delay_configured_ms, fireDelayMs);
+  const fireDelayElapsedMs = readNullableNumber(controlPipeline.fire_delay_elapsed_ms);
+  const fireDelayRemainingMs = readNullableNumber(controlPipeline.fire_delay_remaining_ms);
   const runtimeRecoilEnabled = readNullableBoolean(controlPipeline.recoil_enabled);
   const effectiveRecoilEnabled = runtimeRecoilEnabled ?? recoilEnabled;
   const mouseObservation = asRecord(control.mouse_observation);
-  const controlHasSample = readString(control.global_state, "IDLE") !== "IDLE";
+  const controlHasSample = readString(control.global_state, "IDLE") === "CALCULATED";
   const controlHasTarget = Object.keys(target).length > 0;
   const controlCandidateCount = readNullableNumber(control.candidates);
   const controlTrackId = readNullableNumber(target.track_id);
@@ -1645,15 +1648,17 @@ export function StudioConsoleView({
   const controlWillEmit = controlWillEmitRaw;
   const controlTriggerActiveRaw = readNullableBoolean(control.trigger_active);
   const controlTriggerActive = controlTriggerActiveRaw;
-  const controlNoSendReason = stableRuntimeOutputTrace?.detail || (
-    !controlHasTarget
-      ? targetPipelineMessage || readString(control.selection_reason, "无目标")
-      : controlWillEmit !== true
-        ? readString(control.no_send_reason, readString(control.reason, "控制门控未通过"))
-        : !kmnetRuntimeConnected
-          ? "主链设备通道未连接"
-          : "命令已获准进入设备通道"
-  );
+  const controlNoSendReason = fireDelayPending
+    ? `按键持续时间尚未超过 ${runtimeFireDelayMs.toFixed(0)} ms，控制算法未启动`
+    : stableRuntimeOutputTrace?.detail || (
+        !controlHasTarget
+          ? targetPipelineMessage || readString(control.selection_reason, "无目标")
+          : controlWillEmit !== true
+            ? readString(control.no_send_reason, readString(control.reason, "控制门控未通过"))
+            : !kmnetRuntimeConnected
+              ? "主链设备通道未连接"
+              : "命令已获准进入设备通道"
+      );
   const runtimeOutputEnabled = readNullableBoolean(control.output_enabled);
   const deepstreamInputFrames = runtimeMainlineStatus.nvinferInputFrames;
   const deepstreamOutputBuffers = readNullableNumber(runtimeInference.output_buffers);
@@ -1797,7 +1802,12 @@ export function StudioConsoleView({
     maxOutputYCounts,
     integerCommand: formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts"),
     recoilEnabled: effectiveRecoilEnabled,
-    recoilFireDelayEnabled,
+    hardwareTriggerRequired: triggerMode === "hardware",
+    fireDelayEnabled,
+    fireDelayConfiguredMs: runtimeFireDelayMs,
+    fireDelayPending,
+    fireDelayElapsedMs,
+    fireDelayRemainingMs,
     recoilState: readString(controlPipeline.recoil_state, ""),
     recoilStatus: formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason),
     recoilRemainingMs: readNullableNumber(controlPipeline.recoil_remaining_ms),
@@ -4142,7 +4152,7 @@ export function StudioConsoleView({
                   <span>X / Y 输出上限</span><b>{`${formatOptionalNumber(maxOutputXCounts, 0)} / ${formatOptionalNumber(maxOutputYCounts, 0)} counts`}</b>
                   <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
                   <span>独立压枪状态</span><b>{effectiveRecoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
-                  <span>延迟开火（压枪首发）</span><b>{recoilFireDelayEnabled ? `已开启 · ${recoilFireDelayMs.toFixed(0)} ms` : "已关闭"}</b>
+                  <span>开火延迟</span><b>{fireDelayEnabled ? `已开启 · ${fireDelayMs.toFixed(0)} ms` : "已关闭"}</b>
                   <span>压枪间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_y_counts, 0)} counts`}</b>
                   <span>已等待 / 剩余</span><b>{`${formatOptionalNumber(controlPipeline.recoil_elapsed_since_output_ms, 2)} / ${formatOptionalNumber(controlPipeline.recoil_remaining_ms, 2)} ms`}</b>
                   <span>本轮请求 / 已发送</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 0)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 0)} counts`}</b>
@@ -4238,17 +4248,17 @@ export function StudioConsoleView({
                 <div className="control-chain-setting-controls">
                   <ModuleSwitch
                     compact
-                    label="压枪首发延迟"
-                    enabled={recoilFireDelayEnabled}
-                    onToggle={(enabled) => updateControlGroupField("recoil", "fire_delay_enabled", enabled)}
+                    label="按键持续门槛"
+                    enabled={fireDelayEnabled}
+                    onToggle={(enabled) => updateControlPipelineField("fire_delay_enabled", enabled)}
                   />
-                  {recoilFireDelayEnabled ? (
+                  {fireDelayEnabled ? (
                     <label className="control-chain-inline-field">
                       <span>延迟</span>
                       <InlineNumberControl
-                        ariaLabel="首次压枪延迟"
-                        value={recoilFireDelayMs}
-                        onCommit={(value) => updateControlGroupField("recoil", "fire_delay_ms", Math.max(0, Math.min(5000, Math.round(value))))}
+                        ariaLabel="按键持续开火延迟"
+                        value={fireDelayMs}
+                        onCommit={(value) => updateControlPipelineField("fire_delay_ms", Math.max(0, Math.min(5000, Math.round(value))))}
                       />
                       <i>ms</i>
                     </label>
