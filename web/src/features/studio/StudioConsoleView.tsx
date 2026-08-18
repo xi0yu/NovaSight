@@ -2682,8 +2682,11 @@ export function StudioConsoleView({
     setLocalError(null);
     let lastApplied: RuntimeConfig | null = null;
     let changes: ParameterPageFieldChange[] = [];
+    let appliedChangeCount = 0;
+    let remainingChangeCount = 0;
     try {
       changes = parameterPageFieldChanges(baseline, draft);
+      remainingChangeCount = changes.length;
       if (changes.length === 0) {
         configDraftRef.current = baseline;
         setConfigDraft(baseline);
@@ -2708,6 +2711,8 @@ export function StudioConsoleView({
           }
           lastApplied = normalizeRuntimeConfig(result.config);
           expectedRevision = readNumber(lastApplied.revision, expectedRevision);
+          appliedChangeCount += 1;
+          remainingChangeCount = Math.max(0, changes.length - appliedChangeCount);
           restartRequired ||= result.restart_required;
           if (result.schema) {
             applyConfigSchema(result.schema);
@@ -2731,24 +2736,31 @@ export function StudioConsoleView({
         "parameter-page"
       );
     } catch (error) {
-      if (lastApplied) {
-        let canonical = lastApplied;
-        try {
-          canonical = normalizeRuntimeConfig(await getRuntimeConfig());
-        } catch {
-          // Keep the newest successful response when the recovery read also fails.
-        }
+      let canonical = lastApplied;
+      try {
+        canonical = normalizeRuntimeConfig(await getRuntimeConfig());
+      } catch {
+        // Keep the newest successful response when the recovery read also fails.
+      }
+      if (canonical && changes.length > 0) {
         finalizeRuntimeConfigWrite(canonical);
         const retryDraft = applyParameterPageFieldChanges(canonical, changes);
         retryDraft.revision = canonical.revision;
         parameterPageBaselineRef.current = canonical;
         configDraftRef.current = retryDraft;
         setConfigDraft(retryDraft);
-        setParameterPageDirtyState(!runtimeConfigsEqual(canonical, retryDraft));
+        remainingChangeCount = parameterPageFieldChanges(canonical, retryDraft).length;
+        setParameterPageDirtyState(remainingChangeCount > 0);
       }
       const message = getErrorMessage(error);
-      setLocalError(`参数保存失败：${message}`);
-      setDialogSaveError(message);
+      const progress = remainingChangeCount === 0
+        ? "后端当前配置已重新同步，没有剩余未保存修改。"
+        : appliedChangeCount > 0
+          ? `已保存并热更新 ${appliedChangeCount} 项，剩余 ${remainingChangeCount} 项仍保留为草稿。`
+          : `本次没有参数被写入，${remainingChangeCount} 项修改仍保留为草稿。`;
+      const failureMessage = `${progress} ${message}`;
+      setLocalError(`参数保存未全部完成：${failureMessage}`);
+      setDialogSaveError(failureMessage);
       reportError(error, { source: "parameter-page", title: "参数保存失败" });
     } finally {
       setParameterPageSaving(false);

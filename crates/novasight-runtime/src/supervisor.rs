@@ -1699,6 +1699,8 @@ async fn handle_command(
                     match service.persist_output_gate(update, false).await {
                         Ok(transaction) => {
                             let update = transaction.commit();
+                            refresh_pipeline_metrics(state, active);
+                            publish(snapshot_tx, state, now_ms());
                             #[cfg(test)]
                             service.notify_output_gate_applied();
                             Ok(update)

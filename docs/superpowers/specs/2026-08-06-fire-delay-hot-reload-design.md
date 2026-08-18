@@ -166,10 +166,10 @@ updateConfigField("pipeline", "fire_delay_ms", value)
 沿用现有：
 
 - 乐观 draft
-- `configWriteQueueRef` 串行提交
-- expected revision CAS
+- 点击一次保存后，由 `configWriteQueueRef` 按字段差异串行提交既有热更新事务
+- 每一项使用上一项成功响应的 revision 继续 expected revision CAS，不以整份文档替换触发 epoch reload
 - 成功后 canonical revision 更新
-- 失败后 draft 回滚与错误提示
+- 失败后重新读取 canonical 配置，只保留尚未成功写入的差异作为草稿，并明确显示已生效项数与剩余项数
 - 后端 schema 回传刷新
 
 不新增前端绕过 `runtimeConfigPersistence.ts` 的写路径。
