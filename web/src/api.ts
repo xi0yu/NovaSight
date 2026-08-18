@@ -968,14 +968,15 @@ export function updateRuntimeConfig(config: RuntimeConfig): Promise<ConfigUpdate
 export function updateRuntimeConfigField(
   section: string,
   key: string,
-  value: RuntimeConfigValue
+  value: RuntimeConfigValue,
+  expectedRevision?: number
 ): Promise<ConfigUpdateResponse> {
   return requestJson<ConfigUpdateResponse>(API_PATHS.config, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ section, key, value })
+    body: JSON.stringify({ section, key, value, expected_revision: expectedRevision })
   });
 }
 
@@ -998,10 +999,14 @@ export function setRuntimeOutputGate(enabled: boolean): Promise<ConfigUpdateResp
   });
 }
 
-export function setRuntimeTriggerMode(mode: string): Promise<ConfigUpdateResponse> {
+export function setRuntimeTriggerMode(
+  mode: string,
+  expectedRevision?: number
+): Promise<ConfigUpdateResponse> {
   return updateRuntimeConfigCommand({
     command: "set_trigger_mode",
-    mode
+    mode,
+    expected_revision: expectedRevision
   });
 }
 

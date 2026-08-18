@@ -157,6 +157,7 @@ pub(crate) fn serialize_runtime_status_frame(
         "control" => {
             patch.executor = Some(&state.executor);
             patch.statistics = Some(&state.statistics);
+            patch.config = Some(&state.config);
             patch.pipeline = Some(&state.pipeline);
             patch.vision = Some(&state.vision);
         }

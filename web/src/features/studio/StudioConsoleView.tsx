@@ -118,6 +118,11 @@ const DEFAULT_CONTROL_ALGORITHM = "continuous_atan_medoid_v2";
 const CONTROL_ALGORITHM_LABEL = "连续 Atan 控制";
 const CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX = "配置 schema 与 Studio 参数不一致";
 type KmnetTestMessageTone = "success" | "warning";
+type ParameterPageFieldChange = {
+  section: "control" | "pipeline";
+  key: string;
+  value: RuntimeConfigValue;
+};
 const loadModelManagerDialog = () => import("../models/ModelManagerDialog");
 
 function useDebouncedValue<T>(value: T, delayMs: number): T {
@@ -582,6 +587,96 @@ function runtimeConfigsEqual(left: RuntimeConfig | null, right: RuntimeConfig | 
   return runtimeConfigValuesEqual(left, right);
 }
 
+function parameterPageFieldChanges(
+  baseline: RuntimeConfig,
+  draft: RuntimeConfig
+): ParameterPageFieldChange[] {
+  const allowedSections = new Set(["control", "pipeline"]);
+  const ignoredSections = new Set(["revision", "version", "roi_size"]);
+  const unsupportedSections = Array.from(new Set([...Object.keys(baseline), ...Object.keys(draft)]))
+    .filter((section) => !ignoredSections.has(section))
+    .filter((section) => !allowedSections.has(section))
+    .filter((section) => !runtimeConfigValuesEqual(baseline[section], draft[section]));
+  if (unsupportedSections.length > 0) {
+    throw new Error(`参数页包含不支持热更新的配置区：${unsupportedSections.join("、")}`);
+  }
+
+  const baselineControl = asRecord(baseline.control);
+  const draftControl = asRecord(draft.control);
+  const supportedControlKeys = new Set(["trigger_mode", "recoil"]);
+  const unsupportedControlKeys = Array.from(new Set([
+    ...Object.keys(baselineControl),
+    ...Object.keys(draftControl)
+  ]))
+    .filter((key) => !supportedControlKeys.has(key))
+    .filter((key) => !runtimeConfigValuesEqual(baselineControl[key], draftControl[key]));
+  if (unsupportedControlKeys.length > 0) {
+    throw new Error(`参数页包含不支持热更新的控制字段：${unsupportedControlKeys.join("、")}`);
+  }
+
+  const triggerChange = runtimeConfigValuesEqual(
+    baselineControl.trigger_mode,
+    draftControl.trigger_mode
+  )
+    ? null
+    : {
+        section: "control" as const,
+        key: "trigger_mode",
+        value: draftControl.trigger_mode as RuntimeConfigValue
+      };
+  const recoilChange = runtimeConfigValuesEqual(baselineControl.recoil, draftControl.recoil)
+    ? null
+    : {
+        section: "control" as const,
+        key: "recoil",
+        value: draftControl.recoil as RuntimeConfigValue
+      };
+
+  const baselinePipeline = asRecord(baseline.pipeline);
+  const draftPipeline = asRecord(draft.pipeline);
+  const pipelineChanges = Array.from(new Set([
+    ...Object.keys(baselinePipeline),
+    ...Object.keys(draftPipeline)
+  ]))
+    .sort()
+    .filter((key) => !runtimeConfigValuesEqual(baselinePipeline[key], draftPipeline[key]))
+    .map((key) => ({
+      section: "pipeline" as const,
+      key,
+      value: draftPipeline[key] as RuntimeConfigValue
+    }));
+
+  const changes: ParameterPageFieldChange[] = [];
+  // Entering hardware-gated mode closes the live path before any less
+  // restrictive algorithm edits are installed. Returning to direct trigger
+  // happens last, after the rest of the saved parameter set is effective.
+  if (triggerChange?.value === "hardware") {
+    changes.push(triggerChange);
+  }
+  changes.push(...pipelineChanges);
+  if (recoilChange) {
+    changes.push(recoilChange);
+  }
+  if (triggerChange?.value !== "hardware" && triggerChange) {
+    changes.push(triggerChange);
+  }
+  return changes;
+}
+
+function applyParameterPageFieldChanges(
+  config: RuntimeConfig,
+  changes: ParameterPageFieldChange[]
+): RuntimeConfig {
+  const next = normalizeRuntimeConfig(config);
+  for (const change of changes) {
+    next[change.section] = {
+      ...asRecord(next[change.section]),
+      [change.key]: structuredClone(change.value)
+    } as RuntimeConfig[string];
+  }
+  return next;
+}
+
 const CONFIG_SECTION_LABELS: Record<string, string> = {
   capture: "采集与 ROI",
   inference: "模型推理",
@@ -620,6 +715,10 @@ export function StudioConsoleView({
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
 
   useEffect(() => {
+    if (activePage === "params" || activePage === "control-test") {
+      onStatusTopicChange("control");
+      return;
+    }
     if (activePage === "infer" || activePage === "control" || activePage === "latency" || activePage === "capture") {
       onStatusTopicChange(activePage);
       if (activePage === "infer") void loadModelManagerDialog();
@@ -2570,7 +2669,10 @@ export function StudioConsoleView({
       await Promise.resolve();
     }
     const draft = cloneRuntimeConfig(configDraftRef.current);
-    if (!draft) {
+    const baseline = cloneRuntimeConfig(
+      parameterPageBaselineRef.current ?? runtimeConfigLatestRef.current
+    );
+    if (!draft || !baseline) {
       return;
     }
     beginPendingConfigWrite();
@@ -2578,25 +2680,72 @@ export function StudioConsoleView({
     setBusy("parameter-page.save");
     setDialogSaveError(null);
     setLocalError(null);
+    let lastApplied: RuntimeConfig | null = null;
+    let changes: ParameterPageFieldChange[] = [];
     try {
-      const result = await updateRuntimeConfig(draft);
-      const applied = normalizeRuntimeConfig(result.config);
-      if (result.schema) {
-        applyConfigSchema(result.schema);
+      changes = parameterPageFieldChanges(baseline, draft);
+      if (changes.length === 0) {
+        configDraftRef.current = baseline;
+        setConfigDraft(baseline);
+        parameterPageBaselineRef.current = null;
+        setParameterPageDirtyState(false);
+        return;
       }
-      finalizeRuntimeConfigWrite(applied);
+      let restartRequired = false;
+      let expectedRevision = readNumber(baseline.revision, 0);
+      const executeSave = async () => {
+        for (const change of changes) {
+          const result = await persistRuntimeConfigField(
+            change.section,
+            change.key,
+            change.value,
+            expectedRevision
+          );
+          if (result.apply_mode !== "hot_update") {
+            throw new Error(
+              `${change.section}.${change.key} 未按热更新契约应用，后端返回 ${result.apply_mode}`
+            );
+          }
+          lastApplied = normalizeRuntimeConfig(result.config);
+          expectedRevision = readNumber(lastApplied.revision, expectedRevision);
+          restartRequired ||= result.restart_required;
+          if (result.schema) {
+            applyConfigSchema(result.schema);
+          }
+        }
+      };
+      const request = configWriteQueueRef.current.then(executeSave);
+      configWriteQueueRef.current = request.then(
+        () => undefined,
+        () => undefined
+      );
+      await request;
+      finalizeRuntimeConfigWrite(lastApplied ?? baseline);
       parameterPageBaselineRef.current = null;
       setParameterPageDirtyState(false);
       reportSuccess(
         "参数已保存并生效",
-        result.restart_required
-          ? "运行参数已由当前进程应用；仅进程级基础配置留待下次服务启动接管。"
-          : result.apply_mode === "epoch_reload"
-            ? "修改已写入配置文件，并由当前进程的新运行 epoch 接管。"
-            : "修改已写入配置文件，并立即应用到当前运行链。",
+        restartRequired
+          ? "本页参数已热更新；其他进程级配置仍等待服务启动接管。"
+          : "修改已写入配置文件并同步到当前进程；没有重建运行 epoch。",
         "parameter-page"
       );
     } catch (error) {
+      if (lastApplied) {
+        let canonical = lastApplied;
+        try {
+          canonical = normalizeRuntimeConfig(await getRuntimeConfig());
+        } catch {
+          // Keep the newest successful response when the recovery read also fails.
+        }
+        finalizeRuntimeConfigWrite(canonical);
+        const retryDraft = applyParameterPageFieldChanges(canonical, changes);
+        retryDraft.revision = canonical.revision;
+        parameterPageBaselineRef.current = canonical;
+        configDraftRef.current = retryDraft;
+        setConfigDraft(retryDraft);
+        setParameterPageDirtyState(!runtimeConfigsEqual(canonical, retryDraft));
+      }
       const message = getErrorMessage(error);
       setLocalError(`参数保存失败：${message}`);
       setDialogSaveError(message);

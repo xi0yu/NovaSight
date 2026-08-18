@@ -1668,7 +1668,12 @@ async fn handle_command(
             reply,
         } => {
             let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
-            let result = update_pipeline_config_state(service, update, ingress, dependencies).await;
+            let result =
+                update_pipeline_config_state(service, update, ingress, dependencies).await;
+            if result.is_ok() {
+                refresh_pipeline_metrics(state, active);
+                publish(snapshot_tx, state, now_ms());
+            }
             let _ = reply.send(result);
         }
         RuntimeCommand::UpdateOutputConfig {
@@ -1738,6 +1743,10 @@ async fn handle_command(
             let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
             let result =
                 update_trigger_mode_config_state(service, update, ingress, dependencies).await;
+            if result.is_ok() {
+                refresh_pipeline_metrics(state, active);
+                publish(snapshot_tx, state, now_ms());
+            }
             let _ = reply.send(result);
         }
         RuntimeCommand::UpdateRecoilConfig {
@@ -1746,7 +1755,12 @@ async fn handle_command(
             reply,
         } => {
             let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
-            let result = update_recoil_config_state(service, update, ingress, dependencies).await;
+            let result =
+                update_recoil_config_state(service, update, ingress, dependencies).await;
+            if result.is_ok() {
+                refresh_pipeline_metrics(state, active);
+                publish(snapshot_tx, state, now_ms());
+            }
             let _ = reply.send(result);
         }
         RuntimeCommand::SetPreviewActive {

@@ -9,7 +9,8 @@ import {
 export function persistRuntimeConfigField(
   section: string,
   key: string,
-  value: RuntimeConfigValue
+  value: RuntimeConfigValue,
+  expectedRevision?: number
 ): Promise<ConfigUpdateResponse> {
   if (section === "control" && key === "output_enabled") {
     if (typeof value !== "boolean") {
@@ -21,7 +22,7 @@ export function persistRuntimeConfigField(
     if (typeof value !== "string") {
       throw new Error("触发模式需要字符串值。");
     }
-    return setRuntimeTriggerMode(value);
+    return setRuntimeTriggerMode(value, expectedRevision);
   }
-  return updateRuntimeConfigField(section, key, value);
+  return updateRuntimeConfigField(section, key, value, expectedRevision);
 }
