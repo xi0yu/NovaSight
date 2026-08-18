@@ -715,10 +715,6 @@ export function StudioConsoleView({
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
 
   useEffect(() => {
-    if (activePage === "params" || activePage === "control-test") {
-      onStatusTopicChange("control");
-      return;
-    }
     if (activePage === "infer" || activePage === "control" || activePage === "latency" || activePage === "capture") {
       onStatusTopicChange(activePage);
       if (activePage === "infer") void loadModelManagerDialog();

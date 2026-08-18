@@ -104,9 +104,6 @@ async function getLicenseStatusWithStartupRetry(): Promise<LicenseStatus> {
 
 function statusTopicFromPage(): RuntimeStatusTopic {
   const page = new URLSearchParams(window.location.search).get("page");
-  if (page === "params" || page === "control-test") {
-    return "control";
-  }
   if (page === "infer" || page === "control" || page === "latency" || page === "capture") {
     return page;
   }

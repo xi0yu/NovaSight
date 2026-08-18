@@ -135,49 +135,23 @@ pub(crate) fn serialize_runtime_status_frame(
     }
 
     let mut patch = RuntimeStatusPatch::empty();
+    // Studio keeps shared lifecycle, readiness, error, and device surfaces
+    // mounted on every page. A topic therefore selects expensive detail while
+    // every frame still owns a complete top-level runtime state; omitting a
+    // section here would preserve stale data in the frontend merge.
     patch.semantic = Some(&state.semantic);
     patch.running = Some(state.running);
+    patch.source = Some(&state.source);
+    patch.active_model = Some(&state.active_model);
+    patch.model_catalog_error = Some(&state.model_catalog_error);
+    patch.executor = Some(&state.executor);
+    patch.capture = Some(&state.capture);
+    patch.statistics = Some(&state.statistics);
+    patch.inference = Some(&state.inference);
+    patch.config = Some(&state.config);
+    patch.pipeline = Some(&state.pipeline);
+    patch.vision = Some(&state.vision);
     patch.fatal_error = Some(&state.fatal_error);
-    match topic {
-        "capture" => {
-            patch.source = Some(&state.source);
-            patch.capture = Some(&state.capture);
-            patch.statistics = Some(&state.statistics);
-            patch.config = Some(&state.config);
-            patch.pipeline = Some(&state.pipeline);
-        }
-        "infer" => {
-            patch.active_model = Some(&state.active_model);
-            patch.model_catalog_error = Some(&state.model_catalog_error);
-            patch.statistics = Some(&state.statistics);
-            patch.inference = Some(&state.inference);
-            patch.pipeline = Some(&state.pipeline);
-            patch.vision = Some(&state.vision);
-        }
-        "control" => {
-            patch.executor = Some(&state.executor);
-            patch.statistics = Some(&state.statistics);
-            patch.config = Some(&state.config);
-            patch.pipeline = Some(&state.pipeline);
-            patch.vision = Some(&state.vision);
-        }
-        "latency" => {
-            patch.statistics = Some(&state.statistics);
-            patch.inference = Some(&state.inference);
-            patch.pipeline = Some(&state.pipeline);
-        }
-        _ => {
-            patch.source = Some(&state.source);
-            patch.active_model = Some(&state.active_model);
-            patch.model_catalog_error = Some(&state.model_catalog_error);
-            patch.executor = Some(&state.executor);
-            patch.capture = Some(&state.capture);
-            patch.statistics = Some(&state.statistics);
-            patch.inference = Some(&state.inference);
-            patch.config = Some(&state.config);
-            patch.pipeline = Some(&state.pipeline);
-        }
-    }
     serde_json::to_string(&RuntimeStatusFrame {
         kind: "runtime_snapshot",
         topic,

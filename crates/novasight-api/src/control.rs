@@ -1361,11 +1361,6 @@ async fn stream_runtime_events(socket: WebSocket, state: ControlState, query: Ru
                 status.semantic.epoch,
             );
             let send_full = first_frame || last_semantic.is_some_and(|last| last != semantic);
-            let status = if send_full {
-                runtime_state_for_topic(&state, current.as_ref(), "full").await
-            } else {
-                status
-            };
             let Ok(payload) = serialize_runtime_status_frame(topic, send_full, &status) else {
                 return;
             };
