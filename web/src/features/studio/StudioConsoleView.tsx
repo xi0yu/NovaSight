@@ -1891,8 +1891,6 @@ export function StudioConsoleView({
     movementStrategy: readString(controlPipeline.movement_strategy, ""),
     fullError: formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2, "counts"),
     floatDemand: formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2, "counts"),
-    floatDemandX: readNullableNumber(controlPipeline.float_demand_x),
-    floatDemandY: readNullableNumber(controlPipeline.float_demand_y),
     maxOutputXCounts,
     maxOutputYCounts,
     integerCommand: formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts"),
@@ -1914,10 +1912,7 @@ export function StudioConsoleView({
     noSendReason: controlNoSendReason,
     kmnetRuntimeConnected,
     kmnetConnectionLabel: kmnetRuntimeConnectionLabel,
-    acceptedCommandCount,
-    lastAcceptedCommand,
     deviceLastError: kmnetLastError || kmnetLastDeviceError,
-    outputDeliveryState: readString(controlPipeline.output_delivery_state, "idle"),
     outputTrace: stableRuntimeOutputTrace
   }) : null;
   const captureReason = capture?.last_error || (
@@ -4204,12 +4199,6 @@ export function StudioConsoleView({
 
         {activePage === "control" ? (
           <section className="console-page">
-          <div className="console-metrics">
-            <Metric title="控制状态" value={controlHasSample ? readString(control.global_state, "已计算") : "未执行"} small={controlNoSendReason || NO_SAMPLE} />
-            <Metric title="目标选择输入率" value={formatOptionalNumber(targetingBatchFps)} small="识别结果/s" />
-            <Metric title="控制观测帧龄" value={formatOptionalNumber(controlFrameAgeMs)} small="当前控制样本 · ms" />
-            <Metric title="当前命令" value={formatPoint(control.dx, control.dy, 0)} small="X / Y counts" />
-          </div>
           <ControlTracePanel trace={controlTrace!} />
           <details className="studio-diagnostic-details">
             <summary>

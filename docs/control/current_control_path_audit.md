@@ -89,6 +89,18 @@ Ordinary target behavior exposes minimum confidence, switch delay and
 millisecond loss grace. Association weights and Kalman tuning are expert-only.
 Replay-only fallback values are not exposed.
 
+The control status page mirrors the runtime boundary as one compact sequence:
+
+```text
+target input -> trigger/fire delay -> prediction -> continuous control
+-> recoil composition -> fixed X/Y clamp -> command output
+```
+
+The displayed integer control demand is the tracking command before recoil and
+the final device clamp. Only the latest device receipt is evidence of a command
+that actually crossed that boundary; the UI must not present those two samples
+as the same synchronous fact.
+
 ## Remaining proof gap
 
 Source inspection proves ownership and formulas, not physical timing. Jetson

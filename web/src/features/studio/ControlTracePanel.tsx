@@ -7,14 +7,13 @@ import type {
 } from "./controlTrace";
 
 const STEP_ICONS: Record<ControlTraceStepId, NovaIconName> = {
-  batch: "batch",
   target: "target-lock",
+  trigger: "clock",
   aim: "target-center",
   controller: "response-curve",
-  limiter: "control",
   recoil: "activity-pulse",
-  gate: "command-queue",
-  device: "hid"
+  limiter: "control",
+  output: "hid"
 };
 
 const STATE_ICONS: Record<ControlTraceState, NovaIconName> = {
@@ -31,25 +30,25 @@ const STATE_LABELS: Record<ControlTraceState, string> = {
   idle: "空闲"
 };
 
-function StepStateBadge({ state }: { state: ControlTraceState }) {
+function StepStateBadge({ state, label }: { state: ControlTraceState; label?: string }) {
   return (
     <span className={`control-trace-state ${state}`}>
       <NovaIcon name={STATE_ICONS[state]} size={12} />
-      {STATE_LABELS[state]}
+      {label ?? STATE_LABELS[state]}
     </span>
   );
 }
 
 function ControlTraceStepCard({ step }: { step: ControlTraceStep }) {
   return (
-    <li className={`control-trace-step ${step.state}`} title={`${step.detail} ${step.evidence}`}>
+    <li className={`control-trace-step ${step.state}`}>
       <span className="control-trace-step-icon" aria-hidden="true">
         <NovaIcon name={STEP_ICONS[step.id]} size={18} />
       </span>
       <div className="control-trace-step-copy">
         <div className="control-trace-step-heading">
           <strong>{step.label}</strong>
-          <StepStateBadge state={step.state} />
+          <StepStateBadge state={step.state} label={step.stateLabel} />
         </div>
         <b>{step.value}</b>
       </div>

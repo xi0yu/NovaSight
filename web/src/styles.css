@@ -2289,7 +2289,7 @@ tbody tr:hover {
 
 .control-trace-steps {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 8px;
   margin: 0;
   padding: 0;
@@ -4950,7 +4950,7 @@ body::after {
   .launch-readiness-panel { grid-template-columns: minmax(0, 1fr); }
   .launch-readiness-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .product-config-profile-items { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .control-trace-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .control-trace-steps { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .current-model-summary { grid-template-columns: minmax(0, 1fr) auto; }
   .current-model-runtime-facts { grid-column: 1 / -1; grid-row: 2; }
 }

@@ -3,20 +3,19 @@ import type { RuntimeOutputTraceState } from "../../api";
 export type ControlTraceState = "ready" | "blocked" | "waiting" | "idle";
 
 export type ControlTraceStepId =
-  | "batch"
   | "target"
   | "trigger"
   | "aim"
   | "controller"
-  | "limiter"
   | "recoil"
-  | "gate"
-  | "device";
+  | "limiter"
+  | "output";
 
 export type ControlTraceStep = {
   id: ControlTraceStepId;
   label: string;
   state: ControlTraceState;
+  stateLabel?: string;
   value: string;
   detail: string;
   evidence: string;
@@ -66,8 +65,6 @@ export type BuildControlTraceInput = {
   movementStrategy: string;
   fullError: string;
   floatDemand: string;
-  floatDemandX?: number | null;
-  floatDemandY?: number | null;
   maxOutputXCounts?: number | null;
   maxOutputYCounts?: number | null;
   integerCommand: string;
@@ -89,28 +86,9 @@ export type BuildControlTraceInput = {
   noSendReason: string;
   kmnetRuntimeConnected: boolean;
   kmnetConnectionLabel: string;
-  acceptedCommandCount: number | null;
-  lastAcceptedCommand: string;
   deviceLastError: string;
-  outputDeliveryState: string;
   outputTrace: RuntimeOutputTraceState | null;
 };
-
-const OUTPUT_DELIVERY_LABELS: Record<string, string> = {
-  idle: "等待命令",
-  gate_closed: "输出门关闭",
-  device_disabled: "设备输出停用",
-  trigger_inactive: "等待触发",
-  generation_fenced: "旧配置命令已丢弃",
-  no_movement: "本轮无位移",
-  superseded: "旧命令已被替代",
-  sent: "已发送",
-  send_failed: "发送失败"
-};
-
-function outputDeliveryLabel(value: string): string {
-  return (OUTPUT_DELIVERY_LABELS[value] ?? value) || "等待状态";
-}
 
 const OUTPUT_TRACE_LABELS: Record<string, string> = {
   runtime_stopped: "主链未运行",
@@ -172,59 +150,42 @@ function freshState(ageMs: number | null, thresholdMs: number | null): "fresh" |
   return ageMs <= thresholdMs ? "fresh" : "stale";
 }
 
-function buildBatchStep(input: BuildControlTraceInput): ControlTraceStep {
+function buildTargetStep(input: BuildControlTraceInput): ControlTraceStep {
   const freshness = freshState(input.detectionDataAgeMs, input.freshnessThresholdMs);
   const hasRuntimeInput = positive(input.consumedBatches) || positive(input.targetingBatches);
   const hasPublished = positive(input.publishedBatches);
   if (freshness === "stale" && input.runtimeRunning) {
     return {
-      id: "batch",
-      label: "识别结果",
+      id: "target",
+      label: "目标输入",
       state: "blocked",
       value: formatNumber(input.detectionDataAgeMs, 2, "ms"),
-      detail: "最新结果超过控制新鲜度阈值，控制链会拒绝过期样本。",
+      detail: "最新识别结果超过控制新鲜度阈值，目标选择不会把过期样本交给控制算法。",
       evidence: `published=${formatInteger(input.publishedBatches)} · consumed=${formatInteger(input.consumedBatches)} · targeting=${formatInteger(input.targetingBatches)}`
     };
   }
-  if (hasRuntimeInput) {
-    return {
-      id: "batch",
-      label: "识别结果",
-      state: "ready",
-      value: `${formatNumber(input.detectionBatchFps, 1)}/s`,
-      detail: freshness === "fresh" ? "控制链路已读取新鲜识别结果。" : "控制链路已读取识别结果，等待新鲜样本。",
-      evidence: `published=${formatInteger(input.publishedBatches)} · consumed=${formatInteger(input.consumedBatches)} · targeting=${formatInteger(input.targetingBatches)}`
-    };
-  }
-  return {
-    id: "batch",
-    label: "识别结果",
-    state: input.runtimeRunning || hasPublished ? "waiting" : "idle",
-    value: formatInteger(input.publishedBatches),
-    detail: input.runtimeRunning ? "等待控制链路读取识别结果。" : "主链未运行，暂未产生控制输入。",
-    evidence: `age=${formatNumber(input.detectionDataAgeMs, 2, "ms")} · threshold=${formatNumber(input.freshnessThresholdMs, 2, "ms")}`
-  };
-}
-
-function buildTargetStep(input: BuildControlTraceInput): ControlTraceStep {
   if (input.hasTarget) {
     return {
       id: "target",
-      label: "选择主要目标",
+      label: "目标输入",
       state: "ready",
       value: input.trackId === null ? "已选择" : `track ${Math.trunc(input.trackId)}`,
-      detail: input.classLabel ? `${input.classLabel} 进入控制链。` : "已有目标进入控制链。",
-      evidence: `候选/合格/选择=${formatInteger(input.rawCandidateCount)}/${formatInteger(input.eligibleCandidateCount)}/${formatInteger(input.selectedTargetCount)} · score=${formatNumber(input.targetScore, 3)}`
+      detail: input.classLabel ? `${input.classLabel} 已作为主要目标进入控制链。` : "主要目标已进入控制链。",
+      evidence: `fps=${formatNumber(input.detectionBatchFps, 1)} · 候选/合格/选择=${formatInteger(input.rawCandidateCount)}/${formatInteger(input.eligibleCandidateCount)}/${formatInteger(input.selectedTargetCount)} · score=${formatNumber(input.targetScore, 3)}`
     };
   }
   const hasDiagnostics = input.targetPipelineStage || input.targetPipelineCode || input.targetPipelineMessage;
   return {
     id: "target",
-    label: "选择主要目标",
-    state: hasDiagnostics ? "blocked" : positive(input.targetingBatches) ? "waiting" : "idle",
+    label: "目标输入",
+    state: hasDiagnostics
+      ? "blocked"
+      : hasRuntimeInput || hasPublished
+        ? "waiting"
+        : input.runtimeRunning ? "waiting" : "idle",
     value: formatInteger(input.selectedTargetCount),
-    detail: input.targetPipelineMessage || "尚未选出可控目标。",
-    evidence: input.targetPipelineRejections || input.targetPipelineCode || `detections=${formatInteger(input.detectionCount)}`
+    detail: input.targetPipelineMessage || (input.runtimeRunning ? "等待选择主要目标。" : "主链未运行，暂未产生目标输入。"),
+    evidence: input.targetPipelineRejections || input.targetPipelineCode || `detections=${formatInteger(input.detectionCount)} · published=${formatInteger(input.publishedBatches)}`
   };
 }
 
@@ -285,19 +246,59 @@ function buildLimiterStep(input: BuildControlTraceInput): ControlTraceStep {
   }
   const maxX = input.maxOutputXCounts ?? null;
   const maxY = input.maxOutputYCounts ?? null;
-  const demandX = input.floatDemandX ?? null;
-  const demandY = input.floatDemandY ?? null;
-  const saturated = (maxX !== null && demandX !== null && Math.abs(demandX) > maxX)
-    || (maxY !== null && demandY !== null && Math.abs(demandY) > maxY);
+  const limitValue = `±${formatInteger(maxX)} / ±${formatInteger(maxY)}`;
+  const limitEvidence = `tracking=${input.integerCommand} · recoil_y=${formatInteger(input.recoilRequestedY ?? null)} · limit_x/y=${formatNumber(maxX, 0, "counts")}/${formatNumber(maxY, 0, "counts")}`;
+  if (maxX === null || maxY === null) {
+    return {
+      id: "limiter",
+      label: "固定 X/Y 限幅",
+      state: "waiting",
+      value: limitValue,
+      detail: "等待当前运行配置报告完整的 X/Y 固定输出上限。",
+      evidence: limitEvidence
+    };
+  }
+  if (!input.outputEnabled) {
+    return {
+      id: "limiter",
+      label: "固定 X/Y 限幅",
+      state: "idle",
+      stateLabel: "未执行",
+      value: limitValue,
+      detail: "固定限幅规则已配置，但输出门关闭，当前控制意图不会进入设备边界。",
+      evidence: limitEvidence
+    };
+  }
+  if ((input.hardwareTriggerRequired && input.triggerActive !== true) || !input.kmnetRuntimeConnected) {
+    return {
+      id: "limiter",
+      label: "固定 X/Y 限幅",
+      state: "waiting",
+      value: limitValue,
+      detail: input.hardwareTriggerRequired && input.triggerActive !== true
+        ? "等待触发条件；设备 worker 尚未执行压枪叠加与最终 clamp。"
+        : "等待设备通道；设备 worker 尚未执行压枪叠加与最终 clamp。",
+      evidence: limitEvidence
+    };
+  }
+  if (input.willEmit !== true) {
+    return {
+      id: "limiter",
+      label: "固定 X/Y 限幅",
+      state: "blocked",
+      value: limitValue,
+      detail: input.noSendReason || "当前控制样本未获准进入设备边界。",
+      evidence: limitEvidence
+    };
+  }
   return {
     id: "limiter",
-    label: "X/Y 输出限幅",
+    label: "固定 X/Y 限幅",
     state: "ready",
-    value: present(input.integerCommand) ? input.integerCommand : "已计算",
-    detail: saturated
-      ? "本次浮点需求已按 X/Y 轴上限截断并转换为整数命令。"
-      : "本次浮点需求未触发 X/Y 轴上限，已转换为整数命令。",
-    evidence: `demand=${input.floatDemand} · limit_x/y=${formatNumber(maxX, 0, "counts")}/${formatNumber(maxY, 0, "counts")}`
+    stateLabel: "边界就绪",
+    value: limitValue,
+    detail: "当前条件允许控制意图进入设备 worker；worker 会先叠加压枪，再执行固定轴向 clamp。",
+    evidence: limitEvidence
   };
 }
 
@@ -418,90 +419,68 @@ function buildControllerStep(input: BuildControlTraceInput): ControlTraceStep {
   };
 }
 
-function buildGateStep(input: BuildControlTraceInput): ControlTraceStep {
+function buildOutputStep(input: BuildControlTraceInput): ControlTraceStep {
   if (!input.outputEnabled) {
     return {
-      id: "gate",
-      label: "输出门控",
+      id: "output",
+      label: "命令输出",
       state: "idle",
       value: "暂停",
       detail: "物理输出关闭，不会发送鼠标偏移。",
       evidence: input.noSendReason || "output_enabled=false"
     };
   }
-  if (input.willEmit === true) {
+  if (input.willEmit === true && !input.kmnetRuntimeConnected) {
     return {
-      id: "gate",
-      label: "输出门控",
-      state: "ready",
-      value: "准入",
-      detail: "当前整数命令已通过触发条件和物理输出门，准备进入设备通道。",
-      evidence: input.triggerActive === null ? "trigger=未知" : input.triggerActive ? "trigger=按下" : "trigger=未按下"
+      id: "output",
+      label: "命令输出",
+      state: "blocked",
+      value: "设备未连接",
+      detail: "当前命令已经通过控制门，但 kmNet 运行时通道未连接。",
+      evidence: input.deviceLastError || input.kmnetConnectionLabel
     };
   }
-  const waitingForTrigger = input.noSendReason.includes("触发") || input.triggerActive === false;
-  return {
-    id: "gate",
-    label: "输出门控",
-    state: waitingForTrigger || !input.hasTarget ? "waiting" : "blocked",
-    value: "未发送",
-    detail: input.noSendReason || "控制门控未通过。",
-    evidence: input.triggerActive === null ? "trigger=未知" : input.triggerActive ? "trigger=按下" : "trigger=未按下"
-  };
-}
-
-function buildDeviceStep(input: BuildControlTraceInput): ControlTraceStep {
-  if (!input.outputEnabled) {
+  if (input.kmnetRuntimeConnected && input.willEmit === true) {
     return {
-      id: "device",
-      label: "命令输出",
-      state: "idle",
-      value: "暂停",
-      detail: "输出门关闭时不要求设备回执。",
-      evidence: "最近回执不会被解释为当前样本。"
-    };
-  }
-  if (input.kmnetRuntimeConnected && positive(input.acceptedCommandCount)) {
-    return {
-      id: "device",
+      id: "output",
       label: "命令输出",
       state: "ready",
-      value: input.lastAcceptedCommand,
-      detail: "运行时设备通道已接受过控制命令。",
-      evidence: `accepted=${formatInteger(input.acceptedCommandCount)} · ${outputDeliveryLabel(input.outputDeliveryState)} · ${input.kmnetConnectionLabel}`
+      stateLabel: "已准入",
+      value: "等待设备结果",
+      detail: "当前控制意图已通过触发、输出门与设备连接检查；设备回执只在折叠诊断中展示。",
+      evidence: `trigger=${String(input.triggerActive ?? "—")} · connected=true`
     };
   }
   if (input.kmnetRuntimeConnected) {
     return {
-      id: "device",
+      id: "output",
       label: "命令输出",
       state: "waiting",
       value: "已连接",
-      detail: "设备通道已连接，等待第一条被接受的控制命令。",
-      evidence: `${outputDeliveryLabel(input.outputDeliveryState)} · ${input.kmnetConnectionLabel}`
+      detail: input.noSendReason || "设备通道已连接，等待第一条被接受的控制命令。",
+      evidence: `trigger=${String(input.triggerActive ?? "—")} · ${input.kmnetConnectionLabel}`
     };
   }
+  const waitingForTrigger = input.noSendReason.includes("触发") || input.triggerActive === false;
   return {
-    id: "device",
+    id: "output",
     label: "命令输出",
-    state: input.willEmit === true ? "blocked" : "waiting",
-    value: "未连接",
-    detail: input.willEmit === true ? "控制命令已准入，但运行时设备通道未连接。" : "等待输出门准入和 kmNet 运行时连接。",
+    state: waitingForTrigger || !input.hasTarget ? "waiting" : "blocked",
+    value: "未发送",
+    detail: input.noSendReason || "等待输出门准入和 kmNet 运行时连接。",
     evidence: input.deviceLastError || input.kmnetConnectionLabel
   };
 }
 
 export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSummary {
   const steps = [
-    buildBatchStep(input),
     buildTargetStep(input),
     buildTriggerDelayStep(input),
     buildAimStep(input),
     buildControllerStep(input),
-    buildLimiterStep(input),
-    buildGateStep(input),
     buildRecoilStep(input),
-    buildDeviceStep(input)
+    buildLimiterStep(input),
+    buildOutputStep(input)
   ];
   const completed = steps.filter((step) => step.state === "ready").length;
   const hasBlocked = steps.some((step) => step.state === "blocked");
