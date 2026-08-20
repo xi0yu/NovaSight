@@ -136,7 +136,7 @@ export function StudioNavigation({
     <nav className="console-navigation" aria-label="NovaSight Studio 导航">
       {navigationGroups.map((group) => (
         <section className="console-nav-group" key={group.id} aria-labelledby={`console-nav-${group.id}`}>
-          <h2 id={`console-nav-${group.id}`}>{group.label}</h2>
+          <div className="console-nav-group-title" id={`console-nav-${group.id}`}>{group.label}</div>
           <div className="console-nav-group-items">
             {group.items.map((item) => {
               const active = activePage === item.id;

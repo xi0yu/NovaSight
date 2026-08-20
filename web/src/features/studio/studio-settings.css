@@ -1669,8 +1669,48 @@
 }
 
 @media (max-width: 760px) {
+  .parameter-stepper-control {
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+  }
+
+  .parameter-stepper-button,
+  .parameter-stepper-control > input,
+  .parameter-control-text > input,
+  .parameter-control-select > select,
+  .inline-number-control {
+    height: 44px;
+  }
+
+  .parameter-control-meta > span {
+    min-height: 22px;
+    font-size: 11px;
+  }
+
+  .parameter-control-unit,
+  .parameter-control-range,
+  .parameter-preset-control > header span,
+  .algorithm-settings-disclosure > summary i,
+  .kmnet-diagnostic-details > summary i,
+  .kmnet-configuration-details > summary i,
+  .studio-diagnostic-details > summary i {
+    font-size: 11px;
+  }
+
+  .parameter-control-detail,
+  .algorithm-settings-disclosure > summary small,
+  .kmnet-diagnostic-details > summary small,
+  .kmnet-configuration-details > summary small,
+  .studio-diagnostic-details > summary small {
+    font-size: 12px;
+  }
+
+  .parameter-preset-control.compact .parameter-preset-option {
+    min-height: 44px;
+  }
+
   .parameter-save-bar {
-    position: static;
+    position: sticky;
+    top: var(--space-2);
     grid-template-columns: 32px minmax(0, 1fr);
   }
 

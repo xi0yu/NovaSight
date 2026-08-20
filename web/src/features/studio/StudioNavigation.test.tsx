@@ -21,4 +21,11 @@ describe("StudioNavigation", () => {
     await userEvent.click(screen.getByRole("button", { name: "授权管理" }));
     expect(onNavigate).toHaveBeenCalledWith("license");
   });
+
+  it("keeps navigation groups out of the page heading hierarchy", () => {
+    render(<StudioNavigation activePage="capture" onNavigate={vi.fn()} />);
+
+    expect(screen.queryByRole("heading", { name: "运行工作台" })).not.toBeInTheDocument();
+    expect(screen.getByText("运行工作台")).toBeInTheDocument();
+  });
 });

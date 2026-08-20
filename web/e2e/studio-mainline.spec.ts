@@ -118,6 +118,86 @@ test("Studio navigation moves keyboard focus to the new page heading", async ({ 
   await expect(page.getByRole("heading", { level: 1, name: "运行总览" })).toBeFocused();
 });
 
+test("narrow Studio keeps Chinese navigation and save action reachable", async ({ page }) => {
+  await page.setViewportSize({ width: 620, height: 812 });
+  await mockStudioApi(page);
+  await page.goto("/?page=params");
+
+  const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
+  await expect(navigation.getByText("参数设置", { exact: true })).toBeVisible();
+
+  const shellHeader = page.locator(".console-top");
+  expect((await shellHeader.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(76);
+
+  const saveBar = page.locator(".parameter-save-bar");
+  await expect(saveBar).toHaveCSS("position", "sticky");
+  await page.locator("main.console-main").evaluate((main) => { main.scrollTop = 900; });
+  await expect(page.getByRole("button", { name: "保存修改" })).toBeInViewport();
+
+  for (const control of [
+    page.locator(".error-center-trigger"),
+    page.getByRole("button", { name: "保存修改" }),
+    navigation.getByRole("button", { name: "参数设置" }),
+  ]) {
+    expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  }
+});
+
+test("375px Studio keeps shell actions and horizontal navigation accessible", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await mockStudioApi(page);
+  await page.goto("/?page=params");
+
+  const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
+  const activePageButton = navigation.getByRole("button", { name: "参数设置" });
+  await activePageButton.scrollIntoViewIfNeeded();
+
+  await expect(activePageButton).toBeInViewport();
+  await expect(page.locator(".error-center-trigger")).toBeInViewport();
+  await expect(page.locator(".theme-toggle")).toBeInViewport();
+  expect(await page.locator("body").evaluate((body) => body.scrollWidth)).toBeLessThanOrEqual(375);
+});
+
+test("760px Studio recovery actions keep touch-safe targets", async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 812 });
+  await mockStudioApi(page);
+  await page.goto("/?page=control");
+
+  for (const control of [
+    page.getByRole("button", { name: "查看异常" }),
+    page.getByRole("button", { name: "重试" }),
+    page.locator(".error-center-trigger"),
+    page.locator(".theme-toggle"),
+  ]) {
+    expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
+  }
+});
+
+test("one backend outage does not repeat friendly and channel errors", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.goto("/?page=models");
+  await page.getByRole("heading", { level: 1, name: "模型管理" }).waitFor();
+  await page.locator(".error-center-trigger").click();
+
+  await expect(page.getByRole("dialog", { name: "异常信息" })).toContainText("运行态失败");
+  await expect(page.locator(".error-center-item").filter({ hasText: "runtime 通道异常" })).toHaveCount(0);
+  await expect(page.locator(".error-center-item").filter({ hasText: "config 通道异常" })).toHaveCount(0);
+  await expect(page.locator(".error-center-item").filter({ hasText: "projects 通道异常" })).toHaveCount(0);
+  await expect(page.locator(".error-center-item").filter({ hasText: "当前操作未完成" })).toHaveCount(0);
+});
+
+test("unavailable runtime offers concise recovery without a new popup flow", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.goto("/?page=control");
+
+  await expect(page.getByRole("heading", { level: 1, name: "控制" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看异常" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
+
+  await page.getByRole("button", { name: "查看异常" }).click();
+  await expect(page.getByRole("dialog", { name: "异常信息" })).toBeVisible();
+});
+
 test("authenticated operator can manage and safely exit the current license", async ({ page }) => {
   await mockStudioApi(page);
   await page.goto("/?page=capture");

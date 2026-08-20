@@ -68,7 +68,7 @@ function sectionDescriptionForTitle(title: string): string {
 export function SectionTitle({ title, icon }: { title: string; icon?: NovaIconName }) {
   const description = sectionDescriptionForTitle(title);
   return (
-    <h2 className="console-title">
+    <h2 className="console-title" aria-label={title}>
       <span className="console-title-icon">
         <NovaIcon name={icon ?? sectionIconForTitle(title)} size={18} />
       </span>

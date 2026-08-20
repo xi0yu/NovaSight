@@ -2049,6 +2049,7 @@ export function StudioConsoleView({
           : "已超过控制阈值";
   const currentErrorDetails = useMemo(() => {
     const items: Array<{ key: string; title: string; detail: string; time?: number; count?: number }> = [];
+    const noticeStates = new Set(errorNotices.map((notice) => `${notice.source}\u0000${notice.detail}`));
     for (const notice of errorNotices) {
       items.push({
         key: `notice-${notice.id}`,
@@ -2059,9 +2060,18 @@ export function StudioConsoleView({
       });
     }
     for (const [source, detail] of Object.entries(errors)) {
-      if (detail) items.push({ key: `state-${source}`, title: `${source} 通道异常`, detail });
+      if (detail && !noticeStates.has(`${source}\u0000${detail}`)) {
+        items.push({ key: `state-${source}`, title: `${source} 通道异常`, detail });
+      }
     }
-    if (localError) items.push({ key: "local", title: "当前操作未完成", detail: localError });
+    const localErrorAlreadyCovered = localError !== "" && items.some((item) => (
+      localError === item.detail ||
+      localError === `${item.title}：${item.detail}` ||
+      localError === `${item.title}: ${item.detail}`
+    ));
+    if (localError && !localErrorAlreadyCovered) {
+      items.push({ key: "local", title: "当前操作未完成", detail: localError });
+    }
     if (capture?.last_error) items.push({ key: "capture", title: "采集链路异常", detail: capture.last_error });
     return items.filter((item, index, all) => (
       all.findIndex((candidate) => candidate.title === item.title && candidate.detail === item.detail) === index
@@ -4082,12 +4092,18 @@ export function StudioConsoleView({
             <WorkspaceNotice
               icon="signal-lost"
               title="无法读取控制运行状态"
-              detail="页面不会用配置值冒充实时控制结果。请恢复 Web/API 与 novasightd 的状态通道后重新读取。"
+              detail="Web/API 或 novasightd 状态通道不可用，实时控制结果暂时无法显示。"
               action={(
-                <button className="console-button" disabled={busy !== null} onClick={() => void onRefresh()} type="button">
-                  <NovaIcon name="refresh" size={15} />
-                  重新读取
-                </button>
+                <div className="console-action-row">
+                  <button className="console-button" onClick={() => setErrorCenterOpen(true)} type="button">
+                    <NovaIcon name="triangle-alert" size={15} />
+                    查看异常
+                  </button>
+                  <button className="console-button primary" disabled={busy !== null} onClick={() => void onRefresh()} type="button">
+                    <NovaIcon name="refresh" size={15} />
+                    重试
+                  </button>
+                </div>
               )}
             />
           ) : (
@@ -4823,15 +4839,21 @@ export function StudioConsoleView({
                   ? "正在等待第一批真实统计"
                   : "尚未采集延迟样本"}
               detail={runtime === null
-                ? "状态通道恢复前不展示占位数字，也不会把配置值当作实时测量。"
+                ? "状态通道不可用，暂不显示占位或配置值。"
                 : runtimeLifecycleActive
                   ? "主链已请求运行；统计窗口完成后，这里会显示推理耗时、结果帧龄与实际吞吐。"
                   : "启动主链后才会建立真实统计窗口；未打点的阶段不会估算为 0。"}
               action={runtime === null ? (
-                <button className="console-button" disabled={busy !== null} onClick={() => void onRefresh()} type="button">
-                  <NovaIcon name="refresh" size={15} />
-                  重新读取
-                </button>
+                <div className="console-action-row">
+                  <button className="console-button" onClick={() => setErrorCenterOpen(true)} type="button">
+                    <NovaIcon name="triangle-alert" size={15} />
+                    查看异常
+                  </button>
+                  <button className="console-button primary" disabled={busy !== null} onClick={() => void onRefresh()} type="button">
+                    <NovaIcon name="refresh" size={15} />
+                    重试
+                  </button>
+                </div>
               ) : !runtimeLifecycleActive ? (
                 <button className="console-button primary" disabled={busy !== null || runtimeControlUnavailable} onClick={() => void toggleCapture()} type="button">
                   <NovaIcon name="start" size={15} />

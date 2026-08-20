@@ -106,6 +106,16 @@
 }
 
 @media (max-width: 640px) {
+  .runtime-overview-conclusion small,
+  .runtime-overview-chain small,
+  .runtime-overview-evidence small,
+  .runtime-overview-chain header > span,
+  .runtime-overview-chain li i,
+  .runtime-overview-chain li span,
+  .runtime-overview-evidence summary > span:last-child {
+    font-size: 11px;
+  }
+
   .runtime-overview-conclusion { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
   .runtime-overview-conclusion > .console-button { grid-column: 1 / -1; width: 100%; }
   .runtime-overview-axes { grid-template-columns: minmax(0, 1fr); }

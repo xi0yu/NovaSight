@@ -159,7 +159,7 @@ export function ModelSelectionPanel({
 
       {catalogMessage ? <div className="model-switch-note good">{catalogMessage}</div> : null}
 
-      <section className="model-vault-filters" aria-label="模型筛选">
+      {models.length > 0 ? <section className="model-vault-filters" aria-label="模型筛选">
         <div className="model-vault-recommendation-filter" role="group" aria-label="推荐状态筛选">
           {([
             ["all", "全部"],
@@ -197,7 +197,7 @@ export function ModelSelectionPanel({
             <button type="button" className="clear" onClick={() => setTagFilters(new Set())}>清除</button>
           ) : null}
         </div>
-      </section>
+      </section> : null}
 
       <div className="model-selection-workspace">
         <div className="model-selection-browser">
@@ -212,7 +212,9 @@ export function ModelSelectionPanel({
             />
           ) : (
             <div className="model-catalog-placeholder">
-              {models.length > 0 ? "没有符合当前推荐状态与标签的模型。" : "models 目录中没有 .onnx 或 .engine 模型。"}
+              {models.length > 0
+                ? "没有符合当前推荐状态与标签的模型。"
+                : "暂无模型。将 .onnx 或 .engine 文件放入设备的 models 目录后，点击“刷新模型”。"}
             </div>
           )}
         </div>
