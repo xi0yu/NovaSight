@@ -37,7 +37,8 @@ DetectionBatch latest-only
 ## Jetson 待验收
 
 - 无模型时 daemon 和 Studio 能正常启动，模型主链保持等待态。
-- 固定监听地址为 `0.0.0.0:5174`，局域网浏览器能够访问 Studio。
+- 用户可见 Studio 固定监听 `0.0.0.0:7351`；源码开发时私有
+  Web/API 仅监听 `127.0.0.1:5174`，局域网浏览器使用启动器打印的认证 URL。
 - 配置保存后 YAML revision、运行时 effective revision 和页面状态一致。
 - 真实 DetectionBatch 时间戳与 freshness 门控使用同一 monotonic 时钟域。
 - 预测关闭、预测开启、目标切换和短暂丢失场景没有旧命令补发。

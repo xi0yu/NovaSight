@@ -1492,7 +1492,7 @@ fn first_subsystem_error(
         .flatten()
         .filter(|error| {
             error.code != "device_uncommissioned"
-                && !(error.code == "perception_adapter_unavailable" && !hardware_output_enabled)
+                && (error.code != "perception_adapter_unavailable" || hardware_output_enabled)
         })
     })
 }

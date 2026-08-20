@@ -34,21 +34,24 @@ libraries, and host-side tests are diagnostic/development paths.
 
 ## Current Workspace Snapshot
 
-Measured from `develop-alpha` at `f87e6c7` before the development batch started
-on 2026-08-10:
+The latest hosted baseline is `cab7b53`, verified by quality workflow run
+`32351850209` on 2026-08-20. The current local candidate is based on `c3d4057`
+and passed the host gates below before submission; it does not inherit the
+hosted receipt until its own pushed SHA completes the workflow. Every later
+source revision must pass the same gates before inheriting either baseline:
 
 | Area | Current state | Health signal |
 | --- | --- | --- |
-| Rust workspace | 14 packages, about 47.6k source lines | Mainline is fully Rust-owned |
-| React Studio | about 27.4k TypeScript/CSS lines | Builds cleanly; interaction coverage is missing |
+| Rust workspace | 15 packages | Mainline is fully Rust-owned; locked workspace tests pass |
+| React Studio | TypeScript/CSS application | Typecheck, unit/contract, mocked browser, visual, and production-build gates pass |
 | Tracked Python | 0 files | Legacy Python audit advice is retired |
-| Rust host checks | 227 tests passed | Strong domain/reference evidence, not Jetson proof |
+| Rust host checks | Full locked workspace suite passed | Strong domain/reference evidence, not Jetson proof |
 | Portable native contracts | 9 C++ tests passed | Latest-only and reference ABI contracts are covered |
-| Frontend checks | typecheck, visual audit, and production build passed | Static/build health is good |
-| Repository state | clean and aligned with `origin/develop-alpha` | Workspace hygiene is good |
+| Frontend checks | 35 unit/contract and 30 mocked browser cases passed, plus static/build gates | Interaction and presentation contracts are automated |
+| Hosted automation | Host Rust, Studio, browser, and dependency-audit jobs have successful runs | Jetson jobs remain separately gated |
 
-This snapshot is evidence from the named revision, not a promise that later
-unverified edits pass the same gates.
+This snapshot is revision-bound evidence, not a promise that later unverified
+edits pass the same gates.
 
 ## Maintained Ownership Boundaries
 
@@ -96,14 +99,14 @@ contract; the restricted sandbox failure was not a product failure. One stale
 prediction test had inherited the production default lead and was made explicit
 with `prediction_lead_ms: 0.0`, preserving the test's intended isolation.
 
-### P1: Bring the tracked host and Jetson quality gates online
+### P1: Complete the Jetson quality gates
 
-The tracked `.github/workflows/quality.yml` declares host checks for
-GitHub-hosted macOS/Ubuntu runners, explicitly verifies manifest/lockfile
-agreement, and separates the Jetson release-build receipt from hardware
-production acceptance. The jobs remain disabled until a self-hosted Jetson
-runner and repository variables are configured. No workflow result exists yet,
-so automation remains `PARTIAL` until the relevant job completes successfully.
+The tracked `.github/workflows/quality.yml` runs host checks on GitHub-hosted
+macOS/Ubuntu runners, explicitly verifies manifest/lockfile agreement, and has
+successful host Rust, Studio, browser, and dependency-audit runs. It separates
+the Jetson release-build receipt from hardware production acceptance. Those two
+jobs remain disabled until a self-hosted Jetson runner and repository variables
+are configured, so production automation remains `PARTIAL`.
 
 Portable host gate (macOS; production Linux modules remain Jetson-gated):
 
@@ -145,12 +148,14 @@ contracts, TensorRT reference ABI, and preprocess reference ABI. It cannot prove
 DeepStream SDK loading, NVMM import, real TensorRT execution, V4L2 capture, or
 kmNet hardware behavior. Those remain `UNKNOWN` until a Jetson receipt exists.
 
-### P2: Add behavior coverage at external boundaries
+### P2: Extend behavior coverage at real external boundaries
 
 Current Rust coverage is strongest in domain, configuration, pipeline, runtime,
-and native-contract logic. The Axum router/daemon composition and Studio user
-flows have little or no automated behavior coverage. Add coverage when test work
-is explicitly in scope; do not inflate production modules with test-only seams.
+and native-contract logic. Studio unit/contract tests and mocked Playwright
+journeys cover its critical interaction states. The remaining gap is real
+Web/API/daemon composition and hardware-backed behavior. Add coverage when test
+work is explicitly in scope; do not inflate production modules with test-only
+seams.
 
 Priority boundaries:
 
@@ -217,8 +222,8 @@ of truth.
 | Rust domain/runtime design | YES | Typed ownership and fail-closed seams are present |
 | Host development baseline | YES | Locked metadata, formatting, strict Clippy, workspace tests, and Studio build pass locally |
 | Studio static health | YES | Typecheck, visual audit, and build passed at the recorded baseline |
-| Studio behavior coverage | NO | No automated interaction suite is configured |
-| Automated host CI | PARTIAL | Workflow is tracked; first successful run is pending |
+| Studio behavior coverage | YES | Unit/contract and mocked browser suites cover critical interaction states |
+| Automated host CI | YES | Rust, Studio, browser, and dependency-audit jobs have successful runs |
 | Jetson production readiness | UNKNOWN | Requires current hardware receipts |
-| Dependency vulnerability status | PARTIAL | npm was clean; RustSec fetch was unavailable |
+| Dependency vulnerability status | YES | npm production and RustSec lockfile audits pass in hosted automation; RUSTSEC-2023-0071 is scope-reviewed and explicitly ignored |
 | Documentation authority | YES | This ledger supersedes the deleted Python-era audit content |

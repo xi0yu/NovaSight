@@ -11,6 +11,40 @@ Both jobs require a self-hosted runner labelled `self-hosted`, `Linux`, `ARM64`,
 and `jetson`, with the pinned Rust toolchain, CMake, curl, jq, pnpm, JetPack,
 DeepStream, TensorRT, and the native kmNet build dependencies installed.
 
+## One-time CI setup
+
+1. In the GitHub repository, add a Linux ARM64 self-hosted runner and run the
+   generated registration commands on the dedicated Jetson build account.
+2. Add the custom `jetson` label and install the runner as a service so ordinary
+   pushes do not depend on an interactive terminal.
+3. Install the dependencies in the runner contract above and verify that the
+   runner account can read the camera and NVIDIA runtime without using root.
+4. Set repository variable `NOVASIGHT_JETSON_CI_ENABLED=true` after the build
+   runner is ready.
+5. Create the protected `jetson-production` environment, configure required
+   reviewers, and set its `NOVASIGHT_JETSON_MODEL_FIXTURE_DIR` variable to the
+   approved fixture outside the checkout. Set repository variable
+   `NOVASIGHT_JETSON_PRODUCTION_ACCEPTANCE_ENABLED=true` only when that protected
+   receipt should be available.
+
+The host jobs need no private runner. They run automatically for pull requests
+and pushes to `develop-alpha`, or manually from the `quality` workflow. The same
+manual run is available from a configured GitHub CLI:
+
+```bash
+gh workflow run quality.yml --ref develop-alpha
+gh run list --workflow quality.yml --branch develop-alpha \
+  --event workflow_dispatch --limit 1 --json databaseId,url
+gh run watch <run-id> --exit-status
+```
+
+Both Jetson enable variables may remain true once the runner is stable. The
+production job still waits for the protected environment approval and never
+enables physical kmNet output. Because this is a public repository, Jetson jobs
+never run pull-request code: they accept only a direct `develop-alpha` push or
+an authorized manual workflow dispatch. Pull requests use GitHub-hosted runners
+for host checks.
+
 Set repository variable `NOVASIGHT_JETSON_CI_ENABLED=true` for the release
 build/safe-start job. This job:
 
@@ -25,8 +59,8 @@ build/safe-start job. This job:
 
 Set `NOVASIGHT_JETSON_PRODUCTION_ACCEPTANCE_ENABLED=true` and configure the
 protected `jetson-production` GitHub environment for the production receipt.
-The runner variable `NOVASIGHT_JETSON_MODEL_FIXTURE_DIR` must point outside the
-checkout to an approved TensorRT engine fixture with its matching runtime
+The environment variable `NOVASIGHT_JETSON_MODEL_FIXTURE_DIR` must point outside
+the checkout to an approved TensorRT engine fixture with its matching runtime
 metadata. The fixture directory must contain exactly one `.engine` and a
 `novasight-fixture.json` manifest:
 

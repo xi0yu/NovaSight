@@ -158,7 +158,10 @@ jobs:
 
   jetson-build:
     name: Jetson release build and safe startup
-    if: vars.NOVASIGHT_JETSON_CI_ENABLED == 'true'
+    if: >-
+      vars.NOVASIGHT_JETSON_CI_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/develop-alpha'))
     runs-on: [self-hosted, Linux, ARM64, jetson]
     timeout-minutes: 90
     steps:
@@ -186,7 +189,10 @@ jobs:
   jetson-production:
     name: Jetson real camera and DeepStream receipt
     needs: jetson-build
-    if: vars.NOVASIGHT_JETSON_PRODUCTION_ACCEPTANCE_ENABLED == 'true'
+    if: >-
+      vars.NOVASIGHT_JETSON_PRODUCTION_ACCEPTANCE_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/develop-alpha'))
     runs-on: [self-hosted, Linux, ARM64, jetson]
     timeout-minutes: 120
     environment: jetson-production

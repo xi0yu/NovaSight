@@ -40,6 +40,8 @@ with `git add -A`; review and stage explicit paths after checking
 
 ## Current boundary
 
-The default remains `capture`. Local macOS checks do not run or build the Rust
-product. Until current-SHA Jetson build and production receipts exist, Jetson
-production readiness is `UNKNOWN`.
+The default remains `capture`. Local macOS checks build the Rust product and can
+run the fail-closed `host-preview` composition, but they do not load the Jetson
+DeepStream/TensorRT stack or prove real camera and kmNet behavior. Until
+current-SHA Jetson build and production receipts exist, Jetson production
+readiness is `UNKNOWN`.

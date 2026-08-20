@@ -1,12 +1,10 @@
-//! `novasight-runtime` — daemon lifecycle, RuntimeSupervisor,
-//! PipelineRuntime orchestration, and API server wiring.
+//! `novasight-runtime` — daemon lifecycle, RuntimeSupervisor, configuration
+//! transactions, model activation, PipelineRuntime orchestration, and immutable
+//! runtime snapshots.
 //!
-//! Commit 2 introduces the RuntimeSupervisor, RuntimeHandle,
-//! internal RuntimeCommand actor protocol and public RuntimeSnapshot type
-//! families. The
-//! PipelineRuntime, ConfigService, and HTTP transport land in
-//! later commits; `ReplaceConfig` is intentionally absent from
-//! the command enum until the ConfigService surface exists.
+//! Runtime commands are serialized through one supervisor actor. HTTP and other
+//! control surfaces use `RuntimeHandle` and must not become parallel runtime
+//! authorities.
 
 #![forbid(unsafe_code)]
 
