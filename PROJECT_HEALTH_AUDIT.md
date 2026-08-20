@@ -34,11 +34,13 @@ libraries, and host-side tests are diagnostic/development paths.
 
 ## Current Workspace Snapshot
 
-The latest hosted baseline is `cab7b53`, verified by quality workflow run
-`32351850209` on 2026-08-20. The current local candidate is based on `c3d4057`
-and passed the host gates below before submission; it does not inherit the
-hosted receipt until its own pushed SHA completes the workflow. Every later
-source revision must pass the same gates before inheriting either baseline:
+The hosted reference available when this review began was `cab7b53`, verified
+by quality workflow run `32351850209` on 2026-08-20. The candidate evaluated in
+this review included the changes after `c3d4057` and passed the host gates below
+before submission. For every newer revision, the Actions run bound to its exact
+SHA—not a mutable "latest run" copied into this file—is the current hosted
+receipt. A later source revision must pass the same gates before inheriting the
+baseline:
 
 | Area | Current state | Health signal |
 | --- | --- | --- |
