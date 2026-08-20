@@ -191,7 +191,7 @@ export function LicensePanel({
             <dd>{statusTraceCode}</dd>
           </div>
           <div>
-            <dt>设备指纹</dt>
+            <dt>授权凭据指纹</dt>
             <dd>{fingerprintTraceCode}</dd>
           </div>
           <div>
