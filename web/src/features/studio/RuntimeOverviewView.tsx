@@ -11,6 +11,13 @@ type RuntimeOverviewViewProps = {
   readiness: LaunchReadinessSummary;
   lastUpdated: Date | null;
   onAction: (action: RuntimeRecoveryAction) => void;
+  controlBusy: boolean;
+  emergencyStopping: boolean;
+  launchPending: boolean;
+  runtimeStopping: boolean;
+  runtimeControlUnavailable: boolean;
+  onToggle: () => void;
+  onEmergencyStop: () => void;
 };
 
 function toneForProjection(projection: RuntimeProjection): string {
@@ -25,12 +32,28 @@ function formatEvidenceTime(value: Date | null): string {
   return value ? value.toLocaleTimeString("zh-CN", { hour12: false }) : "尚未取得";
 }
 
+function formatLiveMetric(
+  available: boolean,
+  value: number | null,
+  digits: number,
+  unit: string,
+): string {
+  return available && value !== null ? `${value.toFixed(digits)}${unit}` : "等待样本";
+}
+
 export function RuntimeOverviewView({
   runtime,
   projection,
   readiness,
   lastUpdated,
   onAction,
+  controlBusy,
+  emergencyStopping,
+  launchPending,
+  runtimeStopping,
+  runtimeControlUnavailable,
+  onToggle,
+  onEmergencyStop,
 }: RuntimeOverviewViewProps) {
   if (!runtime || !projection) {
     return (
@@ -46,6 +69,20 @@ export function RuntimeOverviewView({
 
   const tone = toneForProjection(projection);
   const kmnet = runtime.executor.executors.kmnet;
+  const phase = runtime.semantic.phase;
+  const lifecycleActive = ["starting", "waiting_model", "running", "standby", "stopping"].includes(phase);
+  const stopping = phase === "stopping" || runtimeStopping;
+  const starting = phase === "starting" || launchPending;
+  const metricsCurrent = projection.transport === "current";
+  const metricsAvailable = metricsCurrent && runtime.statistics.metrics_available === true;
+  const missingMetricLabel = metricsCurrent ? "等待样本" : "状态已过期";
+  const runtimeControlLabel = stopping
+    ? "正在停止"
+    : starting
+      ? "正在启动"
+      : lifecycleActive
+        ? "停止运行"
+        : "运行";
   const chain = [
     { label: "采集输入", value: runtime.capture.running ? "正在接收" : runtime.capture.available ? "待运行" : "不可用" },
     { label: "感知数据", value: projection.perception.label },
@@ -67,12 +104,55 @@ export function RuntimeOverviewView({
           <h2>{projection.conclusion}</h2>
           <p>{readiness.detail}</p>
         </div>
-        {projection.nextAction ? (
-          <button className="console-button" type="button" onClick={() => onAction(projection.nextAction!)}>
-            {projection.nextActionLabel ?? "处理问题"}
+        <div className="runtime-overview-actions">
+          {projection.nextAction ? (
+            <button className="console-button" type="button" onClick={() => onAction(projection.nextAction!)}>
+              {projection.nextActionLabel ?? "处理问题"}
+            </button>
+          ) : null}
+          <button
+            className={lifecycleActive ? "console-button" : "console-button primary"}
+            disabled={controlBusy || emergencyStopping || stopping || runtimeControlUnavailable}
+            onClick={onToggle}
+            type="button"
+          >
+            <NovaIcon name={lifecycleActive ? "stop" : "start"} size={15} />
+            {runtimeControlLabel}
           </button>
-        ) : null}
+          {lifecycleActive ? (
+            <button
+              className="console-button danger runtime-overview-emergency-stop"
+              disabled={emergencyStopping}
+              onClick={onEmergencyStop}
+              type="button"
+            >
+              <NovaIcon name="emergency-stop" size={15} />
+              {emergencyStopping ? "紧急停止中" : "紧急停止"}
+            </button>
+          ) : null}
+        </div>
       </article>
+
+      <dl className="runtime-overview-metrics" aria-label="核心运行数据">
+        <div>
+          <dt>推理输入 FPS</dt>
+          <dd>{metricsAvailable
+            ? formatLiveMetric(true, runtime.statistics.nvinfer_input_fps, 0, "")
+            : missingMetricLabel}</dd>
+        </div>
+        <div>
+          <dt>检测结果 FPS</dt>
+          <dd>{metricsAvailable
+            ? formatLiveMetric(true, runtime.statistics.detection_batch_fps, 0, "")
+            : missingMetricLabel}</dd>
+        </div>
+        <div>
+          <dt>推理耗时</dt>
+          <dd>{metricsAvailable
+            ? formatLiveMetric(true, runtime.statistics.inference_latency_ms, 1, " ms")
+            : missingMetricLabel}</dd>
+        </div>
+      </dl>
 
       <div className="runtime-overview-axes">
         <article data-state={projection.lifecycle.state}>

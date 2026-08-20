@@ -34,7 +34,7 @@ export function StudioRuntimeBar({
   onToggle,
   onEmergencyStop
 }: StudioRuntimeBarProps) {
-  if (page === "params") return null;
+  if (page === "overview" || page === "params") return null;
 
   if (page === "control-test") {
     const title = !runtimeAvailable

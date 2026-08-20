@@ -46,6 +46,42 @@
 .runtime-overview-conclusion h2 { font-size: clamp(19px, 2.3vw, 26px); line-height: 1.25; }
 .runtime-overview-conclusion p { margin: 7px 0 0; color: var(--text-secondary); line-height: 1.55; }
 
+.runtime-overview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.runtime-overview-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-4);
+  background: var(--bg-surface);
+}
+
+.runtime-overview-metrics > div {
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+}
+
+.runtime-overview-metrics > div + div { border-left: 1px solid var(--border-default); }
+.runtime-overview-metrics dt { color: var(--text-tertiary); font-size: 11px; font-weight: 700; }
+.runtime-overview-metrics dd {
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .runtime-overview-axes {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -117,9 +153,16 @@
   }
 
   .runtime-overview-conclusion { grid-template-columns: auto minmax(0, 1fr); align-items: start; }
-  .runtime-overview-conclusion > .console-button { grid-column: 1 / -1; width: 100%; }
+  .runtime-overview-actions { grid-column: 1 / -1; width: 100%; }
+  .runtime-overview-actions .console-button { flex: 1 1 auto; }
+  .runtime-overview-metrics { grid-template-columns: minmax(0, 1fr); }
+  .runtime-overview-metrics > div + div { border-top: 1px solid var(--border-default); border-left: 0; }
   .runtime-overview-axes { grid-template-columns: minmax(0, 1fr); }
   .runtime-overview-axes article + article { border-top: 1px solid var(--border-default); border-left: 0; }
   .runtime-overview-chain ol { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .runtime-overview-chain li:not(:last-child)::after { top: 25px; right: auto; bottom: -13px; left: 13px; width: 1px; height: auto; }
+}
+
+@media (max-width: 620px) {
+  .runtime-overview-emergency-stop { display: none; }
 }

@@ -58,7 +58,11 @@ const clearedLicense = {
   updated_at: null,
 };
 
-async function mockStudioApi(page: Page, initialSession = authenticatedSession) {
+async function mockStudioApi(
+  page: Page,
+  initialSession = authenticatedSession,
+  runtimeConfig?: Record<string, unknown>,
+) {
   await page.route("**/healthz", async (route) => {
     await route.fulfill({ json: { ok: true } });
   });
@@ -78,6 +82,10 @@ async function mockStudioApi(page: Page, initialSession = authenticatedSession) 
     }
     if (path === "/api/license" && route.request().method() === "DELETE") {
       await route.fulfill({ json: clearedLicense });
+      return;
+    }
+    if (path === "/api/config" && route.request().method() === "GET" && runtimeConfig) {
+      await route.fulfill({ json: runtimeConfig });
       return;
     }
     await route.fulfill({
@@ -116,6 +124,52 @@ test("Studio navigation moves keyboard focus to the new page heading", async ({ 
   await navigation.getByRole("button", { name: "运行总览" }).click();
 
   await expect(page.getByRole("heading", { level: 1, name: "运行总览" })).toBeFocused();
+});
+
+test("Studio navigation restores each page scroll position", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.goto("/?page=params");
+
+  const main = page.locator("main.console-main");
+  const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
+  const paramsScrollTop = await main.evaluate((element) => {
+    element.scrollTop = Math.min(720, element.scrollHeight - element.clientHeight);
+    return element.scrollTop;
+  });
+  expect(paramsScrollTop).toBeGreaterThan(0);
+
+  await navigation.getByRole("button", { name: "运行总览" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "运行总览" })).toBeFocused();
+  await navigation.getByRole("button", { name: "参数设置" }).click();
+
+  await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBe(paramsScrollTop);
+});
+
+test("parameter draft survives in-app navigation without a confirmation popup", async ({ page }) => {
+  await mockStudioApi(page, authenticatedSession, {
+    revision: 1,
+    control: {
+      trigger_mode: "always",
+      recoil: { enabled: false, require_target: true, interval_ms: 16, y_counts: 1 },
+    },
+    pipeline: {},
+  });
+  let dialogCount = 0;
+  page.on("dialog", async (dialog) => {
+    dialogCount += 1;
+    await dialog.dismiss();
+  });
+  await page.goto("/?page=params");
+
+  await page.getByRole("button", { name: "按键触发" }).click();
+  await expect(page.getByRole("button", { name: "保存修改" })).toBeEnabled();
+  const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
+  await navigation.getByRole("button", { name: "运行总览" }).click();
+  await navigation.getByRole("button", { name: "参数设置" }).click();
+
+  await expect(page.getByRole("button", { name: "按键触发" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "保存修改" })).toBeEnabled();
+  expect(dialogCount).toBe(0);
 });
 
 test("narrow Studio keeps Chinese navigation and save action reachable", async ({ page }) => {

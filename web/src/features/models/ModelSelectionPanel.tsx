@@ -24,6 +24,27 @@ const RECOMMENDATION_OPTIONS: Array<{ value: ModelRecommendation; label: string 
   { value: "not_recommended", label: "不推荐" }
 ];
 const SUGGESTED_MODEL_TAGS = ["高精度模型", "低精度模型", "低延迟", "延迟大", "稳定", "实验模型"];
+const MODEL_FILTER_SESSION_KEY = "novasight.model-filters.v1";
+
+function readModelFilterSession(): {
+  recommendation: ModelRecommendation | "all";
+  tags: string[];
+} {
+  try {
+    const value: unknown = JSON.parse(window.sessionStorage.getItem(MODEL_FILTER_SESSION_KEY) ?? "null");
+    if (!value || typeof value !== "object") return { recommendation: "all", tags: [] };
+    const record = value as Record<string, unknown>;
+    const recommendation = ["all", "recommended", "unrated", "not_recommended"].includes(String(record.recommendation))
+      ? record.recommendation as ModelRecommendation | "all"
+      : "all";
+    const tags = Array.isArray(record.tags)
+      ? record.tags.filter((tag): tag is string => typeof tag === "string")
+      : [];
+    return { recommendation, tags };
+  } catch {
+    return { recommendation: "all", tags: [] };
+  }
+}
 
 export interface ModelSelectionPanelProps {
   root: ModelCatalogDirectory | null;
@@ -74,8 +95,11 @@ export function ModelSelectionPanel({
   onSaveMetadata,
   onSwitch
 }: ModelSelectionPanelProps) {
-  const [recommendationFilter, setRecommendationFilter] = useState<ModelRecommendation | "all">("all");
-  const [tagFilters, setTagFilters] = useState<Set<string>>(() => new Set());
+  const [initialFilters] = useState(readModelFilterSession);
+  const [recommendationFilter, setRecommendationFilter] = useState<ModelRecommendation | "all">(
+    initialFilters.recommendation
+  );
+  const [tagFilters, setTagFilters] = useState<Set<string>>(() => new Set(initialFilters.tags));
   const [draftRecommendation, setDraftRecommendation] = useState<ModelRecommendation>("unrated");
   const [draftTags, setDraftTags] = useState<string[]>([]);
   const [newTag, setNewTag] = useState("");
@@ -103,6 +127,17 @@ export function ModelSelectionPanel({
       return next.size === current.size ? current : next;
     });
   }, [availableTagSet]);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(MODEL_FILTER_SESSION_KEY, JSON.stringify({
+        recommendation: recommendationFilter,
+        tags: activeTagFilters,
+      }));
+    } catch {
+      // Filtering remains functional when browser storage is unavailable.
+    }
+  }, [activeTagFilters, recommendationFilter]);
 
   useEffect(() => {
     setDraftRecommendation(selectedModel?.recommendation ?? "unrated");

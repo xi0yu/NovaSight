@@ -702,6 +702,8 @@ export function StudioConsoleView({
   onStatusTopicChange
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
+  const activePageRef = useRef(activePage);
+  const pageScrollPositionsRef = useRef<Partial<Record<ConsolePage, number>>>({});
 
   useEffect(() => {
     if (activePage === "infer" || activePage === "control" || activePage === "latency" || activePage === "capture") {
@@ -785,9 +787,12 @@ export function StudioConsoleView({
   const activeConfigDialogRef = useRef<ConfigDialogId | null>(null);
   const configDialogBaselineRef = useRef<RuntimeConfig | null>(null);
   const parameterPageBaselineRef = useRef<RuntimeConfig | null>(null);
-  const scrollStudioToTop = useCallback(() => {
+  const rememberStudioScroll = useCallback((page: ConsolePage) => {
+    pageScrollPositionsRef.current[page] = mainRef.current?.scrollTop ?? 0;
+  }, []);
+  const restoreStudioScroll = useCallback((page: ConsolePage) => {
     window.requestAnimationFrame(() => {
-      mainRef.current?.scrollTo({ top: 0, left: 0 });
+      mainRef.current?.scrollTo({ top: pageScrollPositionsRef.current[page] ?? 0, left: 0 });
       window.scrollTo({ top: 0, left: 0 });
     });
   }, []);
@@ -1077,40 +1082,25 @@ export function StudioConsoleView({
     writePageToUrl(activePage, "replace");
     const onPopState = () => {
       const nextPage = pageFromUrl();
-      if (
-        parameterPageDirtyRef.current
-        && nextPage !== "params"
-        && !window.confirm("参数设置中还有未保存修改。离开页面将放弃这些修改，确定继续吗？")
-      ) {
-        writePageToUrl("params", "replace");
-        return;
-      }
-      if (parameterPageDirtyRef.current && nextPage !== "params") {
-        discardParameterPageDraft();
-      }
+      rememberStudioScroll(activePageRef.current);
+      activePageRef.current = nextPage;
       setActivePage(nextPage);
-      scrollStudioToTop();
+      restoreStudioScroll(nextPage);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [discardParameterPageDraft, scrollStudioToTop]);
+  }, [activePage, rememberStudioScroll, restoreStudioScroll]);
 
   const navigatePage = useCallback((page: ConsolePage) => {
-    if (
-      activePage === "params"
-      && page !== "params"
-      && parameterPageDirtyRef.current
-      && !window.confirm("参数设置中还有未保存修改。离开页面将放弃这些修改，确定继续吗？")
-    ) {
+    if (page === activePage) {
       return;
     }
-    if (activePage === "params" && page !== "params" && parameterPageDirtyRef.current) {
-      discardParameterPageDraft();
-    }
+    rememberStudioScroll(activePage);
+    activePageRef.current = page;
     setActivePage(page);
     writePageToUrl(page);
-    scrollStudioToTop();
-  }, [activePage, discardParameterPageDraft, scrollStudioToTop]);
+    restoreStudioScroll(page);
+  }, [activePage, rememberStudioScroll, restoreStudioScroll]);
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -2401,8 +2391,8 @@ export function StudioConsoleView({
   });
 
   const runtimePhase = runtime?.semantic.phase ?? null;
-  const mainlineLaunchPending = runtimePhase === "starting";
-  const runtimeStopping = runtimePhase === "stopping";
+  const mainlineLaunchPending = runtimePhase === "starting" || busy === "runtime.start";
+  const runtimeStopping = runtimePhase === "stopping" || busy === "runtime.stop";
   const runtimeControlRequested = ["starting", "waiting_model", "running", "standby"].includes(
     runtimePhase ?? ""
   );
@@ -3730,6 +3720,13 @@ export function StudioConsoleView({
             readiness={launchReadiness}
             lastUpdated={lastUpdated}
             onAction={handleRuntimeRecoveryAction}
+            controlBusy={busy !== null}
+            emergencyStopping={emergencyStopping}
+            launchPending={mainlineLaunchPending}
+            runtimeStopping={runtimeStopping}
+            runtimeControlUnavailable={runtimeControlUnavailable}
+            onToggle={() => void toggleCapture()}
+            onEmergencyStop={() => void emergencyStopMainline()}
           />
         ) : null}
 
