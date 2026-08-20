@@ -497,6 +497,7 @@ struct SupervisorState {
     telemetry_samples: VecDeque<TelemetrySample>,
     output_enabled: bool,
     device_mode: PointerDeviceMode,
+    perception_adapter_present: bool,
     started_at_unix_ms: u64,
 }
 
@@ -533,6 +534,7 @@ impl Default for SupervisorState {
             telemetry_samples: VecDeque::with_capacity(TELEMETRY_SAMPLE_CAPACITY),
             output_enabled: false,
             device_mode: PointerDeviceMode::Commissioned,
+            perception_adapter_present: false,
             started_at_unix_ms: now_ms(),
         }
     }
@@ -669,6 +671,20 @@ impl SupervisorState {
         self.subsystems.device.last_error = Some(error);
     }
 
+    fn mark_perception_unavailable(&mut self) {
+        for (subsystem, name) in [
+            (&mut self.subsystems.capture, "capture"),
+            (&mut self.subsystems.inference, "inference"),
+        ] {
+            subsystem.state = SubsystemState::Unavailable;
+            subsystem.last_error = Some(RuntimeErrorSummary {
+                code: "perception_adapter_unavailable".to_owned(),
+                message: "no perception adapter is installed for this daemon mode".to_owned(),
+                subsystem: Some(name.to_owned()),
+            });
+        }
+    }
+
     fn begin_start(&mut self) -> Result<Option<RuntimeEpoch>, RuntimeError> {
         match self.pipeline {
             PipelineState::Running | PipelineState::Starting | PipelineState::Standby => {
@@ -697,8 +713,12 @@ impl SupervisorState {
             ..PipelineMetrics::default()
         };
         self.reset_telemetry();
-        self.subsystems.capture.last_error = None;
-        self.subsystems.inference.last_error = None;
+        if self.perception_adapter_present {
+            self.subsystems.capture.last_error = None;
+            self.subsystems.inference.last_error = None;
+        } else {
+            self.mark_perception_unavailable();
+        }
         self.subsystems.control.last_error = None;
         self.subsystems.device.last_error = None;
         self.subsystems.control.state = SubsystemState::Starting;
@@ -716,6 +736,8 @@ impl SupervisorState {
         if perception_running {
             self.subsystems.capture.state = SubsystemState::Running;
             self.subsystems.inference.state = SubsystemState::Running;
+        } else if !self.perception_adapter_present {
+            self.mark_perception_unavailable();
         }
         self.subsystems.control.state = SubsystemState::Running;
         if self.device_mode == PointerDeviceMode::Commissioned {
@@ -731,8 +753,12 @@ impl SupervisorState {
         }
         self.pipeline = PipelineState::Stopping;
         self.pipeline_metrics.status = PipelineStatus::Stopping;
-        self.subsystems.capture.state = SubsystemState::Stopping;
-        self.subsystems.inference.state = SubsystemState::Stopping;
+        if self.perception_adapter_present {
+            self.subsystems.capture.state = SubsystemState::Stopping;
+            self.subsystems.inference.state = SubsystemState::Stopping;
+        } else {
+            self.mark_perception_unavailable();
+        }
         self.subsystems.control.state = SubsystemState::Stopping;
         if self.device_mode == PointerDeviceMode::Commissioned {
             self.subsystems.device.state = SubsystemState::Stopping;
@@ -747,8 +773,12 @@ impl SupervisorState {
         self.pipeline_metrics.status = PipelineStatus::Stopped;
         self.pipeline_started_at_ms = None;
         self.reset_telemetry();
-        self.subsystems.capture.state = SubsystemState::Stopped;
-        self.subsystems.inference.state = SubsystemState::Stopped;
+        if self.perception_adapter_present {
+            self.subsystems.capture.state = SubsystemState::Stopped;
+            self.subsystems.inference.state = SubsystemState::Stopped;
+        } else {
+            self.mark_perception_unavailable();
+        }
         self.subsystems.control.state = SubsystemState::Stopped;
         if self.device_mode == PointerDeviceMode::Commissioned {
             self.subsystems.device.state = SubsystemState::Stopped;
@@ -764,11 +794,15 @@ impl SupervisorState {
         self.pipeline_started_at_ms = None;
         self.pipeline_error = Some(error.clone());
         self.reset_telemetry();
-        if self.subsystems.capture.state != SubsystemState::Stopped {
-            self.subsystems.capture.state = SubsystemState::Failed;
-        }
-        if self.subsystems.inference.state != SubsystemState::Stopped {
-            self.subsystems.inference.state = SubsystemState::Failed;
+        if !self.perception_adapter_present {
+            self.mark_perception_unavailable();
+        } else {
+            if self.subsystems.capture.state != SubsystemState::Stopped {
+                self.subsystems.capture.state = SubsystemState::Failed;
+            }
+            if self.subsystems.inference.state != SubsystemState::Stopped {
+                self.subsystems.inference.state = SubsystemState::Failed;
+            }
         }
         self.subsystems.control.state = SubsystemState::Failed;
         self.subsystems.device.state = SubsystemState::Unavailable;
@@ -887,10 +921,14 @@ impl RuntimeSupervisor {
             output_enabled: dependencies.output_enabled
                 && device_mode == PointerDeviceMode::Commissioned,
             device_mode,
+            perception_adapter_present: dependencies.perception.is_some(),
             ..SupervisorState::default()
         };
         if device_mode == PointerDeviceMode::Uncommissioned {
             state.mark_device_uncommissioned();
+        }
+        if !state.perception_adapter_present {
+            state.mark_perception_unavailable();
         }
         let initial_snapshot = Arc::new(state.snapshot(now_ms()));
         let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
@@ -2625,9 +2663,11 @@ async fn start_state(
     if has_perception {
         state.subsystems.capture.state = SubsystemState::Starting;
         state.subsystems.inference.state = SubsystemState::Starting;
-    } else {
+    } else if state.perception_adapter_present {
         state.subsystems.capture.state = SubsystemState::Stopped;
         state.subsystems.inference.state = SubsystemState::Stopped;
+    } else {
+        state.mark_perception_unavailable();
     }
     publish(snapshot_tx, state, now_ms());
 
@@ -3306,6 +3346,39 @@ mod tests {
         assert_eq!(snapshot.subsystems.capture.state, SubsystemState::Stopped);
         assert_eq!(snapshot.subsystems.inference.state, SubsystemState::Stopped);
         assert_eq!(snapshot.subsystems.control.state, SubsystemState::Running);
+
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn absent_perception_adapter_runs_without_claiming_capture_or_inference() {
+        let (supervisor, runtime) = RuntimeSupervisor::spawn(RuntimeDependencies::recording());
+
+        let initial = runtime.snapshot();
+        assert_eq!(
+            initial.subsystems.capture.state,
+            SubsystemState::Unavailable
+        );
+        assert_eq!(
+            initial.subsystems.inference.state,
+            SubsystemState::Unavailable
+        );
+
+        let running = runtime
+            .start()
+            .await
+            .expect("adapter-free runtime must still own the control lifecycle");
+        assert_eq!(running.pipeline.state, PipelineState::Running);
+        assert_eq!(
+            running.subsystems.capture.state,
+            SubsystemState::Unavailable
+        );
+        assert_eq!(
+            running.subsystems.inference.state,
+            SubsystemState::Unavailable
+        );
+        assert_eq!(running.perception_metrics, PerceptionMetrics::default());
 
         runtime.shutdown_daemon().await.unwrap();
         supervisor.join().await.unwrap();

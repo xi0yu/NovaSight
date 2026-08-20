@@ -28,20 +28,30 @@ const DEFAULT_READY_FILE: &str = "run/novasightd-ready.json";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DaemonMode {
+    #[cfg(all(feature = "deepstream", target_os = "linux"))]
     Hardware,
+    #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+    HostPreview,
 }
 
 impl DaemonMode {
-    const fn label(self) -> &'static str {
+    pub(super) const fn label(self) -> &'static str {
         match self {
+            #[cfg(all(feature = "deepstream", target_os = "linux"))]
             Self::Hardware if cfg!(debug_assertions) => "development-hardware",
+            #[cfg(all(feature = "deepstream", target_os = "linux"))]
             Self::Hardware => "production",
+            #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+            Self::HostPreview => "host-preview",
         }
     }
 
-    const fn hardware_output_enabled(self) -> bool {
+    pub(super) const fn hardware_output_enabled(self) -> bool {
         match self {
+            #[cfg(all(feature = "deepstream", target_os = "linux"))]
             Self::Hardware => true,
+            #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+            Self::HostPreview => false,
         }
     }
 }

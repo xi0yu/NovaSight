@@ -5,10 +5,18 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+use std::sync::Arc;
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+use std::time::Instant;
 
 use clap::Parser;
-#[cfg(feature = "deepstream")]
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+use novasight_core::{Clock, MonotonicNanos, PointerDevice, UncommissionedPointerDevice};
+#[cfg(all(feature = "deepstream", target_os = "linux"))]
 use novasight_runtime::NativeModelJobRunner;
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+use novasight_runtime::compose_pipeline_config;
 use novasight_runtime::{ConfigService, LoadedApplication, RuntimeDependencies};
 use novasight_store::config::AppConfig;
 use novasight_store::model_catalog::SqliteModelCatalog;
@@ -22,10 +30,6 @@ use crate::server;
 use crate::live_perception;
 
 const DEFAULT_CONFIG_PATH: &str = "data/novasight.yaml";
-#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
-const PRODUCTION_RUNTIME_UNAVAILABLE: &str =
-    "PRODUCTION_RUNTIME_UNAVAILABLE: rebuild novasightd on Linux with --features deepstream";
-
 #[derive(Parser, Debug)]
 #[command(about = "NovaSight runtime daemon")]
 struct Args {
@@ -74,16 +78,18 @@ pub async fn entry() -> ExitCode {
     );
     #[cfg(not(feature = "deepstream"))]
     let _ = &parser_library;
+    let mode = daemon_mode();
     if args.check {
+        #[cfg(all(feature = "deepstream", target_os = "linux"))]
         if let Err(error) = loaded.config().require_production_adapters() {
             eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
             return ExitCode::FAILURE;
         }
-        if let Err(error) = server::preflight_license_policy(server::DaemonMode::Hardware) {
+        if let Err(error) = server::preflight_license_policy(mode) {
             eprintln!("{}: {error}", error.code());
             return ExitCode::FAILURE;
         }
-        if let Err(error) = server::preflight_instance_lock(server::DaemonMode::Hardware) {
+        if let Err(error) = server::preflight_instance_lock(mode) {
             eprintln!("{}: {error}", error.code());
             return ExitCode::FAILURE;
         }
@@ -132,11 +138,21 @@ pub async fn entry() -> ExitCode {
         }
         #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
         {
-            eprintln!("{PRODUCTION_RUNTIME_UNAVAILABLE}");
-            return ExitCode::FAILURE;
+            if let Err(error) = compose_pipeline_config(loaded.config(), None) {
+                eprintln!("HOST_PREVIEW_CONFIG_INVALID: {error}");
+                return ExitCode::FAILURE;
+            }
+            println!(
+                "PASS mode={} config={} configured_output_enabled={} daemon_transport=http1-unix license_verifier=ready instance_guard=not_required model_ingress=unavailable perception_adapter=absent pointer_adapter=uncommissioned hardware_output_enabled=false",
+                mode.label(),
+                config_path.display(),
+                loaded.config().control.output_enabled,
+            );
+            return ExitCode::SUCCESS;
         }
     }
 
+    #[cfg(all(feature = "deepstream", target_os = "linux"))]
     if let Err(error) = loaded.config().require_production_adapters() {
         eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
         return ExitCode::FAILURE;
@@ -155,7 +171,7 @@ pub async fn entry() -> ExitCode {
         eprintln!("MODEL_CATALOG_WARMUP_FAILED: {error}");
     }
     let config_service = ConfigService::new(loaded.config_path(), loaded.config().clone());
-    let dependencies = match build_production_dependencies(
+    let dependencies = match build_runtime_dependencies(
         loaded.config(),
         config_service.clone(),
         model_catalog.clone(),
@@ -167,11 +183,11 @@ pub async fn entry() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mode = server::DaemonMode::Hardware;
-
-    #[cfg(feature = "deepstream")]
+    #[cfg(all(feature = "deepstream", target_os = "linux"))]
     let dependencies = dependencies.with_model_jobs(NativeModelJobRunner::new());
-    let dependencies = dependencies.with_output_enabled(loaded.config().control.output_enabled);
+    let dependencies = dependencies.with_output_enabled(
+        mode.hardware_output_enabled() && loaded.config().control.output_enabled,
+    );
     match server::run_daemon(loaded, dependencies, config_service, model_catalog, mode).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -179,6 +195,16 @@ pub async fn entry() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(all(feature = "deepstream", target_os = "linux"))]
+const fn daemon_mode() -> server::DaemonMode {
+    server::DaemonMode::Hardware
+}
+
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+const fn daemon_mode() -> server::DaemonMode {
+    server::DaemonMode::HostPreview
 }
 
 fn resolve_deepstream_parser_library(configured: &Path, bundled: Option<&Path>) -> PathBuf {
@@ -189,7 +215,7 @@ fn resolve_deepstream_parser_library(configured: &Path, bundled: Option<&Path>) 
 }
 
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
-fn build_production_dependencies(
+fn build_runtime_dependencies(
     config: &AppConfig,
     config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
@@ -205,11 +231,39 @@ fn build_production_dependencies(
 }
 
 #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
-fn build_production_dependencies(
-    _config: &AppConfig,
+fn build_runtime_dependencies(
+    config: &AppConfig,
     _config_service: ConfigService,
-    _model_catalog: SqliteModelCatalog,
+    model_catalog: SqliteModelCatalog,
     _parser_library: PathBuf,
 ) -> Result<RuntimeDependencies, String> {
-    Err(PRODUCTION_RUNTIME_UNAVAILABLE.to_owned())
+    let pipeline = compose_pipeline_config(config, None)
+        .map_err(|error| format!("HOST_PREVIEW_RUNTIME_INVALID: {error}"))?;
+    let clock: Arc<dyn Clock> = Arc::new(HostMonotonicClock::default());
+    // Absence at the existing perception seam means no frame producer is
+    // started. The uncommissioned device keeps every output path fail-closed.
+    let device: Arc<dyn PointerDevice> = Arc::new(UncommissionedPointerDevice);
+    Ok(RuntimeDependencies::new(clock, device, pipeline).with_model_catalog(model_catalog))
+}
+
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+#[derive(Debug)]
+struct HostMonotonicClock {
+    origin: Instant,
+}
+
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+impl Default for HostMonotonicClock {
+    fn default() -> Self {
+        Self {
+            origin: Instant::now(),
+        }
+    }
+}
+
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+impl Clock for HostMonotonicClock {
+    fn now(&self) -> MonotonicNanos {
+        MonotonicNanos(self.origin.elapsed().as_nanos().min(u64::MAX as u128) as u64)
+    }
 }

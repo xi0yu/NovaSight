@@ -787,7 +787,7 @@ impl RuntimeStatusState {
             .pipeline
             .last_error
             .clone()
-            .or_else(|| first_subsystem_error(snapshot));
+            .or_else(|| first_subsystem_error(snapshot, hardware_output_enabled));
         let mode = if config.is_some_and(|config| config.replay.enabled) {
             "replay".to_owned()
         } else {
@@ -795,8 +795,10 @@ impl RuntimeStatusState {
                 .map(|capture| serialized_label(&capture.backend))
                 .unwrap_or_else(|| "unconfigured".to_owned())
         };
-        let waiting_model =
-            running && inference_config.is_some() && snapshot.model.active.is_none();
+        let waiting_model = running
+            && inference_config.is_some()
+            && snapshot.model.active.is_none()
+            && snapshot.subsystems.inference.state != SubsystemState::Unavailable;
         let semantic_phase = match snapshot.pipeline.state {
             PipelineState::Running if waiting_model => "waiting_model",
             PipelineState::Running => "running",
@@ -814,6 +816,8 @@ impl RuntimeStatusState {
             "starting"
         } else if snapshot.subsystems.inference.state == SubsystemState::Failed {
             "faulted"
+        } else if snapshot.subsystems.inference.state == SubsystemState::Unavailable {
+            "unavailable"
         } else if inference_config.is_some() {
             "stopped"
         } else {
@@ -1468,7 +1472,10 @@ fn subsystem_can_run(subsystem: &SubsystemSnapshot) -> bool {
     )
 }
 
-fn first_subsystem_error(snapshot: &RuntimeSnapshot) -> Option<RuntimeErrorSummary> {
+fn first_subsystem_error(
+    snapshot: &RuntimeSnapshot,
+    hardware_output_enabled: bool,
+) -> Option<RuntimeErrorSummary> {
     [
         &snapshot.subsystems.capture,
         &snapshot.subsystems.inference,
@@ -1483,7 +1490,10 @@ fn first_subsystem_error(snapshot: &RuntimeSnapshot) -> Option<RuntimeErrorSumma
         )
         .then(|| subsystem.last_error.clone())
         .flatten()
-        .filter(|error| error.code != "device_uncommissioned")
+        .filter(|error| {
+            error.code != "device_uncommissioned"
+                && !(error.code == "perception_adapter_unavailable" && !hardware_output_enabled)
+        })
     })
 }
 
@@ -1539,6 +1549,51 @@ mod tests {
         assert_eq!(kmnet["retryable"], true);
         assert_eq!(kmnet["last_error"], "kmNet helper timed out");
         assert!(value["fatal_error"].is_null());
+    }
+
+    #[test]
+    fn absent_perception_adapter_is_an_explicit_non_fatal_runtime_mode() {
+        let mut snapshot = RuntimeSnapshot::default();
+        snapshot.pipeline.state = PipelineState::Running;
+        snapshot.subsystems.capture.state = SubsystemState::Unavailable;
+        snapshot.subsystems.inference.state = SubsystemState::Unavailable;
+        snapshot.subsystems.inference.last_error = Some(RuntimeErrorSummary::new(
+            "perception_adapter_unavailable",
+            "no perception adapter is installed for this daemon mode",
+        ));
+        let config = AppConfig {
+            inference: Some(Default::default()),
+            ..AppConfig::default()
+        };
+
+        let value = serde_json::to_value(RuntimeStatusState::new(
+            &snapshot,
+            Some(&config),
+            Some(0),
+            false,
+            None,
+            None,
+        ))
+        .unwrap();
+
+        assert_eq!(value["semantic"]["phase"], "running");
+        assert_eq!(value["semantic"]["perception_phase"], "unavailable");
+        assert_eq!(value["inference"]["available"], false);
+        assert!(value["fatal_error"].is_null());
+
+        let hardware_value = serde_json::to_value(RuntimeStatusState::new(
+            &snapshot,
+            Some(&config),
+            Some(0),
+            true,
+            None,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(
+            hardware_value["fatal_error"]["code"],
+            "perception_adapter_unavailable"
+        );
     }
 
     #[test]
