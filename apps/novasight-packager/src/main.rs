@@ -13,7 +13,7 @@ use serde::Deserialize;
 const DEFAULT_OUTPUT: &str = "out/package/NovaSight";
 const READY_FILE: &str = "run/ready.json";
 const CONTROL_SOCKET: &str = "run/novasightd.sock";
-const RUST_PACKAGES: [&str; 3] = ["novasight", "novasightctl", "novasightd"];
+const RUST_PACKAGES: [&str; 4] = ["novasight", "novasight-web", "novasightctl", "novasightd"];
 
 #[derive(Parser, Debug)]
 #[command(
@@ -191,6 +191,10 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
         &layout.bin.join(executable_name("novasightd")),
     )?;
     copy_executable(
+        &artifact_dir.join(executable_name("novasight-web")),
+        &layout.bin.join(executable_name("novasight-web")),
+    )?;
+    copy_executable(
         &artifact_dir.join(executable_name("novasightctl")),
         &layout.bin.join(executable_name("novasightctl")),
     )?;
@@ -212,7 +216,7 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
     )?;
     fs::write(
         layout.root.join("README-USER.txt"),
-        "Run ./NovaSight from this directory. NovaSight listens on 0.0.0.0:7351; use the printed LAN URL from another computer on the same network. Press Ctrl+C in the launcher terminal to stop NovaSight. Open USER_MANUAL.md for the user guide.\n",
+        "Run ./NovaSight from this directory. NovaSight listens on 0.0.0.0:7351; use the printed authenticated LAN URL from another computer on the same network. The browser exchanges its one-time URL fragment for an HttpOnly operator session. Press Ctrl+C in the launcher terminal to stop NovaSight. Open USER_MANUAL.md for the user guide.\n",
     )
     .with_context(|| format!("write {}", layout.root.join("README-USER.txt").display()))?;
     Ok(())
@@ -334,6 +338,7 @@ fn executable_name(name: &'static str) -> &'static str {
         match name {
             "novasight" => "novasight.exe",
             "novasightd" => "novasightd.exe",
+            "novasight-web" => "novasight-web.exe",
             "novasightctl" => "novasightctl.exe",
             _ => name,
         }
@@ -441,6 +446,7 @@ fn validate_package(output: &Path) -> Result<()> {
     for path in [
         output.join("NovaSight"),
         output.join("bin").join(executable_name("novasightd")),
+        output.join("bin").join(executable_name("novasight-web")),
         output.join("bin").join(executable_name("novasightctl")),
         output.join("web/index.html"),
         output.join("data/novasight.yaml"),

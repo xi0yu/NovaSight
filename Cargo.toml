@@ -2,6 +2,7 @@
 members = [
   "apps/novasight",
   "apps/novasight-packager",
+  "apps/novasight-web",
   "apps/novasightd",
   "apps/novasightctl",
   "crates/novasight-api",

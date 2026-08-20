@@ -37,7 +37,9 @@ NovaSight/
 - `data/novasight.yaml`：本机配置文件，通常通过界面修改。
 - `data/models/`：放置本机模型文件。
 - `logs/novasightd.log`：运行日志，排查问题时查看。
-- `run/ready.json`：启动成功后记录 Studio 地址。
+- `logs/novasight-web.log`：网页认证与 API 网关日志。
+- `run/novasightd-ready.json`：daemon Unix IPC 就绪信息。
+- `run/ready.json`：Web/API 启动成功后记录 Studio 地址。
 
 删除整个 `NovaSight/` 目录，就会同时删除 NovaSight 自己创建的数据、日志和运行状态文件。
 

@@ -3,9 +3,11 @@ import { NovaIcon, type NovaIconName } from "../../components/visual";
 import "./studio-navigation.css";
 
 export type ConsolePage =
+  | "overview"
   | "capture"
   | "infer"
   | "control"
+  | "models"
   | "params"
   | "control-test"
   | "latency";
@@ -29,12 +31,15 @@ export type ConsolePageMetadata = {
   description: string;
 };
 
+// M3b flips this only after the opt-in SHA passes the Jetson safe-start gate.
 export const DEFAULT_CONSOLE_PAGE: ConsolePage = "capture";
 
 export const CONSOLE_PAGES = new Set<ConsolePage>([
+  "overview",
   "capture",
   "infer",
   "control",
+  "models",
   "params",
   "control-test",
   "latency"
@@ -45,6 +50,7 @@ const navigationGroups: NavigationGroup[] = [
     id: "runtime",
     label: "运行工作台",
     items: [
+      { id: "overview", label: "运行总览", detail: "当前结论与恢复入口", icon: "dashboard" },
       { id: "capture", label: "采集", detail: "输入与 ROI", icon: "capture" },
       { id: "infer", label: "模型推理", detail: "模型与输出", icon: "inference" },
       { id: "control", label: "控制", detail: "目标与执行", icon: "control" }
@@ -54,6 +60,7 @@ const navigationGroups: NavigationGroup[] = [
     id: "configuration",
     label: "配置管理",
     items: [
+      { id: "models", label: "模型管理", detail: "选择、验证与切换", icon: "models" },
       { id: "params", label: "参数设置", detail: "触发到输出", icon: "settings" }
     ]
   },
@@ -68,6 +75,11 @@ const navigationGroups: NavigationGroup[] = [
 ];
 
 export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
+  overview: {
+    group: "运行工作台",
+    title: "运行总览",
+    description: "先确认生命周期、感知数据和硬件输出，再进入对应页面处理问题。"
+  },
   capture: {
     group: "运行工作台",
     title: "采集",
@@ -82,6 +94,11 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
     group: "运行工作台",
     title: "控制",
     description: "观察选择主要目标、目标速度预测、连续非线性控制、输出限幅和命令输出。"
+  },
+  models: {
+    group: "配置管理",
+    title: "模型管理",
+    description: "浏览设备上的模型产物，经后端验证后切换，并以 active artifact 对账结果。"
   },
   params: {
     group: "配置管理",

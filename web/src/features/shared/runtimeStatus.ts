@@ -33,53 +33,10 @@ export type RuntimeMainlineStatus = {
   readinessDetail: string;
 };
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function readString(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-function readErrorMessage(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  return readString(asRecord(value).message);
-}
-
-function readBoolean(value: unknown): boolean {
-  return typeof value === "boolean" ? value : false;
-}
-
-function readOptionalNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function readOutputTrace(value: unknown): RuntimeOutputTraceState | null {
-  const trace = asRecord(value);
-  const code = readString(trace.code);
-  const state = readString(trace.state);
-  const detail = readString(trace.detail);
-  const nextAction = readString(trace.next_action);
-  if (!code && !state && !detail && !nextAction) {
-    return null;
-  }
-  return {
-    code: code || "unknown",
-    state: state || "waiting",
-    detail,
-    next_action: nextAction
-  };
-}
-
-function firstNumber(...values: unknown[]): number | null {
+function firstNumber(...values: Array<number | null | undefined>): number | null {
   for (const value of values) {
-    const number = readOptionalNumber(value);
-    if (number !== null) {
-      return number;
+    if (value !== null && value !== undefined) {
+      return value;
     }
   }
   return null;
@@ -94,47 +51,43 @@ function counterLabel(value: number | null): string {
 }
 
 export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeMainlineStatus {
-  const pipeline = asRecord(runtime?.pipeline);
-  const deepstream = asRecord(pipeline.deepstream);
-  const inference = asRecord(runtime?.inference);
+  const pipeline = runtime?.pipeline;
+  const deepstream = pipeline?.deepstream;
+  const inference = runtime?.inference;
   const statistics = runtime?.statistics;
-  const fatal = asRecord(runtime?.fatal_error);
-  const terminalError = readBoolean(inference.terminal_error) || readBoolean(deepstream.terminal_error);
+  const terminalError = inference?.terminal_error === true || deepstream?.terminal_error === true;
   const pipelineLastError =
-    readErrorMessage(pipeline.last_error) || (terminalError ? readErrorMessage(deepstream.last_error) : "");
-  const fatalMessage = readString(fatal.message);
+    pipeline?.last_error?.message ?? (terminalError ? deepstream?.last_error ?? "" : "");
+  const fatalMessage = runtime?.fatal_error?.message ?? "";
   const failureMessage =
     pipelineLastError ||
     fatalMessage ||
-    (terminalError ? readString(inference.detail) || readString(inference.reason) : "");
+    (terminalError ? inference?.detail || inference?.reason || "" : "");
   const nvinferInputFrames = firstNumber(
     statistics?.nvinfer_input_counter,
-    deepstream.input_frames,
-    inference.input_frames
+    deepstream?.input_frames,
+    inference?.input_frames
   );
   const metadataExtractions = firstNumber(
-    deepstream.metadata_extractions,
-    inference.metadata_extractions
+    deepstream?.metadata_extractions,
+    inference?.metadata_extractions
   );
   const publishedBatches = firstNumber(
     statistics?.detection_batch_counter,
-    deepstream.published_batches,
-    inference.published_batches
+    deepstream?.published_batches,
+    inference?.published_batches
   );
   const consumedBatches = firstNumber(
-    statistics?.detection_batch_consumed_counter,
-    pipeline.consumed_detection_batches
+    statistics?.detection_batch_consumed_counter
   );
   const targetingBatches = firstNumber(
     statistics?.targeting_batch_counter
   );
-  const detectionBatchFps = readOptionalNumber(statistics?.detection_batch_fps);
-  const nvinferInputFps = readOptionalNumber(statistics?.nvinfer_input_fps);
-  const telemetryWindowMs = readOptionalNumber(statistics?.telemetry_window_ms);
-  const detectionDataAgeMs = readOptionalNumber(statistics?.detection_data_age_ms);
-  const detectionFreshnessThresholdMs = readOptionalNumber(
-    statistics?.detection_freshness_threshold_ms
-  );
+  const detectionBatchFps = statistics?.detection_batch_fps ?? null;
+  const nvinferInputFps = statistics?.nvinfer_input_fps ?? null;
+  const telemetryWindowMs = statistics?.telemetry_window_ms ?? null;
+  const detectionDataAgeMs = statistics?.detection_data_age_ms ?? null;
+  const detectionFreshnessThresholdMs = statistics?.detection_freshness_threshold_ms ?? null;
   const hasInferenceSignal =
     positive(nvinferInputFrames) ||
     positive(metadataExtractions) ||
@@ -153,25 +106,24 @@ export function getRuntimeMainlineStatus(runtime: RuntimeState | null): RuntimeM
     `控制读取=${counterLabel(consumedBatches)}`,
     `目标选择=${counterLabel(targetingBatches)}`
   ].join(" · ");
-  const running = runtime?.running === true || pipeline.running === true || deepstream.running === true;
+  const running = runtime?.running === true || pipeline?.running === true || deepstream?.running === true;
   const failed =
     fatalMessage !== ""
       ? true
       : terminalError ||
         pipelineLastError !== "";
-  const pipelineState = readString(pipeline.state);
+  const pipelineState = pipeline?.state ?? "";
   const normalizedFailure = failureMessage.toLowerCase();
-  const executor = asRecord(runtime?.executor);
-  const executors = asRecord(executor.executors);
-  const selectedExecutor = readString(executor.selected);
-  const selectedDevice = asRecord(executors[selectedExecutor] ?? executors.kmnet);
-  const visionControl = asRecord(asRecord(runtime?.vision).control);
-  const outputTrace = readOutputTrace(asRecord(runtime?.vision).output_trace);
+  const selectedExecutor = runtime?.executor.selected ?? "";
+  const selectedDevice = runtime?.executor.executors[selectedExecutor]
+    ?? runtime?.executor.executors.kmnet;
+  const visionControl = runtime?.vision.control;
+  const outputTrace = runtime?.vision.output_trace ?? null;
   const controlDeviceDisconnected =
     running &&
     selectedExecutor !== "replay" &&
-    readBoolean(visionControl.output_enabled) &&
-    !readBoolean(selectedDevice.runtime_connected);
+    visionControl?.output_enabled === true &&
+    selectedDevice?.runtime_connected !== true;
 
   let readinessCode: RuntimeMainlineStatus["readinessCode"] = "stopped";
   let readinessLabel = "未启动";

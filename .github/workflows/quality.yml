@@ -25,14 +25,17 @@ jobs:
       - name: Show pinned toolchain
         run: rustc --version && cargo --version
 
+      - name: Verify Cargo lockfile matches manifests
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Lint workspace
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Run workspace tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Configure latest-only native contracts
         run: cmake -S native/latest-frame-exchange -B out/ci/latest-frame -DCMAKE_BUILD_TYPE=Release
@@ -86,6 +89,9 @@ jobs:
       - name: Check Studio types
         run: pnpm --dir web typecheck
 
+      - name: Run Studio unit and contract tests
+        run: pnpm --dir web test:unit:ci
+
       - name: Audit visual-system contracts
         run: pnpm --dir web visual:audit
 
@@ -94,6 +100,46 @@ jobs:
 
       - name: Audit production dependencies
         run: pnpm --dir web audit --prod
+
+  studio-browser:
+    name: Studio browser behavior
+    needs: studio
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install locked dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Install Chromium runtime
+        run: pnpm --dir web exec playwright install --with-deps chromium
+
+      - name: Run mocked browser behavior suite
+        run: pnpm --dir web test:e2e
+
+      - name: Upload browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: studio-browser-evidence
+          path: |
+            out/playwright-report
+            out/playwright-results
+          if-no-files-found: ignore
+          retention-days: 14
 
   rust-security:
     name: RustSec advisory audit
@@ -110,10 +156,11 @@ jobs:
         # direct and JWT license paths only perform public-key verification.
         run: cargo audit --file Cargo.lock --ignore RUSTSEC-2023-0071
 
-  jetson-production:
-    name: Jetson production preflight
+  jetson-build:
+    name: Jetson release build and safe startup
     if: vars.NOVASIGHT_JETSON_CI_ENABLED == 'true'
     runs-on: [self-hosted, Linux, ARM64, jetson]
+    timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -121,9 +168,48 @@ jobs:
       - name: Show Jetson toolchain
         run: rustc --version && cargo --version && uname -a
 
-      - name: Build release package
-        run: cargo run -p novasight-packager -- --profile release
+      - name: Generate job-local Web access identity
+        run: echo "NOVASIGHT_WEB_ACCESS_CODE=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
 
-      - name: Validate production composition
-        working-directory: out/package/NovaSight
-        run: bin/novasightd --check
+      - name: Build and verify fail-closed package startup
+        run: scripts/ci/jetson-production-acceptance.sh build
+
+      - name: Upload Jetson build receipt
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: jetson-build-receipt
+          path: out/jetson-acceptance/build
+          if-no-files-found: error
+          retention-days: 30
+
+  jetson-production:
+    name: Jetson real camera and DeepStream receipt
+    needs: jetson-build
+    if: vars.NOVASIGHT_JETSON_PRODUCTION_ACCEPTANCE_ENABLED == 'true'
+    runs-on: [self-hosted, Linux, ARM64, jetson]
+    timeout-minutes: 120
+    environment: jetson-production
+    env:
+      NOVASIGHT_JETSON_MODEL_FIXTURE_DIR: ${{ vars.NOVASIGHT_JETSON_MODEL_FIXTURE_DIR }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Show Jetson production identity
+        run: rustc --version && cargo --version && uname -a && command -v tegrastats
+
+      - name: Generate job-local Web access identity
+        run: echo "NOVASIGHT_WEB_ACCESS_CODE=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Produce hardware production receipt
+        run: scripts/ci/jetson-production-acceptance.sh production
+
+      - name: Upload Jetson production receipt
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: jetson-production-receipt
+          path: out/jetson-acceptance/production
+          if-no-files-found: error
+          retention-days: 90

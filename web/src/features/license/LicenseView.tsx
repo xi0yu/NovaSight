@@ -1,7 +1,7 @@
 import { type LicenseStatus } from "../../api";
-import { NovaIcon, ThemeToggle } from "../../components/visual";
+import { NovaIcon } from "../../components/visual";
 import { Panel } from "../../components/ui";
-import { LicensePanel } from "./LicensePanel";
+import { LicenseActivationForm, LicensePanel } from "./LicensePanel";
 import { type LicenseConnectionIssue } from "./connectionIssue";
 
 type LicenseProps = {
@@ -9,8 +9,6 @@ type LicenseProps = {
   loading?: boolean;
   issue?: LicenseConnectionIssue | null;
   onRefresh?: () => void;
-  onTemporaryRecovery?: () => void;
-  temporaryRecoveryLoading?: boolean;
   onLicenseChange: (license: LicenseStatus) => void;
 };
 
@@ -19,10 +17,8 @@ export function LicenseGate({
   loading,
   issue,
   onRefresh,
-  onTemporaryRecovery,
-  temporaryRecoveryLoading,
   onLicenseChange
-}: Required<Pick<LicenseProps, "loading" | "onRefresh" | "onTemporaryRecovery" | "temporaryRecoveryLoading">> &
+}: Required<Pick<LicenseProps, "loading" | "onRefresh">> &
   Pick<LicenseProps, "license" | "issue" | "onLicenseChange">) {
   const serviceUnavailable = !loading && license === null && issue !== null;
   const gateSubtitle = loading
@@ -31,9 +27,7 @@ export function LicenseGate({
       ? "连接本机服务后进入 Jetson 实时视觉工作台"
       : license?.valid
         ? "授权已激活，进入 Jetson 实时视觉工作台"
-        : license?.temporary_access_supported
-          ? "激活正式授权或申请 Debug 临时权限后进入工作台"
-          : "激活正式授权后进入 Jetson 实时视觉工作台";
+        : "输入临时授权码或正式许可证后进入工作台";
 
   return (
     <main className="app-shell license-shell">
@@ -46,7 +40,6 @@ export function LicenseGate({
             <h1>NovaSight</h1>
             <p>{gateSubtitle}</p>
           </div>
-          <ThemeToggle />
         </div>
         {serviceUnavailable ? (
           <section className="service-connection-panel" role="alert" aria-live="polite">
@@ -62,16 +55,6 @@ export function LicenseGate({
               </div>
               <div className="service-connection-actions">
                 <button className="button" type="button" onClick={onRefresh}>重新连接</button>
-                {issue?.kind === "service-error" ? (
-                  <button
-                    className="button compact-button"
-                    type="button"
-                    disabled={temporaryRecoveryLoading}
-                    onClick={onTemporaryRecovery}
-                  >
-                    {temporaryRecoveryLoading ? "正在尝试…" : "尝试 Debug 临时权限"}
-                  </button>
-                ) : null}
               </div>
             </div>
           </section>
@@ -86,12 +69,11 @@ export function LicenseGate({
             </div>
           </section>
         ) : (
-          <>
-            <LicensePanel license={license} onLicenseChange={onLicenseChange} />
-            <button className="button compact-button" type="button" onClick={onRefresh}>
-              重新校验
-            </button>
-          </>
+          <LicenseActivationForm
+            gate
+            temporarySupported={license?.temporary_access_supported === true}
+            onLicenseChange={onLicenseChange}
+          />
         )}
       </section>
     </main>

@@ -15,6 +15,7 @@ import {
   type ModelCatalogModel,
   type ModelCatalogResponse,
   type ModelRecommendation,
+  type ModelPublishResponse,
   type ParserPresetId
 } from "../../api";
 import type { ModelSwitchDialogStatus } from "../models/ModelSwitchDialog";
@@ -24,6 +25,16 @@ import type { ActionConfirmationRequest } from "./ActionConfirmationDialog";
 import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
 
 const MODEL_SWITCH_STAGE_COUNT = 5;
+
+export function isActiveModelNoOp(
+  response: ModelPublishResponse,
+  requestedArtifactId: number,
+): boolean {
+  return response.report.applied === false
+    && response.report.rolled_back === false
+    && response.report.artifact_id === requestedArtifactId
+    && response.deployment.artifact_id === requestedArtifactId;
+}
 
 type UseModelSwitchWorkflowInput = {
   applyModelCatalogResult: (result: ModelCatalogResponse) => void;
@@ -196,17 +207,19 @@ export function useModelSwitchWorkflow({
         artifactId,
         parserPreset
       );
-      if (response.report && !response.report.applied) {
+      const activeNoOp = isActiveModelNoOp(response, artifactId);
+      if (!response.report.applied && !activeNoOp) {
         throw new Error(response.report.message);
       }
       const parserLabel = parserOutputFamilyLabel(response.parser_contract?.output_family);
-      const switchSummary = response.report?.message ??
-        "Engine 输入输出验证完成，运行配置已自动生成并切换。";
-      const manifestSummary = response.preparation?.manifest_action === "generated"
+      const switchSummary = activeNoOp
+        ? "所选模型已是当前模型，运行态保持不变"
+        : response.report.message;
+      const manifestSummary = response.preparation.manifest_action === "generated"
         ? "已自动生成运行配置"
-        : response.preparation?.manifest_action === "reused"
+        : response.preparation.manifest_action === "reused"
           ? "已复用匹配的运行配置"
-          : "运行配置已准备";
+          : "运行配置保持不变";
       setMessage(
         parserLabel
           ? `${switchSummary} · 已验证 ${parserLabel} · NovaSight 内置解析器`

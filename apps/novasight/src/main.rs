@@ -1,13 +1,15 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::Parser;
 use novasight_config::{YamlConfigRepository, studio_endpoint_contract};
+use rand::{RngCore, rngs::OsRng};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Number, Value};
 use tokio::process::{Child, Command};
@@ -23,33 +25,32 @@ const LICENSE_PATH: &str = "data/license.json";
 const LOG_DIR: &str = "logs";
 const RUN_DIR: &str = "run";
 const CONTROL_SOCKET: &str = "run/novasightd.sock";
-const READY_FILE: &str = "run/ready.json";
-const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(20);
-const DAEMON_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
-const DAEMON_LOG_TAIL_BYTES: u64 = 3 * 1024;
-
-#[derive(Parser, Debug)]
-#[command(name = "novasight", about = "NovaSight portable launcher")]
-struct Args {
-    /// Explicitly run the internal Rust API and browser-facing Vite UI together.
-    /// Source workspaces use this mode by default.
-    #[arg(long)]
-    frontend_dev: bool,
-}
+const WEB_READY_FILE: &str = "run/ready.json";
+const DAEMON_READY_FILE: &str = "run/novasightd-ready.json";
+const WEB_ACCESS_FILE: &str = "run/web-access-code";
+const TEMPORARY_LICENSE_ACCESS_FILE: &str = "run/temporary-license-code";
+const WEB_ACCESS_CODE_ENV: &str = "NOVASIGHT_WEB_ACCESS_CODE";
+const TEMPORARY_LICENSE_CODE_ENV: &str = "NOVASIGHT_TEMPORARY_LICENSE_CODE";
+const PROCESS_READY_TIMEOUT: Duration = Duration::from_secs(20);
+const PROCESS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+const LOG_TAIL_BYTES: u64 = 3 * 1024;
 
 #[derive(Clone, Debug)]
 struct PortableLayout {
     mode: LayoutMode,
     root: PathBuf,
     daemon: PathBuf,
+    web: PathBuf,
     control: PathBuf,
     config: PathBuf,
     data_dir: PathBuf,
     model_dir: PathBuf,
     log_dir: PathBuf,
     run_dir: PathBuf,
-    ready_file: PathBuf,
+    web_ready_file: PathBuf,
+    daemon_ready_file: PathBuf,
     daemon_log: PathBuf,
+    web_log: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,10 +59,26 @@ enum LayoutMode {
     Developer,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct ReadyDocument {
     address: String,
     url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DaemonReadyDocument {
+    control_socket: String,
+    transport: String,
+}
+
+#[derive(Clone, Debug)]
+struct WebAccess {
+    code: String,
+}
+
+#[derive(Clone, Debug)]
+struct TemporaryLicenseAccess {
+    code: String,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -76,35 +93,57 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<()> {
-    let args = Args::parse();
+    ensure_zero_arguments()?;
     let layout = PortableLayout::discover()?;
     prepare_layout(&layout)?;
-    if layout.mode == LayoutMode::Developer || args.frontend_dev {
+    if layout.mode == LayoutMode::Developer {
         return frontend_dev::run(&layout).await;
     }
     std::env::set_current_dir(&layout.root)
         .with_context(|| format!("set bundle root {}", layout.root.display()))?;
-
-    if let Some(ready) = read_ready_file(&layout.ready_file).ok()
+    if let Ok(ready) = read_ready_file(&layout.web_ready_file)
         && health_check(&ready.address)
     {
-        open_studio(&ready);
-        supervise_existing_daemon(&layout, &ready).await?;
-        return Ok(());
+        bail!(
+            "NovaSight Web/API is already running at {}; stop the existing launcher before starting another instance",
+            ready.url
+        );
     }
 
-    let _ = fs::remove_file(&layout.ready_file);
+    remove_stale_ready_files(&layout)?;
     ensure_portable_config(&layout)?;
-    let mut child = spawn_daemon(&layout)?;
-    let ready = wait_for_ready(
-        &layout.ready_file,
-        &layout.daemon_log,
-        &mut child,
-        DAEMON_READY_TIMEOUT,
-    )
-    .await?;
-    open_studio(&ready);
-    supervise_spawned_daemon(&layout, child).await?;
+    let access = create_web_access(&layout)?;
+    let temporary_license = create_temporary_license_access(&layout)?;
+    let mut daemon = spawn_daemon(&layout, temporary_license.as_ref())?;
+    if let Err(error) = wait_for_daemon_ready(&layout, &mut daemon, PROCESS_READY_TIMEOUT).await {
+        let _ = stop_child("novasightd", &mut daemon).await;
+        return Err(error);
+    }
+    let mut web = match spawn_web(&layout, &access, false) {
+        Ok(web) => web,
+        Err(error) => {
+            let _ = stop_owned_daemon(&layout, &mut daemon).await;
+            return Err(error);
+        }
+    };
+    let ready =
+        match wait_for_web_ready(&layout, &mut web, &mut daemon, PROCESS_READY_TIMEOUT).await {
+            Ok(ready) => ready,
+            Err(error) => {
+                let _ = stop_child("novasight-web", &mut web).await;
+                let _ = stop_owned_daemon(&layout, &mut daemon).await;
+                return Err(error);
+            }
+        };
+    open_studio(&ready, &access);
+    print_temporary_license_access(&layout, temporary_license.as_ref());
+    supervise_stack(&layout, daemon, web).await
+}
+
+fn ensure_zero_arguments() -> Result<()> {
+    if std::env::args_os().nth(1).is_some() {
+        bail!("NovaSight does not accept startup arguments; run NovaSight directly");
+    }
     Ok(())
 }
 
@@ -117,37 +156,42 @@ impl PortableLayout {
         if let Some(workspace) = developer_workspace_root(executable_dir) {
             return Ok(Self::new(
                 LayoutMode::Developer,
-                workspace.clone(),
+                workspace,
                 executable_dir.join(executable_name("novasightd")),
+                executable_dir.join(executable_name("novasight-web")),
                 executable_dir.join(executable_name("novasightctl")),
             ));
         }
         let root = infer_bundle_root(executable_dir);
         let daemon = resolve_binary(&root, executable_dir, "novasightd")?;
+        let web = resolve_binary(&root, executable_dir, "novasight-web")?;
         let control = resolve_binary(&root, executable_dir, "novasightctl")?;
-        Ok(Self::new(LayoutMode::Package, root, daemon, control))
+        Ok(Self::new(LayoutMode::Package, root, daemon, web, control))
     }
 
-    fn new(mode: LayoutMode, root: PathBuf, daemon: PathBuf, control: PathBuf) -> Self {
-        let config = root.join(CONFIG_PATH);
-        let data_dir = root.join(DATA_DIR);
-        let model_dir = root.join(MODEL_DIR);
+    fn new(
+        mode: LayoutMode,
+        root: PathBuf,
+        daemon: PathBuf,
+        web: PathBuf,
+        control: PathBuf,
+    ) -> Self {
         let log_dir = root.join(LOG_DIR);
-        let run_dir = root.join(RUN_DIR);
-        let ready_file = root.join(READY_FILE);
-        let daemon_log = log_dir.join("novasightd.log");
         Self {
             mode,
-            root,
             daemon,
+            web,
             control,
-            config,
-            data_dir,
-            model_dir,
+            config: root.join(CONFIG_PATH),
+            data_dir: root.join(DATA_DIR),
+            model_dir: root.join(MODEL_DIR),
+            run_dir: root.join(RUN_DIR),
+            web_ready_file: root.join(WEB_READY_FILE),
+            daemon_ready_file: root.join(DAEMON_READY_FILE),
+            daemon_log: log_dir.join("novasightd.log"),
+            web_log: log_dir.join("novasight-web.log"),
             log_dir,
-            run_dir,
-            ready_file,
-            daemon_log,
+            root,
         }
     }
 }
@@ -158,9 +202,8 @@ fn developer_workspace_root(executable_dir: &Path) -> Option<PathBuf> {
     if !looks_like_workspace_root(&workspace) {
         return None;
     }
-    let cargo_artifacts = workspace.join("out/cargo");
     executable_dir
-        .starts_with(cargo_artifacts)
+        .starts_with(workspace.join("out/cargo"))
         .then_some(workspace)
 }
 
@@ -180,21 +223,21 @@ fn infer_bundle_root(executable_dir: &Path) -> PathBuf {
 
 fn resolve_binary(root: &Path, executable_dir: &Path, binary: &'static str) -> Result<PathBuf> {
     let name = executable_name(binary);
-    let candidates = [
+    [
         root.join("bin").join(name),
         root.join(name),
         executable_dir.join(name),
-    ];
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .ok_or_else(|| anyhow!("{binary} was not found below {}", root.display()))
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+    .ok_or_else(|| anyhow!("{binary} was not found below {}", root.display()))
 }
 
 fn executable_name(name: &'static str) -> &'static str {
     if cfg!(windows) {
         match name {
             "novasightd" => "novasightd.exe",
+            "novasight-web" => "novasight-web.exe",
             "novasightctl" => "novasightctl.exe",
             _ => name,
         }
@@ -210,17 +253,24 @@ fn prepare_layout(layout: &PortableLayout) -> Result<()> {
         .with_context(|| format!("create {}", layout.model_dir.display()))?;
     fs::create_dir_all(&layout.log_dir)
         .with_context(|| format!("create {}", layout.log_dir.display()))?;
-    ensure_private_directory(&layout.run_dir)?;
-    Ok(())
+    ensure_private_directory(&layout.run_dir)
 }
 
 fn ensure_private_directory(path: &Path) -> Result<()> {
     fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("set private permissions on {}", path.display()))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("set private permissions on {}", path.display()))?;
+    Ok(())
+}
+
+fn remove_stale_ready_files(layout: &PortableLayout) -> Result<()> {
+    for path in [&layout.web_ready_file, &layout.daemon_ready_file] {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).with_context(|| format!("remove {}", path.display())),
+        }
     }
     Ok(())
 }
@@ -230,24 +280,23 @@ fn ensure_portable_config(layout: &PortableLayout) -> Result<()> {
         YamlConfigRepository::initialize_default(&layout.config)
             .with_context(|| format!("initialize {}", layout.config.display()))?;
     }
-
     let mut document: Value = serde_yaml::from_reader(
         File::open(&layout.config).with_context(|| format!("open {}", layout.config.display()))?,
     )
     .with_context(|| format!("parse {}", layout.config.display()))?;
-    let studio_endpoint = &studio_endpoint_contract().studio;
+    let studio = &studio_endpoint_contract().studio;
     let mut changed = false;
     changed |= set_mapping_field(
         &mut document,
         "server",
         "host",
-        Value::String(studio_endpoint.host.clone()),
+        Value::String(studio.host.clone()),
     )?;
     changed |= set_mapping_field(
         &mut document,
         "server",
         "port",
-        Value::Number(Number::from(studio_endpoint.port)),
+        Value::Number(Number::from(studio.port)),
     )?;
     changed |= set_mapping_field(
         &mut document,
@@ -255,35 +304,18 @@ fn ensure_portable_config(layout: &PortableLayout) -> Result<()> {
         "control_socket",
         Value::String(CONTROL_SOCKET.to_owned()),
     )?;
-    changed |= set_mapping_field(
-        &mut document,
-        "paths",
-        "data_dir",
-        Value::String(DATA_DIR.to_owned()),
-    )?;
-    changed |= set_mapping_field(
-        &mut document,
-        "paths",
-        "model_dir",
-        Value::String(MODEL_DIR.to_owned()),
-    )?;
-    changed |= set_mapping_field(
-        &mut document,
-        "paths",
-        "database",
-        Value::String(DATABASE_PATH.to_owned()),
-    )?;
-    changed |= set_mapping_field(
-        &mut document,
-        "paths",
-        "license",
-        Value::String(LICENSE_PATH.to_owned()),
-    )?;
+    for (section, key, value) in [
+        ("paths", "data_dir", DATA_DIR),
+        ("paths", "model_dir", MODEL_DIR),
+        ("paths", "database", DATABASE_PATH),
+        ("paths", "license", LICENSE_PATH),
+    ] {
+        changed |= set_mapping_field(&mut document, section, key, Value::String(value.to_owned()))?;
+    }
     if changed {
         let current = YamlConfigRepository::load(&layout.config)
             .with_context(|| format!("load {}", layout.config.display()))?;
-        let repository = YamlConfigRepository::new(&layout.config);
-        repository
+        YamlConfigRepository::new(&layout.config)
             .replace_document(document, current.revision)
             .with_context(|| format!("save {}", layout.config.display()))?;
     }
@@ -294,9 +326,8 @@ fn set_mapping_field(document: &mut Value, section: &str, key: &str, value: Valu
     let root = document
         .as_mapping_mut()
         .ok_or_else(|| anyhow!("configuration root must be a mapping"))?;
-    let section_key = Value::String(section.to_owned());
     let section_value = root
-        .entry(section_key)
+        .entry(Value::String(section.to_owned()))
         .or_insert_with(|| Value::Mapping(Mapping::new()));
     let section_mapping = section_value
         .as_mapping_mut()
@@ -309,126 +340,199 @@ fn set_mapping_field(document: &mut Value, section: &str, key: &str, value: Valu
     Ok(true)
 }
 
-fn spawn_daemon(layout: &PortableLayout) -> Result<Child> {
+fn spawn_logged_process(
+    executable: &Path,
+    root: &Path,
+    log_path: &Path,
+    args: &[&str],
+    environment: &[(&str, &str)],
+) -> Result<Child> {
     let log = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&layout.daemon_log)
-        .with_context(|| format!("open {}", layout.daemon_log.display()))?;
+        .open(log_path)
+        .with_context(|| format!("open {}", log_path.display()))?;
     let stdout = log
         .try_clone()
-        .with_context(|| format!("clone {}", layout.daemon_log.display()))?;
-    let mut command = Command::new(&layout.daemon);
+        .with_context(|| format!("clone {}", log_path.display()))?;
+    let mut command = Command::new(executable);
     command
-        .current_dir(&layout.root)
+        .args(args)
+        .current_dir(root)
+        .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(log));
+        .stderr(Stdio::from(log))
+        .kill_on_drop(true);
+    for (name, value) in environment {
+        command.env(name, value);
+    }
     command
         .spawn()
-        .with_context(|| format!("start {}", layout.daemon.display()))
+        .with_context(|| format!("start {}", executable.display()))
 }
 
-async fn wait_for_ready(
-    ready_file: &Path,
-    daemon_log: &Path,
-    child: &mut Child,
+fn spawn_daemon(
+    layout: &PortableLayout,
+    temporary_license: Option<&TemporaryLicenseAccess>,
+) -> Result<Child> {
+    match temporary_license {
+        Some(access) => spawn_logged_process(
+            &layout.daemon,
+            &layout.root,
+            &layout.daemon_log,
+            &[],
+            &[(TEMPORARY_LICENSE_CODE_ENV, access.code.as_str())],
+        ),
+        None => spawn_logged_process(&layout.daemon, &layout.root, &layout.daemon_log, &[], &[]),
+    }
+}
+
+fn spawn_web(layout: &PortableLayout, access: &WebAccess, frontend_dev: bool) -> Result<Child> {
+    let args = if frontend_dev {
+        &["--frontend-dev"][..]
+    } else {
+        &[][..]
+    };
+    spawn_logged_process(
+        &layout.web,
+        &layout.root,
+        &layout.web_log,
+        args,
+        &[(WEB_ACCESS_CODE_ENV, access.code.as_str())],
+    )
+}
+
+async fn wait_for_daemon_ready(
+    layout: &PortableLayout,
+    daemon: &mut Child,
     timeout: Duration,
-) -> Result<ReadyDocument> {
+) -> Result<DaemonReadyDocument> {
     let started = Instant::now();
     loop {
-        if let Some(status) = child.try_wait().context("check novasightd process")? {
+        if let Some(status) = daemon.try_wait().context("check novasightd process")? {
             bail!(
-                "novasightd exited before ready with status {status}; see {}\n{}",
-                daemon_log.display(),
-                daemon_log_tail(daemon_log)
+                "novasightd exited before ready with status {status}; {}",
+                log_tail(&layout.daemon_log)
             );
         }
-        if let Ok(ready) = read_ready_file(ready_file)
-            && health_check(&ready.address)
+        if let Ok(ready) = read_daemon_ready_file(&layout.daemon_ready_file)
+            && ready.transport == "http1-unix"
+            && !ready.control_socket.trim().is_empty()
         {
             return Ok(ready);
         }
         if started.elapsed() >= timeout {
             bail!(
-                "novasightd did not become ready within {:?}; see {}; daemon log {}\n{}",
-                timeout,
-                ready_file.display(),
-                daemon_log.display(),
-                daemon_log_tail(daemon_log)
+                "novasightd did not publish Unix control readiness within {timeout:?}; {}",
+                log_tail(&layout.daemon_log)
             );
         }
         time::sleep(Duration::from_millis(100)).await;
     }
 }
 
-fn daemon_log_tail(path: &Path) -> String {
-    match read_file_tail(path, DAEMON_LOG_TAIL_BYTES) {
-        Ok(text) if !text.trim().is_empty() => {
-            format!("last daemon log output:\n{}", text.trim_end())
+async fn wait_for_web_ready(
+    layout: &PortableLayout,
+    web: &mut Child,
+    daemon: &mut Child,
+    timeout: Duration,
+) -> Result<ReadyDocument> {
+    let started = Instant::now();
+    loop {
+        if let Some(status) = web.try_wait().context("check novasight-web process")? {
+            bail!(
+                "novasight-web exited before ready with status {status}; {}",
+                log_tail(&layout.web_log)
+            );
         }
-        Ok(_) => "daemon log is empty".to_owned(),
-        Err(error) => format!("daemon log unavailable: {error}"),
+        if let Some(status) = daemon.try_wait().context("check novasightd process")? {
+            bail!(
+                "novasightd exited while Web/API was starting with status {status}; {}",
+                log_tail(&layout.daemon_log)
+            );
+        }
+        if let Ok(ready) = read_ready_file(&layout.web_ready_file)
+            && health_check(&ready.address)
+        {
+            return Ok(ready);
+        }
+        if started.elapsed() >= timeout {
+            bail!(
+                "novasight-web did not become healthy within {timeout:?}; {}",
+                log_tail(&layout.web_log)
+            );
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn log_tail(path: &Path) -> String {
+    match read_file_tail(path, LOG_TAIL_BYTES) {
+        Ok(text) if !text.trim().is_empty() => format!("last log output:\n{}", text.trim_end()),
+        Ok(_) => format!("{} is empty", path.display()),
+        Err(error) => format!("{} unavailable: {error}", path.display()),
     }
 }
 
 fn read_file_tail(path: &Path, max_bytes: u64) -> Result<String> {
     let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let len = file
-        .metadata()
-        .with_context(|| format!("stat {}", path.display()))?
-        .len();
+    let len = file.metadata()?.len();
     let start = len.saturating_sub(max_bytes);
-    file.seek(SeekFrom::Start(start))
-        .with_context(|| format!("seek {}", path.display()))?;
+    file.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::with_capacity((len - start).min(max_bytes) as usize);
-    file.read_to_end(&mut bytes)
-        .with_context(|| format!("read {}", path.display()))?;
+    file.read_to_end(&mut bytes)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-async fn supervise_existing_daemon(layout: &PortableLayout, ready: &ReadyDocument) -> Result<()> {
-    eprintln!("NOVASIGHT_RUNNING: press Ctrl+C to stop NovaSight");
-    wait_for_shutdown_signal().await?;
-    request_daemon_shutdown(layout).await?;
-    wait_until_daemon_stops(&ready.address, DAEMON_SHUTDOWN_TIMEOUT).await
-}
-
-async fn supervise_spawned_daemon(layout: &PortableLayout, mut child: Child) -> Result<()> {
-    eprintln!("NOVASIGHT_RUNNING: press Ctrl+C to stop NovaSight");
+async fn supervise_stack(layout: &PortableLayout, mut daemon: Child, mut web: Child) -> Result<()> {
+    eprintln!("NOVASIGHT_RUNNING: press Ctrl+C to stop Web/API and novasightd");
     tokio::select! {
-        status = child.wait() => {
+        status = daemon.wait() => {
             let status = status.context("wait for novasightd process")?;
-            if status.success() {
-                Ok(())
-            } else {
-                bail!("novasightd exited with status {status}")
-            }
+            let _ = stop_child("novasight-web", &mut web).await;
+            bail!("novasightd exited with status {status}")
+        }
+        status = web.wait() => {
+            let status = status.context("wait for novasight-web process")?;
+            let _ = stop_owned_daemon(layout, &mut daemon).await;
+            bail!("novasight-web exited with status {status}")
         }
         signal = wait_for_shutdown_signal() => {
             signal?;
-            stop_owned_daemon(layout, &mut child).await
+            let web_stop = stop_child("novasight-web", &mut web).await;
+            let daemon_stop = stop_owned_daemon(layout, &mut daemon).await;
+            web_stop.and(daemon_stop)
         }
     }
 }
 
 async fn stop_owned_daemon(layout: &PortableLayout, child: &mut Child) -> Result<()> {
-    eprintln!("NOVASIGHT_SHUTDOWN_REQUESTED: stopping novasightd");
+    eprintln!("NOVASIGHT_SHUTDOWN_REQUESTED: stopping novasightd through local IPC");
     if let Err(error) = request_daemon_shutdown(layout).await {
         eprintln!("NOVASIGHT_SHUTDOWN_FALLBACK: {error:#}");
     }
-    match time::timeout(DAEMON_SHUTDOWN_TIMEOUT, child.wait()).await {
+    match time::timeout(PROCESS_SHUTDOWN_TIMEOUT, child.wait()).await {
         Ok(status) => {
             let _ = status.context("wait for novasightd process")?;
             Ok(())
         }
-        Err(_) => {
-            child
-                .start_kill()
-                .context("force stop unresponsive novasightd")?;
-            let _ = child.wait().await.context("wait for killed novasightd")?;
-            Ok(())
-        }
+        Err(_) => stop_child("novasightd", child).await,
     }
+}
+
+async fn stop_child(label: &str, child: &mut Child) -> Result<()> {
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+    eprintln!("NOVASIGHT_SHUTDOWN_REQUESTED: stopping {label}");
+    child
+        .start_kill()
+        .with_context(|| format!("stop {label}"))?;
+    let _ = child
+        .wait()
+        .await
+        .with_context(|| format!("wait for {label}"))?;
+    Ok(())
 }
 
 async fn request_daemon_shutdown(layout: &PortableLayout) -> Result<()> {
@@ -447,19 +551,6 @@ async fn request_daemon_shutdown(layout: &PortableLayout) -> Result<()> {
     Ok(())
 }
 
-async fn wait_until_daemon_stops(address: &str, timeout: Duration) -> Result<()> {
-    let started = Instant::now();
-    loop {
-        if !health_check(address) {
-            return Ok(());
-        }
-        if started.elapsed() >= timeout {
-            bail!("novasightd did not stop within {timeout:?}");
-        }
-        time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
 async fn wait_for_shutdown_signal() -> Result<()> {
     #[cfg(unix)]
     {
@@ -472,14 +563,15 @@ async fn wait_for_shutdown_signal() -> Result<()> {
         }
     }
     #[cfg(not(unix))]
-    {
-        tokio::signal::ctrl_c().await.context("wait for Ctrl+C")
-    }
+    tokio::signal::ctrl_c().await.context("wait for Ctrl+C")
 }
 
 fn read_ready_file(path: &Path) -> Result<ReadyDocument> {
-    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    serde_json::from_reader(file).with_context(|| format!("parse {}", path.display()))
+    serde_json::from_reader(File::open(path)?).with_context(|| format!("parse {}", path.display()))
+}
+
+fn read_daemon_ready_file(path: &Path) -> Result<DaemonReadyDocument> {
+    serde_json::from_reader(File::open(path)?).with_context(|| format!("parse {}", path.display()))
 }
 
 fn health_check(address: &str) -> bool {
@@ -504,47 +596,142 @@ fn health_check(address: &str) -> bool {
     buffer[..read].starts_with(b"HTTP/1.1 200") || buffer[..read].starts_with(b"HTTP/1.0 200")
 }
 
-fn open_studio(ready: &ReadyDocument) {
-    print_studio_urls(ready);
-    let url = browser_open_url(ready);
+fn open_studio(ready: &ReadyDocument, access: &WebAccess) {
+    print_studio_urls(ready, access);
+    let url = access_url(
+        &ready_address(ready)
+            .map(connectable_local_address)
+            .map(http_url)
+            .unwrap_or_else(|| ready.url.clone()),
+        access,
+    );
     if let Err(error) = open_browser(&url) {
         eprintln!(
-            "NOVASIGHT_BROWSER_OPEN_SKIPPED: {error:#}; open the NovaSight Studio Web UI URL above manually"
+            "NOVASIGHT_BROWSER_OPEN_SKIPPED: {error:#}; open the authenticated Studio URL above manually"
         );
     }
 }
 
-fn print_studio_urls(ready: &ReadyDocument) {
-    for message in studio_ready_messages(ready, detect_lan_ip()) {
+fn print_studio_urls(ready: &ReadyDocument, access: &WebAccess) {
+    for message in studio_ready_messages(ready, access, detect_lan_ip()) {
         println!("{message}");
     }
 }
 
-fn studio_ready_messages(ready: &ReadyDocument, lan_ip: Option<IpAddr>) -> Vec<String> {
+fn studio_ready_messages(
+    ready: &ReadyDocument,
+    access: &WebAccess,
+    lan_ip: Option<IpAddr>,
+) -> Vec<String> {
     let Some(address) = ready_address(ready) else {
-        return vec![format!("NovaSight Studio Web UI: {}", ready.url)];
+        return vec![format!(
+            "NovaSight Studio authenticated URL: {}",
+            access_url(&ready.url, access)
+        )];
     };
     if !address.ip().is_unspecified() {
-        return vec![format!("NovaSight Studio Web UI: {}", ready.url)];
+        return vec![format!(
+            "NovaSight Studio authenticated URL: {}",
+            access_url(&ready.url, access)
+        )];
     }
-
-    let mut messages = vec![format!("NovaSight Studio Web UI: {}", http_url(address))];
     let lan_url = lan_ip
         .map(|ip| http_url(SocketAddr::new(ip, address.port())))
         .unwrap_or_else(|| format!("http://<this-machine-ip>:{}/", address.port()));
-    messages.push(format!("NovaSight Studio Web UI (LAN): {lan_url}"));
-    messages.push(format!(
-        "NovaSight Studio Web UI (this machine): {}",
-        http_url(connectable_local_address(address))
-    ));
-    messages
+    vec![
+        format!(
+            "NovaSight Studio LAN authenticated URL: {}",
+            access_url(&lan_url, access)
+        ),
+        format!(
+            "NovaSight Studio local authenticated URL: {}",
+            access_url(&http_url(connectable_local_address(address)), access)
+        ),
+    ]
 }
 
-fn browser_open_url(ready: &ReadyDocument) -> String {
-    ready_address(ready)
-        .map(connectable_local_address)
-        .map(http_url)
-        .unwrap_or_else(|| ready.url.clone())
+fn access_url(url: &str, access: &WebAccess) -> String {
+    format!("{url}#access={}", access.code)
+}
+
+fn create_web_access(layout: &PortableLayout) -> Result<WebAccess> {
+    let access = WebAccess {
+        code: random_access_code(),
+    };
+    persist_web_access(layout, &access)?;
+    Ok(access)
+}
+
+fn persist_web_access(layout: &PortableLayout, access: &WebAccess) -> Result<()> {
+    let path = layout.root.join(WEB_ACCESS_FILE);
+    persist_private_code(&path, &access.code, "Web access")
+}
+
+fn create_temporary_license_access(
+    layout: &PortableLayout,
+) -> Result<Option<TemporaryLicenseAccess>> {
+    let path = layout.root.join(TEMPORARY_LICENSE_ACCESS_FILE);
+    if !cfg!(debug_assertions) {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("remove stale {}", path.display()));
+            }
+        }
+        return Ok(None);
+    }
+    let access = TemporaryLicenseAccess {
+        code: random_access_code(),
+    };
+    persist_private_code(&path, &access.code, "temporary license")?;
+    Ok(Some(access))
+}
+
+fn random_access_code() -> String {
+    let mut bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn persist_private_code(path: &Path, code: &str, label: &str) -> Result<()> {
+    if let Ok(metadata) = fs::symlink_metadata(path)
+        && !metadata.file_type().is_file()
+    {
+        bail!("{label} path is not a regular file: {}", path.display());
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("open private {label} file {}", path.display()))?;
+    file.write_all(code.as_bytes())?;
+    file.sync_all()?;
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+fn print_temporary_license_access(
+    layout: &PortableLayout,
+    access: Option<&TemporaryLicenseAccess>,
+) {
+    let Some(access) = access else {
+        return;
+    };
+    eprintln!(
+        "NovaSight temporary license code (current debug daemon only): {}",
+        access.code
+    );
+    eprintln!(
+        "NovaSight temporary license code file: {}",
+        layout.root.join(TEMPORARY_LICENSE_ACCESS_FILE).display()
+    );
 }
 
 fn ready_address(ready: &ReadyDocument) -> Option<SocketAddr> {
@@ -572,27 +759,22 @@ fn detect_lan_ip() -> Option<IpAddr> {
 fn detect_lan_ip_by_udp_route() -> Option<IpAddr> {
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).ok()?;
     socket.connect(SocketAddr::from(([8, 8, 8, 8], 80))).ok()?;
-    let ip = socket.local_addr().ok()?.ip();
-    candidate_lan_ip(ip)
+    candidate_lan_ip(socket.local_addr().ok()?.ip())
 }
 
 #[cfg(target_os = "linux")]
 fn detect_lan_ip_from_hostname() -> Option<IpAddr> {
     let output = StdCommand::new("hostname").arg("-I").output().ok()?;
-    let text = String::from_utf8(output.stdout).ok()?;
-    first_lan_ip_from_whitespace(&text)
+    String::from_utf8(output.stdout)
+        .ok()?
+        .split_whitespace()
+        .filter_map(|candidate| candidate.parse().ok())
+        .find_map(candidate_lan_ip)
 }
 
 #[cfg(not(target_os = "linux"))]
 fn detect_lan_ip_from_hostname() -> Option<IpAddr> {
     None
-}
-
-#[cfg(target_os = "linux")]
-fn first_lan_ip_from_whitespace(text: &str) -> Option<IpAddr> {
-    text.split_whitespace()
-        .filter_map(|candidate| candidate.parse().ok())
-        .find_map(candidate_lan_ip)
 }
 
 fn candidate_lan_ip(ip: IpAddr) -> Option<IpAddr> {
@@ -617,7 +799,7 @@ fn open_browser(url: &str) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("start browser with xdg-open")?;
+        .context("start browser")?;
     Ok(())
 }
 
@@ -648,4 +830,18 @@ fn open_browser(url: &str) -> Result<()> {
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn open_browser(_url: &str) -> Result<()> {
     bail!("opening the browser is not supported on this platform")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::random_access_code;
+
+    #[test]
+    fn generated_access_codes_are_full_width_hex_and_not_reused() {
+        let first = random_access_code();
+        let second = random_access_code();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
 }

@@ -1,659 +1,96 @@
+import {
+  decodeCaptureState,
+  decodeCrosshairLearnResponse,
+  decodeCrosshairSnapshot,
+  decodePreviewSnapshot,
+  decodeRuntimeState
+} from "./contracts/runtime";
+import {
+  decodeConversionJobs,
+  decodeModelArtifactMetadata,
+  decodeModelArtifacts,
+  decodeModelCatalog,
+  decodeModelCatalogRegisterResponse,
+  decodeModelPublishResponse,
+  decodeModelProjects,
+  decodeModelVersions
+} from "./contracts/model";
+import {
+  decodeConfigSchema,
+  decodeConfigUpdate,
+  decodeRuntimeConfig
+} from "./contracts/config";
+import { decodeLicenseStatus } from "./contracts/license";
+import { decodeCaptureCapabilities } from "./contracts/capture";
+import { decodeDiagnosticMoveResponse } from "./contracts/hardware";
+import {
+  decodeDeepStreamRecommendation,
+  decodeModelProbeResponse,
+  decodeModelProfileResponse
+} from "./contracts/modelIngress";
+import { decodeAuthSession } from "./contracts/auth";
+import type {
+  ConfigCommandPayload,
+  ConfigSchemaResponse,
+  ConfigUpdateResponse,
+  RuntimeConfig,
+  RuntimeConfigValue
+} from "./contracts/config";
+import type {
+  CaptureState,
+  CrosshairLearnResponse,
+  CrosshairSnapshot,
+  PreviewSnapshotState,
+  RuntimeState,
+  RuntimeStatusTopic
+} from "./contracts/runtime";
+import type {
+  ConversionJob,
+  ModelArtifact,
+  ModelArtifactMetadata,
+  ModelCatalogRegisterResponse,
+  ModelCatalogResponse,
+  ModelPublishResponse,
+  ModelProject,
+  ModelRecommendation,
+  ModelVersion,
+  ParserPresetId
+} from "./contracts/model";
+import type { LicenseStatus } from "./contracts/license";
+import type {
+  CaptureCapabilitiesResponse,
+  CaptureSelectPayload
+} from "./contracts/capture";
+import type { DiagnosticMoveResponse } from "./contracts/hardware";
+import type {
+  DeepStreamRecommendationResponse,
+  ModelProbeResponse,
+  ModelProfileConfigurePayload,
+  ModelProfileResponse
+} from "./contracts/modelIngress";
+import type { AuthSession } from "./contracts/auth";
+
+export {
+  decodeRuntimeStatusMessage,
+  RuntimeContractError
+} from "./contracts/runtime";
+export type * from "./contracts/runtime";
+export type * from "./contracts/model";
+export { ConfigContractError } from "./contracts/config";
+export type * from "./contracts/config";
+export { LicenseContractError } from "./contracts/license";
+export type * from "./contracts/license";
+export { CaptureContractError } from "./contracts/capture";
+export type * from "./contracts/capture";
+export { HardwareContractError } from "./contracts/hardware";
+export type * from "./contracts/hardware";
+export { ModelIngressContractError } from "./contracts/modelIngress";
+export type * from "./contracts/modelIngress";
+export { AuthContractError } from "./contracts/auth";
+export type * from "./contracts/auth";
+
 export type HealthResponse = {
   ok: boolean;
-};
-
-export type ExecutorStatus = {
-  selected: string;
-  executors: Record<string, ExecutorAvailability>;
-  state: RuntimeSubsystemState;
-  last_error: RuntimeErrorSummary | null;
-};
-
-export type ExecutorAvailability = {
-  available: boolean;
-  configuration_state: "not_applicable" | "uncommissioned" | "restart_required" | "ready" | (string & {});
-  configuration_ready: boolean;
-  restart_required: boolean;
-  can_connect: boolean;
-  can_disconnect: boolean;
-  blocked_reason: string | null;
-  connected: boolean;
-  runtime_connected: boolean;
-  connecting: boolean;
-  buttons_available: boolean;
-  button_left: boolean;
-  button_right: boolean;
-  connection_state: string;
-  retryable: boolean;
-  last_error: string | null;
-  managed_by_runtime: boolean;
-  accepted_command_count: number;
-  last_accepted_dx: number | null;
-  last_accepted_dy: number | null;
-  diagnostic_move_count: number;
-  last_diagnostic_dx: number | null;
-  last_diagnostic_dy: number | null;
-  device_error_count: number;
-  device_recovery_count: number;
-  last_device_error: string | null;
-};
-
-export type RuntimeSubsystemState =
-  | "stopped"
-  | "starting"
-  | "ready"
-  | "running"
-  | "degraded"
-  | "stopping"
-  | "failed"
-  | "unavailable";
-
-export type RuntimeErrorSummary = {
-  code: string;
-  message: string;
-  subsystem: string | null;
-};
-
-export type ModelProject = {
-  id: number;
-  name: string;
-  description: string;
-};
-
-export type ModelVersion = {
-  id: number;
-  project_id: number;
-  version: string;
-  source_kind: "pt" | "onnx" | (string & {});
-  source_path: string;
-  classes: string[];
-  input_shape: string;
-};
-
-export type ModelArtifact = {
-  id: number;
-  version_id: number;
-  kind: "pt" | "onnx" | "engine" | (string & {});
-  path: string;
-  checksum: string;
-  status: "pending" | "running" | "ready" | "failed" | (string & {});
-  size_bytes?: number | null;
-};
-
-export type ModelRecommendation = "recommended" | "not_recommended" | "unrated";
-
-export type ModelArtifactMetadata = {
-  artifact_id: number;
-  recommendation: ModelRecommendation;
-  tags: string[];
-};
-
-export type ModelCatalogModel = {
-  type: "model";
-  name: string;
-  relative_path: string;
-  kind: "onnx" | "engine" | (string & {});
-  size_bytes: number;
-  scan_status: "ready" | "need_confirm" | "invalid" | "unsupported" | (string & {});
-  scan_reason: string;
-  project_id?: number;
-  project_name?: string;
-  version_id?: number;
-  version_name?: string;
-  artifact_id?: number;
-  artifact_status?: ModelArtifact["status"];
-  recommendation: ModelRecommendation;
-  tags: string[];
-};
-
-export type ModelCatalogDirectory = {
-  type: "directory";
-  name: string;
-  relative_path: string;
-  children: Array<ModelCatalogDirectory | ModelCatalogModel>;
-};
-
-export type ModelCatalogResponse = {
-  root: ModelCatalogDirectory;
-  directory_count: number;
-  model_count: number;
-  discovered_files: number;
-  updated_files: number;
-  cache_hits: number;
-  force: boolean;
-};
-
-export type ModelCatalogRegisterResponse = {
-  project: ModelProject;
-  version: ModelVersion;
-  artifact: ModelArtifact;
-  engine_path: string;
-  created: boolean;
-};
-
-export type Deployment = {
-  id: number;
-  project_id: number;
-  artifact_id: number;
-  previous_artifact_id: number | null;
-};
-
-export type ModelPrepareResponse = {
-  project: ModelProject;
-  version: ModelVersion;
-  artifact: ModelArtifact;
-  downloaded: boolean;
-  url: string;
-};
-
-export type ModelUploadResponse = {
-  project: ModelProject;
-  version: ModelVersion;
-  artifact: ModelArtifact;
-};
-
-export type ConversionJob = {
-  id: number;
-  version_id: number;
-  target_kind: "onnx" | "engine" | (string & {});
-  command: string[];
-  status: "pending" | "running" | "failed" | "succeeded" | (string & {});
-  log: string;
-};
-
-export type ActiveModel = {
-  project: ModelProject | null;
-  version?: ModelVersion | null;
-  deployment: Deployment;
-  artifact: ModelArtifact | null;
-};
-
-export type OperationReportSection = {
-  section: string;
-  impact: string;
-  status: string;
-  message: string;
-};
-
-export type ModelSwitchReport = {
-  action: string;
-  applied: boolean;
-  rolled_back: boolean;
-  message: string;
-  runtime_error?: string;
-  artifact_id: number;
-  previous_artifact_id: number | null;
-  artifact_path: string;
-  backend: string;
-  input_shape: string;
-  classes: number;
-  sections: OperationReportSection[];
-};
-
-export type ModelPublishResponse = {
-  deployment: Deployment;
-  inference: Record<string, unknown>;
-  parser_contract?: ParserContract;
-  preparation?: {
-    manifest_action: "generated" | "reused" | (string & {});
-    reason: string;
-    input_shape: string;
-    classes: string[];
-  };
-  report?: ModelSwitchReport;
-};
-
-export type ParserPresetId =
-  | "auto"
-  | "yolov5"
-  | "yolov8"
-  | "yolo11"
-  | "novasight_generic";
-
-export type ParserContract = {
-  requested_preset: ParserPresetId;
-  output_family: "yolov5" | "yolov8_yolo11";
-  has_objectness: boolean;
-  parser_library: "novasight_builtin";
-  parser_function: "NvDsInferParseNovaSight";
-  nms_owner: "deepstream";
-};
-
-export type DeepStreamManifestRecommendation = {
-  model_id: string;
-  display_name: string;
-  runtime_precision?: string;
-  input_name: string;
-  input_shape: number[];
-  input_dtype?: string;
-  input_color_format?: string;
-  input_scale_factor?: number;
-  maintain_aspect_ratio?: boolean;
-  symmetric_padding?: boolean;
-  output_name: string;
-  output_shape: number[];
-  output_dtype?: string;
-  class_count: number;
-  confidence_threshold?: number;
-  nms_iou_threshold?: number;
-};
-
-export type DeepStreamRecommendationResponse = {
-  artifact_id: number;
-  artifact_path: string;
-  recommendation: DeepStreamManifestRecommendation;
-  io_tensors: Array<{
-    name: string;
-    shape: number[];
-    dtype: string;
-    mode: "input" | "output";
-  }>;
-  class_names: string[];
-  output_has_objectness: boolean;
-  sources: Record<string, string>;
-  warnings: string[];
-};
-
-export type ModelProfile = {
-  schema_version: number;
-  model_id: string;
-  display_name: string;
-  status:
-    | "UNINSPECTED"
-    | "INSPECTING"
-    | "NEEDS_CONFIGURATION"
-    | "READY_FOR_PROBE"
-    | "PROBING"
-    | "VALIDATED"
-    | "INVALID"
-    | "INCOMPATIBLE"
-    | "ACTIVE";
-  input: {
-    name: string;
-    runtime_shape: number[];
-    engine_shape: number[];
-    dtype: string;
-    layout: string;
-  };
-  outputs: Array<{
-    name: string;
-    shape: number[];
-    engine_shape: number[];
-    dtype: string;
-  }>;
-  preprocess: {
-    color_format: string;
-    scale: number | null;
-    resize_mode: string;
-  };
-  decoder: {
-    parser_type: string;
-    class_count: number;
-    bbox_format: string;
-    has_objectness: boolean | null;
-  };
-  labels: string[];
-  parser_candidates: Array<{
-    parser_type: string;
-    confidence: string;
-    reason: string;
-    requires_confirmation: boolean;
-  }>;
-  validation: {
-    status: string;
-    engine_execution_ok: boolean;
-    decoder_ok: boolean;
-    nms_ok: boolean;
-    detection_batch_ok: boolean;
-    issues: string[];
-  };
-};
-
-export type ModelProfileResponse = {
-  artifact_id: number;
-  profile_path: string;
-  profile: ModelProfile;
-};
-
-export type ModelProfileConfigurePayload = {
-  color_format: "RGB" | "BGR";
-  scale: number;
-  offsets?: number[];
-  mean?: number[];
-  std?: number[];
-  resize_mode: "direct" | "letterbox";
-  symmetric_padding?: boolean;
-  padding_value?: number;
-  parser_type: string;
-  class_count: number;
-  labels: string[];
-  bbox_format: "xywh" | "xyxy";
-  has_objectness: boolean;
-  confidence_threshold?: number;
-  nms_threshold?: number;
-  max_detections?: number;
-};
-
-export type ModelProbeResponse = ModelProfileResponse & {
-  report: {
-    status: string;
-    engine_execution_ok: boolean;
-    output_tensor_ok: boolean;
-    decoder_ok: boolean;
-    nms_ok: boolean;
-    detection_batch_ok: boolean;
-    // Null means the probe injected a model-shaped tensor and did not run the
-    // image preprocessing stage.
-    preprocess_ms: number | null;
-    inference_ms: number;
-    decode_ms: number;
-    // Native probing currently measures decode + NMS as one operation. Null is
-    // deliberate: reporting 0 ms would be a fabricated measurement.
-    nms_ms: number | null;
-    issues: Array<{ code: string; stage: string; message: string }>;
-  };
-};
-
-export type CaptureState = {
-  available: boolean;
-  running: boolean;
-  state: RuntimeSubsystemState;
-  device: string;
-  profile: null | {
-    pixel_format: string;
-    width: number;
-    height: number;
-    fps: number;
-    preference: string;
-    source: "configured" | string;
-  };
-  backend: string | null;
-  last_error: string | null;
-};
-
-export type Statistics = {
-  nvinfer_input_counter: number;
-  detection_batch_counter: number;
-  detection_batch_consumed_counter: number;
-  targeting_batch_counter: number;
-  nvinfer_input_fps: number | null;
-  nvinfer_output_fps: number | null;
-  detection_batch_fps: number | null;
-  targeting_batch_fps: number | null;
-  detection_data_age_ms: number | null;
-  detection_freshness_threshold_ms: number | null;
-  inference_latency_ms: number | null;
-  inference_latency_samples: number;
-  telemetry_window_ms: number | null;
-  metrics_available: boolean;
-};
-
-export type RuntimeInferenceState = {
-  available: boolean;
-  configured: boolean;
-  loaded: boolean;
-  running: boolean;
-  terminal_error: boolean;
-  state: RuntimeSubsystemState;
-  selected: string | null;
-  reason: string | null;
-  detail: string | null;
-  inference_reason: string | null;
-  input_frames: number;
-  output_buffers: number;
-  metadata_extractions: number;
-  published_batches: number;
-  timestamp_buffer_pts_matches: number;
-  timestamp_frame_meta_pts_matches: number;
-  timestamp_correlation_misses: number;
-  sampled_detection_generation: number | null;
-  preview_enabled: boolean;
-  preview_active: boolean;
-  preview_encoder_active: boolean;
-  preview_consumers: number;
-  preview_available: boolean;
-  preview_sequence: number;
-  preview_reason: string;
-  preview_transport: string | null;
-  postprocess: {
-    confidence_threshold: number;
-    nms_threshold: number;
-  } | null;
-};
-
-export type PreviewSnapshotState = {
-  preview_enabled: boolean;
-  preview_running: boolean;
-  preview_active: boolean;
-  preview_encoder_active: boolean;
-  preview_consumers: number;
-  preview_available: boolean;
-  preview_sequence: number;
-  preview_reason: string;
-  preview_transport: string;
-};
-
-export type RuntimeDeepStreamState = {
-  running: boolean;
-  terminal_error: boolean;
-  last_error: string | null;
-  input_frames: number;
-  metadata_extractions: number;
-  published_batches: number;
-  crosshair_active: boolean;
-  crosshair_reason: string;
-};
-
-export type RuntimePipelineSummary = {
-  running: boolean;
-  state: "stopped" | "starting" | "running" | "standby" | "stopping" | "faulted";
-  epoch: number | null;
-  started_at_ms: number | null;
-  mode: string;
-  last_error: RuntimeErrorSummary | null;
-  deepstream: RuntimeDeepStreamState;
-};
-
-export type CaptureCapability = {
-  pixel_format: string;
-  width: number;
-  height: number;
-  fps_list: number[];
-};
-
-export type CaptureCapabilitiesResponse = {
-  available: boolean;
-  device: string;
-  capabilities: CaptureCapability[];
-  reason: string;
-};
-
-export type CaptureSelectPayload = {
-  device: string;
-  preference?: "auto_high_fps" | "auto_low_latency" | "auto_balanced" | "manual";
-  pixel_format?: string;
-  width?: number;
-  height?: number;
-  fps?: number;
-};
-
-export type RuntimeConfigSummary = {
-  version: number;
-  schema_version: number;
-  effective_version: number;
-  restart_required: boolean;
-};
-
-export type RuntimeOutputTraceState = {
-  code: string;
-  state: "ready" | "blocked" | "waiting" | "idle" | string;
-  detail: string;
-  next_action: string;
-};
-
-export type RuntimeVisionState = Record<string, unknown> & {
-  output_trace?: RuntimeOutputTraceState;
-};
-
-export type RuntimeSemanticState = {
-  phase: "stopped" | "starting" | "waiting_model" | "running" | "standby" | "stopping" | "faulted" | (string & {});
-  perception_phase: "unavailable" | "stopped" | "starting" | "waiting_model" | "running" | "faulted" | (string & {});
-  epoch: number | null;
-  snapshot_sequence: number;
-  snapshot_updated_at_ms: number;
-};
-
-export type RuntimeState = {
-  semantic: RuntimeSemanticState;
-  running: boolean;
-  source: string;
-  active_model: ActiveModel | null;
-  model_catalog_error: string | null;
-  executor: ExecutorStatus;
-  capture: CaptureState;
-  statistics: Statistics;
-  inference: RuntimeInferenceState;
-  config: RuntimeConfigSummary;
-  pipeline: RuntimePipelineSummary;
-  vision: RuntimeVisionState;
-  fatal_error: RuntimeErrorSummary | null;
-};
-
-export type RuntimeStatusTopic =
-  | "summary"
-  | "capture"
-  | "infer"
-  | "control"
-  | "latency";
-
-export type RuntimeStatusFrame = {
-  kind: "runtime_snapshot";
-  topic: RuntimeStatusTopic | "full";
-  full: boolean;
-  state: Partial<RuntimeState>;
-};
-
-export type RuntimeConfigValue =
-  | string
-  | number
-  | boolean
-  | null
-  | RuntimeConfigValue[]
-  | { [key: string]: RuntimeConfigValue };
-
-export type RuntimeConfig = Record<string, RuntimeConfigValue>;
-
-export type ConfigApplyMode = "hot_update" | "epoch_reload" | "process_restart";
-
-export type ConfigFieldSchema = {
-  path: string;
-  label: string;
-  type: "string" | "string_list" | "int" | "float" | "select" | "bool";
-  options?: string[];
-  option_labels?: Record<string, string>;
-  min?: number;
-  max?: number;
-  default?: number;
-  recommended_min?: number;
-  recommended_max?: number;
-  step?: number;
-  precision?: number;
-  unit?: string;
-  description?: string;
-  apply_mode: ConfigApplyMode;
-  restart_required: boolean;
-};
-
-export type ConfigSectionSchema = {
-  id: string;
-  label: string;
-  algorithm_scope?: string[];
-  fields: ConfigFieldSchema[];
-};
-
-export type ConfigAlgorithmResponseSchema = {
-  formula: string;
-  radial_multiplier_formula: string;
-  atan_scale_counts: number;
-};
-
-export type ConfigAlgorithmPredictionSchema = {
-  model: string;
-  aim_history_points: number;
-  velocity_segments: number;
-};
-
-export type ConfigAlgorithmSchema = {
-  id: string;
-  label: string;
-  response: ConfigAlgorithmResponseSchema;
-  prediction: ConfigAlgorithmPredictionSchema;
-};
-
-export type ConfigSchemaResponse = {
-  version: number;
-  algorithm?: ConfigAlgorithmSchema;
-  values: RuntimeConfig;
-  sections: ConfigSectionSchema[];
-};
-
-export type ConfigUpdateResponse = {
-  config: RuntimeConfig;
-  schema?: ConfigSchemaResponse;
-  apply_mode: ConfigApplyMode;
-  restart_required: boolean;
-  applied?: boolean;
-  rolled_back?: boolean;
-  message?: string;
-  sections?: OperationReportSection[];
-};
-
-export type ConfigCommandPayload =
-  | {
-      command: "set_output_gate";
-      enabled: boolean;
-      expected_revision?: number;
-    }
-  | {
-      command: "set_trigger_mode";
-      mode: string;
-      expected_revision?: number;
-    };
-
-export type LicenseFeature =
-  | "capture"
-  | "runtime"
-  | "models"
-  | "tensorrt"
-  | "hardware_control"
-  | "config_read"
-  | "config_write";
-
-export type LicenseStatus = {
-  configured: boolean;
-  valid: boolean;
-  temporary_access_supported: boolean;
-  fingerprint: string;
-  tier: string;
-  features: LicenseFeature[];
-  license_id: string;
-  credential_format: string;
-  token_id: string;
-  key_id: string;
-  created_at: number | null;
-  not_before: number | null;
-  activated_at: number | null;
-  expires_at: number | null;
-  duration_value: number | null;
-  duration_unit: string;
-  updated_at: number | null;
-  message: string;
-};
-
-export type TemporaryLicenseResponse = {
-  supported: boolean;
-  granted: boolean;
-  status: LicenseStatus;
 };
 
 export class ApiError extends Error {
@@ -668,6 +105,91 @@ export class ApiError extends Error {
   }
 }
 
+function invalidRequest(field: string, expected: string, value: unknown): never {
+  throw new ApiError(`请求参数无效：${field} 应为 ${expected}`, 400, {
+    code: "frontend_contract_invalid",
+    field,
+    expected,
+    value
+  });
+}
+
+function requireNonBlank(value: string, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    return invalidRequest(field, "非空字符串", value);
+  }
+  return value;
+}
+
+function requirePositiveSafeInteger(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    return invalidRequest(field, "正安全整数", value);
+  }
+  return value;
+}
+
+function requireUnsignedSafeInteger(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    return invalidRequest(field, "无符号安全整数", value);
+  }
+  return value;
+}
+
+function requirePositiveU32(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 0xffff_ffff) {
+    return invalidRequest(field, "正 u32", value);
+  }
+  return value;
+}
+
+function requireI16(value: number, field: string): number {
+  if (!Number.isSafeInteger(value) || value < -0x8000 || value > 0x7fff) {
+    return invalidRequest(field, "i16", value);
+  }
+  return value;
+}
+
+function assertJsonValue(
+  value: unknown,
+  path: string,
+  ancestors: Set<object>,
+  allowUndefined: boolean
+): void {
+  if (value === undefined) {
+    if (allowUndefined) return;
+    invalidRequest(path, "可序列化 JSON 值", value);
+  }
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) invalidRequest(path, "有限数字", value);
+    return;
+  }
+  if (typeof value !== "object") {
+    invalidRequest(path, "可序列化 JSON 值", value);
+  }
+  if (ancestors.has(value)) invalidRequest(path, "无循环引用的 JSON 值", value);
+  ancestors.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertJsonValue(item, `${path}[${index}]`, ancestors, false));
+  } else {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      invalidRequest(path, "普通 JSON 对象", value);
+    }
+    for (const [key, item] of Object.entries(value)) {
+      assertJsonValue(item, `${path}.${key}`, ancestors, true);
+    }
+  }
+  ancestors.delete(value);
+}
+
+function encodeJsonBody(value: unknown): string {
+  assertJsonValue(value, "body", new Set<object>(), false);
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) return invalidRequest("body", "JSON 文档", value);
+  return encoded;
+}
+
 export function getApiErrorCode(error: unknown): string {
   if (!(error instanceof ApiError)) {
     return "";
@@ -680,16 +202,16 @@ export function getApiErrorCode(error: unknown): string {
 
 export const API_PATHS = {
   health: "/healthz",
+  authSession: "/api/auth/session",
   runtimeState: "/api/runtime/state",
   runtimeStart: "/api/runtime/start",
   runtimeStop: "/api/runtime/stop",
-  runtimeEmergencyStop: "/api/v1/runtime/emergency-stop",
+  runtimeEmergencyStop: "/api/runtime/emergency-stop",
   config: "/api/config",
   configCommands: "/api/v1/config/commands",
   configSchema: "/api/config/schema",
   captureCapabilities: "/api/capture/capabilities",
   captureSelect: "/api/capture/select",
-  captureImage: "/api/capture/image",
   captureStop: "/api/capture/stop",
   capturePreview: "/api/capture/preview",
   captureStream: "/api/capture/stream.mjpg",
@@ -707,11 +229,16 @@ export const API_PATHS = {
   modelJobsList: "/api/models/jobs/list",
   license: "/api/license",
   licenseActivate: "/api/license/activate",
-  licenseTemporary: "/api/license/temporary",
   statusWs: "/ws/status"
 } as const;
 
 const apiBase = (import.meta.env.VITE_NOVASIGHT_API_BASE ?? "").replace(/\/$/, "");
+let csrfToken = "";
+
+function synchronizeAuthSession(session: AuthSession): AuthSession {
+  csrfToken = session.authenticated ? session.csrf_token ?? "" : "";
+  return session;
+}
 
 export function apiUrl(path: string): string {
   return `${apiBase}${path}`;
@@ -744,34 +271,42 @@ type RequestOptions = {
 
 const STATUS_REQUEST_TIMEOUT_MS = 5000;
 const STANDARD_READ_TIMEOUT_MS = 10000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
+const MODEL_OPERATION_TIMEOUT_MS = 180000;
+
+type JsonDecoder<T> = (value: unknown) => T;
 
 async function requestJson<T>(
   path: string,
-  init?: RequestInit,
-  options?: RequestOptions
+  init: RequestInit | undefined,
+  options: RequestOptions | undefined,
+  decode: JsonDecoder<T>
 ): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (!(["GET", "HEAD", "OPTIONS"].includes(method)) && csrfToken) {
+    headers.set("X-NovaSight-CSRF", csrfToken);
+  }
 
-  const timeoutController = options?.timeoutMs ? new AbortController() : null;
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  const timeoutController = new AbortController();
   const upstreamSignal = init?.signal;
   let timedOut = false;
   let timeoutId: number | null = null;
-  const handleUpstreamAbort = () => timeoutController?.abort(upstreamSignal?.reason);
+  const handleUpstreamAbort = () => timeoutController.abort(upstreamSignal?.reason);
 
-  if (timeoutController && upstreamSignal) {
+  if (upstreamSignal) {
     if (upstreamSignal.aborted) {
       handleUpstreamAbort();
     } else {
       upstreamSignal.addEventListener("abort", handleUpstreamAbort, { once: true });
     }
   }
-  if (timeoutController && options?.timeoutMs) {
-    timeoutId = window.setTimeout(() => {
-      timedOut = true;
-      timeoutController.abort();
-    }, options.timeoutMs);
-  }
+  timeoutId = window.setTimeout(() => {
+    timedOut = true;
+    timeoutController.abort();
+  }, timeoutMs);
 
   try {
     let response: Response;
@@ -779,7 +314,7 @@ async function requestJson<T>(
       response = await fetch(apiUrl(path), {
         ...init,
         credentials: init?.credentials ?? "include",
-        signal: timeoutController?.signal ?? upstreamSignal,
+        signal: timeoutController.signal,
         headers: {
           ...Object.fromEntries(headers.entries())
         }
@@ -787,32 +322,50 @@ async function requestJson<T>(
     } catch (error) {
       if (timedOut) {
         throw new ApiError(
-          `请求超时：${path} 在 ${Math.round((options?.timeoutMs ?? 0) / 1000)} 秒内未响应`,
+          `请求超时：${path} 在 ${Math.round(timeoutMs / 1000)} 秒内未响应`,
           408,
-          { path, timeout_ms: options?.timeoutMs ?? 0 }
+          { path, timeout_ms: timeoutMs }
         );
       }
       throw error;
     }
 
     const contentType = response.headers.get("content-type") ?? "";
-    let body: unknown = null;
+    let responseText = "";
     try {
-      body = contentType.includes("application/json")
-        ? await response.json()
-        : await response.text();
+      responseText = await response.text();
     } catch (error) {
       if (timedOut) {
         throw new ApiError(
-          `请求超时：${path} 在 ${Math.round((options?.timeoutMs ?? 0) / 1000)} 秒内未完成响应`,
+          `请求超时：${path} 在 ${Math.round(timeoutMs / 1000)} 秒内未完成响应`,
           408,
-          { path, timeout_ms: options?.timeoutMs ?? 0 }
+          { path, timeout_ms: timeoutMs }
         );
       }
       if (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError") {
         throw error;
       }
-      body = "";
+      throw new ApiError(`响应读取失败：${path}`, 502, { path });
+    }
+
+    if (response.ok && response.status === 204) {
+      return decode(undefined);
+    }
+
+    let body: unknown = responseText;
+    if (contentType.includes("application/json") || contentType.includes("+json")) {
+      try {
+        body = JSON.parse(responseText) as unknown;
+      } catch {
+        if (response.ok) {
+          throw new ApiError(`响应 JSON 无法解析：${path}`, 502, { path });
+        }
+      }
+    } else if (response.ok) {
+      throw new ApiError(`响应数据不是 JSON：${path}`, 502, {
+        path,
+        content_type: contentType || null
+      });
     }
 
     if (!response.ok) {
@@ -823,18 +376,27 @@ async function requestJson<T>(
           ? objectBody.last_error
           : objectBody && typeof objectBody.reason === "string"
             ? objectBody.reason
+            : objectBody && typeof objectBody.message === "string"
+              ? objectBody.message
             : objectBody && typeof objectBody.detail === "string"
               ? objectBody.detail
               : objectBody &&
                   typeof objectBody.detail === "object" &&
                   objectBody.detail !== null &&
                   typeof (objectBody.detail as Record<string, unknown>).message === "string"
-                ? String((objectBody.detail as Record<string, unknown>).message)
+                ? (objectBody.detail as Record<string, string>).message
               : response.statusText;
+      if (response.status === 401 && objectBody?.code === "AUTHENTICATION_REQUIRED") {
+        csrfToken = "";
+        window.dispatchEvent(new CustomEvent("novasight:auth-required"));
+      }
+      if (response.status === 403 && objectBody?.code === "CSRF_REJECTED") {
+        window.dispatchEvent(new CustomEvent("novasight:csrf-rejected"));
+      }
       throw new ApiError(detail || "请求失败", response.status, body);
     }
 
-    return body as T;
+    return decode(body);
   } finally {
     if (timeoutId !== null) {
       window.clearTimeout(timeoutId);
@@ -843,11 +405,52 @@ async function requestJson<T>(
   }
 }
 
+export function getAuthSession(signal?: AbortSignal): Promise<AuthSession> {
+  return requestJson<AuthSession>(
+    API_PATHS.authSession,
+    { signal },
+    { timeoutMs: STATUS_REQUEST_TIMEOUT_MS },
+    decodeAuthSession
+  ).then(synchronizeAuthSession);
+}
+
+export function establishAuthSession(
+  accessCode: string,
+  signal?: AbortSignal
+): Promise<AuthSession> {
+  return requestJson<AuthSession>(
+    API_PATHS.authSession,
+    {
+      method: "POST",
+      signal,
+      headers: { "Content-Type": "application/json" },
+      body: encodeJsonBody({ access_code: requireNonBlank(accessCode, "access_code") })
+    },
+    { timeoutMs: STATUS_REQUEST_TIMEOUT_MS },
+    decodeAuthSession
+  ).then(synchronizeAuthSession);
+}
+
+export function logoutAuthSession(signal?: AbortSignal): Promise<AuthSession> {
+  return requestJson<AuthSession>(
+    API_PATHS.authSession,
+    { method: "DELETE", signal },
+    { timeoutMs: STATUS_REQUEST_TIMEOUT_MS },
+    decodeAuthSession
+  ).then(synchronizeAuthSession);
+}
+
 export function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
   return requestJson<HealthResponse>(
     API_PATHS.health,
     { signal },
-    { timeoutMs: STATUS_REQUEST_TIMEOUT_MS }
+    { timeoutMs: STATUS_REQUEST_TIMEOUT_MS },
+    (value) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value) || !("ok" in value) || typeof value.ok !== "boolean") {
+        throw new ApiError("健康检查响应结构无效", 502, value);
+      }
+      return { ok: value.ok };
+    }
   );
 }
 
@@ -858,44 +461,76 @@ export function getRuntimeState(
   return requestJson<RuntimeState>(
     API_PATHS.runtimeState,
     { signal },
-    { timeoutMs }
+    { timeoutMs },
+    decodeRuntimeState
   );
 }
 
-export function startRuntimePipeline(signal?: AbortSignal): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.runtimeStart, {
-    method: "POST",
-    signal
-  });
+export function startRuntimePipeline(signal?: AbortSignal): Promise<void> {
+  return requestJson<void>(
+    API_PATHS.runtimeStart,
+    { method: "POST", signal },
+    undefined,
+    (value) => {
+      if (value !== undefined) {
+        throw new ApiError("启动响应必须为空", 502, value);
+      }
+    }
+  );
 }
 
-export function stopRuntimePipeline(): Promise<RuntimeState> {
-  return requestJson<RuntimeState>(API_PATHS.runtimeStop, {
-    method: "POST"
-  });
+export function stopRuntimePipeline(signal?: AbortSignal): Promise<RuntimeState> {
+  return requestJson<RuntimeState>(
+    API_PATHS.runtimeStop,
+    { method: "POST", signal },
+    undefined,
+    decodeRuntimeState
+  );
 }
 
-export function emergencyStopRuntimePipeline(signal?: AbortSignal): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.runtimeEmergencyStop, {
-    method: "POST",
-    signal
-  });
+function discardJsonCommandResponse(_value: unknown): void {
+  // Command callers read the authoritative RuntimeState immediately after the
+  // mutation. Do not pretend the internal RuntimeSnapshot receipt is config.
 }
 
-export function getCrosshairStatus(): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.crosshair);
+export function emergencyStopRuntimePipeline(signal?: AbortSignal): Promise<void> {
+  return requestJson<void>(
+    API_PATHS.runtimeEmergencyStop,
+    { method: "POST", signal },
+    undefined,
+    (value) => {
+      if (value !== undefined) {
+        throw new ApiError("紧急停止响应必须为空", 502, value);
+      }
+    }
+  );
 }
 
-export function learnCrosshair(): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.crosshairLearn, {
-    method: "POST"
-  });
+export function getCrosshairStatus(): Promise<CrosshairSnapshot> {
+  return requestJson<CrosshairSnapshot>(
+    API_PATHS.crosshair,
+    undefined,
+    undefined,
+    decodeCrosshairSnapshot
+  );
 }
 
-export function clearCrosshairTemplate(): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.crosshairTemplate, {
-    method: "DELETE"
-  });
+export function learnCrosshair(): Promise<CrosshairLearnResponse> {
+  return requestJson<CrosshairLearnResponse>(
+    API_PATHS.crosshairLearn,
+    { method: "POST" },
+    undefined,
+    decodeCrosshairLearnResponse
+  );
+}
+
+export function clearCrosshairTemplate(): Promise<CrosshairSnapshot> {
+  return requestJson<CrosshairSnapshot>(
+    API_PATHS.crosshairTemplate,
+    { method: "DELETE" },
+    undefined,
+    decodeCrosshairSnapshot
+  );
 }
 
 export function crosshairTemplatePreviewUrl(cacheKey: number): string {
@@ -905,50 +540,70 @@ export function crosshairTemplatePreviewUrl(cacheKey: number): string {
 export function diagnosticMoveKmNet(
   dx = 1,
   dy = 0
-): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDiagnosticMove, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+): Promise<DiagnosticMoveResponse> {
+  const checkedDx = requireI16(dx, "dx");
+  const checkedDy = requireI16(dy, "dy");
+  if (checkedDx === 0 && checkedDy === 0) {
+    return invalidRequest("dx/dy", "至少一个非零 i16", { dx, dy });
+  }
+  return requestJson<DiagnosticMoveResponse>(
+    API_PATHS.kmnetDiagnosticMove,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({
+        dx: checkedDx,
+        dy: checkedDy,
+        repeat: 1,
+        interval_ms: 0,
+        move_kind: "raw"
+      })
     },
-    body: JSON.stringify({
-      dx,
-      dy,
-      repeat: 1,
-      interval_ms: 0,
-      move_kind: "raw"
-    })
-  });
+    undefined,
+    decodeDiagnosticMoveResponse
+  );
 }
 
-export function connectKmNet(signal?: AbortSignal): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetConnect, {
-    method: "POST",
-    signal
-  });
+export function connectKmNet(signal?: AbortSignal): Promise<void> {
+  return requestJson<void>(
+    API_PATHS.kmnetConnect,
+    { method: "POST", signal },
+    undefined,
+    discardJsonCommandResponse
+  );
 }
 
-export function disconnectKmNet(signal?: AbortSignal): Promise<Record<string, RuntimeConfigValue>> {
-  return requestJson<Record<string, RuntimeConfigValue>>(API_PATHS.kmnetDisconnect, {
-    method: "POST",
-    signal
-  });
+export function disconnectKmNet(signal?: AbortSignal): Promise<void> {
+  return requestJson<void>(
+    API_PATHS.kmnetDisconnect,
+    { method: "POST", signal },
+    undefined,
+    discardJsonCommandResponse
+  );
 }
 
 export function getRuntimeConfig(): Promise<RuntimeConfig> {
   return requestJson<RuntimeConfig>(
     API_PATHS.config,
     undefined,
-    { timeoutMs: STANDARD_READ_TIMEOUT_MS }
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeRuntimeConfig
   );
 }
 
 export function getConfigSchema(): Promise<ConfigSchemaResponse> {
-  return requestJson<ConfigSchemaResponse>(API_PATHS.configSchema);
+  return requestJson<ConfigSchemaResponse>(
+    API_PATHS.configSchema,
+    undefined,
+    undefined,
+    decodeConfigSchema
+  );
 }
 
 export function sanitizeRuntimeConfigForUpdate(config: RuntimeConfig): RuntimeConfig {
-  const next = structuredClone(config) as RuntimeConfig;
+  const next = structuredClone(config);
   delete next.version;
   delete next.roi_size;
   return next;
@@ -956,13 +611,18 @@ export function sanitizeRuntimeConfigForUpdate(config: RuntimeConfig): RuntimeCo
 
 export function updateRuntimeConfig(config: RuntimeConfig): Promise<ConfigUpdateResponse> {
   const payload = sanitizeRuntimeConfigForUpdate(config);
-  return requestJson<ConfigUpdateResponse>(API_PATHS.config, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  return requestJson<ConfigUpdateResponse>(
+    API_PATHS.config,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody(payload)
     },
-    body: JSON.stringify(payload)
-  });
+    undefined,
+    decodeConfigUpdate
+  );
 }
 
 export function updateRuntimeConfigField(
@@ -971,36 +631,58 @@ export function updateRuntimeConfigField(
   value: RuntimeConfigValue,
   expectedRevision?: number
 ): Promise<ConfigUpdateResponse> {
-  return requestJson<ConfigUpdateResponse>(API_PATHS.config, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  requireNonBlank(section, "section");
+  requireNonBlank(key, "key");
+  if (expectedRevision !== undefined) {
+    requireUnsignedSafeInteger(expectedRevision, "expected_revision");
+  }
+  return requestJson<ConfigUpdateResponse>(
+    API_PATHS.config,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({ section, key, value, expected_revision: expectedRevision })
     },
-    body: JSON.stringify({ section, key, value, expected_revision: expectedRevision })
-  });
+    undefined,
+    decodeConfigUpdate
+  );
 }
 
 export function updateRuntimeConfigCommand(
   command: ConfigCommandPayload
 ): Promise<ConfigUpdateResponse> {
-  return requestJson<ConfigUpdateResponse>(API_PATHS.configCommands, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  if (command.expected_revision !== undefined) {
+    requireUnsignedSafeInteger(command.expected_revision, "expected_revision");
+  }
+  return requestJson<ConfigUpdateResponse>(
+    API_PATHS.configCommands,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody(command)
     },
-    body: JSON.stringify(command)
-  });
+    undefined,
+    decodeConfigUpdate
+  );
 }
 
-export function setRuntimeOutputGate(enabled: boolean): Promise<ConfigUpdateResponse> {
+export function setRuntimeOutputGate(
+  enabled: boolean,
+  expectedRevision?: number
+): Promise<ConfigUpdateResponse> {
   return updateRuntimeConfigCommand({
     command: "set_output_gate",
-    enabled
+    enabled,
+    expected_revision: expectedRevision
   });
 }
 
 export function setRuntimeTriggerMode(
-  mode: string,
+  mode: "always" | "hardware",
   expectedRevision?: number
 ): Promise<ConfigUpdateResponse> {
   return updateRuntimeConfigCommand({
@@ -1013,84 +695,126 @@ export function setRuntimeTriggerMode(
 export function getCaptureCapabilities(
   device: string
 ): Promise<CaptureCapabilitiesResponse> {
-  return requestJson<CaptureCapabilitiesResponse>(API_PATHS.captureCapabilities, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  const checkedDevice = requireNonBlank(device, "device");
+  return requestJson<CaptureCapabilitiesResponse>(
+    API_PATHS.captureCapabilities,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({ device: checkedDevice })
     },
-    body: JSON.stringify({ device })
-  });
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeCaptureCapabilities
+  );
 }
 
 export function selectCaptureProfile(payload: CaptureSelectPayload, signal?: AbortSignal): Promise<CaptureState> {
-  return requestJson<CaptureState>(API_PATHS.captureSelect, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  requireNonBlank(payload.device, "device");
+  if (payload.pixel_format !== undefined) {
+    requireNonBlank(payload.pixel_format, "pixel_format");
+  }
+  if (payload.width !== undefined) requirePositiveU32(payload.width, "width");
+  if (payload.height !== undefined) requirePositiveU32(payload.height, "height");
+  if (payload.fps !== undefined) requirePositiveU32(payload.fps, "fps");
+  if (
+    payload.preference === "manual" &&
+    (payload.pixel_format === undefined ||
+      payload.width === undefined ||
+      payload.height === undefined ||
+      payload.fps === undefined)
+  ) {
+    return invalidRequest(
+      "capture_profile",
+      "manual 模式必须同时提供 pixel_format/width/height/fps",
+      payload
+    );
+  }
+  return requestJson<CaptureState>(
+    API_PATHS.captureSelect,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody(payload),
+      signal
     },
-    body: JSON.stringify(payload),
-    signal
-  });
-}
-
-export function selectImageSource(path: string, fps: number): Promise<CaptureState> {
-  return requestJson<CaptureState>(API_PATHS.captureImage, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ path, fps })
-  });
+    undefined,
+    decodeCaptureState
+  );
 }
 
 export function stopCapture(reason = "用户停止采集"): Promise<CaptureState> {
-  return requestJson<CaptureState>(API_PATHS.captureStop, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  const checkedReason = requireNonBlank(reason, "reason");
+  return requestJson<CaptureState>(
+    API_PATHS.captureStop,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({ reason: checkedReason })
     },
-    body: JSON.stringify({ reason })
-  });
+    undefined,
+    decodeCaptureState
+  );
 }
 
 export function setCapturePreviewEnabled(
   enabled: boolean,
   options?: { keepalive?: boolean }
 ): Promise<PreviewSnapshotState> {
-  return requestJson<PreviewSnapshotState>(API_PATHS.capturePreview, {
-    method: "POST",
-    keepalive: options?.keepalive,
-    headers: {
-      "Content-Type": "application/json"
+  return requestJson<PreviewSnapshotState>(
+    API_PATHS.capturePreview,
+    {
+      method: "POST",
+      keepalive: options?.keepalive,
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({ enabled })
     },
-    body: JSON.stringify({ enabled })
-  });
+    undefined,
+    decodePreviewSnapshot
+  );
 }
 
 export function getModelProjects(): Promise<ModelProject[]> {
   return requestJson<ModelProject[]>(
     API_PATHS.modelProjects,
     undefined,
-    { timeoutMs: STANDARD_READ_TIMEOUT_MS }
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeModelProjects
   );
 }
 
 export function getModelCatalog(force = false): Promise<ModelCatalogResponse> {
   return requestJson<ModelCatalogResponse>(
-    `${API_PATHS.modelCatalog}?force=${force ? "true" : "false"}`
+    `${API_PATHS.modelCatalog}?force=${force ? "true" : "false"}`,
+    undefined,
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeModelCatalog
   );
 }
 
 export function registerCatalogModel(
   relativePath: string
 ): Promise<ModelCatalogRegisterResponse> {
-  return requestJson<ModelCatalogRegisterResponse>("/api/models/catalog/register", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  const checkedRelativePath = requireNonBlank(relativePath, "relative_path");
+  return requestJson<ModelCatalogRegisterResponse>(
+    "/api/models/catalog/register",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({ relative_path: checkedRelativePath })
     },
-    body: JSON.stringify({ relative_path: relativePath })
-  });
+    { timeoutMs: MODEL_OPERATION_TIMEOUT_MS },
+    decodeModelCatalogRegisterResponse
+  );
 }
 
 export function updateModelArtifactMetadata(
@@ -1098,34 +822,63 @@ export function updateModelArtifactMetadata(
   recommendation: ModelRecommendation,
   tags: string[]
 ): Promise<ModelArtifactMetadata> {
-  return requestJson<ModelArtifactMetadata>(`/api/models/artifacts/${artifactId}/metadata`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json"
+  const checkedArtifactId = requirePositiveSafeInteger(artifactId, "artifact_id");
+  return requestJson<ModelArtifactMetadata>(
+    `/api/models/artifacts/${checkedArtifactId}/metadata`,
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({ recommendation, tags })
     },
-    body: JSON.stringify({ recommendation, tags })
-  });
+    undefined,
+    decodeModelArtifactMetadata
+  );
 }
 
 export function getModelVersions(projectId: number): Promise<ModelVersion[]> {
-  return requestJson<ModelVersion[]>(`${API_PATHS.modelProjects}/${projectId}/versions`);
+  const checkedProjectId = requirePositiveSafeInteger(projectId, "project_id");
+  return requestJson<ModelVersion[]>(
+    `${API_PATHS.modelProjects}/${checkedProjectId}/versions`,
+    undefined,
+    undefined,
+    decodeModelVersions
+  );
 }
 
 export function getModelArtifacts(versionId: number): Promise<ModelArtifact[]> {
-  return requestJson<ModelArtifact[]>(`/api/models/versions/${versionId}/artifacts`);
+  const checkedVersionId = requirePositiveSafeInteger(versionId, "version_id");
+  return requestJson<ModelArtifact[]>(
+    `/api/models/versions/${checkedVersionId}/artifacts`,
+    undefined,
+    undefined,
+    decodeModelArtifacts
+  );
 }
 
 export function getConversionJobs(versionId?: number): Promise<ConversionJob[]> {
   if (typeof versionId !== "number") {
-    return requestJson<ConversionJob[]>(API_PATHS.modelJobs);
+    return requestJson<ConversionJob[]>(
+      API_PATHS.modelJobs,
+      undefined,
+      { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+      decodeConversionJobs
+    );
   }
-  return requestJson<ConversionJob[]>(API_PATHS.modelJobsList, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  const checkedVersionId = requirePositiveSafeInteger(versionId, "version_id");
+  return requestJson<ConversionJob[]>(
+    API_PATHS.modelJobsList,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({ version_id: checkedVersionId })
     },
-    body: JSON.stringify({ version_id: versionId })
-  });
+    undefined,
+    decodeConversionJobs
+  );
 }
 
 export function publishModel(
@@ -1133,122 +886,132 @@ export function publishModel(
   artifactId: number,
   parserPreset: ParserPresetId = "auto"
 ): Promise<ModelPublishResponse> {
-  return requestJson<ModelPublishResponse>(`${API_PATHS.modelProjects}/${projectId}/publish`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  const checkedProjectId = requirePositiveSafeInteger(projectId, "project_id");
+  const checkedArtifactId = requirePositiveSafeInteger(artifactId, "artifact_id");
+  return requestJson<ModelPublishResponse>(
+    `${API_PATHS.modelProjects}/${checkedProjectId}/publish`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({ artifact_id: checkedArtifactId, parser_preset: parserPreset })
     },
-    body: JSON.stringify({ artifact_id: artifactId, parser_preset: parserPreset })
-  });
+    { timeoutMs: MODEL_OPERATION_TIMEOUT_MS },
+    decodeModelPublishResponse
+  );
 }
 
 export function getDeepStreamRecommendation(
   artifactId: number
 ): Promise<DeepStreamRecommendationResponse> {
+  const checkedArtifactId = requirePositiveSafeInteger(artifactId, "artifact_id");
   return requestJson<DeepStreamRecommendationResponse>(
-    `/api/models/artifacts/${artifactId}/deepstream/recommendation`
+    `/api/models/artifacts/${checkedArtifactId}/deepstream/recommendation`,
+    undefined,
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeDeepStreamRecommendation
   );
 }
 
 export function inspectModelArtifact(artifactId: number): Promise<ModelProfileResponse> {
-  return requestJson<ModelProfileResponse>(`/api/models/artifacts/${artifactId}/inspect`, {
-    method: "POST"
-  });
+  const checkedArtifactId = requirePositiveSafeInteger(artifactId, "artifact_id");
+  return requestJson<ModelProfileResponse>(
+    `/api/models/artifacts/${checkedArtifactId}/inspect`,
+    { method: "POST" },
+    { timeoutMs: MODEL_OPERATION_TIMEOUT_MS },
+    decodeModelProfileResponse
+  );
 }
 
 export function getModelProfile(artifactId: number): Promise<ModelProfileResponse> {
-  return requestJson<ModelProfileResponse>(`/api/models/artifacts/${artifactId}/profile`);
+  const checkedArtifactId = requirePositiveSafeInteger(artifactId, "artifact_id");
+  return requestJson<ModelProfileResponse>(
+    `/api/models/artifacts/${checkedArtifactId}/profile`,
+    undefined,
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeModelProfileResponse
+  );
 }
 
 export function configureModelProfile(
   artifactId: number,
   payload: ModelProfileConfigurePayload
 ): Promise<ModelProfileResponse> {
-  return requestJson<ModelProfileResponse>(`/api/models/artifacts/${artifactId}/profile`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json"
+  const checkedArtifactId = requirePositiveSafeInteger(artifactId, "artifact_id");
+  return requestJson<ModelProfileResponse>(
+    `/api/models/artifacts/${checkedArtifactId}/profile`,
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody(payload)
     },
-    body: JSON.stringify(payload)
-  });
+    { timeoutMs: MODEL_OPERATION_TIMEOUT_MS },
+    decodeModelProfileResponse
+  );
 }
 
 export function probeModelArtifact(
   artifactId: number,
   inputMode: "fixed" | "latest" = "fixed"
 ): Promise<ModelProbeResponse> {
-  return requestJson<ModelProbeResponse>(`/api/models/artifacts/${artifactId}/probe`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  const checkedArtifactId = requirePositiveSafeInteger(artifactId, "artifact_id");
+  return requestJson<ModelProbeResponse>(
+    `/api/models/artifacts/${checkedArtifactId}/probe`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({ input_mode: inputMode })
     },
-    body: JSON.stringify({ input_mode: inputMode })
-  });
+    { timeoutMs: MODEL_OPERATION_TIMEOUT_MS },
+    decodeModelProbeResponse
+  );
 }
 
 export function rollbackModel(projectId: number): Promise<ModelPublishResponse> {
-  return requestJson<ModelPublishResponse>(`${API_PATHS.modelProjects}/${projectId}/rollback`, {
-    method: "POST"
-  });
-}
-
-export function prepareYolov8nExample(): Promise<ModelPrepareResponse> {
-  return requestJson<ModelPrepareResponse>("/api/models/examples/yolov8n/prepare", {
-    method: "POST"
-  });
-}
-
-export function uploadModelFile(payload: {
-  projectName: string;
-  version: string;
-  description: string;
-  classes: string;
-  inputShape: string;
-  file: File;
-}): Promise<ModelUploadResponse> {
-  const form = new FormData();
-  form.set("project_name", payload.projectName);
-  form.set("version", payload.version);
-  form.set("description", payload.description);
-  form.set("classes", payload.classes);
-  form.set("input_shape", payload.inputShape);
-  form.set("file", payload.file);
-  return requestJson<ModelUploadResponse>("/api/models/upload", {
-    method: "POST",
-    body: form
-  });
+  const checkedProjectId = requirePositiveSafeInteger(projectId, "project_id");
+  return requestJson<ModelPublishResponse>(
+    `${API_PATHS.modelProjects}/${checkedProjectId}/rollback`,
+    { method: "POST" },
+    { timeoutMs: MODEL_OPERATION_TIMEOUT_MS },
+    decodeModelPublishResponse
+  );
 }
 
 export function getLicenseStatus(): Promise<LicenseStatus> {
   return requestJson<LicenseStatus>(
     API_PATHS.license,
     undefined,
-    { timeoutMs: STANDARD_READ_TIMEOUT_MS }
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeLicenseStatus
   );
 }
 
-export function requestTemporaryLicense(): Promise<TemporaryLicenseResponse> {
-  return requestJson<TemporaryLicenseResponse>(API_PATHS.licenseTemporary, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({})
-  });
-}
-
 export function saveLicenseKey(key: string): Promise<LicenseStatus> {
-  return requestJson<LicenseStatus>(API_PATHS.licenseActivate, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
+  const checkedKey = requireNonBlank(key, "key");
+  return requestJson<LicenseStatus>(
+    API_PATHS.licenseActivate,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: encodeJsonBody({ key: checkedKey })
     },
-    body: JSON.stringify({ key })
-  });
+    undefined,
+    decodeLicenseStatus
+  );
 }
 
 export function clearLicenseKey(): Promise<LicenseStatus> {
-  return requestJson<LicenseStatus>(API_PATHS.license, {
-    method: "DELETE"
-  });
+  return requestJson<LicenseStatus>(
+    API_PATHS.license,
+    { method: "DELETE" },
+    undefined,
+    decodeLicenseStatus
+  );
 }

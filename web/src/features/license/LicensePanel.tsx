@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 import {
   type LicenseStatus,
   clearLicenseKey,
-  requestTemporaryLicense,
   saveLicenseKey
 } from "../../api";
-import { InlineError, StatusIndicator } from "../../components/ui";
+import { Button, InlineError, StatusIndicator } from "../../components/ui";
 import { reportError } from "../../lib/toast";
 import { Field } from "../shared/Field";
 import { formatEpoch } from "../shared/format";
@@ -15,7 +14,7 @@ import {
   type LicenseActionFailure
 } from "./connectionIssue";
 
-const LICENSE_CLEAR_CONFIRMATION_MESSAGE = "再次点击将在当前设备退出授权；5 秒后自动取消确认。";
+const LICENSE_CLEAR_CONFIRMATION_MESSAGE = "再次点击将先紧急停止当前设备并验证输出安全，再退出授权；5 秒后自动取消确认。";
 
 export function LicensePanel({
   license,
@@ -24,9 +23,6 @@ export function LicensePanel({
   license: LicenseStatus | null;
   onLicenseChange: (license: LicenseStatus) => void;
 }) {
-  const [licenseInput, setLicenseInput] = useState("");
-  const [requesting, setRequesting] = useState(false);
-  const [activating, setActivating] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [clearArmed, setClearArmed] = useState(false);
   const [message, setMessage] = useState<string | undefined>();
@@ -50,77 +46,6 @@ export function LicensePanel({
     : "等待授权激活";
   const backendMessage = license?.message?.trim();
   const features = license?.features ?? [];
-
-  const requestTemporary = useCallback(async () => {
-    setFailure(null);
-    setMessage(undefined);
-    setRequesting(true);
-    try {
-      const response = await requestTemporaryLicense();
-      const status = response.status;
-      if (!response.supported) {
-        onLicenseChange(status);
-        setFailure({
-          title: "当前构建不支持临时权限",
-          message: "Release 服务只接受正式签名授权；请启动 Debug 构建的 novasightd 进行开发验证。"
-        });
-        return;
-      }
-      if (!response.granted || !status.valid) {
-        onLicenseChange(status);
-        setFailure({
-          title: "临时授权未通过",
-          message: status.valid
-            ? "当前已有有效的正式授权，无需申请临时授权。"
-            : "当前服务未开放临时授权，请使用 Debug 测试版本，或改用正式授权凭证。"
-        });
-        return;
-      }
-      onLicenseChange(status);
-      setMessage("当前 Debug 进程已开放开发权限，可以进入 NovaSight 工作台。");
-    } catch (err) {
-      const nextFailure = describeLicenseActionFailure(err, "temporary");
-      setFailure(nextFailure);
-      reportError(err, {
-        source: "license-temporary",
-        title: nextFailure.title,
-        publicDetail: nextFailure.message,
-        exposeStatus: false
-      });
-    } finally {
-      setRequesting(false);
-    }
-  }, [onLicenseChange]);
-
-  const activateSignedLicense = useCallback(async () => {
-    setFailure(null);
-    setMessage(undefined);
-    setActivating(true);
-    try {
-      const status = await saveLicenseKey(licenseInput);
-      onLicenseChange(status);
-      if (!status.valid) {
-        setFailure({
-          title: "正式授权未生效",
-          message: "该授权凭证已过期或当前不可用，请更换有效凭证。"
-        });
-        return;
-      }
-      setLicenseInput("");
-      setMessage("正式授权已激活，授权凭证不会在界面中回显。");
-    } catch (err) {
-      const nextFailure = describeLicenseActionFailure(err, "activate");
-      setFailure(nextFailure);
-      reportError(err, {
-        source: "license-activate",
-        title: nextFailure.title,
-        publicDetail: nextFailure.message,
-        exposeStatus: false
-      });
-    } finally {
-      setActivating(false);
-    }
-  }, [licenseInput, onLicenseChange]);
 
   useEffect(() => {
     if (!clearArmed) return undefined;
@@ -171,7 +96,7 @@ export function LicensePanel({
         <div>
           <span>NovaSight 授权</span>
           <strong>{license?.valid ? formatTier(license.tier) : "等待授权"}</strong>
-          <p>{license?.valid ? "授权状态有效，当前设备可以进入完整工作台。" : "测试阶段可直接申请临时授权；正式环境使用签名授权凭证。"}</p>
+          <p>{license?.valid ? "授权状态有效，当前设备可以进入完整工作台。" : "临时授权码与正式许可证使用同一验证入口。"}</p>
         </div>
         <StatusIndicator tone={license?.valid ? "good" : "idle"}>
           {license?.valid ? "授权有效" : "尚未授权"}
@@ -231,66 +156,22 @@ export function LicensePanel({
         <Field label="激活时间" value={formatEpoch(license?.activated_at)} />
         <Field
           label="到期时间"
-          value={license?.tier === "temporary" ? "进程退出即失效" : formatEpoch(license?.expires_at)}
+          value={license?.credential_format === "ephemeral_code" ? "进程退出即失效" : formatEpoch(license?.expires_at)}
         />
         <Field
           label="期限"
-          value={license?.tier === "temporary"
+          value={license?.credential_format === "ephemeral_code"
             ? "当前服务进程"
             : formatDuration(license?.duration_value, license?.duration_unit)}
         />
       </div>
-      <div className="temporary-license-action">
-        <div>
-          <strong>测试临时授权</strong>
-          <span>{temporarySupported
-            ? "由本机 Debug 构建直接批准，只在当前服务进程内有效；不访问外部授权服务，也不写入授权文件。"
-            : "当前是 Release 构建，不开放临时权限；正式使用需要签名授权凭证。"}</span>
-        </div>
-        <button
-          className="button"
-          type="button"
-          onClick={requestTemporary}
-          disabled={requesting || license?.valid === true || !temporarySupported}
-        >
-          {requesting
-            ? "正在申请…"
-            : license?.valid
-              ? "授权已生效"
-              : temporarySupported
-                ? "申请临时权限"
-                : "当前构建不支持"}
-        </button>
-      </div>
-      <div className="signed-license-action">
-        <div>
-          <strong>正式授权</strong>
-          <span>优先使用 RS256 JWT，兼容旧版 NS1。界面不保存或回显凭证，NovaSight 服务会在受限权限文件中保留签名片段用于重启复核。</span>
-        </div>
-        <div className="signed-license-controls">
-          <label className="config-field">
-            <span>授权凭证</span>
-            <input
-              type="password"
-              value={licenseInput}
-              placeholder="粘贴 RS256 JWT 授权凭证"
-              autoComplete="off"
-              onChange={(event) => setLicenseInput(event.target.value)}
-            />
-          </label>
-          <button
-            className="button"
-            type="button"
-            onClick={activateSignedLicense}
-            disabled={activating || !licenseInput.trim()}
-          >
-            {activating ? "正在验证…" : "激活正式授权"}
-          </button>
-        </div>
-      </div>
+      <LicenseActivationForm
+        temporarySupported={temporarySupported}
+        onLicenseChange={onLicenseChange}
+      />
       {license?.configured ? (
         <button className="button compact-button" disabled={clearing} type="button" onClick={clearLicense}>
-          {clearing ? "正在退出…" : clearArmed ? "确认退出授权" : "退出当前授权"}
+          {clearing ? "正在停止设备并退出…" : clearArmed ? "确认：先紧急停止设备，再退出授权" : "退出当前授权"}
         </button>
       ) : null}
       <div className={features.length > 0 ? "license-features" : "license-features empty"}>
@@ -300,6 +181,90 @@ export function LicensePanel({
             ))
           : <span>等待授权功能范围</span>}
       </div>
+    </div>
+  );
+}
+
+export function LicenseActivationForm({
+  temporarySupported,
+  onLicenseChange,
+  gate = false
+}: {
+  temporarySupported: boolean;
+  onLicenseChange: (license: LicenseStatus) => void;
+  gate?: boolean;
+}) {
+  const [credential, setCredential] = useState("");
+  const [activating, setActivating] = useState(false);
+  const [message, setMessage] = useState<string | undefined>();
+  const [failure, setFailure] = useState<LicenseActionFailure | null>(null);
+
+  const activate = useCallback(async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalized = credential.trim();
+    if (!normalized) {
+      setFailure({ title: "请输入授权码", message: "授权码不能为空。" });
+      return;
+    }
+    setFailure(null);
+    setMessage(undefined);
+    setActivating(true);
+    try {
+      const status = await saveLicenseKey(normalized);
+      onLicenseChange(status);
+      if (!status.valid) {
+        setFailure({
+          title: "授权未生效",
+          message: "该授权码已过期或当前不可用，请更换有效授权码。"
+        });
+        return;
+      }
+      setCredential("");
+      setMessage(status.tier === "temporary"
+        ? "本次进程临时授权已生效，重启后需要使用新临时码。"
+        : "正式许可证已激活，完整凭证不会在界面中回显。");
+    } catch (err) {
+      const nextFailure = describeLicenseActionFailure(err, "activate");
+      setFailure(nextFailure);
+      reportError(err, {
+        source: "license-activate",
+        title: nextFailure.title,
+        publicDetail: nextFailure.message,
+        exposeStatus: false
+      });
+    } finally {
+      setActivating(false);
+    }
+  }, [credential, onLicenseChange]);
+
+  return (
+    <div className={gate ? "license-activation-form is-gate" : "license-activation-form"}>
+      <div className="license-activation-copy">
+        <strong>{gate ? "输入授权码" : "激活授权"}</strong>
+        <span>{temporarySupported
+          ? "可使用本次 Debug 启动生成的临时授权码，或正式签名许可证。两者经过同一服务端验证流程。"
+          : "请输入正式签名许可证。授权码只发送给本机服务验证，不会在页面中保存或回显。"}</span>
+      </div>
+      <form className="license-activation-controls" onSubmit={activate}>
+        <label className="config-field">
+          <span>授权码</span>
+          <input
+            type="password"
+            value={credential}
+            placeholder={temporarySupported ? "临时授权码或正式许可证" : "正式许可证"}
+            autoComplete="off"
+            autoFocus={gate}
+            spellCheck={false}
+            disabled={activating}
+            onChange={(event) => setCredential(event.target.value)}
+          />
+        </label>
+        <Button variant="primary" type="submit" loading={activating} leadingIcon="shield-check">
+          验证并继续
+        </Button>
+      </form>
+      {failure ? <InlineError message={failure.message} title={failure.title} /> : null}
+      {message ? <div className="inline-note">{message}</div> : null}
     </div>
   );
 }
@@ -352,7 +317,7 @@ function formatCredentialFormat(format: string | null | undefined): string {
   const labels: Record<string, string> = {
     jwt_rs256: "JWT · RS256",
     legacy_ns1: "旧版 NS1",
-    debug_session: "Debug 进程授权",
+    ephemeral_code: "本次启动临时码",
     legacy_document: "旧版授权文件"
   };
   return format ? labels[format] ?? format : "未授权";

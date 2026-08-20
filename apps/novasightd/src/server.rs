@@ -1,24 +1,16 @@
-//! Production HTTP, Unix-socket, and shutdown server ownership.
+//! Production Unix-socket control and shutdown ownership.
 
 use std::fs::{self, File};
 use std::future::IntoFuture;
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{
-    Router,
-    extract::State,
-    http::{StatusCode, Uri, header},
-    response::{IntoResponse, Response},
-    routing::get,
-};
 use novasight_api::{build_control_router_with_platform_queries, with_trusted_local_control};
 use novasight_core::CaptureCapabilityProbe;
 use novasight_runtime::{
@@ -29,22 +21,14 @@ use novasight_store::license::{FileLicenseRepository, LicenseError, LicensePolic
 use novasight_store::model_catalog::SqliteModelCatalog;
 use serde::Serialize;
 use thiserror::Error;
-use tokio::net::{TcpListener, UnixListener, UnixStream};
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 
-const DEFAULT_WEB_ROOT: &str = "web";
-const DEFAULT_READY_FILE: &str = "run/ready.json";
-const WEB_ROOT_ENV: &str = "NOVASIGHT_WEB_ROOT";
+const DEFAULT_READY_FILE: &str = "run/novasightd-ready.json";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DaemonMode {
     Hardware,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum WebUiMode {
-    Configured,
-    Disabled,
 }
 
 impl DaemonMode {
@@ -68,53 +52,30 @@ pub(super) async fn run_daemon(
     config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
     mode: DaemonMode,
-    web_ui_mode: WebUiMode,
 ) -> Result<(), DaemonRunError> {
     let _instance_lock = acquire_instance_lock(mode.hardware_output_enabled())?;
-    let host = loaded.config().server.host.clone();
-    let port = loaded.config().server.port;
     let control_socket = loaded.config().server.control_socket.clone();
-    let license_repository =
-        FileLicenseRepository::new(loaded.config().paths.license.clone(), license_policy(mode)?);
-    let listener = TcpListener::bind((host.as_str(), port))
-        .await
-        .map_err(|source| DaemonRunError::Bind {
-            host: host.clone(),
-            port,
-            source,
-        })?;
-    let address = listener
-        .local_addr()
-        .map_err(DaemonRunError::LocalAddress)?;
+    let license_repository = FileLicenseRepository::new(
+        loaded.config().paths.license.clone(),
+        license_policy(mode, false)?,
+    );
     let (control_listener, _control_socket_guard, _control_directory_lock) =
         bind_control_socket(&control_socket).await?;
     let mut signals = ShutdownSignals::register()?;
     let application = loaded.start(dependencies);
-    let (server_shutdown_tx, mut server_shutdown_rx) = watch::channel(false);
+    let (server_shutdown_tx, server_shutdown_rx) = watch::channel(false);
     let capture_probe = platform_capture_probe();
     let runtime = application.runtime();
     let api_router = build_control_router_with_platform_queries(
         runtime.clone(),
-        config_service,
+        config_service.clone(),
         license_repository.clone(),
         model_catalog,
         capture_probe,
         mode.hardware_output_enabled(),
         server_shutdown_rx.clone(),
     );
-    let web_root = match web_ui_mode {
-        WebUiMode::Configured => effective_web_root(&configured_web_root()),
-        WebUiMode::Disabled => None,
-    };
-    let router = attach_web_ui(api_router.clone(), web_root.as_deref());
     let control_router = with_trusted_local_control(api_router);
-    let http_server = axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            if !*server_shutdown_rx.borrow() {
-                let _ = server_shutdown_rx.changed().await;
-            }
-        })
-        .into_future();
     let mut control_shutdown_rx = server_shutdown_tx.subscribe();
     let control_server = axum::serve(control_listener, control_router)
         .with_graceful_shutdown(async move {
@@ -123,11 +84,11 @@ pub(super) async fn run_daemon(
             }
         })
         .into_future();
-    let mut http_server = Box::pin(http_server);
     let mut control_server = Box::pin(control_server);
     let mut license_watchdog = Box::pin(monitor_runtime_license(
         license_repository,
         runtime.clone(),
+        config_service,
         mode.hardware_output_enabled(),
         server_shutdown_tx.subscribe(),
         Duration::from_secs(1),
@@ -136,21 +97,14 @@ pub(super) async fn run_daemon(
 
     let ready_file = Path::new(DEFAULT_READY_FILE);
     let _ready_file_guard = ReadyFileGuard::new(ready_file.to_owned());
-    write_ready_file(
-        ready_file,
-        address,
-        &control_socket,
-        mode,
-        web_root.as_deref(),
-    )?;
+    write_ready_file(ready_file, &control_socket, mode)?;
     eprintln!(
-        "novasightd ready mode={} address={address} socket={}",
+        "novasightd ready mode={} transport=http1-unix socket={}",
         mode.label(),
         control_socket.display()
     );
 
     let first_exit = tokio::select! {
-        result = http_server.as_mut() => FirstExit::Http(result),
         result = control_server.as_mut() => FirstExit::Control(result),
         result = license_watchdog.as_mut() => FirstExit::License(result),
         () = runtime_exit.as_mut() => FirstExit::Runtime,
@@ -159,29 +113,20 @@ pub(super) async fn run_daemon(
     server_shutdown_tx.send_replace(true);
     let (service_result, license_result) = match first_exit {
         FirstExit::Signal | FirstExit::Runtime => {
-            let (http, control, license) = tokio::join!(
-                http_server.as_mut(),
-                control_server.as_mut(),
-                license_watchdog.as_mut()
-            );
-            (combine_server_results(http, control), license)
-        }
-        FirstExit::Http(http) => {
             let (control, license) =
                 tokio::join!(control_server.as_mut(), license_watchdog.as_mut());
-            (combine_server_results(http, control), license)
+            (control.map_err(DaemonRunError::ControlServe), license)
         }
         FirstExit::Control(control) => {
-            let (http, license) = tokio::join!(http_server.as_mut(), license_watchdog.as_mut());
-            (combine_server_results(http, control), license)
+            let license = license_watchdog.as_mut().await;
+            (control.map_err(DaemonRunError::ControlServe), license)
         }
         FirstExit::License(license) => {
-            let (http, control) = tokio::join!(http_server.as_mut(), control_server.as_mut());
-            (combine_server_results(http, control), license)
+            let control = control_server.as_mut().await;
+            (control.map_err(DaemonRunError::ControlServe), license)
         }
     };
     let service_result = service_result.and(license_result);
-    drop(http_server);
     drop(control_server);
     drop(license_watchdog);
     drop(runtime_exit);
@@ -199,125 +144,19 @@ pub(super) async fn run_daemon(
     }
 }
 
-fn effective_web_root(web_root: &Path) -> Option<PathBuf> {
-    let index = web_root.join("index.html");
-    if index.is_file() {
-        Some(web_root.to_owned())
-    } else {
-        tracing::warn!(
-            web_root = %web_root.display(),
-            "NovaSight Studio web root is missing index.html; HTTP API remains available"
-        );
-        None
-    }
-}
-
-fn configured_web_root() -> PathBuf {
-    std::env::var_os(WEB_ROOT_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_WEB_ROOT))
-}
-
-fn attach_web_ui(router: Router, web_root: Option<&Path>) -> Router {
-    let Some(web_root) = web_root else {
-        return router;
-    };
-    router.fallback(get(serve_web_ui).with_state(WebUiState {
-        root: Arc::new(web_root.to_owned()),
-    }))
-}
-
-#[derive(Clone)]
-struct WebUiState {
-    root: Arc<PathBuf>,
-}
-
-async fn serve_web_ui(State(state): State<WebUiState>, uri: Uri) -> Response {
-    let request_path = uri.path();
-    if is_api_path(request_path) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let Some(asset_path) = web_asset_path(&state.root, request_path) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let content_type = content_type_for_path(&asset_path);
-    match tokio::fs::read(&asset_path).await {
-        Ok(bytes) => ([(header::CONTENT_TYPE, content_type)], bytes).into_response(),
-        Err(_) if asset_path != state.root.join("index.html") => {
-            let index = state.root.join("index.html");
-            match tokio::fs::read(&index).await {
-                Ok(bytes) => {
-                    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], bytes).into_response()
-                }
-                Err(_) => StatusCode::NOT_FOUND.into_response(),
-            }
-        }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-fn is_api_path(path: &str) -> bool {
-    matches!(path, "/api" | "/healthz" | "/ws")
-        || path.starts_with("/api/")
-        || path.starts_with("/ws/")
-}
-
-fn web_asset_path(root: &Path, request_path: &str) -> Option<PathBuf> {
-    let trimmed = request_path.trim_start_matches('/');
-    let relative = if trimmed.is_empty() {
-        Path::new("index.html")
-    } else {
-        Path::new(trimmed)
-    };
-    let mut sanitized = PathBuf::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(part) => sanitized.push(part),
-            Component::CurDir => {}
-            _ => return None,
-        }
-    }
-    let candidate = root.join(sanitized);
-    if candidate.is_file() {
-        Some(candidate)
-    } else {
-        Some(root.join("index.html"))
-    }
-}
-
-fn content_type_for_path(path: &Path) -> &'static str {
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some("css") => "text/css; charset=utf-8",
-        Some("html") => "text/html; charset=utf-8",
-        Some("ico") => "image/x-icon",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("js") => "text/javascript; charset=utf-8",
-        Some("json") => "application/json; charset=utf-8",
-        Some("png") => "image/png",
-        Some("svg") => "image/svg+xml",
-        Some("wasm") => "application/wasm",
-        Some("webp") => "image/webp",
-        _ => "application/octet-stream",
-    }
-}
-
 #[derive(Serialize)]
 struct ReadyDocument {
     schema_version: u32,
     pid: u32,
     mode: String,
-    address: String,
-    url: String,
     control_socket: String,
-    web_root: Option<String>,
+    transport: &'static str,
 }
 
 fn write_ready_file(
     path: &Path,
-    address: SocketAddr,
     control_socket: &Path,
     mode: DaemonMode,
-    web_root: Option<&Path>,
 ) -> Result<(), DaemonRunError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| DaemonRunError::ReadyFileDirectory {
@@ -326,13 +165,11 @@ fn write_ready_file(
         })?;
     }
     let document = ReadyDocument {
-        schema_version: 1,
+        schema_version: 2,
         pid: process::id(),
         mode: mode.label().to_owned(),
-        address: address.to_string(),
-        url: ready_url(address),
         control_socket: control_socket.display().to_string(),
-        web_root: web_root.map(|path| path.display().to_string()),
+        transport: "http1-unix",
     };
     let payload =
         serde_json::to_vec_pretty(&document).map_err(DaemonRunError::ReadyFileSerialize)?;
@@ -347,20 +184,6 @@ fn write_ready_file(
         to: path.to_owned(),
     })?;
     Ok(())
-}
-
-fn ready_url(address: SocketAddr) -> String {
-    format!("http://{}/", connectable_local_address(address))
-}
-
-fn connectable_local_address(address: SocketAddr) -> SocketAddr {
-    if !address.ip().is_unspecified() {
-        return address;
-    }
-    match address {
-        SocketAddr::V4(address) => SocketAddr::new(Ipv4Addr::LOCALHOST.into(), address.port()),
-        SocketAddr::V6(address) => SocketAddr::new(Ipv6Addr::LOCALHOST.into(), address.port()),
-    }
 }
 
 struct ReadyFileGuard {
@@ -392,44 +215,60 @@ fn platform_capture_probe() -> Option<Arc<dyn CaptureCapabilityProbe>> {
     None
 }
 
-fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
+fn license_policy(
+    mode: DaemonMode,
+    production_verifier_required: bool,
+) -> Result<LicensePolicy, DaemonRunError> {
     // A debug build exposes process-local development access through the
     // local API. It never creates a license document and disappears when this
-    // daemon exits. Only release artifacts enforce deployment key provisioning.
+    // daemon exits. Release artifacts require a deployment verifier before a
+    // formal license can be activated, but missing provisioning does not keep
+    // the license UI offline.
     let development_build = cfg!(debug_assertions);
-    let temporary_access_supported = development_build;
+    let temporary_access_code = development_build
+        .then(|| std::env::var("NOVASIGHT_TEMPORARY_LICENSE_CODE").ok())
+        .flatten()
+        .filter(|value| !value.is_empty());
     let inline_public_key = std::env::var("NOVASIGHT_LICENSE_PUBLIC_KEY")
         .ok()
         .filter(|value| !value.trim().is_empty());
-    if development_build {
+    let public_key = if development_build && !production_verifier_required {
         // A formal verifier is optional in Debug. Load it opportunistically so
         // signed-license testing still works, but stale deployment paths must
         // never prevent the local development daemon from starting.
-        let public_key = inline_public_key.or_else(|| {
+        inline_public_key.or_else(|| {
             std::env::var_os("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
                 .filter(|path| !path.is_empty())
                 .and_then(|path| std::fs::read_to_string(path).ok())
-        });
-        return Ok(LicensePolicy::new(temporary_access_supported, public_key));
-    }
-    let public_key = match inline_public_key {
-        Some(public_key) => Some(public_key),
-        None => std::env::var_os("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
-            .filter(|path| !path.is_empty())
-            .map(PathBuf::from)
-            .map(|path| {
-                std::fs::read_to_string(&path).map_err(|source| {
-                    DaemonRunError::LicensePublicKeyRead {
-                        path: path.clone(),
-                        source,
-                    }
+        })
+    } else {
+        match inline_public_key {
+            Some(public_key) => Some(public_key),
+            None => std::env::var_os("NOVASIGHT_LICENSE_PUBLIC_KEY_FILE")
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .map(|path| {
+                    std::fs::read_to_string(&path).map_err(|source| {
+                        DaemonRunError::LicensePublicKeyRead {
+                            path: path.clone(),
+                            source,
+                        }
+                    })
                 })
-            })
-            .transpose()?,
+                .transpose()?,
+        }
     };
-    let policy = LicensePolicy::new(temporary_access_supported, public_key);
-    let public_key_required = mode.hardware_output_enabled();
-    match policy.validate_public_key(public_key_required) {
+    let policy = match temporary_access_code.as_deref() {
+        Some(code) => LicensePolicy::new(public_key).with_temporary_access_code(code),
+        None => Ok(LicensePolicy::new(public_key)),
+    }
+    .map_err(DaemonRunError::LicensePolicyInvalid)?;
+    // Keep the product online when deployment provisioning is incomplete so
+    // the license UI can explain the missing verifier. Runtime authorization
+    // remains fail-closed, and a configured malformed key still prevents
+    // readiness.
+    match policy.validate_public_key(production_verifier_required && mode.hardware_output_enabled())
+    {
         Ok(()) => Ok(policy),
         Err(LicenseError::PublicKeyMissing) => Err(DaemonRunError::LicensePublicKeyMissing),
         Err(error) => Err(DaemonRunError::LicensePublicKeyInvalid(error)),
@@ -437,7 +276,7 @@ fn license_policy(mode: DaemonMode) -> Result<LicensePolicy, DaemonRunError> {
 }
 
 pub(super) fn preflight_license_policy(mode: DaemonMode) -> Result<(), DaemonRunError> {
-    license_policy(mode).map(drop)
+    license_policy(mode, true).map(drop)
 }
 
 pub(super) fn preflight_instance_lock(mode: DaemonMode) -> Result<(), DaemonRunError> {
@@ -476,6 +315,7 @@ struct InstanceLock(#[allow(dead_code)] UnixListener);
 async fn monitor_runtime_license(
     repository: FileLicenseRepository,
     runtime: RuntimeHandle,
+    config_service: ConfigService,
     hardware_output_enabled: bool,
     mut shutdown: watch::Receiver<bool>,
     interval: Duration,
@@ -492,17 +332,13 @@ async fn monitor_runtime_license(
             }
             _ = tick.tick() => {
                 let status_repository = repository.clone();
+                let hardware_output_requested = hardware_output_enabled
+                    && config_service.snapshot().await.control.output_enabled;
                 let authorization = tokio::task::spawn_blocking(move || {
                     status_repository.status().map(|status| {
-                        let runtime = status.features.iter().any(|feature| feature == "runtime");
-                        let hardware = status
-                            .features
-                            .iter()
-                            .any(|feature| feature == "hardware_control");
-                        let authorized = status.configured
-                            && status.valid
-                            && runtime
-                            && (!hardware_output_enabled || hardware);
+                        let authorized = status
+                            .authorize_runtime(hardware_output_requested)
+                            .is_ok();
                         (authorized, status.message)
                     })
                 })
@@ -536,21 +372,8 @@ async fn monitor_runtime_license(
 enum FirstExit {
     Signal,
     Runtime,
-    Http(Result<(), io::Error>),
     Control(Result<(), io::Error>),
     License(Result<(), DaemonRunError>),
-}
-
-fn combine_server_results(
-    http: Result<(), io::Error>,
-    control: Result<(), io::Error>,
-) -> Result<(), DaemonRunError> {
-    match (http, control) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(DaemonRunError::HttpServe(error)),
-        (Ok(()), Err(error)) => Err(DaemonRunError::ControlServe(error)),
-        (Err(http), Err(control)) => Err(DaemonRunError::ServersFailed { http, control }),
-    }
 }
 
 async fn bind_control_socket(
@@ -786,9 +609,7 @@ impl ShutdownSignals {
 
 #[derive(Debug, Error)]
 pub(super) enum DaemonRunError {
-    #[error(
-        "release hardware mode requires NOVASIGHT_LICENSE_PUBLIC_KEY or NOVASIGHT_LICENSE_PUBLIC_KEY_FILE"
-    )]
+    #[error("production license public key is not configured")]
     LicensePublicKeyMissing,
     #[error("failed to read license public key {}: {source}", path.display())]
     LicensePublicKeyRead {
@@ -798,6 +619,8 @@ pub(super) enum DaemonRunError {
     },
     #[error("configured production license public key is invalid: {0}")]
     LicensePublicKeyInvalid(LicenseError),
+    #[error("configured license policy is invalid: {0}")]
+    LicensePolicyInvalid(LicenseError),
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[error("another NovaSight daemon is already running")]
     InstanceLockInUse,
@@ -806,15 +629,6 @@ pub(super) enum DaemonRunError {
     InstanceLockAcquire(io::Error),
     #[error("failed to stop runtime after license invalidation: {0}")]
     LicenseEnforcement(RuntimeError),
-    #[error("failed to bind HTTP server at {host}:{port}: {source}")]
-    Bind {
-        host: String,
-        port: u16,
-        #[source]
-        source: io::Error,
-    },
-    #[error("failed to read bound HTTP address: {0}")]
-    LocalAddress(io::Error),
     #[error("failed to create ready-file directory {}: {source}", path.display())]
     ReadyFileDirectory {
         path: PathBuf,
@@ -838,8 +652,6 @@ pub(super) enum DaemonRunError {
     },
     #[error("failed to register shutdown signal: {0}")]
     Signal(io::Error),
-    #[error("HTTP server failed: {0}")]
-    HttpServe(io::Error),
     #[error("Unix control server failed: {0}")]
     ControlServe(io::Error),
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -848,8 +660,6 @@ pub(super) enum DaemonRunError {
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     #[error("abstract control sockets are supported only on Linux and Android")]
     AbstractControlSocketUnsupported,
-    #[error("HTTP server failed: {http}; Unix control server also failed: {control}")]
-    ServersFailed { http: io::Error, control: io::Error },
     #[error("control socket path is occupied by a non-socket file: {}", .0.display())]
     ControlSocketPathOccupied(PathBuf),
     #[error("another daemon is already listening at control socket {}", .0.display())]
@@ -933,25 +743,22 @@ impl DaemonRunError {
             Self::LicensePublicKeyMissing => "LICENSE_PUBLIC_KEY_MISSING",
             Self::LicensePublicKeyRead { .. } => "LICENSE_PUBLIC_KEY_READ_FAILED",
             Self::LicensePublicKeyInvalid(_) => "LICENSE_PUBLIC_KEY_INVALID",
+            Self::LicensePolicyInvalid(_) => "LICENSE_POLICY_INVALID",
             #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::InstanceLockInUse => "INSTANCE_ALREADY_RUNNING",
             #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::InstanceLockAcquire(_) => "INSTANCE_GUARD_FAILED",
             Self::LicenseEnforcement(_) => "LICENSE_ENFORCEMENT_FAILED",
-            Self::Bind { .. } => "SERVER_BIND_FAILED",
-            Self::LocalAddress(_) => "SERVER_LOCAL_ADDRESS_FAILED",
             Self::ReadyFileDirectory { .. } => "READY_FILE_DIRECTORY_FAILED",
             Self::ReadyFileSerialize(_) => "READY_FILE_SERIALIZE_FAILED",
             Self::ReadyFileWrite { .. } => "READY_FILE_WRITE_FAILED",
             Self::ReadyFileRename { .. } => "READY_FILE_RENAME_FAILED",
             Self::Signal(_) => "SHUTDOWN_SIGNAL_FAILED",
-            Self::HttpServe(_) => "SERVER_FAILED",
             Self::ControlServe(_) => "CONTROL_SERVER_FAILED",
             #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::AbstractControlSocketNameEmpty => "CONTROL_SOCKET_ABSTRACT_NAME_EMPTY",
             #[cfg(not(any(target_os = "linux", target_os = "android")))]
             Self::AbstractControlSocketUnsupported => "CONTROL_SOCKET_ABSTRACT_UNSUPPORTED",
-            Self::ServersFailed { .. } => "SERVERS_FAILED",
             Self::ControlSocketPathOccupied(_) => "CONTROL_SOCKET_PATH_OCCUPIED",
             Self::ControlSocketInUse(_) => "CONTROL_SOCKET_IN_USE",
             Self::InspectControlSocket { .. } => "CONTROL_SOCKET_INSPECT_FAILED",

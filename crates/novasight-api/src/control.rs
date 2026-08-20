@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::{
     Extension, Json, Router,
@@ -26,15 +25,15 @@ use novasight_runtime::{
     ModelActivationError, ModelIngressError, PipelineState, RuntimeError, RuntimeErrorKind,
     RuntimeHandle, RuntimeSnapshot,
 };
-use novasight_store::license::{FileLicenseRepository, LicenseError, LicenseStatus};
+use novasight_store::license::{FileLicenseRepository, LicenseDenial, LicenseError, LicenseStatus};
 use novasight_store::model_catalog::{ModelCatalogError, SqliteModelCatalog};
+use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, watch};
 use tracing::Instrument;
 
 use crate::dto::{
-    ConfigSchemaResponse, RuntimeHealth, RuntimeStartResponse, RuntimeStatusState,
-    serialize_runtime_status_frame,
+    ConfigSchemaResponse, RuntimeHealth, RuntimeStatusState, serialize_runtime_status_frame,
 };
 use crate::license_session::LicenseSession;
 use crate::websocket::status::send_while_receiving;
@@ -122,6 +121,7 @@ pub fn build_control_router_with_platform_queries(
     shutdown: impl Into<Option<watch::Receiver<bool>>>,
 ) -> Router {
     let state = ControlState {
+        daemon_instance_id: generate_daemon_instance_id(),
         runtime,
         config: config_service.into(),
         license: license.into(),
@@ -142,10 +142,10 @@ pub fn build_control_router_with_platform_queries(
                 .delete(clear_license),
         )
         .route("/api/license/activate", post(activate_license))
-        .route("/api/license/temporary", post(grant_temporary_license))
         .route("/api/runtime/state", get(runtime_status))
         .route("/api/runtime/start", post(runtime_start))
         .route("/api/runtime/stop", post(runtime_stop))
+        .route("/api/runtime/emergency-stop", post(runtime_emergency_stop))
         .route("/ws/status", get(runtime_events))
         .route("/api/v1/status", get(status))
         .route("/api/v1/config", get(config).patch(update_config))
@@ -191,7 +191,10 @@ pub fn build_control_router_with_platform_queries(
         )
         .with_state(state.clone());
     let router = if license_gate_enabled {
-        router.layer(middleware::from_fn_with_state(state, require_license))
+        router.layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_license,
+        ))
     } else {
         router
     };
@@ -230,6 +233,7 @@ async fn log_http_request(request: Request<Body>, next: Next) -> Response {
 
 #[derive(Clone)]
 struct ControlState {
+    daemon_instance_id: Arc<str>,
     runtime: RuntimeHandle,
     config: Option<ConfigService>,
     license: Option<FileLicenseRepository>,
@@ -241,19 +245,19 @@ struct ControlState {
     license_session: LicenseSession,
 }
 
-#[derive(Debug, Deserialize)]
-struct LicenseActivationRequest {
-    key: String,
+fn generate_daemon_instance_id() -> Arc<str> {
+    let mut bytes = [0_u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+        .into()
 }
 
 #[derive(Debug, Deserialize)]
-struct TemporaryLicenseRequest {}
-
-#[derive(Debug, Serialize)]
-struct TemporaryLicenseResponse {
-    supported: bool,
-    granted: bool,
-    status: LicenseStatus,
+struct LicenseActivationRequest {
+    key: String,
 }
 
 async fn license_status(State(state): State<ControlState>) -> Result<Response, ControlApiError> {
@@ -290,69 +294,15 @@ async fn activate_license(
     license_response(&state, &status, status.clone())
 }
 
-async fn grant_temporary_license(
-    State(state): State<ControlState>,
-    Json(_request): Json<TemporaryLicenseRequest>,
-) -> Result<Response, ControlApiError> {
-    let _lifecycle_guard = state.lifecycle_lock.lock().await;
-    let license = state
-        .license
-        .as_ref()
-        .ok_or(ControlApiError::LicenseUnavailable)?;
-    let supported = license.temporary_access_supported();
-    let (granted, status) = tokio::task::spawn_blocking({
-        let repository = license.clone();
-        move || match repository.grant_temporary() {
-            Ok(status) => Ok((true, status)),
-            Err(error)
-                if matches!(
-                    error,
-                    LicenseError::TemporaryGrantDisabled
-                        | LicenseError::TemporaryGrantWouldReplaceActiveLicense
-                ) =>
-            {
-                let mut status = repository.status()?;
-                status.message = error.to_string();
-                Ok((false, status))
-            }
-            Err(error) => Err(error),
-        }
-    })
-    .await
-    .map_err(ControlApiError::LicenseTask)?
-    .map_err(ControlApiError::License)?;
-    if granted {
-        tracing::info!(
-            tier = %status.tier,
-            expires_at = status.expires_at,
-            "process-local development access granted"
-        );
-    } else {
-        tracing::warn!(
-            configured = status.configured,
-            valid = status.valid,
-            reason = %status.message,
-            "process-local development access rejected"
-        );
-    }
-    stop_if_license_disallows_runtime(&state, &status).await?;
-    let payload = TemporaryLicenseResponse {
-        supported,
-        granted,
-        status: status.clone(),
-    };
-    license_response(&state, &status, payload)
-}
-
 async fn clear_license(State(state): State<ControlState>) -> Result<Response, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     let license = state
         .license
         .as_ref()
         .ok_or(ControlApiError::LicenseUnavailable)?;
+    ensure_runtime_safe_locked(&state).await?;
     let status = run_license_operation(license.clone(), |repository| repository.clear()).await?;
     tracing::info!("license cleared");
-    stop_if_license_disallows_runtime(&state, &status).await?;
     let mut response = Json(status).into_response();
     response
         .headers_mut()
@@ -378,26 +328,60 @@ async fn stop_if_license_disallows_runtime(
     state: &ControlState,
     status: &LicenseStatus,
 ) -> Result<(), ControlApiError> {
-    if !license_authorizes_runtime(status, state.hardware_output_enabled)
+    if status
+        .authorize_runtime(hardware_output_requested(state).await)
+        .is_err()
         && matches!(
             state.runtime.snapshot().pipeline.state,
             PipelineState::Starting | PipelineState::Running | PipelineState::Standby
         )
     {
-        state.runtime.emergency_stop().await?;
+        emergency_stop_locked(state).await?;
     }
     Ok(())
 }
 
-fn license_authorizes_runtime(status: &LicenseStatus, hardware_output_enabled: bool) -> bool {
-    status.configured
-        && status.valid
-        && status.features.iter().any(|feature| feature == "runtime")
-        && (!hardware_output_enabled
-            || status
-                .features
-                .iter()
-                .any(|feature| feature == "hardware_control"))
+fn runtime_snapshot_confirms_safe(snapshot: &RuntimeSnapshot) -> bool {
+    snapshot.pipeline.state == PipelineState::Stopped
+        && !snapshot.pipeline_metrics.device_connected
+        && !snapshot.pipeline_metrics.control.emit_allowed
+}
+
+async fn emergency_stop_locked(state: &ControlState) -> Result<RuntimeSnapshot, ControlApiError> {
+    let snapshot = state.runtime.emergency_stop().await?;
+    if !runtime_snapshot_confirms_safe(&snapshot) {
+        return Err(ControlApiError::Runtime(
+            RuntimeError::invalid_pipeline_state(
+                "emergency stop completed without a confirmed stopped, disconnected, output-blocked snapshot",
+            ),
+        ));
+    }
+    Ok(snapshot)
+}
+
+async fn ensure_runtime_safe_locked(
+    state: &ControlState,
+) -> Result<RuntimeSnapshot, ControlApiError> {
+    let current = state.runtime.snapshot();
+    if runtime_snapshot_confirms_safe(&current) {
+        return Ok(current);
+    }
+    emergency_stop_locked(state).await
+}
+
+async fn emergency_stop_with_lifecycle_barrier(
+    state: &ControlState,
+) -> Result<RuntimeSnapshot, ControlApiError> {
+    let immediate_result = state.runtime.emergency_stop().await;
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let snapshot = emergency_stop_locked(state).await?;
+    if let Err(error) = immediate_result {
+        tracing::warn!(
+            error = %error,
+            "initial emergency stop attempt failed; lifecycle-barrier stop confirmed safe"
+        );
+    }
+    Ok(snapshot)
 }
 
 async fn run_license_operation(
@@ -494,8 +478,8 @@ async fn require_license(
         )
             .into_response();
     }
-    if state.hardware_output_enabled
-        && is_runtime_start(method, path)
+    if is_runtime_start(method, path)
+        && hardware_output_requested(&state).await
         && !status
             .features
             .iter()
@@ -546,13 +530,13 @@ fn is_license_open_path(method: &Method, path: &str) -> bool {
         || path == "/healthz"
         || (path == "/api/license" && matches!(*method, Method::GET | Method::PUT | Method::DELETE))
         || (path == "/api/license/activate" && *method == Method::POST)
-        || (path == "/api/license/temporary" && *method == Method::POST)
         || path == "/ws/status"
         || path == "/api/config/schema"
         || (*method == Method::POST
             && matches!(
                 path,
                 "/api/runtime/stop"
+                    | "/api/runtime/emergency-stop"
                     | "/api/v1/runtime/stop"
                     | "/api/v1/runtime/emergency-stop"
                     | "/api/v1/daemon/shutdown"
@@ -602,22 +586,34 @@ async fn runtime_status(State(state): State<ControlState>) -> Json<RuntimeStatus
     Json(runtime_state(&state, &snapshot).await)
 }
 
-async fn runtime_start(
-    State(state): State<ControlState>,
-) -> Result<Json<RuntimeStartResponse>, ControlApiError> {
+async fn runtime_start(State(state): State<ControlState>) -> Result<StatusCode, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_runtime_license(&state).await?;
     prepare_config_for_start(&state).await?;
-    let snapshot = state.runtime.start().await?;
-    Ok(Json(RuntimeStartResponse::from(&snapshot)))
+    state.runtime.start().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn runtime_stop(
     State(state): State<ControlState>,
 ) -> Result<Json<RuntimeStatusState>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
-    let snapshot = state.runtime.stop().await?;
+    let stopped = state.runtime.stop().await?;
+    let snapshot = if runtime_snapshot_confirms_safe(&stopped) {
+        stopped
+    } else {
+        // Ordinary Stop has the same externally visible safety postcondition as
+        // E-stop. If the graceful path does not prove it, fail closed now.
+        emergency_stop_locked(&state).await?
+    };
     Ok(Json(runtime_state(&state, &snapshot).await))
+}
+
+async fn runtime_emergency_stop(
+    State(state): State<ControlState>,
+) -> Result<StatusCode, ControlApiError> {
+    emergency_stop_with_lifecycle_barrier(&state).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn runtime_state(state: &ControlState, snapshot: &RuntimeSnapshot) -> RuntimeStatusState {
@@ -639,6 +635,7 @@ async fn runtime_state_for_topic(
         .map(ConfigService::blocking_effective_snapshot);
     let effective_revision = state.config.as_ref().map(ConfigService::effective_revision);
     RuntimeStatusState::for_topic(
+        &state.daemon_instance_id,
         snapshot,
         config.as_ref(),
         effective_config.as_ref(),
@@ -958,6 +955,9 @@ async fn apply_config_field_update(
     let hot_trigger_mode = update.section == "control" && update.key == "trigger_mode";
     let hot_recoil = update.section == "control" && update.key == "recoil";
     let hot_pipeline = hot_pipeline_config_update(&update);
+    if hot_output_gate && update.value.as_bool() == Some(true) {
+        ensure_hardware_control_license(state).await?;
+    }
     let result = if hot_output_gate {
         service.update_output_gate(&state.runtime, update).await?
     } else if hot_trigger_mode {
@@ -999,17 +999,22 @@ impl ConfigCommandRequest {
             Self::SetOutputGate {
                 enabled,
                 expected_revision,
-            } => Ok(service
-                .update_output_gate(
-                    &state.runtime,
-                    ConfigFieldUpdate {
-                        section: "control".to_owned(),
-                        key: "output_enabled".to_owned(),
-                        value: serde_json::Value::Bool(enabled),
-                        expected_revision,
-                    },
-                )
-                .await?),
+            } => {
+                if enabled {
+                    ensure_hardware_control_license(state).await?;
+                }
+                Ok(service
+                    .update_output_gate(
+                        &state.runtime,
+                        ConfigFieldUpdate {
+                            section: "control".to_owned(),
+                            key: "output_enabled".to_owned(),
+                            value: serde_json::Value::Bool(enabled),
+                            expected_revision,
+                        },
+                    )
+                    .await?)
+            }
             Self::SetTriggerMode {
                 mode,
                 expected_revision,
@@ -1034,21 +1039,43 @@ async fn ensure_runtime_license(state: &ControlState) -> Result<(), ControlApiEr
     };
     let status =
         run_license_operation(repository.clone(), |repository| repository.status()).await?;
-    if !status.configured || !status.valid {
-        return Err(ControlApiError::LicenseRequired);
+    status
+        .authorize_runtime(hardware_output_requested(state).await)
+        .map_err(control_error_from_license_denial)
+}
+
+async fn ensure_hardware_control_license(state: &ControlState) -> Result<(), ControlApiError> {
+    if !state.hardware_output_enabled {
+        return Ok(());
     }
-    if !status.features.iter().any(|feature| feature == "runtime") {
-        return Err(ControlApiError::LicenseFeatureRequired("runtime"));
+    let Some(repository) = state.license.as_ref() else {
+        return Ok(());
+    };
+    let status =
+        run_license_operation(repository.clone(), |repository| repository.status()).await?;
+    status
+        .authorize_feature("hardware_control")
+        .map_err(control_error_from_license_denial)
+}
+
+fn control_error_from_license_denial(denial: LicenseDenial) -> ControlApiError {
+    match denial {
+        LicenseDenial::Required => ControlApiError::LicenseRequired,
+        LicenseDenial::FeatureRequired(feature) => ControlApiError::LicenseFeatureRequired(feature),
     }
-    if state.hardware_output_enabled
-        && !status
-            .features
-            .iter()
-            .any(|feature| feature == "hardware_control")
-    {
-        return Err(ControlApiError::LicenseFeatureRequired("hardware_control"));
+}
+
+async fn hardware_output_requested(state: &ControlState) -> bool {
+    if !state.hardware_output_enabled {
+        return false;
     }
-    Ok(())
+    if state.runtime.snapshot().pipeline_metrics.output_gate_open {
+        return true;
+    }
+    match &state.config {
+        Some(service) => service.snapshot().await.control.output_enabled,
+        None => false,
+    }
 }
 
 async fn config(State(state): State<ControlState>) -> Result<Json<AppConfig>, ControlApiError> {
@@ -1279,7 +1306,7 @@ async fn restart(
 async fn emergency_stop(
     State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
-    Ok(Json(state.runtime.emergency_stop().await?))
+    Ok(Json(emergency_stop_with_lifecycle_barrier(&state).await?))
 }
 
 async fn shutdown_daemon(
@@ -1304,6 +1331,13 @@ async fn events(websocket: WebSocketUpgrade, State(state): State<ControlState>) 
 #[derive(Debug, Default, Deserialize)]
 struct RuntimeStatusQuery {
     topic: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RuntimeStatusHeartbeat {
+    kind: &'static str,
+    daemon_instance_id: String,
+    snapshot_sequence: u64,
 }
 
 async fn runtime_events(
@@ -1389,7 +1423,23 @@ async fn stream_runtime_events(socket: WebSocket, state: ControlState, query: Ru
                 snapshot_changed = true;
             }
             _ = heartbeat.tick() => {
-                snapshot_changed = true;
+                let snapshot_sequence = snapshots.borrow().sequence;
+                let Ok(payload) = serde_json::to_string(&RuntimeStatusHeartbeat {
+                    kind: "runtime_heartbeat",
+                    daemon_instance_id: state.daemon_instance_id.to_string(),
+                    snapshot_sequence,
+                }) else {
+                    return;
+                };
+                match send_or_shutdown(
+                    &mut outbound,
+                    &mut inbound,
+                    Message::Text(payload.into()),
+                    &mut shutdown,
+                ).await {
+                    SendOutcome::Sent => {}
+                    SendOutcome::Closed | SendOutcome::Shutdown => return,
+                }
             }
             incoming = inbound.next() => {
                 match incoming {
@@ -1910,5 +1960,29 @@ impl IntoResponse for ControlApiError {
             );
         }
         (status, Json(body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_snapshot_confirms_safe;
+    use novasight_runtime::{PipelineState, RuntimeSnapshot};
+
+    #[test]
+    fn safe_snapshot_requires_stopped_disconnected_and_output_blocked() {
+        let safe = RuntimeSnapshot::default();
+        assert!(runtime_snapshot_confirms_safe(&safe));
+
+        let mut running = safe.clone();
+        running.pipeline.state = PipelineState::Running;
+        assert!(!runtime_snapshot_confirms_safe(&running));
+
+        let mut connected = safe.clone();
+        connected.pipeline_metrics.device_connected = true;
+        assert!(!runtime_snapshot_confirms_safe(&connected));
+
+        let mut emitting = safe;
+        emitting.pipeline_metrics.control.emit_allowed = true;
+        assert!(!runtime_snapshot_confirms_safe(&emitting));
     }
 }

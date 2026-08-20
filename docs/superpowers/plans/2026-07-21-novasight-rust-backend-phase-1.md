@@ -568,7 +568,7 @@ pub struct RuntimeStateResponse {
 
 - `GET /healthz` returns `{"ok": true}`.
 - `GET /api/runtime/state` projects `RuntimeHandle::snapshot()`.
-- `POST /api/runtime/start` awaits `RuntimeHandle::start()` and returns existing keys `running`, `accepted`, `failed`, plus additive `epoch` and `operation_id`.
+- `POST /api/runtime/start` accepts no request body, awaits `RuntimeHandle::start()`, and returns `204 No Content`; `GET /api/runtime/state` and `/ws/status` remain the only runtime-state authorities.
 - `POST /api/runtime/stop` awaits complete stop then returns the full RuntimeState projection.
 
 - [ ] **Step 5: Run route contracts**

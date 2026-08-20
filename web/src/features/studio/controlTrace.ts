@@ -103,6 +103,18 @@ const OUTPUT_TRACE_LABELS: Record<string, string> = {
   trigger_inactive: "等待触发",
   device_not_connected: "设备未连接",
   control_blocked: "控制阻断",
+  generation_fenced: "等待新配置帧",
+  device_send_failed: "设备发送失败",
+  device_output_disabled: "设备输出已停用",
+  TIMESTAMP_DOMAIN_INVALID: "时间戳域无效",
+  STALE_OBSERVATION: "控制观测已过期",
+  NON_MONOTONIC_OBSERVATION: "控制时间戳非单调",
+  TARGET_INVALID: "控制目标无效",
+  GEOMETRY_INVALID: "控制几何无效",
+  TRIGGER_INACTIVE: "等待触发",
+  TRIGGER_DELAY_PENDING: "等待开火延迟",
+  DEAD_ZONE: "目标位于死区",
+  DEMAND_OUT_OF_RANGE: "控制需求越界",
   ready: "输出链路已贯通"
 };
 

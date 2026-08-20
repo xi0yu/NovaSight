@@ -46,6 +46,8 @@ pipeline:
   target_aim_y_ratio: 0.22
   target_class_aim_y_ratios: ""
   candidate_max_aspect_ratio: 6.0
+control:
+  output_enabled: false
 capture:
   device: /dev/video0
   backend: deepstream_nvinfer
@@ -85,7 +87,7 @@ inference:
   deepstream_shutdown_timeout_ms: 5000
   input_source: source.default
 hardware:
-  auto_connect: true
+  auto_connect: false
   backend: native_udp
   host: 192.168.2.188
   port: 8888

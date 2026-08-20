@@ -38,6 +38,8 @@ import {
   RuntimeConfigValue,
   RuntimeState,
   RuntimeStatusTopic,
+  type RuntimeVisionDetectionState,
+  type RuntimeVisionTargetState,
   getCaptureCapabilities,
   getModelArtifacts,
   getModelCatalog,
@@ -45,8 +47,6 @@ import {
   selectCaptureProfile,
   setRuntimeOutputGate,
   setCapturePreviewEnabled,
-  stopCapture,
-  stopRuntimePipeline,
   streamUrl,
   updateRuntimeConfig,
 } from "../../api";
@@ -54,7 +54,7 @@ import { reportError, reportInfo, reportSuccess, useClearErrorNotices, useErrorN
 import { getErrorMessage } from "../shared/format";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { useStableSemanticValue } from "../shared/useStableSemanticValue";
-import { NovaIcon, StatusBadge, ThemeToggle } from "../../components/visual";
+import { NovaIcon, ThemeToggle } from "../../components/visual";
 import { CurrentModelSummary } from "../models/CurrentModelSummary";
 import { ModelSwitchDialog } from "../models/ModelSwitchDialog";
 import {
@@ -93,19 +93,22 @@ import {
 } from "./algorithmParameterModel";
 import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
 import { StudioPageHeader } from "./StudioPageHeader";
-import { KvCard, Metric, SectionTitle } from "./StudioPresentation";
+import { KvCard, Metric, SectionTitle, WorkspaceNotice } from "./StudioPresentation";
+import { StudioRuntimeBar } from "./StudioRuntimeBar";
 import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
 import {
   buildLaunchReadiness,
   type LaunchReadinessAction
 } from "./launchReadiness";
-import {
-  resolveMainlineLaunchStepState,
-  useMainlineLaunch,
-  type MainlineLaunchStepState
-} from "./useMainlineLaunch";
+import { useMainlineLaunch } from "./useMainlineLaunch";
 import { useConfigApplyPresentation } from "./useConfigApplyPresentation";
 import { useModelSwitchWorkflow } from "./useModelSwitchWorkflow";
+import { RuntimeOverviewView } from "./RuntimeOverviewView";
+import {
+  projectRuntimeState,
+  type RuntimeRecoveryAction,
+  type RuntimeTransportConfidence,
+} from "../runtime/runtimeProjection";
 import { buildControlTrace } from "./controlTrace";
 import {
   buildProductConfigProfile,
@@ -152,6 +155,9 @@ const ModelManagerDialog = lazy(() =>
   loadModelManagerDialog().then((module) => ({
     default: module.ModelManagerDialog
   }))
+);
+const ModelWorkspace = lazy(() =>
+  import("../models/ModelWorkspace").then((module) => ({ default: module.ModelWorkspace }))
 );
 
 function ModelManagerLoadingDialog({ onClose }: { onClose: () => void }) {
@@ -200,7 +206,7 @@ type StudioConsoleViewProps = {
   onEnsureProjects: (force?: boolean) => Promise<ModelProject[]>;
   onRefresh: () => Promise<void>;
   onRuntimeConfigChange: (config: RuntimeConfig) => void;
-  onRuntimeStateChange: (runtime: RuntimeState) => void;
+  onRuntimeStateChange: (runtime: RuntimeState) => boolean;
   onStatusTopicChange: (topic: RuntimeStatusTopic) => void;
 };
 
@@ -234,8 +240,6 @@ const ALGORITHM_SETTINGS_SECTIONS: Array<{
   }
 ];
 
-const RUNTIME_MAINLINE_BACKENDS = new Set(["deepstream_nvinfer"]);
-
 function pageFromUrl(): ConsolePage {
   const raw = new URLSearchParams(window.location.search).get("page");
   return CONSOLE_PAGES.has(raw as ConsolePage) ? (raw as ConsolePage) : DEFAULT_CONSOLE_PAGE;
@@ -252,24 +256,18 @@ function writePageToUrl(page: ConsolePage, mode: "push" | "replace" = "push") {
 }
 
 const ROI_SIZE_CHOICES = [256, 320, 480, 640];
-const KMNET_RECOMMENDED = {
-  auto_connect: true,
-  backend: "native_udp",
-  host: "192.168.2.188",
-  port: 8888,
-  uuid: "12345678",
-  monitor_port: 5001
-};
 
 const ARTIFACT_KIND_RANK: Record<string, number> = {
   engine: 0,
   onnx: 1
 };
+const EMPTY_RECORD: Record<string, unknown> = Object.freeze({});
+const EMPTY_AIM_ROLES: Record<string, AimRole> = Object.freeze({});
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
-    : {};
+    : EMPTY_RECORD;
 }
 
 function nestedRecord(value: unknown, key: string): Record<string, unknown> {
@@ -345,10 +343,6 @@ function parseDetectionClassFilter(value: string): Set<number> | null {
   return classIds.length > 0 ? new Set(classIds) : null;
 }
 
-function recordArray(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.map(asRecord) : [];
-}
-
 function readNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -358,10 +352,6 @@ function readBoolean(value: unknown, fallback = false): boolean {
 }
 
 function readNullableNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
@@ -452,10 +442,6 @@ function formatResponseStage(value: unknown): string {
     default:
       return NO_SAMPLE;
   }
-}
-
-function readNullableBoolean(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
 }
 
 function freshnessSummary(ageMs: number | null, thresholdMs: number | null): string {
@@ -720,8 +706,12 @@ export function StudioConsoleView({
       if (activePage === "infer") void loadModelManagerDialog();
       return;
     }
+    if (activePage === "models") {
+      void import("../models/ModelWorkspace");
+      void onEnsureProjects(false).catch(() => undefined);
+    }
     onStatusTopicChange("summary");
-  }, [activePage, onStatusTopicChange]);
+  }, [activePage, onEnsureProjects, onStatusTopicChange]);
   const [device, setDevice] = useState(
     readString(nestedRecord(runtimeConfig, "capture").device, runtime?.capture?.device ?? "/dev/video0")
   );
@@ -786,11 +776,18 @@ export function StudioConsoleView({
   const [dialogSaveError, setDialogSaveError] = useState<string | null>(null);
   const configFieldIndex = useMemo(() => buildConfigFieldIndex(configSchema), [configSchema]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
   const runtimeConfigLatestRef = useRef<RuntimeConfig | null>(runtimeConfig);
   const activeConfigDialogRef = useRef<ConfigDialogId | null>(null);
   const configDialogBaselineRef = useRef<RuntimeConfig | null>(null);
   const parameterPageBaselineRef = useRef<RuntimeConfig | null>(null);
+  const scrollStudioToTop = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      mainRef.current?.scrollTo({ top: 0, left: 0 });
+      window.scrollTo({ top: 0, left: 0 });
+    });
+  }, []);
   const parameterPageDirtyRef = useRef(false);
   const confirmationBusyRef = useRef(false);
   // Per-call AbortController for kmNet connect/disconnect. If the user
@@ -830,7 +827,6 @@ export function StudioConsoleView({
   const classConfigDialogRef = useRef<HTMLElement | null>(null);
   const targetWeightsDialogRef = useRef<HTMLElement | null>(null);
   const errorCenterDialogRef = useRef<HTMLElement | null>(null);
-  const launchDialogRef = useRef<HTMLElement | null>(null);
   const dialogSavingRef = useRef(false);
 
   const setConfigDialogVisibility = useCallback((dialog: ConfigDialogId, open: boolean) => {
@@ -1090,10 +1086,11 @@ export function StudioConsoleView({
         discardParameterPageDraft();
       }
       setActivePage(nextPage);
+      scrollStudioToTop();
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [discardParameterPageDraft]);
+  }, [discardParameterPageDraft, scrollStudioToTop]);
 
   const navigatePage = useCallback((page: ConsolePage) => {
     if (
@@ -1109,7 +1106,8 @@ export function StudioConsoleView({
     }
     setActivePage(page);
     writePageToUrl(page);
-  }, [activePage, discardParameterPageDraft]);
+    scrollStudioToTop();
+  }, [activePage, discardParameterPageDraft, scrollStudioToTop]);
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -1211,7 +1209,27 @@ export function StudioConsoleView({
   const capture = runtime?.capture;
   const statistics = runtime?.statistics;
   const config = configDraft ?? runtimeConfig;
-  const captureConfig = nestedRecord(config, "capture");
+  const {
+    captureConfig,
+    roiConfig,
+    crosshairConfig,
+    limitsConfig,
+    inferenceConfig,
+    controlConfig,
+    rustPipelineConfig,
+    hardwareConfig,
+    consumersConfig
+  } = useMemo(() => ({
+    captureConfig: nestedRecord(config, "capture"),
+    roiConfig: nestedRecord(config, "roi"),
+    crosshairConfig: nestedRecord(config, "crosshair"),
+    limitsConfig: nestedRecord(config, "limits"),
+    inferenceConfig: nestedRecord(config, "inference"),
+    controlConfig: nestedRecord(config, "control"),
+    rustPipelineConfig: nestedRecord(config, "pipeline"),
+    hardwareConfig: nestedRecord(config, "hardware"),
+    consumersConfig: nestedRecord(config, "consumers")
+  }), [config]);
   const configuredCaptureDevice = readString(captureConfig.device, "");
   const configuredCapturePixelFormat = readString(captureConfig.pixel_format, "");
   const configuredCaptureWidth = readNumber(captureConfig.width, 0);
@@ -1221,31 +1239,20 @@ export function StudioConsoleView({
   const configuredRoiTop = readNumber(captureConfig.roi_top, 0);
   const configuredRoiWidth = readNumber(captureConfig.roi_width, 0);
   const configuredRoiHeight = readNumber(captureConfig.roi_height, 0);
-  const roiConfig = nestedRecord(config, "roi");
-  const crosshairConfig = nestedRecord(config, "crosshair");
-  const limitsConfig = nestedRecord(config, "limits");
-  const inferenceConfig = nestedRecord(config, "inference");
-  const controlConfig = nestedRecord(config, "control");
-  const rustPipelineConfig = nestedRecord(config, "pipeline");
   const rustControlPlane = Object.prototype.hasOwnProperty.call(
     rustPipelineConfig,
     "projection_fov_x_deg"
   );
-  const hardwareConfig = nestedRecord(config, "hardware");
-  const consumersConfig = nestedRecord(config, "consumers");
-  const vision = asRecord(runtime?.vision);
-  const crosshairStatus = asRecord(vision.crosshair);
-  const crosshairObservation = asRecord(crosshairStatus.observation);
-  const crosshairTemplate = asRecord(crosshairStatus.template);
-  const inferenceTrace = asRecord(vision.inference);
-  const runtimeInference = asRecord(runtime?.inference);
-  const pipeline = asRecord(runtime?.pipeline);
-  const deepstreamStatus = asRecord(pipeline.deepstream);
+  const vision = runtime?.vision;
+  const crosshairStatus = vision?.crosshair;
+  const crosshairObservation = crosshairStatus?.observation;
+  const crosshairTemplate = crosshairStatus?.template;
+  const inferenceTrace = vision?.inference;
+  const runtimeInference = runtime?.inference;
+  const deepstreamStatus = runtime?.pipeline.deepstream;
   const configuredInferenceBackend = readString(inferenceConfig.backend, "deepstream_nvinfer");
-  const selectedRuntimeBackend = readString(runtimeInference.selected, configuredInferenceBackend);
+  const selectedRuntimeBackend = runtimeInference?.selected ?? configuredInferenceBackend;
   const deepstreamNvinferSelected = selectedRuntimeBackend === "deepstream_nvinfer";
-  const mainlineRuntimeSelected = RUNTIME_MAINLINE_BACKENDS.has(selectedRuntimeBackend);
-  const runtimeMainlineSelected = mainlineRuntimeSelected;
   const runtimeMainlineStatus = getRuntimeMainlineStatus(runtime);
   const runtimeMainlinePresentation = useStableSemanticValue(
     runtimeMainlineStatus,
@@ -1258,14 +1265,10 @@ export function StudioConsoleView({
     runtimeOutputTrace?.code ?? "unavailable",
     220
   );
-  const runtimeInferenceConfigured = runtimeInference.configured === true;
-  const runtimeInferenceReason = readString(runtimeInference.reason, "");
-  const runtimeInferenceDetail = readString(runtimeInference.detail, "");
+  const runtimeInferenceConfigured = runtimeInference?.configured === true;
   const runtimeMainlineRunning = runtimeMainlineStatus.running;
-  const runtimePostprocess = asRecord(runtimeInference.postprocess);
-  const executorStatus = asRecord(runtime?.executor);
-  const executors = asRecord(executorStatus.executors);
-  const kmnetStatus = asRecord(executors.kmnet);
+  const runtimePostprocess = runtimeInference?.postprocess;
+  const kmnetStatus = runtime?.executor.executors.kmnet;
   const selectedProfile = capture?.profile;
   const runningPixelFormat = selectedProfile?.pixel_format ?? "";
   const runningWidth = selectedProfile?.width ?? 0;
@@ -1325,21 +1328,21 @@ export function StudioConsoleView({
   const crosshairSearchSize = readNumber(crosshairConfig.search_size, 96);
   const crosshairSampleHz = readNumber(crosshairConfig.sample_hz, 10);
   const crosshairSampleFrames = readNumber(crosshairConfig.sample_frames, 5);
-  const crosshairState = readString(crosshairStatus.state, "idle");
+  const crosshairState = crosshairStatus?.state ?? "idle";
   const stableCrosshairState = useStableSemanticValue(crosshairState, crosshairState, 280);
-  const crosshairTemplateId = readString(crosshairTemplate.id, "");
-  const crosshairRecentSamples = readNumber(crosshairStatus.recent_samples, 0);
-  const crosshairRequiredSamples = readNumber(crosshairStatus.required_samples, crosshairSampleFrames);
-  const crosshairConfidence = readNumber(crosshairObservation.confidence, 0);
-  const crosshairOffsetX = readNumber(crosshairObservation.offset_x, 0);
-  const crosshairOffsetY = readNumber(crosshairObservation.offset_y, 0);
-  const crosshairReferenceReady = readBoolean(crosshairStatus.control_reference_ready, false);
-  const crosshairBranchActive = readBoolean(deepstreamStatus.crosshair_active, false);
-  const crosshairBranchReason = readString(deepstreamStatus.crosshair_reason, "");
-  const crosshairProcessingError = readString(crosshairStatus.last_error, "");
+  const crosshairTemplateId = crosshairTemplate?.id ?? "";
+  const crosshairRecentSamples = crosshairStatus?.recent_samples ?? 0;
+  const crosshairRequiredSamples = crosshairStatus?.required_samples ?? crosshairSampleFrames;
+  const crosshairConfidence = crosshairObservation?.confidence ?? 0;
+  const crosshairOffsetX = crosshairObservation?.offset_x ?? 0;
+  const crosshairOffsetY = crosshairObservation?.offset_y ?? 0;
+  const crosshairReferenceReady = crosshairStatus?.control_reference_ready === true;
+  const crosshairBranchActive = deepstreamStatus?.crosshair_active === true;
+  const crosshairBranchReason = deepstreamStatus?.crosshair_reason ?? "";
+  const crosshairProcessingError = crosshairStatus?.last_error ?? "";
   const previewFps = readNumber(limitsConfig.stream_fps, 30);
-  const sourceWidth = selectedProfile?.width ?? readNumber(inferenceTrace.source_width, 0);
-  const sourceHeight = selectedProfile?.height ?? readNumber(inferenceTrace.source_height, 0);
+  const sourceWidth = selectedProfile?.width ?? inferenceTrace?.source_width ?? 0;
+  const sourceHeight = selectedProfile?.height ?? inferenceTrace?.source_height ?? 0;
   const roiX = rustControlPlane
     ? configuredRoiLeft
     : sourceWidth > 0 ? Math.max(0, Math.floor((sourceWidth - roiSize) / 2)) : 0;
@@ -1348,7 +1351,10 @@ export function StudioConsoleView({
     : sourceHeight > 0 ? Math.max(0, Math.floor((sourceHeight - roiSize) / 2)) : 0;
   const confidence = readNumber(inferenceConfig.confidence_threshold, 0.25);
   const nms = readNumber(inferenceConfig.nms_threshold, 0.45);
-  const detectionProfiles = recordList(inferenceConfig.detection_class_profiles);
+  const detectionProfiles = useMemo(
+    () => recordList(inferenceConfig.detection_class_profiles),
+    [inferenceConfig.detection_class_profiles]
+  );
   const activeDetectionProfile = readString(inferenceConfig.detection_class_profile, "default");
   const activeDetectionClass = readString(
     rustControlPlane
@@ -1356,7 +1362,7 @@ export function StudioConsoleView({
       : inferenceConfig.detection_class_filter,
     "all"
   );
-  const detectionProfileNames = Object.keys(detectionProfiles);
+  const detectionProfileNames = useMemo(() => Object.keys(detectionProfiles), [detectionProfiles]);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(
     rustControlPlane
@@ -1364,13 +1370,22 @@ export function StudioConsoleView({
       : inferenceConfig.detection_class_priority,
     "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
   );
-  const classPriorityIds = parseClassPriority(detectionClassPriority);
+  const classPriorityIds = useMemo(
+    () => parseClassPriority(detectionClassPriority),
+    [detectionClassPriority]
+  );
   useEffect(() => {
     setRenamedClassProfileName(activeDetectionProfile);
     setClassProfileDeleteArmed(false);
   }, [activeDetectionProfile]);
-  const aimConfig = nestedRecord(controlConfig, "aim");
-  const rawAimRoleRatios = nestedRecord(aimConfig, "role_y_ratios");
+  const { aimConfig, rawAimRoleRatios, recoilConfig } = useMemo(() => {
+    const aim = nestedRecord(controlConfig, "aim");
+    return {
+      aimConfig: aim,
+      rawAimRoleRatios: nestedRecord(aim, "role_y_ratios"),
+      recoilConfig: nestedRecord(controlConfig, "recoil")
+    };
+  }, [controlConfig]);
   const rustOtherAimRatio = readNumber(
     rustControlPlane ? rustPipelineConfig.target_aim_y_ratio : undefined,
     0.22
@@ -1392,8 +1407,11 @@ export function StudioConsoleView({
     }),
     [rawAimRoleRatios, rustControlPlane, rustOtherAimRatio]
   );
-  const classRoleProfiles = profileRoleRecords(aimConfig.class_roles);
-  const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? {};
+  const classRoleProfiles = useMemo(
+    () => profileRoleRecords(aimConfig.class_roles),
+    [aimConfig.class_roles]
+  );
+  const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? EMPTY_AIM_ROLES;
   const targetFovRadiusPx = readNumber(rustPipelineConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(rustPipelineConfig.candidate_max_aspect_ratio, 6);
   const normalizedSelectionClassWeight = clampNumber(
@@ -1434,7 +1452,6 @@ export function StudioConsoleView({
   const trackerKalmanMaxPredictSteps = readNumber(rustPipelineConfig.tracker_kalman_max_predict_steps, 5);
   const trackerKalmanNisThreshold = readNumber(rustPipelineConfig.tracker_kalman_nis_threshold, 9.21);
   const trackerKalmanNisHardReject = readNumber(rustPipelineConfig.tracker_kalman_nis_hard_reject, 16);
-  const recoilConfig = (controlConfig.recoil ?? {}) as Record<string, unknown>;
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
   const recoilRequireTarget = readBoolean(recoilConfig.require_target, true);
   const recoilIntervalMs = readNumber(recoilConfig.interval_ms, 16);
@@ -1448,8 +1465,8 @@ export function StudioConsoleView({
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
   const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
-  const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, true);
-  const outputEnabled = readBoolean(controlConfig.output_enabled, true);
+  const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, false);
+  const outputEnabled = readBoolean(controlConfig.output_enabled, false);
   const controlModeLabel = controlAlgorithmLabel;
 
   useEffect(() => {
@@ -1479,27 +1496,22 @@ export function StudioConsoleView({
     // controlled components and memos stay stable.
     setConfigDraft((prev) => (runtimeConfigValuesEqual(prev, next) ? prev : next));
   }, [draggingControlId, pendingConfigWriteCount, runtimeConfig]);
-  const kmnetConnectedRaw = kmnetStatus.connected === true;
-  const kmnetConnectingRaw = kmnetStatus.connecting === true;
-  const kmnetExecutorAvailable = kmnetStatus.available === true;
-  const kmnetConnectionStateRaw = readString(
-    kmnetStatus.connection_state,
-    kmnetConnectedRaw ? "connected" : kmnetConnectingRaw ? "connecting" : "disconnected"
-  );
+  const kmnetConnectedRaw = kmnetStatus?.connected === true;
+  const kmnetConnectingRaw = kmnetStatus?.connecting === true;
+  const kmnetExecutorAvailable = kmnetStatus?.available === true;
+  const kmnetConnectionStateRaw = kmnetStatus?.connection_state
+    ?? (kmnetConnectedRaw ? "connected" : kmnetConnectingRaw ? "connecting" : "disconnected");
   const kmnetConnectionState = useDebouncedValue(kmnetConnectionStateRaw, 280);
   const kmnetConnected = kmnetConnectionState === "connected";
   const kmnetRuntimeConnected = kmnetConnected;
   const kmnetConnecting = kmnetConnectionState === "connecting";
   const kmnetConnectionFailed = kmnetConnectionState === "failed";
   const kmnetConnectionDegraded = kmnetConnectionState === "degraded";
-  const kmnetRetryable = kmnetConnectionFailed || kmnetConnectionDegraded;
-  const kmnetLastError = readString(kmnetStatus.last_error, "");
-  const kmnetLastDeviceError = readString(kmnetStatus.last_device_error, "");
-  const reportedDesiredConfigRevision = readNumber(runtime?.config?.version, 0);
-  const reportedEffectiveConfigRevision = readNumber(
-    runtime?.config?.effective_version,
-    reportedDesiredConfigRevision
-  );
+  const kmnetLastError = kmnetStatus?.last_error ?? "";
+  const kmnetLastDeviceError = kmnetStatus?.last_device_error ?? "";
+  const reportedDesiredConfigRevision = runtime?.config.version ?? 0;
+  const reportedEffectiveConfigRevision = runtime?.config.effective_version
+    ?? reportedDesiredConfigRevision;
   const reportedConfigRestartRequired = runtime?.config?.restart_required === true
     || reportedDesiredConfigRevision !== reportedEffectiveConfigRevision;
   const configApplyPresentation = useConfigApplyPresentation({
@@ -1512,32 +1524,18 @@ export function StudioConsoleView({
   const configRestartRequired = configApplyPresentation.state === "pending_process";
   const desiredConfigRevision = configApplyPresentation.desiredRevision;
   const effectiveConfigRevision = configApplyPresentation.effectiveRevision;
-  const kmnetRestartRequired = kmnetStatus.restart_required === true;
-  const kmnetConfigurationState = readString(
-    kmnetStatus.configuration_state,
-    kmnetRestartRequired ? "restart_required" : kmnetAutoConnect ? "ready" : "uncommissioned"
-  );
-  const kmnetConfigurationReady = kmnetStatus.configuration_ready === true
+  const kmnetRestartRequired = kmnetStatus?.restart_required === true;
+  const kmnetConfigurationState = kmnetStatus?.configuration_state
+    ?? (kmnetRestartRequired ? "restart_required" : kmnetAutoConnect ? "ready" : "uncommissioned");
+  const kmnetConfigurationReady = kmnetStatus?.configuration_ready === true
     || (kmnetConfigurationState === "ready" && !kmnetRestartRequired);
-  const kmnetCanConnect = kmnetStatus.can_connect === true
+  const kmnetCanConnect = kmnetStatus?.can_connect === true
     || (kmnetConfigurationReady
       && runtime?.running === true
       && !kmnetRuntimeConnected
       && !kmnetConnecting);
-  const kmnetCanDisconnect = kmnetStatus.can_disconnect === true
+  const kmnetCanDisconnect = kmnetStatus?.can_disconnect === true
     || (runtime?.running === true && kmnetRuntimeConnected);
-  const kmnetBlockedReason = readString(kmnetStatus.blocked_reason, "");
-  const kmnetConnectionLabel = kmnetRestartRequired
-    ? "配置等待当前进程重载"
-    : kmnetConnected
-    ? "已连接"
-    : kmnetConnecting
-      ? "连接中"
-      : kmnetConnectionDegraded
-        ? "连接异常，重试中"
-        : kmnetConnectionFailed
-          ? "连接失败"
-          : "未连接";
   const kmnetRuntimeConnectionLabel = runtime?.running === true
     ? kmnetRestartRequired
       ? kmnetRuntimeConnected ? "旧会话仍连接" : "等待重载"
@@ -1565,10 +1563,8 @@ export function StudioConsoleView({
   );
   const kmnetDiagnosticDisabled = kmnetRestartRequired
     || !kmnetExecutorAvailable
-    || runtime?.running === true
+    || runtime?.semantic.phase !== "stopped"
     || busy === "kmnet.diagnostic";
-  const kmnetButtonLeft = kmnetStatus.button_left === true;
-  const kmnetButtonRight = kmnetStatus.button_right === true;
   const previewEnabled = consumersConfig.preview !== false;
   const activeModelName = runtime?.active_model?.project?.name ?? "未发布模型";
   const activeModelPublished = runtime?.active_model !== null && runtime?.active_model !== undefined;
@@ -1578,12 +1574,12 @@ export function StudioConsoleView({
     ? "等待 TensorRT engine 探测"
     : version?.input_shape ?? "";
   const displayedInputShape = registeredInputShape;
-  const runtimePostprocessConfidence = readNumber(runtimePostprocess.confidence_threshold, Number.NaN);
-  const runtimePostprocessNms = readNumber(runtimePostprocess.nms_threshold, Number.NaN);
-  const runtimeRoiLeft = readNumber(inferenceTrace.roi_offset_x, Number.NaN);
-  const runtimeRoiTop = readNumber(inferenceTrace.roi_offset_y, Number.NaN);
-  const runtimeRoiWidth = readNumber(inferenceTrace.roi_width, Number.NaN);
-  const runtimeRoiHeight = readNumber(inferenceTrace.roi_height, Number.NaN);
+  const runtimePostprocessConfidence = runtimePostprocess?.confidence_threshold ?? Number.NaN;
+  const runtimePostprocessNms = runtimePostprocess?.nms_threshold ?? Number.NaN;
+  const runtimeRoiLeft = inferenceTrace?.roi_offset_x ?? Number.NaN;
+  const runtimeRoiTop = inferenceTrace?.roi_offset_y ?? Number.NaN;
+  const runtimeRoiWidth = inferenceTrace?.roi_width ?? Number.NaN;
+  const runtimeRoiHeight = inferenceTrace?.roi_height ?? Number.NaN;
   const runtimeRoiAvailable = runtimeMainlineRunning
     && Number.isFinite(runtimeRoiLeft)
     && Number.isFinite(runtimeRoiTop)
@@ -1602,7 +1598,7 @@ export function StudioConsoleView({
         ? "正在应用…"
         : "已保存 · 等待运行态确认";
   const runtimePostprocessAvailable = runtimeMainlineRunning
-    && runtimeInference.loaded === true
+    && runtimeInference?.loaded === true
     && Number.isFinite(runtimePostprocessConfidence)
     && Number.isFinite(runtimePostprocessNms);
   const postprocessSettingsApplied = runtimePostprocessAvailable
@@ -1615,17 +1611,18 @@ export function StudioConsoleView({
       : configApplyPending
         ? "正在应用…"
         : "已保存 · 等待运行态确认";
-  const switchableArtifacts = modelArtifacts.filter(
-    (item) =>
-      item.kind === "engine" &&
-      (item.status === "ready" || item.status === "pending" || item.status === "failed") &&
-      (selectedModelVersionId === "" || item.version_id === selectedModelVersionId)
-  );
-  const sortedSwitchableArtifacts = [...switchableArtifacts].sort((left, right) => {
-    const leftRank = ARTIFACT_KIND_RANK[left.kind] ?? 99;
-    const rightRank = ARTIFACT_KIND_RANK[right.kind] ?? 99;
-    return leftRank - rightRank || left.path.localeCompare(right.path);
-  });
+  const sortedSwitchableArtifacts = useMemo(() => modelArtifacts
+    .filter(
+      (item) =>
+        item.kind === "engine" &&
+        (item.status === "ready" || item.status === "pending" || item.status === "failed") &&
+        (selectedModelVersionId === "" || item.version_id === selectedModelVersionId)
+    )
+    .sort((left, right) => {
+      const leftRank = ARTIFACT_KIND_RANK[left.kind] ?? 99;
+      const rightRank = ARTIFACT_KIND_RANK[right.kind] ?? 99;
+      return leftRank - rightRank || left.path.localeCompare(right.path);
+    }), [modelArtifacts, selectedModelVersionId]);
   const selectedSwitchArtifact =
     typeof selectedModelArtifactId === "number"
       ? sortedSwitchableArtifacts.find((item) => item.id === selectedModelArtifactId) ?? null
@@ -1644,82 +1641,80 @@ export function StudioConsoleView({
     (selectedCatalogModel === null || selectedCatalogModel.version_id === selectedModelVersionId)
       ? modelVersions.find((item) => item.id === selectedModelVersionId) ?? null
       : null;
-  const detectionCount = readNullableNumber(vision.detections);
-  const target = asRecord(vision.target);
-  const activeRuntimeClassId = readNullableNumber(target.cls ?? target.class_id);
+  const detectionCount = vision?.detections ?? null;
+  const target = vision?.target;
+  const activeRuntimeClassId = target?.cls ?? target?.class_id ?? null;
   const activeRuntimeClassLabel = activeRuntimeClassId !== null
     ? `cls ${Math.round(activeRuntimeClassId)}`
     : "";
-  const runtimeDetectionItems = recordArray(vision.detection_items);
-  const runtimeDetectionClassIds = runtimeDetectionItems.flatMap((item) => {
-    const classId = readNullableNumber(item.cls ?? item.class_id);
-    return classId !== null && Number.isInteger(classId) ? [classId] : [];
-  });
-  const classEditorIds = Array.from(new Set([
+  const runtimeDetectionItems = vision?.detection_items ?? [];
+  const runtimeDetectionClassIds = useMemo(
+    () => runtimeDetectionItems.map((item) => item.cls),
+    [runtimeDetectionItems]
+  );
+  const classEditorIds = useMemo(() => Array.from(new Set([
     ...detectionClasses.map((_, classId) => classId),
     ...classPriorityIds,
     ...runtimeDetectionClassIds,
-    ...(activeRuntimeClassId !== null && Number.isInteger(activeRuntimeClassId)
-      ? [activeRuntimeClassId]
-      : [])
-  ])).filter((classId) => classId >= 0 && classId <= 255).sort((left, right) => left - right);
-  const orderedClassEditorIds = [
+    ...(activeRuntimeClassId !== null ? [activeRuntimeClassId] : [])
+  ])).filter((classId) => classId >= 0 && classId <= 255).sort((left, right) => left - right), [
+    activeRuntimeClassId,
+    classPriorityIds,
+    detectionClasses,
+    runtimeDetectionClassIds
+  ]);
+  const orderedClassEditorIds = useMemo(() => [
     ...classPriorityIds.filter((classId) => classEditorIds.includes(classId)),
     ...classEditorIds.filter((classId) => !classPriorityIds.includes(classId))
-  ];
-  const configuredDetectionClassIds = parseDetectionClassFilter(activeDetectionClass);
-  const selectedDetectionClassIds = configuredDetectionClassIds ?? new Set(classEditorIds);
-  const control = asRecord(vision.control);
-  const targetPipeline = asRecord(vision.target_pipeline);
-  const targetPipelineCounts = asRecord(targetPipeline.counts);
-  const targetPipelineCode = readString(targetPipeline.code, "");
-  const targetPipelineStage = readString(targetPipeline.stage, "");
-  const targetPipelineMessage = readString(targetPipeline.message, "");
-  const targetPipelineRejections = Array.isArray(targetPipeline.rejection_reasons)
-    ? targetPipeline.rejection_reasons.map((item) => String(item)).join(", ")
-    : "";
-  const rawCandidateCount = readNullableNumber(
-    targetPipelineCounts.raw_candidates ?? targetPipelineCounts.decode_raw_candidates
+  ], [classEditorIds, classPriorityIds]);
+  const configuredDetectionClassIds = useMemo(
+    () => parseDetectionClassFilter(activeDetectionClass),
+    [activeDetectionClass]
   );
-  const eligibleCandidateCount = readNullableNumber(
-    targetPipelineCounts.eligible_candidates ?? targetPipelineCounts.inside_fov
+  const selectedDetectionClassIds = useMemo(
+    () => configuredDetectionClassIds ?? new Set(classEditorIds),
+    [classEditorIds, configuredDetectionClassIds]
   );
-  const selectedTargetCount = readNullableNumber(targetPipelineCounts.selected_targets);
-  const controlCandidateFilter = asRecord(control.candidate_filter);
-  const basicCandidateFilter = asRecord(controlCandidateFilter.basic);
-  const effectiveClassFilter = readString(controlCandidateFilter.effective_class_filter, activeDetectionClass);
-  const rejectedBasicClassIds = Array.isArray(basicCandidateFilter.rejected_class_ids)
-    ? basicCandidateFilter.rejected_class_ids
-        .map((item) => Number(item))
-        .filter((item) => Number.isInteger(item) && item >= 0 && item <= 255)
-    : [];
-  const recoveryClassIdSet = new Set([
+  const control = vision?.control;
+  const targetPipeline = vision?.target_pipeline;
+  const targetPipelineCode = targetPipeline?.code ?? "";
+  const targetPipelineStage = targetPipeline?.stage ?? "";
+  const targetPipelineMessage = targetPipeline?.message ?? "";
+  const targetPipelineRejections = targetPipeline?.rejection_reasons.join(", ") ?? "";
+  const rawCandidateCount = targetPipeline?.counts.raw_candidates ?? null;
+  const eligibleCandidateCount = targetPipeline?.counts.eligible_candidates ?? null;
+  const selectedTargetCount = targetPipeline?.counts.selected_targets ?? null;
+  const controlCandidateFilter = control?.candidate_filter;
+  const basicCandidateFilter = controlCandidateFilter?.basic;
+  const effectiveClassFilter = controlCandidateFilter?.effective_class_filter ?? activeDetectionClass;
+  const rejectedBasicClassIds = basicCandidateFilter?.rejected_class_ids ?? [];
+  const recoveryClassIdSet = useMemo(() => new Set([
     ...(configuredDetectionClassIds ?? []),
     ...runtimeDetectionClassIds
-  ]);
-  const detectedClassFilterValue = orderedClassEditorIds
+  ]), [configuredDetectionClassIds, runtimeDetectionClassIds]);
+  const detectedClassFilterValue = useMemo(() => orderedClassEditorIds
     .filter((classId) => recoveryClassIdSet.has(classId))
-    .join(",");
-  const controlPipeline = asRecord(asRecord(vision.control).pipeline);
-  const fireDelayPending = readBoolean(controlPipeline.fire_delay_pending, false);
-  const runtimeFireDelayMs = readNumber(controlPipeline.fire_delay_configured_ms, fireDelayMs);
-  const fireDelayElapsedMs = readNullableNumber(controlPipeline.fire_delay_elapsed_ms);
-  const fireDelayRemainingMs = readNullableNumber(controlPipeline.fire_delay_remaining_ms);
-  const runtimeRecoilEnabled = readNullableBoolean(controlPipeline.recoil_enabled);
+    .join(","), [orderedClassEditorIds, recoveryClassIdSet]);
+  const controlPipeline = control?.pipeline;
+  const fireDelayPending = controlPipeline?.fire_delay_pending === true;
+  const runtimeFireDelayMs = controlPipeline?.fire_delay_configured_ms ?? fireDelayMs;
+  const fireDelayElapsedMs = controlPipeline?.fire_delay_elapsed_ms ?? null;
+  const fireDelayRemainingMs = controlPipeline?.fire_delay_remaining_ms ?? null;
+  const runtimeRecoilEnabled = controlPipeline?.recoil_enabled ?? null;
   const effectiveRecoilEnabled = runtimeRecoilEnabled ?? recoilEnabled;
-  const mouseObservation = asRecord(control.mouse_observation);
-  const controlHasSample = readString(control.global_state, "IDLE") === "CALCULATED";
-  const controlHasTarget = Object.keys(target).length > 0;
-  const controlCandidateCount = readNullableNumber(control.candidates);
-  const controlTrackId = readNullableNumber(target.track_id);
-  const controlWidthPx = readNullableNumber(mouseObservation.control_width_px);
-  const controlHeightPx = readNullableNumber(mouseObservation.control_height_px);
+  const mouseObservation = control?.mouse_observation;
+  const controlHasSample = control?.global_state === "CALCULATED";
+  const controlHasTarget = target !== null && target !== undefined;
+  const controlCandidateCount = control?.candidates ?? null;
+  const controlTrackId = target?.track_id ?? null;
+  const controlWidthPx = mouseObservation?.control_width_px ?? null;
+  const controlHeightPx = mouseObservation?.control_height_px ?? null;
   const controlCenterX = controlWidthPx === null ? null : controlWidthPx * 0.5;
   const controlCenterY = controlHeightPx === null ? null : controlHeightPx * 0.5;
-  const predictedAimX = readNullableNumber(mouseObservation.predicted_x_px ?? control.aim_x);
-  const predictedAimY = readNullableNumber(mouseObservation.predicted_y_px ?? control.aim_y);
-  const observedAimX = readNullableNumber(mouseObservation.observed_x_px);
-  const observedAimY = readNullableNumber(mouseObservation.observed_y_px);
+  const predictedAimX = mouseObservation?.predicted_x_px ?? control?.aim_x ?? null;
+  const predictedAimY = mouseObservation?.predicted_y_px ?? control?.aim_y ?? null;
+  const observedAimX = mouseObservation?.observed_x_px ?? null;
+  const observedAimY = mouseObservation?.observed_y_px ?? null;
   const predictedErrorXPx =
     predictedAimX !== null && controlCenterX !== null ? predictedAimX - controlCenterX : null;
   const predictedErrorYPx =
@@ -1728,56 +1723,52 @@ export function StudioConsoleView({
     predictedErrorXPx !== null && predictedErrorYPx !== null
       ? Math.hypot(predictedErrorXPx, predictedErrorYPx)
       : null;
-  const controlMeasurementDtS = readNullableNumber(controlPipeline.measurement_dt_s ?? mouseObservation.measurement_dt_s);
+  const controlMeasurementDtS = controlPipeline?.measurement_dt_s ?? mouseObservation?.measurement_dt_s ?? null;
   const controlMeasurementDtMs = controlMeasurementDtS === null ? null : controlMeasurementDtS * 1000;
-  const controlFrameAgeMs = readNullableNumber(controlPipeline.frame_age_ms);
-  const acceptedCommandCount = readNullableNumber(kmnetStatus.accepted_command_count);
-  const hasAcceptedCommand = (acceptedCommandCount ?? 0) > 0;
+  const controlFrameAgeMs = controlPipeline?.frame_age_ms ?? null;
+  const hasAcceptedCommand = (kmnetStatus?.accepted_command_count ?? 0) > 0;
   const lastAcceptedCommand = formatPoint(
-    kmnetStatus.last_accepted_dx,
-    kmnetStatus.last_accepted_dy,
+    kmnetStatus?.last_accepted_dx,
+    kmnetStatus?.last_accepted_dy,
     0,
     "counts"
   );
-  const controlWillEmitRaw = readNullableBoolean(control.will_emit);
+  const controlWillEmitRaw = control?.will_emit ?? null;
   const controlWillEmit = controlWillEmitRaw;
-  const controlTriggerActiveRaw = readNullableBoolean(control.trigger_active);
+  const controlTriggerActiveRaw = control?.trigger_active ?? null;
   const controlTriggerActive = controlTriggerActiveRaw;
   const controlNoSendReason = fireDelayPending
     ? `按键持续时间尚未超过 ${runtimeFireDelayMs.toFixed(0)} ms，控制算法未启动`
     : stableRuntimeOutputTrace?.detail || (
         !controlHasTarget
-          ? targetPipelineMessage || readString(control.selection_reason, "无目标")
+          ? targetPipelineMessage || control?.selection_reason || "无目标"
           : controlWillEmit !== true
-            ? readString(control.no_send_reason, readString(control.reason, "控制门控未通过"))
+            ? control?.no_send_reason || control?.reason || "控制门控未通过"
             : !kmnetRuntimeConnected
               ? "主链设备通道未连接"
               : "命令已获准进入设备通道"
       );
-  const runtimeOutputEnabled = readNullableBoolean(control.output_enabled);
+  const runtimeOutputEnabled = control?.output_enabled ?? null;
   const deepstreamInputFrames = runtimeMainlineStatus.nvinferInputFrames;
-  const deepstreamOutputBuffers = readNullableNumber(runtimeInference.output_buffers);
+  const deepstreamOutputBuffers = runtimeInference?.output_buffers ?? null;
   const deepstreamMetadataExtractions = runtimeMainlineStatus.metadataExtractions;
   const deepstreamPublishedBatches = runtimeMainlineStatus.publishedBatches;
   const deepstreamInferenceCompleted =
     (deepstreamOutputBuffers ?? 0) > 0 ||
     (deepstreamPublishedBatches ?? 0) > 0;
   const inferenceRan = deepstreamNvinferSelected && deepstreamInferenceCompleted;
-  const inferenceReason = readString(
-    runtimeInference.inference_reason,
-    readString(runtimeInference.reason, "")
-  );
+  const inferenceReason = runtimeInference?.inference_reason ?? runtimeInference?.reason ?? "";
   const deepstreamPreviewStreamReady =
     deepstreamNvinferSelected &&
     previewEnabled &&
-    runtimeInference.preview_enabled === true &&
+    runtimeInference?.preview_enabled === true &&
     runtimeInference.loaded === true &&
     runtimeInference.terminal_error !== true;
-  const runtimePreviewActive = runtimeInference.preview_active === true;
+  const runtimePreviewActive = runtimeInference?.preview_active === true;
   const previewRuntimePresentation = {
     streamReady: deepstreamPreviewStreamReady,
     active: runtimePreviewActive,
-    reason: readString(runtimeInference.preview_reason, "等待 DeepStream 硬件预览帧")
+    reason: runtimeInference?.preview_reason ?? "等待 DeepStream 硬件预览帧"
   };
   const previewActive = previewActiveOverride ?? previewRuntimePresentation.active;
   const previewImageAvailable = deepstreamNvinferSelected
@@ -1869,7 +1860,7 @@ export function StudioConsoleView({
     hasTarget: controlHasTarget,
     trackId: controlTrackId,
     classLabel: activeRuntimeClassLabel,
-    targetScore: readNullableNumber(target.score),
+    targetScore: target?.score ?? null,
     observedAim: formatPoint(observedAimX, observedAimY, STANDARD_DECIMAL_DIGITS, "px"),
     controlAim: formatPoint(predictedAimX, predictedAimY, STANDARD_DECIMAL_DIGITS, "px"),
     controlCenter: formatPoint(controlCenterX, controlCenterY, STANDARD_DECIMAL_DIGITS, "px"),
@@ -1878,22 +1869,22 @@ export function StudioConsoleView({
     controlFrameAgeMs,
     measurementDtMs: controlMeasurementDtMs,
     predictionEnabled: controlPredictionEnabled,
-    predictionAllowedX: readNullableBoolean(controlPipeline.prediction_allowed),
-    predictionAllowedY: readNullableBoolean(controlPipeline.prediction_allowed_y),
+    predictionAllowedX: controlPipeline?.prediction_allowed ?? null,
+    predictionAllowedY: controlPipeline?.prediction_allowed_y ?? null,
     predictionSafeOffset: formatPoint(
-      controlPipeline.prediction_safe_offset_x,
-      controlPipeline.prediction_safe_offset_y,
+      controlPipeline?.prediction_safe_offset_x,
+      controlPipeline?.prediction_safe_offset_y,
       2,
       "px"
     ),
     controllerActive: controlHasSample,
     controllerMode: controlModeLabel,
-    movementStrategy: readString(controlPipeline.movement_strategy, ""),
-    fullError: formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2, "counts"),
-    floatDemand: formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2, "counts"),
+    movementStrategy: controlPipeline?.movement_strategy ?? "",
+    fullError: formatPoint(controlPipeline?.full_error_counts_x, controlPipeline?.full_error_counts_y, 2, "counts"),
+    floatDemand: formatPoint(controlPipeline?.float_demand_x, controlPipeline?.float_demand_y, 2, "counts"),
     maxOutputXCounts,
     maxOutputYCounts,
-    integerCommand: formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts"),
+    integerCommand: formatPoint(controlPipeline?.integer_command_x, controlPipeline?.integer_command_y, 0, "counts"),
     recoilEnabled: effectiveRecoilEnabled,
     hardwareTriggerRequired: triggerMode === "hardware",
     fireDelayEnabled,
@@ -1901,11 +1892,11 @@ export function StudioConsoleView({
     fireDelayPending,
     fireDelayElapsedMs,
     fireDelayRemainingMs,
-    recoilState: readString(controlPipeline.recoil_state, ""),
-    recoilStatus: formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason),
-    recoilRemainingMs: readNullableNumber(controlPipeline.recoil_remaining_ms),
-    recoilRequestedY: readNullableNumber(controlPipeline.recoil_requested_counts_y),
-    recoilEmittedY: readNullableNumber(controlPipeline.recoil_emitted_counts_y),
+    recoilState: controlPipeline?.recoil_state ?? "",
+    recoilStatus: formatRecoilState(controlPipeline?.recoil_state, controlPipeline?.recoil_block_reason),
+    recoilRemainingMs: controlPipeline?.recoil_remaining_ms ?? null,
+    recoilRequestedY: controlPipeline?.recoil_requested_counts_y ?? null,
+    recoilEmittedY: controlPipeline?.recoil_emitted_counts_y ?? null,
     outputEnabled: runtimeOutputEnabled ?? outputEnabled,
     willEmit: controlWillEmit,
     triggerActive: controlTriggerActive,
@@ -1924,10 +1915,10 @@ export function StudioConsoleView({
           ? "已收到输入帧，正在建立速率窗口"
           : "采集已启动，等待第一帧"
   );
-  const roiInputWidth = readNumber(inferenceTrace.input_width, 0);
-  const roiInputHeight = readNumber(inferenceTrace.input_height, 0);
-  const modelInputWidth = readNumber(inferenceTrace.model_input_width, 0);
-  const modelInputHeight = readNumber(inferenceTrace.model_input_height, 0);
+  const roiInputWidth = inferenceTrace?.input_width ?? 0;
+  const roiInputHeight = inferenceTrace?.input_height ?? 0;
+  const modelInputWidth = inferenceTrace?.model_input_width ?? 0;
+  const modelInputHeight = inferenceTrace?.model_input_height ?? 0;
   const inputDownscaleFactor =
     roiInputWidth > 0 && roiInputHeight > 0 && modelInputWidth > 0 && modelInputHeight > 0
       ? Math.max(roiInputWidth / modelInputWidth, roiInputHeight / modelInputHeight)
@@ -1940,7 +1931,7 @@ export function StudioConsoleView({
   // crates/novasight-runtime/src/supervisor.rs:2037-2043) into its identity
   // fields so the memo can stay stable across partial frames that don't
   // actually change the active deployment. Authoritative schema:
-  // web/src/api.ts:73-81 + crates/novasight-store/src/model_catalog.rs:40-49.
+  // web/src/contracts/model.ts + crates/novasight-store/src/model_catalog.rs.
   const activeArtifact = activeModelPublished ? artifact ?? null : null;
   const activeArtifactId = activeArtifact?.id ?? null;
   const activeArtifactVersionId = activeArtifact?.version_id ?? null;
@@ -1964,7 +1955,7 @@ export function StudioConsoleView({
       roiLabel: roiApplyLabel,
       roiApplied: roiSettingsApplied,
       modelPublished: activeModelPublished,
-      modelRuntimeLoaded: runtimeInference.loaded === true,
+      modelRuntimeLoaded: runtimeInference?.loaded === true,
       modelName: activeModelName,
       artifactLabel: activeArtifact ? `${activeArtifact.kind} · ${activeArtifact.status}` : "",
       backendLabel: selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream 推理" : selectedRuntimeBackend,
@@ -2024,22 +2015,21 @@ export function StudioConsoleView({
       postprocessSettingsApplied,
       roiApplyLabel,
       roiSettingsApplied,
-      runtimeInference.loaded,
+      runtimeInference?.loaded,
       runtimeMainlineRunning,
       selectedRuntimeBackend,
       triggerMode
     ]
   );
   const inputDensityWarning = inputDownscaleFactor !== null && inputDownscaleFactor > 1;
-  const sampledDetectionGeneration = readNullableNumber(
-    inferenceTrace.generation ?? runtimeInference.sampled_detection_generation
-  );
+  const sampledDetectionGeneration = inferenceTrace?.generation
+    ?? runtimeInference?.sampled_detection_generation
+    ?? null;
   const inferenceTotalMs = readNullableNumber(statistics?.inference_latency_ms);
   const inferenceHighestConfidence = activePage === "infer"
     ? runtimeDetectionItems.reduce<number | null>(
         (highest, item) => {
-          const score = readNullableNumber(item.score);
-          return score === null ? highest : highest === null ? score : Math.max(highest, score);
+          return highest === null ? item.score : Math.max(highest, item.score);
         },
         null
       )
@@ -2055,13 +2045,14 @@ export function StudioConsoleView({
           ? "新鲜 · 控制可用"
           : "已超过控制阈值";
   const currentErrorDetails = useMemo(() => {
-    const items: Array<{ key: string; title: string; detail: string; time?: number }> = [];
+    const items: Array<{ key: string; title: string; detail: string; time?: number; count?: number }> = [];
     for (const notice of errorNotices) {
       items.push({
         key: `notice-${notice.id}`,
         title: notice.title,
         detail: notice.detail || notice.source,
-        time: notice.createdAt
+        time: notice.createdAt,
+        count: notice.count
       });
     }
     for (const [source, detail] of Object.entries(errors)) {
@@ -2115,9 +2106,11 @@ export function StudioConsoleView({
     setSelectedModelProjectId,
     setSelectedModelVersionId
   });
+  const modelManagerActive = activePage === "models"
+    || (activePage === "infer" && modelManagerDialogOpen);
 
   useEffect(() => {
-    if (activePage !== "infer" || !modelManagerDialogOpen) {
+    if (!modelManagerActive) {
       return undefined;
     }
     let cancelled = false;
@@ -2147,7 +2140,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [activePage, applyModelCatalogResult, modelCatalogRefreshKey, modelManagerDialogOpen, onRefresh]);
+  }, [applyModelCatalogResult, modelCatalogRefreshKey, modelManagerActive, onRefresh]);
 
   useEffect(() => {
     if (!modelCatalog || typeof artifact?.id !== "number") {
@@ -2175,7 +2168,7 @@ export function StudioConsoleView({
   }, [projects, runtime?.active_model?.project?.id]);
 
   useEffect(() => {
-    if (activePage !== "infer" || !modelManagerDialogOpen) {
+    if (!modelManagerActive) {
       return undefined;
     }
     if (selectedModelProjectId === "") {
@@ -2227,10 +2220,10 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [activePage, modelDetailsRefreshKey, modelManagerDialogOpen, runtime?.active_model?.version?.id, selectedModelProjectId]);
+  }, [modelDetailsRefreshKey, modelManagerActive, runtime?.active_model?.version?.id, selectedModelProjectId]);
 
   useEffect(() => {
-    if (activePage !== "infer" || !modelManagerDialogOpen) {
+    if (!modelManagerActive) {
       return undefined;
     }
     if (selectedModelVersionId === "") {
@@ -2284,7 +2277,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [activePage, modelDetailsRefreshKey, modelManagerDialogOpen, selectedModelVersionId]);
+  }, [modelDetailsRefreshKey, modelManagerActive, selectedModelVersionId]);
 
   const refreshCapabilities = useCallback(async () => {
     setBusy("caps");
@@ -2361,84 +2354,59 @@ export function StudioConsoleView({
     setBusy("capture");
     setLocalError(null);
     const payload = buildCapturePayload();
+    let operationFailed = false;
     try {
       await selectCaptureProfile(payload);
+    } catch (err) {
+      operationFailed = true;
+      setLocalError(`切换失败，已保留上一组可用配置：${getErrorMessage(err)}`);
+      reportError(err, { source: 'studio', title: '操作失败' });
+    }
+    try {
       await onRefresh();
     } catch (err) {
-      setLocalError(`切换失败，已保留上一组可用配置：${getErrorMessage(err)}`);
-
-      reportError(err, { source: 'studio', title: '操作失败' });
-      await onRefresh();
+      if (!operationFailed) {
+        setLocalError(`采集配置处理完成，但最新状态刷新失败：${getErrorMessage(err)}`);
+      }
+      reportError(err, { source: "capture-refresh", title: "采集状态刷新失败" });
     } finally {
       setBusy(null);
     }
   }, [buildCapturePayload, onRefresh]);
 
   const {
-    accepted: mainlineLaunchAccepted,
-    cancel: cancelMainlineLaunch,
-    cancelInFlight: launchCancelInFlight,
-    clearAccepted: clearMainlineLaunchAccepted,
-    closeDialog: closeLaunchDialog,
-    completedStages: launchCompletedStages,
-    dialogOpen: launchDialogOpen,
-    error: launchError,
-    message: mainlineLaunchMessage,
-    openDialog: openMainlineLaunchDialog,
-    progress: launchProgress,
-    progressDetail: launchProgressDetail,
-    stageIndex: launchStageIndex,
-    stages: launchStages,
+    emergencyStop: emergencyStopMainline,
+    emergencyStopping,
     start: startMainlineLaunch,
-    startInferenceThread,
-    status: launchStatus,
-    summary: launchSummary,
-    toastVisible: launchToastVisible
+    stop: stopMainlineLaunch
   } = useMainlineLaunch({
-    activeModelPublished,
-    buildCapturePayload,
     onRefresh,
     onRuntimeStateChange,
-    runtimeFatalError: runtime?.fatal_error !== null,
-    runtimeInferenceDetail,
-    runtimeInferenceReason,
-    runtimeMainlineRunning,
-    runtimeMainlineSelected,
-    runtimeMainlineStatus,
+    runtime,
     setBusy,
     setLocalError
   });
 
-  useEffect(() => {
-    if (!launchDialogOpen) {
-      return undefined;
-    }
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const frame = window.requestAnimationFrame(() => launchDialogRef.current?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Tab") {
-        trapDialogTabKey(event, launchDialogRef.current);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      document.removeEventListener("keydown", onKeyDown);
-      previousFocus?.focus();
-    };
-  }, [launchDialogOpen]);
-
-  const mainlineLaunchPending =
-    mainlineRuntimeSelected &&
-    mainlineLaunchAccepted &&
-    !runtimeMainlineRunning &&
-    !runtimeMainlineStatus.failed &&
-    runtime?.fatal_error === null;
-  const captureMainRunning = runtimeMainlineSelected
-    ? (!runtimeMainlineStatus.failed && runtimeMainlineRunning) || mainlineLaunchPending
-    : capture?.available === true;
+  const runtimePhase = runtime?.semantic.phase ?? null;
+  const mainlineLaunchPending = runtimePhase === "starting";
+  const runtimeStopping = runtimePhase === "stopping";
+  const runtimeControlRequested = ["starting", "waiting_model", "running", "standby"].includes(
+    runtimePhase ?? ""
+  );
+  const runtimeLifecycleActive = runtimeControlRequested || runtimeStopping;
+  const diagnosticModeReady = runtimePhase === "stopped";
+  const runtimeControlUnavailable = runtime === null || health?.ok !== true;
+  const runtimeUnavailableLabel = errors.health
+    ? "服务不可达"
+    : health === null
+      ? "连接中"
+      : health.ok !== true
+      ? "服务不可达"
+      : runtime === null
+        ? "等待状态"
+        : null;
   const captureMainConfigured = capture?.available === true || runtimeInferenceConfigured;
-  const captureStatusText = capture?.state === "failed" || capture?.state === "unavailable"
+  const captureStatusText = runtimeUnavailableLabel ?? (capture?.state === "failed" || capture?.state === "unavailable"
     ? "采集异常"
     : capture?.running === true
       ? "运行中"
@@ -2446,10 +2414,13 @@ export function StudioConsoleView({
         ? "启动中"
         : captureMainConfigured
           ? "待启动"
-          : "未配置";
-  const inferenceStatusText = runtimeMainlineSelected
-    ? runtimeMainlineStatus.failed
+          : "未配置");
+  const inferenceStatusText = runtimeUnavailableLabel ?? (runtimeMainlineStatus.failed
       ? "管线故障"
+      : runtimePhase === "starting"
+        ? "启动中"
+      : runtimePhase === "waiting_model"
+        ? "等待模型"
       : runtimeMainlineRunning
         ? !activeModelPublished
           ? "主链运行 · 等待模型"
@@ -2458,51 +2429,20 @@ export function StudioConsoleView({
           : runtimeMainlineStatus.hasInferenceSignal
             ? "识别结果已产出"
             : "等待识别结果"
-      : mainlineLaunchPending
-        ? "等待启动反馈"
-        : runtimeInferenceConfigured
-          ? "待启动"
-          : "未配置"
-    : runtime?.running
-      ? "运行中"
-      : "已停止";
-  const runtimeControlRequested = captureMainRunning;
-
-  const stopCurrentCapture = useCallback(async () => {
-    setBusy("stop");
-    setLocalError(null);
-    clearMainlineLaunchAccepted();
-    try {
-      if (runtimeMainlineSelected) {
-        const stoppedState = await stopRuntimePipeline();
-        onRuntimeStateChange(stoppedState);
-      } else {
-        await stopCapture();
-      }
-      await onRefresh();
-    } catch (err) {
-      setLocalError(getErrorMessage(err));
-    } finally {
-      setBusy(null);
-    }
-  }, [clearMainlineLaunchAccepted, runtimeMainlineSelected, onRefresh, onRuntimeStateChange]);
+      : runtimeInferenceConfigured
+        ? "待启动"
+        : "未配置");
 
   const toggleCapture = useCallback(async () => {
-    if (runtimeControlRequested) {
-      await stopCurrentCapture();
+    if (runtimeLifecycleActive) {
+      await stopMainlineLaunch();
       return;
     }
-    if (runtimeMainlineSelected) {
-      openMainlineLaunchDialog();
-      return;
-    }
-    await applyCapture();
+    await startMainlineLaunch();
   }, [
-    applyCapture,
-    runtimeControlRequested,
-    runtimeMainlineSelected,
-    openMainlineLaunchDialog,
-    stopCurrentCapture
+    runtimeLifecycleActive,
+    startMainlineLaunch,
+    stopMainlineLaunch
   ]);
 
   const updateConfigField = useCallback(
@@ -2556,9 +2496,6 @@ export function StudioConsoleView({
         );
         const result = await request;
         const applied = normalizeRuntimeConfig(result.config);
-        if (result.schema) {
-          applyConfigSchema(result.schema);
-        }
         // Always advance the canonical persisted revision (guarded by the
         // unified runtime write seq). A newer optimistic edit may still own
         // the visible draft, but the next queued transaction must never be
@@ -2705,9 +2642,6 @@ export function StudioConsoleView({
           appliedChangeCount += 1;
           remainingChangeCount = Math.max(0, changes.length - appliedChangeCount);
           restartRequired ||= result.restart_required;
-          if (result.schema) {
-            applyConfigSchema(result.schema);
-          }
         }
       };
       const request = configWriteQueueRef.current.then(executeSave);
@@ -2727,7 +2661,10 @@ export function StudioConsoleView({
         "parameter-page"
       );
     } catch (error) {
-      let canonical = lastApplied;
+      // The write queue mutates `lastApplied` inside an async closure. Keep the
+      // recovery value explicitly wide so TypeScript does not freeze the
+      // closure-owned assignment at its initial `null` value.
+      let canonical: RuntimeConfig | null = lastApplied;
       try {
         canonical = normalizeRuntimeConfig(await getRuntimeConfig());
       } catch {
@@ -2812,9 +2749,6 @@ export function StudioConsoleView({
           return null;
         }
         const applied = normalizeRuntimeConfig(result.config);
-        if (result.schema) {
-          applyConfigSchema(result.schema);
-        }
         finalizeRuntimeConfigWrite(applied);
         return result;
       } finally {
@@ -3001,9 +2935,8 @@ export function StudioConsoleView({
     setLocalError(null);
     try {
       const result = await learnCrosshair();
-      const template = asRecord(result.template);
       setCrosshairPreviewKey(Date.now());
-      setCrosshairMessage(`准星模板 ${readString(template.id, "")} 已生成，等待连续观测确认。`);
+      setCrosshairMessage(`准星模板 ${result.template.id} 已生成，等待连续观测确认。`);
       await onRefresh();
     } catch (error) {
       const message = getErrorMessage(error);
@@ -3357,86 +3290,6 @@ export function StudioConsoleView({
     persistClassProfiles
   ]);
 
-  // Per-field apply: writes only the selected hardware keys. Used by the
-  // field-level confirmation picker so the user can keep some values
-  // unchanged instead of accepting a blanket "apply all recommended".
-  const applyKmNetSelected = useCallback(
-    async (selectedKeys: string[]) => {
-      setBusy("kmnet.defaults");
-      setLocalError(null);
-      const payload: Record<string, RuntimeConfigValue> = {};
-      for (const key of selectedKeys) {
-        const value = (KMNET_RECOMMENDED as Record<string, RuntimeConfigValue>)[key];
-        if (value !== undefined) {
-          payload[key] = value;
-        }
-      }
-      if (Object.keys(payload).length === 0) {
-        setBusy(null);
-        return;
-      }
-      try {
-        const result = await updateConfigSection("hardware", payload);
-        setKmnetTestMessageTone(result?.applied === false ? "warning" : "success");
-        setKmnetTestMessage(result?.applied === false
-          ? "kmNet 参数已保存，但当前进程未确认应用；请查看错误中心。"
-          : `kmNet ${selectedKeys.length} 个字段已保存，并已在当前进程重新装载。`
-        );
-        await onRefresh();
-      } catch (err) {
-        setLocalError(`kmNet 推荐参数应用失败：${getErrorMessage(err)}`);
-        reportError(err, { source: "studio", title: "操作失败" });
-        await onRefresh();
-      } finally {
-        setBusy(null);
-      }
-    },
-    [onRefresh, updateConfigSection]
-  );
-
-  const requestApplyKmNetRecommended = useCallback(() => {
-    // Field-level picker: default-tick only the fields that actually differ
-    // from the current values, so the user can accept a partial diff without
-    // being forced into a blanket apply. The dialog owns the live selection
-    // state and reports the chosen keys back via the confirm callback.
-    const current: Record<string, unknown> = {
-      host: kmnetHost || "",
-      port: kmnetPort,
-      uuid: kmnetUuid || "",
-      monitor_port: kmnetMonitorPort,
-      auto_connect: kmnetAutoConnect
-    };
-    const fieldOrder: Array<{ key: string; label: string; recommended: unknown; format: (value: unknown) => string }> = [
-      { key: "host", label: "地址 host", recommended: KMNET_RECOMMENDED.host, format: (v) => String(v) },
-      { key: "port", label: "主控制端口 port", recommended: KMNET_RECOMMENDED.port, format: (v) => String(v) },
-      { key: "uuid", label: "UUID", recommended: KMNET_RECOMMENDED.uuid, format: (v) => String(v) },
-      { key: "monitor_port", label: "监听端口 monitor_port", recommended: KMNET_RECOMMENDED.monitor_port, format: (v) => String(v) },
-      { key: "auto_connect", label: "主链启动时连接设备 auto_connect", recommended: KMNET_RECOMMENDED.auto_connect, format: (v) => v ? "开启" : "关闭" }
-    ];
-    setConfirmationRequest({
-      eyebrow: "kmNet 配置",
-      title: "应用 kmNet 推荐参数",
-      description: "勾选要替换的字段。保存后会在当前进程立即重载设备适配器；未勾选的字段保持原值。",
-      fields: fieldOrder.map((item) => ({
-        key: item.key,
-        label: item.label,
-        current: item.format(current[item.key]),
-        recommended: item.format(item.recommended),
-        selected: current[item.key] !== item.recommended
-      })),
-      confirmLabel: "应用勾选项",
-      danger: true,
-      onConfirm: (selectedKeys?: string[]) => {
-        const keys = selectedKeys ?? [];
-        if (keys.length === 0) {
-          reportInfo("未选择字段", "没有字段被勾选，未做修改。", "kmnet-defaults");
-          return;
-        }
-        void applyKmNetSelected(keys);
-      }
-    });
-  }, [applyKmNetSelected, kmnetAutoConnect, kmnetHost, kmnetMonitorPort, kmnetPort, kmnetUuid]);
-
   const setKmNetConnection = useCallback(async (connect: boolean) => {
     setBusy(connect ? "kmnet.connect" : "kmnet.disconnect");
     setLocalError(null);
@@ -3507,15 +3360,11 @@ export function StudioConsoleView({
         Math.round(dx),
         Math.round(dy)
       );
-      const metadata = asRecord(result.metadata);
-      const stepsSent = readNumber(result.steps_sent, result.sent === true ? 1 : 0);
-      const apiName = readString(metadata.api_name, "rust_pointer_device_send");
-      const sent = result.sent === true;
-      setKmnetTestMessageTone(sent ? "success" : "warning");
+      setKmnetTestMessageTone(result.sent ? "success" : "warning");
       setKmnetTestMessage(
-        sent
-          ? `已通过 ${apiName} 发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${stepsSent}/1 步`
-          : `未发送原始命令：${readString(result.message, "未知原因")} · ${stepsSent}/1 步`
+        result.sent
+          ? `已通过 ${result.metadata.api_name} 发送 dx=${Math.round(dx)} dy=${Math.round(dy)} · ${result.steps_sent}/1 步`
+          : `未发送原始命令：${result.message} · ${result.steps_sent}/1 步`
       );
       await onRefresh();
     } catch (err) {
@@ -3581,9 +3430,6 @@ export function StudioConsoleView({
             payload.revision = canonical.revision;
             const result = await updateRuntimeConfig(payload);
             const applied = normalizeRuntimeConfig(result.config);
-            if (result.schema) {
-              applyConfigSchema(result.schema);
-            }
             finalizeRuntimeConfigWrite(applied);
             reportSuccess(
               "配置导入成功",
@@ -3699,21 +3545,14 @@ export function StudioConsoleView({
   const realtimeStatusText = runtimeDeliveryLabel(realtimeStatus);
   const realtimeStatusDescription = runtimeDeliveryDescription(realtimeStatus);
   const realtimeStatusClass = `console-live ${runtimeDeliveryTone(realtimeStatus)}`;
-  const backendStatus = errors.health
-    ? "error"
-    : health?.ok
-      ? "normal"
-      : health === null
-        ? "waiting"
-        : "error";
-  const backendStatusLabel = errors.health
-    ? "服务不可达"
-    : health?.ok
-      ? "服务在线"
-      : health === null
-        ? "服务检查中"
-        : "服务异常";
   const telemetryWindowMs = readNullableNumber(statistics?.telemetry_window_ms);
+  const latencySampleCount = readNullableNumber(statistics?.inference_latency_samples);
+  const latencyHasSamples = statistics?.metrics_available === true && (
+    (latencySampleCount ?? 0) > 0
+    || inferenceTotalMs !== null
+    || detectionDataAgeMs !== null
+    || detectionBatchFps !== null
+  );
   const runtimeMetricsStatus = statistics?.metrics_available === true
     ? telemetryWindowMs === null
       ? "已有样本 · 正在建立速率窗口"
@@ -3723,26 +3562,35 @@ export function StudioConsoleView({
     () => buildLaunchReadiness({
       license,
       runtime,
-      runtimeConfig: config
+      serviceAvailable: errors.health ? false : health?.ok ?? null
     }),
-    [config, license, runtime]
+    [errors.health, health?.ok, license, runtime]
+  );
+  const runtimeTransportConfidence: RuntimeTransportConfidence =
+    realtimeStatus === "connected" || realtimeStatus === "fallback"
+      ? "current"
+      : realtimeStatus === "stale" || realtimeStatus === "paused"
+        ? "stale"
+        : "unavailable";
+  const runtimeProjection = useMemo(
+    () => projectRuntimeState(runtime, runtimeTransportConfidence),
+    [runtime, runtimeTransportConfidence]
   );
   const handleLaunchReadinessAction = useCallback((action: LaunchReadinessAction) => {
     if (action === "open-model-manager") {
-      navigatePage("infer");
-      openModelManager();
+      navigatePage("models");
       return;
     }
     if (action === "open-capture") {
       navigatePage("capture");
       return;
     }
-    if (action === "start-mainline") {
-      openMainlineLaunchDialog();
-      return;
-    }
     if (action === "open-control") {
       navigatePage("control");
+      return;
+    }
+    if (action === "open-latency") {
+      navigatePage("latency");
       return;
     }
     if (action === "open-kmnet-test") {
@@ -3754,15 +3602,17 @@ export function StudioConsoleView({
       return;
     }
     setLocalError("授权状态已在进入 Studio 前校验；如需更换授权，请返回授权入口。");
-  }, [navigatePage, openMainlineLaunchDialog, openModelManager]);
+  }, [navigatePage, setLocalError]);
+  const handleRuntimeRecoveryAction = useCallback((action: RuntimeRecoveryAction) => {
+    handleLaunchReadinessAction(action);
+  }, [handleLaunchReadinessAction]);
   const handleProductConfigAction = useCallback((action: ProductConfigAction) => {
     if (action === "capture") {
       navigatePage("capture");
       return;
     }
     if (action === "models") {
-      navigatePage("infer");
-      openModelManager();
+      navigatePage("models");
       return;
     }
     if (action === "control") {
@@ -3778,7 +3628,7 @@ export function StudioConsoleView({
       return;
     }
     openConfigDialog("algorithm");
-  }, [navigatePage, openConfigDialog, openModelManager]);
+  }, [navigatePage, openConfigDialog]);
 
   return (
     <section className="console-app">
@@ -3791,24 +3641,19 @@ export function StudioConsoleView({
         </div>
         <div className="console-toolbar">
           <div className="console-group">
-            <div className="console-toolbar-item">
+            <div className="console-toolbar-item" title={projects[0]?.name ?? "默认项目"}>
               <NovaIcon name="models" size={15} />
-              <span>项目：{projects[0]?.name ?? "默认项目"}</span>
-              <NovaIcon name="collapse" size={13} />
+              <span><small>项目</small>{projects[0]?.name ?? "默认项目"}</span>
             </div>
-            <div className="console-toolbar-item">
+            <div
+              className="console-toolbar-item"
+              title={configuredCaptureDevice || capture?.device || "尚未配置采集设备"}
+            >
               <NovaIcon name="jetson" size={15} />
-              <span>设备：Jetson Orin Nano</span>
-              <NovaIcon name="collapse" size={13} />
+              <span><small>采集设备</small>{configuredCaptureDevice || capture?.device || "未配置"}</span>
             </div>
           </div>
           <div className="console-group">
-            <StatusBadge
-              status={backendStatus}
-              icon={backendStatus === "normal" ? "check-circle" : backendStatus === "waiting" ? "clock" : "plug-off"}
-              label={backendStatusLabel}
-              size="sm"
-            />
             <button type="button"
               className={currentErrorDetails.length > 0 ? "error-center-trigger has-errors" : "error-center-trigger"}
               onClick={() => setErrorCenterOpen(true)}
@@ -3833,9 +3678,10 @@ export function StudioConsoleView({
               aria-label={`${realtimeStatusText}。${realtimeStatusDescription}运行态 ${formatDate(lastUpdated)}`}
               className={realtimeStatusClass}
               role="status"
-              title={realtimeStatusDescription}
+              title={`${realtimeStatusDescription} 最近更新 ${formatDate(lastUpdated)}`}
             >
-              {realtimeStatusText} · 运行态 {formatDate(lastUpdated)}
+              <span>{realtimeStatusText}</span>
+              <small>{formatDate(lastUpdated)}</small>
             </div>
           </div>
         </div>
@@ -3845,56 +3691,68 @@ export function StudioConsoleView({
         <StudioNavigation activePage={activePage} onNavigate={navigatePage} />
       </aside>
 
-      <main className="console-main" data-page={activePage}>
-        <StudioPageHeader
+      <main className="console-main" data-page={activePage} ref={mainRef}>
+        <StudioPageHeader page={activePage} />
+        <StudioRuntimeBar
           page={activePage}
-          runtimeRunning={runtime?.running === true}
-          realtimeConnected={realtimeStatus === "connected"}
+          runtimeAvailable={runtime !== null}
+          runtimeLifecycleActive={runtimeLifecycleActive}
+          runtimeControlRequested={runtimeControlRequested}
+          runtimeStopping={runtimeStopping}
+          launchPending={mainlineLaunchPending}
+          diagnosticModeReady={diagnosticModeReady}
+          busy={busy !== null}
+          emergencyStopping={emergencyStopping}
+          runtimeControlUnavailable={runtimeControlUnavailable}
+          captureStatus={captureStatusText}
+          inferenceStatus={inferenceStatusText}
+          onToggle={() => void toggleCapture()}
+          onEmergencyStop={() => void emergencyStopMainline()}
         />
-        <section className="console-process">
-          <div className="console-process-state">
-            <NovaIcon name="activity-pulse" size={16} />
-            {runtimeMainlineSelected
-              ? `主链：${captureStatusText} · 推理：${inferenceStatusText}`
-              : `采集：${captureStatusText} · 推理：${inferenceStatusText}`}
-          </div>
-          <button type="button"
-            className={runtimeControlRequested ? "console-button danger" : "console-button primary"}
-            disabled={busy === "capture" || busy === "stop" || busy === "runtime.start"}
-            onClick={() => void toggleCapture()}
-          >
-            <NovaIcon name={runtimeControlRequested ? "stop" : "start"} size={16} />
-            {runtimeControlRequested ? (runtimeMainlineSelected ? "停止主链" : "停止采集") : runtimeMainlineSelected ? "启动主链" : "启动采集"}
-          </button>
-          {!runtimeMainlineSelected && !runtime?.running && capture?.available ? (
-            <button type="button"
-              className="console-button"
-              disabled={busy === "runtime.start"}
-              onClick={() => void startInferenceThread()}
-            >
-              恢复推理线程
-            </button>
-          ) : null}
-          {activePage === "params" ? (
-            <>
-              <button className="console-button" onClick={exportConfig} type="button">
-                <NovaIcon name="export" size={16} />
-                导出全部参数
-              </button>
-              <button type="button" className="console-button" onClick={() => fileInputRef.current?.click()}              >
-                <NovaIcon name="import" size={16} />
-                导入全部参数
-              </button>
-              <input ref={fileInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importConfig} />
-            </>
-          ) : null}
-        </section>
 
-        {mainlineLaunchPending ? (
-          <div className="console-info">
-            {mainlineLaunchMessage || "主链启动请求已提交，正在等待运行状态确认。"}
-          </div>
-        ) : runtimeMainlineSelected && runtimeMainlineRunning && runtimeMainlinePresentation.readinessCode !== "ready" ? (
+        {activePage === "overview" ? (
+          <RuntimeOverviewView
+            runtime={runtime}
+            projection={runtimeProjection}
+            readiness={launchReadiness}
+            lastUpdated={lastUpdated}
+            onAction={handleRuntimeRecoveryAction}
+          />
+        ) : null}
+
+        {activePage === "models" ? (
+          <Suspense fallback={<div className="console-info" role="status">正在加载模型管理工作区…</div>}>
+            <ModelWorkspace
+              activeModelName={activeModelName}
+              panelProps={{
+                root: modelCatalog,
+                loading: modelCatalogLoading,
+                directoryCount: modelCatalogDirectoryCount,
+                modelCount: modelCatalogModelCount,
+                selectedPath: selectedModelCatalogPath,
+                selectedModel: selectedCatalogModel,
+                selectedArtifact: selectedPreviewArtifact,
+                selectedVersion: selectedPreviewVersion,
+                activeArtifactId: artifact?.id ?? null,
+                activeArtifactPath: artifact?.path ?? "",
+                runtimeBackend: readString(runtime?.inference?.selected, ""),
+                runtimeInputShape: displayedInputShape,
+                catalogMessage: modelCatalogMessage,
+                switchMessage: modelSwitch.message,
+                busy,
+                canSwitch: selectedCatalogModel?.kind === "engine",
+                parserPreset,
+                onParserPresetChange: setParserPreset,
+                onRefresh: () => void refreshModelCatalog(),
+                onSelectModel: selectModelFromCatalog,
+                onSaveMetadata: (recommendation, tags) => void modelSwitch.saveMetadata(recommendation, tags),
+                onSwitch: modelSwitch.switchModel,
+              }}
+            />
+          </Suspense>
+        ) : null}
+
+        {activePage !== "overview" && activePage !== "models" && activePage !== "params" && activePage !== "control-test" && runtimeLifecycleActive && runtimeMainlinePresentation.readinessCode !== "ready" ? (
           <div className="console-info" role="status">
             {runtimeMainlinePresentation.readinessLabel}：{runtimeMainlinePresentation.readinessDetail}
           </div>
@@ -3902,7 +3760,7 @@ export function StudioConsoleView({
 
         {activePage === "capture" ? (
           <LaunchReadinessPanel
-            busy={busy !== null || launchStatus === "running"}
+            busy={busy !== null || runtimeStopping || runtimeControlUnavailable}
             onAction={handleLaunchReadinessAction}
             readiness={launchReadiness}
           />
@@ -3910,18 +3768,20 @@ export function StudioConsoleView({
 
         {activePage === "capture" ? (
           <section className="console-page">
-          <div className="console-metrics">
-            <Metric title="采集状态" value={captureStatusText} small={capture?.device || configuredCaptureDevice || "等待设备"} />
-            <Metric title="推理输入 FPS" value={formatOptionalNumber(nvinferInputFps)} small="有效输入" />
-            <Metric title="配置输入 FPS" value={formatOptionalNumber(configuredCaptureFps, 0)} small="配置值 · 非实时测量" />
-            <Metric title="ROI 应用" value={roiApplyLabel} small={runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : "等待运行 ROI"} />
-          </div>
+          {runtime !== null ? (
+            <div className="console-metrics">
+              <Metric title="采集状态" value={captureStatusText} small={capture?.device || configuredCaptureDevice || "等待设备"} />
+              <Metric title="推理输入 FPS" value={formatOptionalNumber(nvinferInputFps)} small="有效输入" />
+              <Metric title="配置输入 FPS" value={formatOptionalNumber(configuredCaptureFps, 0)} small="配置值 · 非实时测量" />
+              <Metric title="ROI 应用" value={roiApplyLabel} small={runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : "等待运行 ROI"} />
+            </div>
+          ) : null}
           <div className="console-grid2 capture-config-grid compact-content-grid">
               <div className="console-card">
                 <SectionTitle title="采集设备" />
                 <TextControl
                   label="视频设备"
-                  detail="更换设备路径后先检测能力；启动主链时提交当前待选设备。"
+                  detail="更换设备路径后先检测能力，再明确保存采集配置。"
                   value={device}
                   applyMode="launch"
                   onCommit={(value) => {
@@ -3933,7 +3793,7 @@ export function StudioConsoleView({
                 <div className="capture-format-control">
                   <SelectControl
                     label="采集格式"
-                    detail={caps ? "从设备实际返回的格式中选择；启动主链时提交。" : "未检测前使用已保存格式；更换采集卡后建议重新检测。"}
+                    detail={caps ? "从设备实际返回的格式中选择，然后保存为运行配置。" : "未检测前使用已保存格式；更换采集卡后建议重新检测。"}
                     value={selectedChoice ? choiceId(selectedChoice) : ""}
                     applyMode="launch"
                     options={choices.length > 0
@@ -3947,6 +3807,14 @@ export function StudioConsoleView({
                   <button className="console-button secondary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
                     <NovaIcon name="refresh" size={15} />
                     {busy === "caps" ? "检测中..." : "检测设备能力"}
+                  </button>
+                  <button
+                    className="console-button primary"
+                    disabled={busy !== null || runtimeLifecycleActive || runtimeControlUnavailable}
+                    onClick={() => void applyCapture()}
+                    type="button"
+                  >
+                    保存采集配置
                   </button>
                 </div>
                 <p className="console-section-note">
@@ -4039,19 +3907,21 @@ export function StudioConsoleView({
 
         {activePage === "infer" ? (
           <section className="console-page">
-          <div className="console-metrics">
-            <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="模型实际完成" />
-            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果有效产出" />
-            <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
-            <Metric title="最近检测" value={formatOptionalInteger(detectionCount)} small="最近遥测 · 最多 5Hz" />
-          </div>
+          {runtime !== null ? (
+            <div className="console-metrics">
+              <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="模型实际完成" />
+              <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果有效产出" />
+              <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
+              <Metric title="最近检测" value={formatOptionalInteger(detectionCount)} small="最近遥测 · 最多 5Hz" />
+            </div>
+          ) : null}
           <div className="console-card model-selection-card">
             <SectionTitle title="模型设置" />
             <CurrentModelSummary
               artifactKind={artifact?.kind ?? ""}
               deployed={artifact !== null && artifact !== undefined}
               inputShape={displayedInputShape}
-              loaded={runtimeInference.loaded === true}
+              loaded={runtimeInference?.loaded === true}
               modelName={activeModelName}
               onOpenManager={openModelManager}
             />
@@ -4092,7 +3962,7 @@ export function StudioConsoleView({
                 <summary>当前模型详情</summary>
                 <div className="model-debug-grid">
                   <span>当前模型</span><b>{activeModelName}</b>
-                  <span>运行装载</span><b>{runtimeInference.loaded === true ? "已装载" : "未装载"}</b>
+                  <span>运行装载</span><b>{runtimeInference?.loaded === true ? "已装载" : "未装载"}</b>
                   <span>登记输入</span><b>{registeredInputShape || "-"}</b>
                   <span>运行输入</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : NO_SAMPLE}</b>
                   <span>模型文件</span><b>{artifact ? `${artifact.kind} · ${artifact.status}` : NO_SAMPLE}</b>
@@ -4149,9 +4019,9 @@ export function StudioConsoleView({
                   <span>识别结果已发布</span><b>{formatOptionalInteger(deepstreamPublishedBatches)}</b>
                   <span>识别结果已读取</span><b>{formatOptionalInteger(runtimeMainlineStatus.consumedBatches)}</b>
                   <span>目标选择输入</span><b>{formatOptionalInteger(runtimeMainlineStatus.targetingBatches)}</b>
-                  <span>缓冲时间戳匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_buffer_pts_matches)}</b>
-                  <span>帧元数据时间戳匹配</span><b>{formatOptionalInteger(runtimeInference.timestamp_frame_meta_pts_matches)}</b>
-                  <span>时间戳关联失败</span><b>{formatOptionalInteger(runtimeInference.timestamp_correlation_misses)}</b>
+                  <span>缓冲时间戳匹配</span><b>{formatOptionalInteger(runtimeInference?.timestamp_buffer_pts_matches)}</b>
+                  <span>帧元数据时间戳匹配</span><b>{formatOptionalInteger(runtimeInference?.timestamp_frame_meta_pts_matches)}</b>
+                  <span>时间戳关联失败</span><b>{formatOptionalInteger(runtimeInference?.timestamp_correlation_misses)}</b>
                   <span>采样结果版本</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
                   <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
                 </div>
@@ -4184,7 +4054,7 @@ export function StudioConsoleView({
                   <span>置信度阈值</span><b>{formatOptionalNumber(runtimePostprocessConfidence, 2)}</b>
                   <span>NMS IoU 阈值</span><b>{formatOptionalNumber(runtimePostprocessNms, 2)}</b>
                   <span>最近检测数</span><b>{formatOptionalInteger(detectionCount)}</b>
-                  <span>遥测列表截断</span><b>{formatOptionalInteger(vision.detection_items_truncated)}</b>
+                  <span>遥测列表截断</span><b>{formatOptionalInteger(vision?.detection_items_truncated)}</b>
                   <span>最高检测置信度</span><b>{formatOptionalNumber(inferenceHighestConfidence, 3)}</b>
                   <span>识别结果状态</span><b>{inferenceBatchState}</b>
                   <span>识别结果已发布</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchPublished ? "是" : "否"}</b>
@@ -4199,6 +4069,20 @@ export function StudioConsoleView({
 
         {activePage === "control" ? (
           <section className="console-page">
+          {runtime === null ? (
+            <WorkspaceNotice
+              icon="signal-lost"
+              title="无法读取控制运行状态"
+              detail="页面不会用配置值冒充实时控制结果。请恢复 Web/API 与 novasightd 的状态通道后重新读取。"
+              action={(
+                <button className="console-button" disabled={busy !== null} onClick={() => void onRefresh()} type="button">
+                  <NovaIcon name="refresh" size={15} />
+                  重新读取
+                </button>
+              )}
+            />
+          ) : (
+          <>
           <ControlTracePanel trace={controlTrace!} />
           <details className="studio-diagnostic-details">
             <summary>
@@ -4212,8 +4096,8 @@ export function StudioConsoleView({
               <div className="console-card">
                 <SectionTitle title="选择主要目标" />
                 <div className="console-kv">
-                  <span>控制状态</span><b>{controlHasSample ? readString(control.global_state, "已计算") : "未执行"}</b>
-                  <span>控制原因</span><b>{readString(control.reason, readString(control.selection_reason, "")) || NO_SAMPLE}</b>
+                  <span>控制状态</span><b>{controlHasSample ? control?.global_state ?? "已计算" : "未执行"}</b>
+                  <span>控制原因</span><b>{control?.reason || control?.selection_reason || NO_SAMPLE}</b>
                   <span>阻断阶段</span><b>{targetPipelineStage || NO_SAMPLE}</b>
                   <span>状态代码</span><b>{targetPipelineCode || NO_SAMPLE}</b>
                   <span>状态信息</span><b>{targetPipelineMessage || NO_SAMPLE}</b>
@@ -4222,18 +4106,18 @@ export function StudioConsoleView({
                   <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
                   <span>生效类别过滤</span><b>{effectiveClassFilter === "all" ? "全部类别" : effectiveClassFilter === "none" ? "未选择任何类别" : `cls ${effectiveClassFilter}`}</b>
                   <span>被类别过滤的 cls</span><b>{rejectedBasicClassIds.length > 0 ? rejectedBasicClassIds.join(", ") : NO_SAMPLE}</b>
-                  <span>基础过滤前 / 后</span><b>{`${formatOptionalInteger(basicCandidateFilter.raw_candidates)} / ${formatOptionalInteger(basicCandidateFilter.filtered_candidates)}`}</b>
-                  <span>基础过滤拒绝</span><b>{formatOptionalInteger(basicCandidateFilter.rejected_candidates)}</b>
+                  <span>基础过滤前 / 后</span><b>{`${formatOptionalInteger(basicCandidateFilter?.raw_candidates)} / ${formatOptionalInteger(basicCandidateFilter?.filtered_candidates)}`}</b>
+                  <span>基础过滤拒绝</span><b>{formatOptionalInteger(basicCandidateFilter?.rejected_candidates)}</b>
                   <span>候选目标数量</span><b>{formatOptionalInteger(controlCandidateCount)}</b>
                   <span>最终选择数量</span><b>{controlHasTarget ? "1" : controlHasSample ? "0" : NO_SAMPLE}</b>
                   <span>当前 track_id</span><b>{formatOptionalInteger(controlTrackId)}</b>
                   <span>目标类别</span><b>{activeRuntimeClassLabel || NO_SAMPLE}</b>
-                  <span>目标置信度</span><b>{formatOptionalNumber(target.score, 3)}</b>
-                  <span>Track 身份置信度</span><b>{formatOptionalNumber(target.identity_confidence, 3)}</b>
-                  <span>目标选择状态</span><b>{readString(control.selector_state, "") || NO_SAMPLE}</b>
-                  <span>目标选择原因</span><b>{readString(control.selection_reason, "") || NO_SAMPLE}</b>
-                  <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target.x1, target.y1)} -> ${formatPoint(target.x2, target.y2)}` : NO_SAMPLE}</b>
-                  <span>目标框中心</span><b>{formatPoint(target.box_cx ?? target.cx, target.box_cy ?? target.cy, STANDARD_DECIMAL_DIGITS, "px")}</b>
+                  <span>目标置信度</span><b>{formatOptionalNumber(target?.score, 3)}</b>
+                  <span>Track 身份置信度</span><b>{formatOptionalNumber(target?.identity_confidence, 3)}</b>
+                  <span>目标选择状态</span><b>{control?.selector_state || NO_SAMPLE}</b>
+                  <span>目标选择原因</span><b>{control?.selection_reason || NO_SAMPLE}</b>
+                  <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target?.x1, target?.y1)} -> ${formatPoint(target?.x2, target?.y2)}` : NO_SAMPLE}</b>
+                  <span>目标框中心</span><b>{formatPoint(target?.box_cx ?? target?.cx, target?.box_cy ?? target?.cy, STANDARD_DECIMAL_DIGITS, "px")}</b>
                   <span>遥测说明</span><b>目标与框为最近采样快照，最多约 5Hz</b>
                 </div>
                 {targetPipelineCode === "BASIC_CANDIDATE_REJECTED" && targetPipelineRejections.includes("class_filter") && detectedClassFilterValue ? (
@@ -4266,43 +4150,43 @@ export function StudioConsoleView({
                 <SectionTitle title="连续非线性控制" />
                 <div className="console-kv">
                   <span>屏幕中心</span><b>{formatPoint(controlCenterX, controlCenterY, STANDARD_DECIMAL_DIGITS, "px")}</b>
-                  <span>观测误差</span><b>{formatPoint(controlPipeline.observed_error_x_px, controlPipeline.observed_error_y_px, 2, "px")}</b>
+                  <span>观测误差</span><b>{formatPoint(controlPipeline?.observed_error_x_px, controlPipeline?.observed_error_y_px, 2, "px")}</b>
                   <span>控制误差</span><b>{formatPoint(predictedErrorXPx, predictedErrorYPx, 2, "px")}</b>
                   <span>误差距离</span><b>{formatOptionalNumber(predictedErrorDistancePx, 2, "px")}</b>
                   <span>控制 dt</span><b>{controlMeasurementDtS === null ? NO_SAMPLE : `${(controlMeasurementDtS * 1000).toFixed(3)} ms`}</b>
                   <span>控制观测帧龄</span><b>{formatOptionalNumber(controlFrameAgeMs, 2, "ms")}</b>
-                  <span>预测执行延迟</span><b>{controlPredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_actuation_delay_ms, 2, "ms") : "已关闭"}</b>
-                  <span>预测实际时域</span><b>{controlPredictionEnabled ? formatOptionalNumber(controlPipeline.prediction_horizon_ms, 2, "ms") : "已关闭"}</b>
+                  <span>预测执行延迟</span><b>{controlPredictionEnabled ? formatOptionalNumber(controlPipeline?.prediction_actuation_delay_ms, 2, "ms") : "已关闭"}</b>
+                  <span>预测实际时域</span><b>{controlPredictionEnabled ? formatOptionalNumber(controlPipeline?.prediction_horizon_ms, 2, "ms") : "已关闭"}</b>
                 </div>
               </div>
               <div className="console-card">
                 <SectionTitle title="目标速度预测" />
                 <p className="console-section-note">三段二维速度只取向量 medoid，再按预测时域计算提前瞄点。</p>
                 <div className="console-kv">
-                  <span>速度段 X</span><b>{`${formatOptionalNumber(controlPipeline.velocity_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_3, 3)} px/ms`}</b>
-                  <span>速度段 Y</span><b>{`${formatOptionalNumber(controlPipeline.velocity_y_1, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_2, 3)} / ${formatOptionalNumber(controlPipeline.velocity_y_3, 3)} px/ms`}</b>
-                  <span>Medoid 速度</span><b>{formatPoint(controlPipeline.prediction_velocity, controlPipeline.prediction_velocity_y, 3, "px/ms")}</b>
-                  <span>原始预测</span><b>{formatPoint(controlPipeline.prediction_raw_offset_x, controlPipeline.prediction_raw_offset_y, 2, "px")}</b>
-                  <span>预测位移上限</span><b>{formatOptionalNumber(controlPipeline.prediction_allowed_cap_x, 2, "px")}</b>
-                  <span>截断后预测</span><b>{formatPoint(controlPipeline.prediction_safe_offset_x, controlPipeline.prediction_safe_offset_y, 2, "px")}</b>
+                  <span>速度段 X</span><b>{`${formatOptionalNumber(controlPipeline?.velocity_1, 3)} / ${formatOptionalNumber(controlPipeline?.velocity_2, 3)} / ${formatOptionalNumber(controlPipeline?.velocity_3, 3)} px/ms`}</b>
+                  <span>速度段 Y</span><b>{`${formatOptionalNumber(controlPipeline?.velocity_y_1, 3)} / ${formatOptionalNumber(controlPipeline?.velocity_y_2, 3)} / ${formatOptionalNumber(controlPipeline?.velocity_y_3, 3)} px/ms`}</b>
+                  <span>Medoid 速度</span><b>{formatPoint(controlPipeline?.prediction_velocity, controlPipeline?.prediction_velocity_y, 3, "px/ms")}</b>
+                  <span>原始预测</span><b>{formatPoint(controlPipeline?.prediction_raw_offset_x, controlPipeline?.prediction_raw_offset_y, 2, "px")}</b>
+                  <span>预测位移上限</span><b>{formatOptionalNumber(controlPipeline?.prediction_allowed_cap_x, 2, "px")}</b>
+                  <span>截断后预测</span><b>{formatPoint(controlPipeline?.prediction_safe_offset_x, controlPipeline?.prediction_safe_offset_y, 2, "px")}</b>
                 </div>
               </div>
               <div className="console-card">
                 <SectionTitle title="输出限幅与命令" />
                 <div className="console-kv">
                   <span>控制算法</span><b>{controlModeLabel}</b>
-                  <span>移动策略</span><b>{readString(controlPipeline.movement_strategy, "") || NO_SAMPLE}</b>
-                  <span>响应阶段</span><b>{formatResponseStage(controlPipeline.mode)}</b>
-                  <span>完整修正 counts</span><b>{formatPoint(controlPipeline.full_error_counts_x, controlPipeline.full_error_counts_y, 2)}</b>
-                  <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline.float_demand_x, controlPipeline.float_demand_y, 2)}</b>
+                  <span>移动策略</span><b>{controlPipeline?.movement_strategy || NO_SAMPLE}</b>
+                  <span>响应阶段</span><b>{formatResponseStage(controlPipeline?.mode)}</b>
+                  <span>完整修正 counts</span><b>{formatPoint(controlPipeline?.full_error_counts_x, controlPipeline?.full_error_counts_y, 2)}</b>
+                  <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline?.float_demand_x, controlPipeline?.float_demand_y, 2)}</b>
                   <span>X / Y 输出上限</span><b>{`${formatOptionalNumber(maxOutputXCounts, 0)} / ${formatOptionalNumber(maxOutputYCounts, 0)} counts`}</b>
-                  <span>整数输出</span><b>{formatPoint(controlPipeline.integer_command_x, controlPipeline.integer_command_y, 0, "counts")}</b>
-                  <span>独立压枪状态</span><b>{effectiveRecoilEnabled ? formatRecoilState(controlPipeline.recoil_state, controlPipeline.recoil_block_reason) : "关闭"}</b>
+                  <span>整数输出</span><b>{formatPoint(controlPipeline?.integer_command_x, controlPipeline?.integer_command_y, 0, "counts")}</b>
+                  <span>独立压枪状态</span><b>{effectiveRecoilEnabled ? formatRecoilState(controlPipeline?.recoil_state, controlPipeline?.recoil_block_reason) : "关闭"}</b>
                   <span>开火延迟</span><b>{fireDelayEnabled ? `已开启 · ${fireDelayMs.toFixed(0)} ms` : "已关闭"}</b>
-                  <span>压枪间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline.recoil_y_counts, 0)} counts`}</b>
-                  <span>已等待 / 剩余</span><b>{`${formatOptionalNumber(controlPipeline.recoil_elapsed_since_output_ms, 2)} / ${formatOptionalNumber(controlPipeline.recoil_remaining_ms, 2)} ms`}</b>
-                  <span>本轮请求 / 已发送</span><b>{`${formatOptionalNumber(controlPipeline.recoil_requested_counts_y, 0)} / ${formatOptionalNumber(controlPipeline.recoil_emitted_counts_y, 0)} counts`}</b>
-                  <span>控制预算</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
+                  <span>压枪间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline?.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline?.recoil_y_counts, 0)} counts`}</b>
+                  <span>已等待 / 剩余</span><b>{`${formatOptionalNumber(controlPipeline?.recoil_elapsed_since_output_ms, 2)} / ${formatOptionalNumber(controlPipeline?.recoil_remaining_ms, 2)} ms`}</b>
+                  <span>本轮请求 / 已发送</span><b>{`${formatOptionalNumber(controlPipeline?.recoil_requested_counts_y, 0)} / ${formatOptionalNumber(controlPipeline?.recoil_emitted_counts_y, 0)} counts`}</b>
+                  <span>控制预算</span><b>{formatPoint(control?.dx, control?.dy, 0, "counts")}</b>
                 </div>
               </div>
               <div className="console-card">
@@ -4311,9 +4195,9 @@ export function StudioConsoleView({
                 <div className="console-kv">
                   <span>触发状态</span><b>{controlTriggerActive === true ? "按下" : controlTriggerActive === false ? "未按下" : NO_SAMPLE}</b>
                   <span>是否允许发包</span><b>{controlWillEmit === true ? "是" : controlWillEmit === false ? "否" : NO_SAMPLE}</b>
-                  <span>运行输出门</span><b>{control.output_enabled === true ? "已打开" : control.output_enabled === false ? "已关闭" : NO_SAMPLE}</b>
+                  <span>运行输出门</span><b>{control?.output_enabled === true ? "已打开" : control?.output_enabled === false ? "已关闭" : NO_SAMPLE}</b>
                   <span>不发包原因</span><b>{controlNoSendReason || NO_SAMPLE}</b>
-                  <span>本轮控制意图</span><b>{formatPoint(control.dx, control.dy, 0, "counts")}</b>
+                  <span>本轮控制意图</span><b>{formatPoint(control?.dx, control?.dy, 0, "counts")}</b>
                   <span>发送语义</span><b>仅保留最新观测</b>
                   <span>最近设备已接受</span><b>{hasAcceptedCommand ? lastAcceptedCommand : NO_SAMPLE}</b>
                   <span>设备通道</span><b>{kmnetRuntimeConnectionLabel}</b>
@@ -4321,6 +4205,8 @@ export function StudioConsoleView({
               </div>
             </div>
           </details>
+          </>
+          )}
           </section>
         ) : null}
 
@@ -4337,6 +4223,15 @@ export function StudioConsoleView({
                 {parameterPageDirty ? <small>保存后立即生效</small> : null}
               </div>
               <div className="parameter-save-bar-actions">
+                <button className="console-button" onClick={exportConfig} type="button">
+                  <NovaIcon name="export" size={15} />
+                  导出
+                </button>
+                <button className="console-button" onClick={() => fileInputRef.current?.click()} type="button">
+                  <NovaIcon name="import" size={15} />
+                  导入
+                </button>
+                <input ref={fileInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importConfig} />
                 {parameterPageDirty ? (
                   <button
                     className="console-button"
@@ -4363,6 +4258,7 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">01</span>
                 <div className="control-chain-setting-title">
                   <b>触发方式</b>
+                  <small>决定控制链在什么条件下开始计算与输出。</small>
                 </div>
                 <div className="trigger-mode-options" role="group" aria-label="触发方式">
                   <button
@@ -4390,6 +4286,7 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">02</span>
                 <div className="control-chain-setting-title">
                   <b>开火延迟</b>
+                  <small>过滤短按，避免刚触发时立即进入持续控制。</small>
                 </div>
                 <div className="control-chain-setting-controls">
                   <ModuleSwitch
@@ -4416,6 +4313,7 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">03</span>
                 <div className="control-chain-setting-title">
                   <b>算法配置</b>
+                  <small>设置预测与连续响应，决定偏移如何被换算。</small>
                 </div>
                 <div className="control-chain-setting-controls split">
                   <ModuleSwitch
@@ -4440,6 +4338,7 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">04</span>
                 <div className="control-chain-setting-title">
                   <b>压枪</b>
+                  <small>在主控制量之外独立叠加向下补偿。</small>
                 </div>
                 <div className="control-chain-setting-controls recoil">
                   <ModuleSwitch compact label="启用压枪" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
@@ -4473,6 +4372,7 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">05</span>
                 <div className="control-chain-setting-title">
                   <b>限幅</b>
+                  <small>约束每次发送的最大 X/Y 输出，防止突变。</small>
                 </div>
                 <div className="control-chain-setting-controls">
                   <label className="control-chain-inline-field">
@@ -4500,6 +4400,7 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">06</span>
                 <div className="control-chain-setting-title">
                   <b>输出</b>
+                  <small>物理设备的最终发送门；关闭时仍保留算法计算。</small>
                 </div>
                 <ModuleSwitch
                   compact
@@ -4723,198 +4624,145 @@ export function StudioConsoleView({
           </>
           ) : (
           <>
-          <div className="console-metrics">
-            <Metric title="设备连接" value={kmnetConnectionLabel} small={kmnetRestartRequired ? `运行 ${effectiveConfigRevision} · 已保存 ${desiredConfigRevision}` : kmnetConnected ? "ready" : kmnetConnecting ? "connecting" : kmnetRetryable ? "retry available" : "unavailable"} />
-            <Metric title="执行器可用" value={kmnetRestartRequired ? "等待装载" : kmnetExecutorAvailable ? "可用" : "不可用"} small="kmNet" />
-            <Metric title="按键数据" value={kmnetStatus.buttons_available === true ? "可用" : "不可用"} small="最近轮询" />
-            <Metric title="自动连接" value={kmnetAutoConnect ? kmnetRestartRequired ? "重载后启用" : "已启用" : "已关闭"} small="startup" />
-            <Metric title="设备通道" value={kmnetRuntimeConnectionLabel} small={kmnetRuntimeConnected ? "运行中" : "等待设备"} />
-            <Metric title="命令门控" value={controlWillEmit === true ? "允许" : controlWillEmit === false ? "阻止" : NO_SAMPLE} small={controlNoSendReason || "当前控制样本"} />
-          </div>
           <div className="console-grid2 control-test-grid">
             <div className="console-card">
-              <SectionTitle title="kmNet 控制面板" />
+              <SectionTitle title="kmNet 单步测试" />
               <div className="kmnet-status-grid">
-                <div className={kmnetRestartRequired ? "kmnet-status-tile idle" : kmnetConnected ? "kmnet-status-tile good" : kmnetConnectionFailed ? "kmnet-status-tile bad" : "kmnet-status-tile idle"}>
-                  <span>连接</span>
-                  <b>{kmnetConnectionLabel}</b>
-                </div>
-                <div className={kmnetStatus.buttons_available === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
-                  <span>按键</span>
-                  <b>{kmnetStatus.buttons_available === true ? `${kmnetButtonLeft ? "左键" : "-"} / ${kmnetButtonRight ? "右键" : "-"}` : "数据不可用"}</b>
+                <div className={diagnosticModeReady ? "kmnet-status-tile good" : "kmnet-status-tile bad"}>
+                  <span>主链</span>
+                  <b>{diagnosticModeReady ? "已停止" : runtime === null ? "状态不可用" : "未完全停止"}</b>
                 </div>
                 <div className={kmnetExecutorAvailable ? "kmnet-status-tile good" : "kmnet-status-tile bad"}>
-                  <span>执行器</span>
+                  <span>硬件适配器</span>
                   <b>{kmnetExecutorAvailable ? "可用" : "不可用"}</b>
                 </div>
-                <div className={controlWillEmit === true ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
-                  <span>当前命令门控</span>
-                  <b>{controlWillEmit === true ? "允许" : controlWillEmit === false ? "阻止" : NO_SAMPLE}</b>
-                </div>
-                <div className={kmnetRuntimeConnected ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
-                  <span>设备通道</span>
-                  <b>{kmnetRuntimeConnectionLabel}</b>
-                </div>
-                <div className="kmnet-status-tile">
-                  <span>连接阶段</span>
-                  <b>{kmnetConnectionState}</b>
+                <div className={outputEnabled ? "kmnet-status-tile good" : "kmnet-status-tile bad"}>
+                  <span>物理输出门</span>
+                  <b>{outputEnabled ? "已允许" : "已关闭"}</b>
                 </div>
                 <div className={kmnetConfigurationReady ? "kmnet-status-tile good" : "kmnet-status-tile idle"}>
                   <span>配置装载</span>
                   <b>{kmnetRestartRequired ? `${effectiveConfigRevision} → ${desiredConfigRevision}` : kmnetConfigurationReady ? "已生效" : "未委任"}</b>
                 </div>
-                <div className="kmnet-status-tile">
-                  <span>最近设备错误</span>
-                  <b>{kmnetLastDeviceError || kmnetLastError || "无"}</b>
-                </div>
               </div>
               {kmnetNotice.code !== "none" ? (
                 <div className={kmnetNotice.code === "failed" ? "kmnet-connection-notice failed" : "kmnet-connection-notice warn"} role="status">
                   <div>
-                    <strong>{kmnetNotice.code === "restart_required" ? "kmNet 配置正在由当前进程重新装载" : kmnetNotice.code === "failed" ? "输出设备未连接" : kmnetNotice.code === "degraded" ? "设备连接异常，正在自动恢复" : "最近一次输出失败"}</strong>
+                    <strong>{kmnetNotice.code === "restart_required" ? "kmNet 配置尚未进入当前进程" : kmnetNotice.code === "failed" ? "硬件适配器不可用" : kmnetNotice.code === "degraded" ? "最近一次设备会话异常" : "最近一次输出失败"}</strong>
                     <span>{kmnetNotice.code === "restart_required"
-                      ? `当前进程使用 revision ${kmnetNotice.effectiveRevision}，已保存 revision ${kmnetNotice.desiredRevision}；正在等待设备适配器重载确认。`
-                      : kmnetNotice.lastError || kmnetNotice.lastDeviceError || (kmnetNotice.code === "failed" ? "请检查地址、端口、UUID 和网络连通性。" : "视觉主链继续运行，物理偏移输出保持关闭。")}</span>
+                      ? `当前进程使用 revision ${kmnetNotice.effectiveRevision}，已保存 revision ${kmnetNotice.desiredRevision}；单步测试保持锁定。`
+                      : kmnetNotice.lastError || kmnetNotice.lastDeviceError || "请检查地址、端口、UUID 和局域网连通性。"}</span>
                   </div>
-                  {kmnetNotice.code === "restart_required" ? (
-                    <small>这是进程内设备适配器重载，不是网络连接失败，也不要求重启主链。</small>
-                  ) : kmnetRetryable ? (
-                    <small>
-                      {rustControlPlane
-                        ? "低频设备线程会自动重试；也可以点击“立即重试连接”。"
-                        : "修改配置后点击“重新连接”，无需重启主链。"}
-                    </small>
-                  ) : null}
+                  <small>单步命令会独立执行“连接 → 发送一次 → 断开”，不会复用主链实时会话。</small>
                 </div>
               ) : null}
-              <div className="console-action-row kmnet-connection-actions">
-                <button type="button"
-                  className="console-button"
-                  aria-pressed={kmnetConnected}
-                  disabled={
-                    busy !== null ||
-                    kmnetRestartRequired ||
-                    !kmnetAutoConnect ||
-                    !kmnetCanConnect
-                  }
-                  onClick={() => void setKmNetConnection(true)}
-                >
-                  {kmnetRestartRequired
-                    ? "正在重载 kmNet"
-                    : kmnetRuntimeConnected
-                      ? "kmNet 已连接"
-                      : kmnetConnecting
-                        ? "连接中"
-                        : kmnetConnectionDegraded
-                          ? "立即重试连接"
-                          : kmnetAutoConnect
-                            ? "连接 kmNet"
-                            : "请先启用自动连接"}
-                </button>
-                <button type="button"
-                  className="console-button danger"
-                  disabled={busy !== null || !kmnetCanDisconnect}
-                  onClick={() => void setKmNetConnection(false)}
-                >
-                  断开 kmNet
-                </button>
-                <span>
-                  {kmnetRestartRequired
-                    ? "新配置尚未进入当前进程；请停止并重新运行 novasightd。"
-                    : !kmnetExecutorAvailable
-                    ? "当前没有可用的硬件输出适配器；请检查 kmNet 配置和 Jetson 运行环境。"
-                    : runtime?.running
-                      ? kmnetBlockedReason === "already_connected"
-                        ? "设备已连接；断开只停止物理输出，采集、推理和目标计算保持运行。"
-                        : "连接操作只影响 kmNet 会话，采集、推理和目标计算保持运行。"
-                      : "请先启动主链；运行通道建立后才能控制 kmNet 会话。"}
-                </span>
-              </div>
-              <TextControl
-                label="kmNet 地址"
-                detail="设备控制器的局域网 IP 或主机名；提交后会在当前进程重新装载硬件会话。"
-                value={kmnetHost}
-                applyMode="live"
-                riskLevel="advanced"
-                onCommit={(value) => updateConfigField("hardware", "host", value)}
-              />
-              <ParameterNumberControl
-                label="kmNet 控制端口"
-                detail="kmNet 主控制连接端口。"
-                value={kmnetPort}
-                min={rustControlPlane ? 1 : 0}
-                max={65535}
-                step={1}
-                kind="stepper"
-                applyMode="live"
-                riskLevel="advanced"
-                onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))}
-              />
-              <TextControl
-                label="kmNet UUID"
-                detail="硬件授权标识；与设备地址一起组成当前进程内的输出会话。"
-                value={kmnetUuid}
-                applyMode="live"
-                riskLevel="advanced"
-                onCommit={(value) => updateConfigField("hardware", "uuid", value)}
-              />
-              <ParameterNumberControl
-                label="kmNet 监控端口"
-                detail="kmNet 监控连接端口。"
-                value={kmnetMonitorPort}
-                min={rustControlPlane ? 1024 : 0}
-                max={rustControlPlane ? 49151 : 65535}
-                step={1}
-                kind="stepper"
-                applyMode="live"
-                riskLevel="advanced"
-                onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))}
-              />
-              <ModuleSwitch
-                label={rustControlPlane ? "主链启动时连接设备" : "NovaSight 启动时自动连接"}
-                detail={rustControlPlane
-                  ? "修改后立即重建当前进程内的设备适配器；连接失败时视觉主链继续运行，并由低频设备线程自动重连"
-                  : "独立于主链启动；连接失败不会阻止采集、推理和鼠标算法运行"}
-                enabled={kmnetAutoConnect}
-                onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
-              />
-              <div className="kmnet-section-heading">
-                <span>命令调度</span>
-              </div>
-              <div className="console-kv compact-kv">
-                <span>调度方式</span><b>最新观测优先</b>
-                <span>行为</span><b>新观测覆盖未发送命令</b>
-                <span>待发送容量</span><b>1 条完整命令</b>
-                <span>最终校验</span><b>输出前校验</b>
-              </div>
+              <details className="kmnet-configuration-details" open={!kmnetConfigurationReady || undefined}>
+                <summary>
+                  <span>
+                    <b>设备连接配置</b>
+                    <small>{kmnetConfigurationReady ? `${kmnetHost}:${kmnetPort}` : "完成地址、端口与 UUID 后才能测试"}</small>
+                  </span>
+                  <i>{kmnetConfigurationReady ? "已配置" : "需配置"}</i>
+                </summary>
+                <div className="kmnet-configuration-content">
+                  <TextControl
+                    label="kmNet 地址"
+                    detail="设备控制器的局域网 IP 或主机名；不要使用示例常量代替设备真实地址。"
+                    value={kmnetHost}
+                    applyMode="live"
+                    riskLevel="advanced"
+                    onCommit={(value) => updateConfigField("hardware", "host", value)}
+                  />
+                  <ParameterNumberControl
+                    label="kmNet 控制端口"
+                    detail="单步测试连接使用的主控制端口。"
+                    value={kmnetPort}
+                    min={rustControlPlane ? 1 : 0}
+                    max={65535}
+                    step={1}
+                    kind="stepper"
+                    applyMode="live"
+                    riskLevel="advanced"
+                    onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))}
+                  />
+                  <TextControl
+                    label="kmNet UUID"
+                    detail="设备授权标识；必须填写实际设备值，不会自动套用通用 UUID。"
+                    value={kmnetUuid}
+                    applyMode="live"
+                    riskLevel="advanced"
+                    onCommit={(value) => updateConfigField("hardware", "uuid", value)}
+                  />
+                  <ParameterNumberControl
+                    label="kmNet 监控端口"
+                    detail="主链实时会话读取设备状态时使用的监控端口。"
+                    value={kmnetMonitorPort}
+                    min={rustControlPlane ? 1024 : 0}
+                    max={rustControlPlane ? 49151 : 65535}
+                    step={1}
+                    kind="stepper"
+                    applyMode="live"
+                    riskLevel="advanced"
+                    onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))}
+                  />
+                  <ModuleSwitch
+                    label={rustControlPlane ? "主链启动时连接设备" : "NovaSight 启动时自动连接"}
+                    detail="只影响实时主链会话；单步测试始终独立连接、发送并断开。"
+                    enabled={kmnetAutoConnect}
+                    onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
+                  />
+                  <div className="kmnet-live-session">
+                    <div>
+                      <b>实时主链会话</b>
+                      <small>仅在主链运行时手动重连或安全断开；单步测试不需要此操作。</small>
+                    </div>
+                    <div className="console-action-row">
+                      <button
+                        aria-pressed={kmnetConnected}
+                        className="console-button"
+                        disabled={busy !== null || kmnetRestartRequired || !kmnetAutoConnect || !kmnetCanConnect}
+                        onClick={() => void setKmNetConnection(true)}
+                        type="button"
+                      >
+                        {kmnetConnecting ? "连接中" : kmnetConnectionDegraded ? "重试实时连接" : "连接实时会话"}
+                      </button>
+                      <button
+                        className="console-button danger"
+                        disabled={busy !== null || !kmnetCanDisconnect}
+                        onClick={() => void setKmNetConnection(false)}
+                        type="button"
+                      >
+                        断开实时会话
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </details>
               <details className="kmnet-diagnostic-details">
                 <summary>
                   <span>
                     <b>排查信息</b>
-                    <small>累计计数与设备回执只在排查时查看，不作为当前移动结果展示。</small>
+                    <small>运行阶段、会话状态和累计计数只在排查失败时查看。</small>
                   </span>
-                  <i>6 项</i>
+                  <i>9 项</i>
                 </summary>
                 <div className="console-kv compact-kv">
-                  <span>执行器</span><b>{readString(executorStatus.selected, NO_SAMPLE)}</b>
-                  <span>设备接受状态</span><b>{acceptedCommandCount === null ? NO_SAMPLE : hasAcceptedCommand ? "已有协议回执" : "尚无回执"}</b>
-                  <span>设备接受次数</span><b>{formatOptionalInteger(kmnetStatus.accepted_command_count)}</b>
-                  <span>最近接受位移</span><b>{formatPoint(kmnetStatus.last_accepted_dx, kmnetStatus.last_accepted_dy, 0)}</b>
-                  <span>设备恢复次数</span><b>{formatOptionalInteger(kmnetStatus.device_recovery_count)}</b>
-                  <span>设备错误次数</span><b>{formatOptionalInteger(kmnetStatus.device_error_count)}</b>
+                  <span>执行器</span><b>{runtime?.executor.selected || NO_SAMPLE}</b>
+                  <span>运行阶段</span><b>{runtimePhase || NO_SAMPLE}</b>
+                  <span>配置状态</span><b>{kmnetConfigurationState}</b>
+                  <span>实时会话</span><b>{kmnetConnectionState}</b>
+                  <span>最近设备错误</span><b>{kmnetLastDeviceError || kmnetLastError || "无"}</b>
+                  <span>单步发送次数</span><b>{formatOptionalInteger(kmnetStatus?.diagnostic_move_count)}</b>
+                  <span>最近单步位移</span><b>{formatPoint(kmnetStatus?.last_diagnostic_dx, kmnetStatus?.last_diagnostic_dy, 0)}</b>
+                  <span>设备恢复次数</span><b>{formatOptionalInteger(kmnetStatus?.device_recovery_count)}</b>
+                  <span>设备错误次数</span><b>{formatOptionalInteger(kmnetStatus?.device_error_count)}</b>
                 </div>
               </details>
-              <div className="console-action-row">
-                <button
-                  className="console-button"
-                  disabled={busy === "kmnet.defaults"}
-                  onClick={requestApplyKmNetRecommended}
-                  type="button"
-                >
-                  应用推荐参数
-                </button>
-              </div>
               <div className="kmnet-test-panel">
+                <div className="kmnet-test-section">
+                  <h3>发送一次受控移动</h3>
+                  <p>每次点击只发送一条命令；服务端会再次验证主链已停止、输出门已打开，并在完成后断开设备。</p>
+                </div>
                 <div className="kmnet-test-inputs">
                   <label>
                     <span>dx</span>
@@ -4942,22 +4790,9 @@ export function StudioConsoleView({
                   <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(10, 0)}>→</button>
                   <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, 10)}>↓</button>
                 </div>
-                <div className="kmnet-test-section">
-                  <h3>设备单步测试</h3>
-                  <p>仅在主链停止时单独发送一次受控移动，不会与实时输出竞争。</p>
-                  <div className="console-action-row">
-                    <button type="button"
-                      className="console-button"
-                      disabled={kmnetDiagnosticDisabled}
-                      onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy)}
-                    >
-                      发送单步移动
-                    </button>
-                  </div>
-                </div>
                 <div className="kmnet-test-result">
                   <span>最近测试移动</span>
-                  <b>{formatPoint(kmnetStatus.last_diagnostic_dx, kmnetStatus.last_diagnostic_dy, 0)}</b>
+                  <b>{formatPoint(kmnetStatus?.last_diagnostic_dx, kmnetStatus?.last_diagnostic_dy, 0)}</b>
                 </div>
                 {kmnetTestMessage ? <div className={`kmnet-test-message ${kmnetTestMessageTone}`}>{kmnetTestMessage}</div> : null}
               </div>
@@ -4970,40 +4805,82 @@ export function StudioConsoleView({
 
         {activePage === "latency" ? (
           <section className="console-page">
-          <div className="console-metrics">
-            <Metric title="推理链耗时" value={formatOptionalNumber(inferenceTotalMs)} small="预处理 + 推理 + 解析 · ms" />
-            <Metric title="结果帧龄" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
-            <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果/s" />
-            <Metric title="统计窗口" value={formatOptionalNumber(telemetryWindowMs, 0)} small="ms" />
-          </div>
-          <div className="console-grid2 latency-analysis-grid">
-            <KvCard
-              title="当前真实测量"
-              rows={[
-                ["统计状态", runtimeMetricsStatus],
-                ["推理输入 FPS", formatOptionalNumber(nvinferInputFps, 2, "FPS")],
-                ["推理输出 FPS", formatOptionalNumber(nvinferOutputFps, 2, "FPS")],
-                ["识别结果 FPS", formatOptionalNumber(detectionBatchFps, 2, "FPS")],
-                ["目标选择输入 FPS", formatOptionalNumber(targetingBatchFps, 2, "FPS")],
-                ["sink → src 样本", formatOptionalInteger(statistics?.inference_latency_samples)],
-                ["控制新鲜度阈值", formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")]
-              ]}
-              notice={<p className="latency-boundary-note">这些值来自低频统计窗口，不在采集推理热路径中为 UI 增加工作。</p>}
+          {!latencyHasSamples ? (
+            <WorkspaceNotice
+              icon={runtime === null ? "signal-lost" : runtimeLifecycleActive ? "clock" : "latency"}
+              title={runtime === null
+                ? "无法读取延迟运行状态"
+                : runtimeLifecycleActive
+                  ? "正在等待第一批真实统计"
+                  : "尚未采集延迟样本"}
+              detail={runtime === null
+                ? "状态通道恢复前不展示占位数字，也不会把配置值当作实时测量。"
+                : runtimeLifecycleActive
+                  ? "主链已请求运行；统计窗口完成后，这里会显示推理耗时、结果帧龄与实际吞吐。"
+                  : "启动主链后才会建立真实统计窗口；未打点的阶段不会估算为 0。"}
+              action={runtime === null ? (
+                <button className="console-button" disabled={busy !== null} onClick={() => void onRefresh()} type="button">
+                  <NovaIcon name="refresh" size={15} />
+                  重新读取
+                </button>
+              ) : !runtimeLifecycleActive ? (
+                <button className="console-button primary" disabled={busy !== null || runtimeControlUnavailable} onClick={() => void toggleCapture()} type="button">
+                  <NovaIcon name="start" size={15} />
+                  启动主链
+                </button>
+              ) : undefined}
             />
-            <KvCard
-              title="测量边界"
-              rows={[
-                ["推理链耗时", "包含预处理、模型推理与结果解析"],
-                ["结果帧龄", "当前时刻 − 最新识别结果的采集时间"],
-                ["结果 FPS", "统计窗口内已发布识别结果增量 / 实际秒数"],
-                ["未提供", "采集、解码、ROI、排队、控制计算的独立阶段耗时"]
-              ]}
-              notice={<p className="latency-boundary-note">未打点的阶段不展示 0、不估算，也不拼成所谓完整链路。</p>}
-            />
-          </div>
+          ) : (
+          <>
+            <div className="console-metrics">
+              <Metric title="推理链耗时" value={formatOptionalNumber(inferenceTotalMs)} small="预处理 + 推理 + 解析 · ms" />
+              <Metric title="结果帧龄" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
+              <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果/s" />
+              <Metric title="统计窗口" value={formatOptionalNumber(telemetryWindowMs, 0)} small="ms" />
+            </div>
+            <div className="console-grid2 latency-analysis-grid">
+              <KvCard
+                title="当前真实测量"
+                rows={[
+                  ["统计状态", runtimeMetricsStatus],
+                  ["推理输入 FPS", formatOptionalNumber(nvinferInputFps, 2, "FPS")],
+                  ["推理输出 FPS", formatOptionalNumber(nvinferOutputFps, 2, "FPS")],
+                  ["识别结果 FPS", formatOptionalNumber(detectionBatchFps, 2, "FPS")],
+                  ["目标选择输入 FPS", formatOptionalNumber(targetingBatchFps, 2, "FPS")],
+                  ["sink → src 样本", formatOptionalInteger(statistics?.inference_latency_samples)],
+                  ["控制新鲜度阈值", formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")]
+                ]}
+                notice={<p className="latency-boundary-note">这些值来自低频统计窗口，不在采集推理热路径中为 UI 增加工作。</p>}
+              />
+              <KvCard
+                title="测量边界"
+                rows={[
+                  ["推理链耗时", "包含预处理、模型推理与结果解析"],
+                  ["结果帧龄", "当前时刻 − 最新识别结果的采集时间"],
+                  ["结果 FPS", "统计窗口内已发布识别结果增量 / 实际秒数"],
+                  ["未提供", "采集、解码、ROI、排队、控制计算的独立阶段耗时"]
+                ]}
+                notice={<p className="latency-boundary-note">未打点的阶段不展示 0、不估算，也不拼成所谓完整链路。</p>}
+              />
+            </div>
+          </>
+          )}
           </section>
         ) : null}
       </main>
+
+      {runtimeLifecycleActive ? (
+        <button
+          aria-label="紧急停止主链"
+          className="console-button danger studio-mobile-emergency-stop"
+          disabled={emergencyStopping}
+          onClick={() => void emergencyStopMainline()}
+          type="button"
+        >
+          <NovaIcon name="emergency-stop" size={17} />
+          {emergencyStopping ? "紧急停止确认中" : "紧急停止"}
+        </button>
+      ) : null}
 
       {algorithmSettingsDialogOpen ? (
       <AdvancedSettingsDialog
@@ -5501,7 +5378,7 @@ export function StudioConsoleView({
           >
             <header className="error-center-header">
               <div>
-                <span>SYSTEM DIAGNOSTICS</span>
+                <span>系统诊断</span>
                 <h2 id="error-center-title">异常信息</h2>
                 <p>页面保持安静；网络、服务与操作错误统一收拢在这里。</p>
               </div>
@@ -5515,6 +5392,7 @@ export function StudioConsoleView({
                   <NovaIcon name="triangle-alert" size={17} />
                   <div>
                     <strong>{item.title}</strong>
+                    {(item.count ?? 1) > 1 ? <small>本会话重复 {item.count} 次</small> : null}
                     <p>{item.detail}</p>
                     {item.time ? <time>{formatDate(new Date(item.time))}</time> : null}
                   </div>
@@ -5534,7 +5412,7 @@ export function StudioConsoleView({
                 onClick={clearErrorNotices}
                 type="button"
               >
-                清除历史记录
+                确认并清空本会话记录
               </button>
               <button type="button" className="console-button primary" onClick={() => setErrorCenterOpen(false)}              >完成</button>
             </footer>
@@ -5602,158 +5480,7 @@ export function StudioConsoleView({
       />
       ) : null}
 
-      {launchDialogOpen ? (
-        <div
-          aria-hidden="false"
-          className="launch-dialog-layer"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && launchStatus !== "running") {
-              closeLaunchDialog();
-            }
-          }}
-        >
-          <section
-            aria-labelledby="launch-dialog-title"
-            aria-modal="true"
-            className="launch-dialog"
-            ref={launchDialogRef}
-            role="dialog"
-            tabIndex={-1}
-          >
-            <header className="launch-dialog-header">
-              <div className="launch-dialog-title-wrap">
-                <div className="launch-dialog-icon" aria-hidden="true">
-                  <NovaIcon name="start" size={22} strokeWidth={1.9} />
-                </div>
-                <div>
-                  <h2 id="launch-dialog-title">启动视觉处理链路</h2>
-                  <p>系统会自动完成启动检查；任一项失败都会中断后续流程。</p>
-                </div>
-              </div>
-              <button
-                aria-label="关闭"
-                className="launch-dialog-close"
-                disabled={launchStatus === "running"}
-                onClick={closeLaunchDialog}
-                type="button"
-              >
-                <NovaIcon name="x-circle" size={18} />
-              </button>
-            </header>
-
-            <div className="launch-dialog-body">
-              <div
-                aria-atomic="true"
-                aria-live="polite"
-                className={`launch-overview ${launchStatus}`}
-              >
-                <div className="launch-progress-meta">
-                  <span>{launchSummary}</span>
-                  <strong>{launchCompletedStages} / {launchStages.length}</strong>
-                </div>
-                <div className="launch-progress-track">
-                  <div
-                    className="launch-progress-bar"
-                    style={{ transform: `scaleX(${launchProgress / 100})` }}
-                  />
-                </div>
-              </div>
-
-              <ol className="launch-stage-list">
-                {launchStages.map((stage, index) => {
-                  const stepState = resolveMainlineLaunchStepState(
-                    index,
-                    launchStatus,
-                    launchStageIndex,
-                    launchCompletedStages
-                  );
-                  const stepDetail = stepState === "failed"
-                    ? launchError || "该步骤执行失败。"
-                    : stepState === "running" && launchProgressDetail
-                      ? launchProgressDetail
-                      : "";
-                  return (
-                    <li className={`launch-stage-row ${stepState}`} key={stage.title}>
-                      <div className="launch-stage-marker" aria-hidden="true">
-                        <LaunchStepIndicator state={stepState} />
-                      </div>
-                      <div className="launch-stage-copy">
-                        <div className="launch-stage-heading">
-                          <span>{String(index + 1).padStart(2, "0")}</span>
-                          <strong>{stage.title}</strong>
-                          <em>{launchStepStateLabel(stepState)}</em>
-                        </div>
-                        <p>{stage.caption}</p>
-                        {stepDetail ? <small>{stepDetail}</small> : null}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            </div>
-
-            <footer className="launch-dialog-footer">
-              <button type="button" className="console-button" onClick={() => void cancelMainlineLaunch()}              >
-                <NovaIcon name={launchStatus === "running" ? "pause-output" : "x-circle"} size={16} />
-                {launchStatus === "running" ? "取消启动" : "关闭"}
-              </button>
-              <button type="button"
-                className="console-button primary"
-                disabled={launchStatus === "running" || launchCancelInFlight}
-                onClick={launchStatus === "success" ? closeLaunchDialog : () => void startMainlineLaunch()}
-              >
-                <NovaIcon name={launchStatus === "running" ? "activity-pulse" : launchStatus === "success" ? "dashboard" : "start"} size={16} />
-                {launchStatus === "running" ? "正在启动" : launchStatus === "success" ? "完成" : launchStatus === "failed" || launchStatus === "cancelled" ? "重新启动" : "开始启动"}
-              </button>
-            </footer>
-          </section>
-        </div>
-      ) : null}
-
-      <div className={launchToastVisible ? "launch-toast show" : "launch-toast"} role="status">
-        主链启动完成，运行态已确认
-      </div>
     </section>
-  );
-}
-
-function launchStepStateLabel(state: MainlineLaunchStepState): string {
-  switch (state) {
-    case "running":
-      return "执行中";
-    case "success":
-      return "已完成";
-    case "failed":
-      return "失败";
-    default:
-      return "未执行";
-  }
-}
-
-function LaunchStepIndicator({ state }: { state: MainlineLaunchStepState }) {
-  return (
-    <span className={`launch-step-indicator ${state}`}>
-      <svg viewBox="0 0 24 24" focusable="false">
-        {state === "success" ? (
-          <>
-            <circle cx="12" cy="12" r="9" />
-            <path d="m7.8 12.2 2.7 2.7 5.9-6" />
-          </>
-        ) : state === "failed" ? (
-          <>
-            <circle cx="12" cy="12" r="9" />
-            <path d="m8.7 8.7 6.6 6.6m0-6.6-6.6 6.6" />
-          </>
-        ) : state === "running" ? (
-          <>
-            <circle className="launch-step-track" cx="12" cy="12" r="9" />
-            <path className="launch-step-arc" d="M12 3a9 9 0 0 1 9 9" />
-          </>
-        ) : (
-          <circle cx="12" cy="12" r="8" />
-        )}
-      </svg>
-    </span>
   );
 }
 
@@ -5837,14 +5564,14 @@ const PREVIEW_OVERLAY_HOLD_MS = 100;
 
 type PreviewOverlaySnapshot = {
   detections: PreviewDetection[];
-  target: Record<string, unknown>;
+  target: RuntimeVisionTargetState | null;
   updatedAtMs: number;
 };
 
 function useStablePreviewOverlay(
   detections: PreviewDetection[],
-  target: Record<string, unknown>
-): { detections: PreviewDetection[]; target: Record<string, unknown> } {
+  target: RuntimeVisionTargetState | null
+): { detections: PreviewDetection[]; target: RuntimeVisionTargetState | null } {
   const snapshotRef = useRef<PreviewOverlaySnapshot | null>(null);
   const nowMs = Date.now();
   if (detections.length > 0) {
@@ -5858,34 +5585,20 @@ function useStablePreviewOverlay(
   return { detections, target };
 }
 
-function readPreviewDetections(value: unknown): PreviewDetection[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.map(asRecord).flatMap((item, index) => {
-    const displayBox = asRecord(item.display_box);
-    const roiBox = asRecord(item.roi_box);
-    const box = Object.keys(displayBox).length > 0
-      ? displayBox
-      : Object.keys(roiBox).length > 0
-        ? roiBox
-        : item;
-    const x = finiteNumber(box.x);
-    const y = finiteNumber(box.y);
-    const w = finiteNumber(box.w);
-    const h = finiteNumber(box.h);
-    if (x === null || y === null || w === null || h === null || w <= 0 || h <= 0) {
+function readPreviewDetections(value: RuntimeVisionDetectionState[]): PreviewDetection[] {
+  return value.flatMap((item, index) => {
+    if (item.w <= 0 || item.h <= 0) {
       return [];
     }
     return [{
-      x,
-      y,
-      w,
-      h,
-      cx: finiteNumber(box.cx) ?? x + w / 2,
-      cy: finiteNumber(box.cy) ?? y + h / 2,
-      score: finiteNumber(item.score) ?? 0,
-      className: readString(item.class_name, readString(item.className, `类别${readNumber(item.class_id, 0)}`)),
+      x: item.x,
+      y: item.y,
+      w: item.w,
+      h: item.h,
+      cx: item.cx,
+      cy: item.cy,
+      score: item.score,
+      className: `类别${item.class_id}`,
       index
     }];
   });
@@ -5960,30 +5673,28 @@ function PreviewFrame({
   const [streamRetryAttempt, setStreamRetryAttempt] = useState(0);
   const [streamRetryKey, setStreamRetryKey] = useState(0);
   const [transportFps, setTransportFps] = useState(previewFps);
-  const configVersion = typeof runtime?.config?.version === "number" ? runtime.config.version : 0;
-  const vision = asRecord(runtime?.vision);
-  const inferenceTrace = asRecord(vision.inference);
-  const control = asRecord(vision.control);
-  const previewWidth = readNumber(inferenceTrace.input_width, roiSize);
-  const previewHeight = readNumber(inferenceTrace.input_height, roiSize);
+  const configVersion = runtime?.config.version ?? 0;
+  const vision = runtime?.vision;
+  const inferenceTrace = vision?.inference;
+  const control = vision?.control;
+  const previewWidth = inferenceTrace?.input_width ?? roiSize;
+  const previewHeight = inferenceTrace?.input_height ?? roiSize;
   const displaySize = Math.max(previewWidth, previewHeight, roiSize);
-  const liveDetections = readPreviewDetections(vision.detection_items);
-  const liveTarget = asRecord(vision.target);
+  const liveDetections = useMemo(
+    () => readPreviewDetections(vision?.detection_items ?? []),
+    [vision?.detection_items]
+  );
+  const liveTarget = vision?.target ?? null;
   const overlay = useStablePreviewOverlay(liveDetections, liveTarget);
   const detections = overlay.detections;
   const target = overlay.target;
-  const mouseObservation = asRecord(target.mouse_observation ?? control.mouse_observation);
-  const rawAim = asRecord(mouseObservation.raw_aim);
-  const targetDetectionIndex = readNullableNumber(target.target_detection_index);
-  const targetCx = readNullableNumber(target.cx);
-  const targetCy = readNullableNumber(target.cy);
-  const targetAimX = readNullableNumber(mouseObservation.predicted_aim_x_roi_px)
-    ?? readNullableNumber(mouseObservation.predicted_x_px)
-    ?? readNullableNumber(rawAim.aim_roi_x_px)
+  const mouseObservation = control?.mouse_observation;
+  const targetDetectionIndex = target?.target_detection_index ?? null;
+  const targetCx = target?.cx ?? null;
+  const targetCy = target?.cy ?? null;
+  const targetAimX = mouseObservation?.predicted_x_px
     ?? targetCx;
-  const targetAimY = readNullableNumber(mouseObservation.predicted_aim_y_roi_px)
-    ?? readNullableNumber(mouseObservation.predicted_y_px)
-    ?? readNullableNumber(rawAim.aim_roi_y_px)
+  const targetAimY = mouseObservation?.predicted_y_px
     ?? targetCy;
   const showImage = supported && active && imageAvailable && !streamFailure;
   const showOverlay = supported && active && runtime?.running === true && detections.length > 0;
@@ -5993,10 +5704,10 @@ function PreviewFrame({
       : targetCx !== null && targetCy !== null && Math.abs(item.cx - targetCx) <= 2 && Math.abs(item.cy - targetCy) <= 2
   ));
   const selectedIndex = selectedDetection?.index ?? null;
-  const sourceWidth = readNumber(inferenceTrace.source_width, 0);
-  const sourceHeight = readNumber(inferenceTrace.source_height, 0);
-  const roiOffsetX = readNumber(inferenceTrace.roi_offset_x, 0);
-  const roiOffsetY = readNumber(inferenceTrace.roi_offset_y, 0);
+  const sourceWidth = inferenceTrace?.source_width ?? 0;
+  const sourceHeight = inferenceTrace?.source_height ?? 0;
+  const roiOffsetX = inferenceTrace?.roi_offset_x ?? 0;
+  const roiOffsetY = inferenceTrace?.roi_offset_y ?? 0;
   const centerX = clampNumber(
     sourceWidth > 0 ? sourceWidth / 2 - roiOffsetX : previewWidth / 2,
     0,

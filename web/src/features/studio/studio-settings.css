@@ -1046,6 +1046,7 @@
 }
 
 .kmnet-diagnostic-details,
+.kmnet-configuration-details,
 .studio-diagnostic-details {
   margin-top: var(--space-3);
   overflow: hidden;
@@ -1055,6 +1056,7 @@
 }
 
 .kmnet-diagnostic-details > summary,
+.kmnet-configuration-details > summary,
 .studio-diagnostic-details > summary {
   min-height: 46px;
   display: flex;
@@ -1068,22 +1070,26 @@
 }
 
 .kmnet-diagnostic-details > summary::-webkit-details-marker,
+.kmnet-configuration-details > summary::-webkit-details-marker,
 .studio-diagnostic-details > summary::-webkit-details-marker {
   display: none;
 }
 
 .kmnet-diagnostic-details > summary:hover,
+.kmnet-configuration-details > summary:hover,
 .studio-diagnostic-details > summary:hover {
   background: color-mix(in srgb, var(--brand-primary) 5%, transparent);
 }
 
 .kmnet-diagnostic-details > summary:focus-visible,
+.kmnet-configuration-details > summary:focus-visible,
 .studio-diagnostic-details > summary:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: -2px;
 }
 
 .kmnet-diagnostic-details > summary span,
+.kmnet-configuration-details > summary span,
 .studio-diagnostic-details > summary span {
   min-width: 0;
   display: grid;
@@ -1091,12 +1097,14 @@
 }
 
 .kmnet-diagnostic-details > summary b,
+.kmnet-configuration-details > summary b,
 .studio-diagnostic-details > summary b {
   font-size: 12px;
   font-weight: 750;
 }
 
 .kmnet-diagnostic-details > summary small,
+.kmnet-configuration-details > summary small,
 .studio-diagnostic-details > summary small {
   color: var(--text-tertiary);
   font-size: 10px;
@@ -1105,6 +1113,7 @@
 }
 
 .kmnet-diagnostic-details > summary i,
+.kmnet-configuration-details > summary i,
 .studio-diagnostic-details > summary i {
   flex: 0 0 auto;
   padding: 3px 7px;
@@ -1117,6 +1126,7 @@
 }
 
 .kmnet-diagnostic-details[open] > summary,
+.kmnet-configuration-details[open] > summary,
 .studio-diagnostic-details[open] > summary {
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -1126,6 +1136,39 @@
   padding: var(--space-3);
   border: 0;
   background: transparent;
+}
+
+.kmnet-configuration-content {
+  padding: 4px var(--space-3) var(--space-3);
+}
+
+.kmnet-live-session {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-3);
+  background: var(--bg-surface);
+}
+
+.kmnet-live-session > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.kmnet-live-session b {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.kmnet-live-session small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .studio-diagnostic-details > summary {
@@ -1496,6 +1539,13 @@
   font-weight: 760;
 }
 
+.control-chain-setting-title small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
 .control-chain-setting-controls {
   min-width: 0;
   display: grid;
@@ -1626,10 +1676,13 @@
 
   .parameter-save-bar-actions {
     grid-column: 1 / -1;
+    flex-wrap: wrap;
   }
 
   .parameter-save-bar-actions > .console-button {
     flex: 1 1 0;
+    padding-inline: 9px;
+    white-space: nowrap;
   }
 
   .control-chain-setting {
@@ -1659,6 +1712,18 @@
   .control-chain-setting-controls.split,
   .control-chain-setting-controls.recoil {
     grid-template-columns: 1fr;
+  }
+
+  .kmnet-live-session {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .kmnet-live-session .console-action-row {
+    justify-content: stretch;
+  }
+
+  .kmnet-live-session .console-button {
+    flex: 1 1 180px;
   }
 }
 

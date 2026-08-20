@@ -1,4 +1,12 @@
-import { lazy, memo, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState
+} from "react";
 
 import { StatusIndicator } from "./components/ui";
 import {
@@ -10,17 +18,18 @@ import {
   RuntimeState,
   RuntimeStatusFrame,
   RuntimeStatusTopic,
+  decodeRuntimeStatusMessage,
   getHealth,
   getApiErrorCode,
   getLicenseStatus,
   getModelProjects,
   getRuntimeConfig,
   getRuntimeState,
-  requestTemporaryLicense,
   statusWebSocketUrl,
 } from "./api";
 import { ToastHost } from "./components/ToastHost";
-import { reportError, reportInfo } from "./lib/toast";
+import { AuthGate } from "./features/auth/AuthGate";
+import { reportError } from "./lib/toast";
 import {
   clearWebSocketFailure,
   reportWebSocketFailure,
@@ -38,6 +47,12 @@ import {
   type RuntimeDeliveryStatus
 } from "./features/shared/runtimeDelivery";
 import { useStableSemanticValue } from "./features/shared/useStableSemanticValue";
+import {
+  EMPTY_RUNTIME_SNAPSHOT_CURSOR,
+  gateRuntimeSnapshot,
+  type RuntimeSnapshotCursor,
+} from "./features/runtime/runtimeSnapshotGate";
+import { SafetyOperationProvider, useSafetyOperation } from "./features/runtime/SafetyOperationContext";
 
 type ErrorKey = "health" | "runtime" | "config" | "projects" | "capture";
 type LoadState = {
@@ -110,38 +125,11 @@ function statusTopicFromPage(): RuntimeStatusTopic {
   return "summary";
 }
 
-function isRuntimeStatusFrame(value: unknown): value is RuntimeStatusFrame {
-  if (typeof value !== "object" || value === null) return false;
-  const frame = value as Partial<RuntimeStatusFrame>;
-  return frame.kind === "runtime_snapshot" && typeof frame.full === "boolean" &&
-    typeof frame.state === "object" && frame.state !== null;
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function mergeRuntimePatch(current: RuntimeState, patch: Partial<RuntimeState>): RuntimeState {
-  return {
-    ...current,
-    ...patch,
-    executor: patch.executor ?? current.executor,
-    capture: patch.capture ? { ...current.capture, ...patch.capture } : current.capture,
-    statistics: patch.statistics
-      ? { ...(current.statistics ?? {}), ...patch.statistics }
-      : current.statistics,
-    inference: patch.inference
-      ? { ...current.inference, ...patch.inference }
-      : current.inference,
-    config: patch.config ? { ...current.config, ...patch.config } : current.config,
-    pipeline: patch.pipeline ?? current.pipeline,
-    vision: patch.vision ?? current.vision
-  };
-}
-
-// Structural deep-equal for RuntimeState. Duplicate of the studio feature's
-// `runtimeConfigValuesEqual` (kept here to avoid a hard import of the studio
-// chunk from App.tsx's status-stream hot path). Used to short-circuit
-// setState when a partial/full frame carries no observable change — this is
-// the single biggest remaining source of per-frame paint churn in the
-// Studio console.
-function runtimePayloadEqual(left: RuntimeState, right: RuntimeState): boolean {
+function jsonValuesEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) {
     return true;
   }
@@ -149,44 +137,52 @@ function runtimePayloadEqual(left: RuntimeState, right: RuntimeState): boolean {
     return Array.isArray(left)
       && Array.isArray(right)
       && left.length === right.length
-      && left.every((value, index) => runtimePayloadEqual(value as RuntimeState, right[index] as RuntimeState));
+      && left.every((value, index) => jsonValuesEqual(value, right[index]));
   }
-  if (
-    left === null
-    || right === null
-    || typeof left !== "object"
-    || typeof right !== "object"
-  ) {
+  if (!isJsonRecord(left) || !isJsonRecord(right)) {
     return false;
   }
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const leftKeys = Object.keys(leftRecord);
-  const rightKeys = Object.keys(rightRecord);
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
   if (leftKeys.length !== rightKeys.length) {
     return false;
   }
   for (const key of leftKeys) {
-    if (!Object.prototype.hasOwnProperty.call(rightRecord, key)) {
+    if (!Object.prototype.hasOwnProperty.call(right, key)) {
       return false;
     }
-    const l = leftRecord[key];
-    const r = rightRecord[key];
-    if (typeof l === "object" && typeof r === "object" && l !== null && r !== null) {
-      if (!runtimePayloadEqual(l as RuntimeState, r as RuntimeState)) {
-        return false;
-      }
-    } else if (!Object.is(l, r)) {
+    if (!jsonValuesEqual(left[key], right[key])) {
       return false;
     }
   }
   return true;
 }
 
+// Heartbeat sequence/timestamp changes are transport metadata, not UI state.
+// Compare every other field so idle status frames do not repaint the Studio.
+function runtimePayloadEqual(left: RuntimeState, right: RuntimeState): boolean {
+  return left.semantic.daemon_instance_id === right.semantic.daemon_instance_id
+    && left.semantic.phase === right.semantic.phase
+    && left.semantic.perception_phase === right.semantic.perception_phase
+    && left.semantic.epoch === right.semantic.epoch
+    && left.running === right.running
+    && left.source === right.source
+    && left.model_catalog_error === right.model_catalog_error
+    && jsonValuesEqual(left.active_model, right.active_model)
+    && jsonValuesEqual(left.executor, right.executor)
+    && jsonValuesEqual(left.capture, right.capture)
+    && jsonValuesEqual(left.statistics, right.statistics)
+    && jsonValuesEqual(left.inference, right.inference)
+    && jsonValuesEqual(left.config, right.config)
+    && jsonValuesEqual(left.pipeline, right.pipeline)
+    && jsonValuesEqual(left.vision, right.vision)
+    && jsonValuesEqual(left.fatal_error, right.fatal_error);
+}
+
 const visualSystemMode = new URLSearchParams(window.location.search).get("visual-system") === "1";
 
 // Throttles the "更新于 HH:MM:SS" text node to ≤1Hz. The parent re-renders
-// on every WebSocket partial frame; without throttling the timestamp paints
+// on observable WebSocket snapshot changes; without throttling the timestamp paints
 // N times per second even when the formatted string is unchanged. The
 // component only commits a new `displayed` value once per 1000ms.
 const LastUpdatedText = memo(function LastUpdatedText({ date }: { date: Date | null }) {
@@ -238,10 +234,15 @@ function RouteLoadingShell() {
 }
 
 export default function App() {
-  if (visualSystemMode) {
-    return <Suspense fallback={<RouteLoadingShell />}><VisualSystemView /></Suspense>;
-  }
-  return <StudioApp />;
+  return (
+    <SafetyOperationProvider>
+      <AuthGate>
+        {visualSystemMode
+          ? <Suspense fallback={<RouteLoadingShell />}><VisualSystemView /></Suspense>
+          : <StudioApp />}
+      </AuthGate>
+    </SafetyOperationProvider>
+  );
 }
 
 function StudioApp() {
@@ -253,7 +254,8 @@ function StudioApp() {
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine);
   const loadRequestSeqRef = useRef(0);
   const licenseRequestSeqRef = useRef(0);
-  const runtimeRevisionRef = useRef(0);
+  const runtimeRequestGenerationRef = useRef(0);
+  const runtimeSnapshotCursorRef = useRef<RuntimeSnapshotCursor>(EMPTY_RUNTIME_SNAPSHOT_CURSOR);
   const initialLoadStartedRef = useRef(false);
   const backgroundLoadInFlightRef = useRef(false);
   const healthLoadInFlightRef = useRef(false);
@@ -264,27 +266,58 @@ function StudioApp() {
   const runtimeFallbackAbortRef = useRef<AbortController | null>(null);
   const healthRefreshAbortRef = useRef<AbortController | null>(null);
   const [licenseLoading, setLicenseLoading] = useState(true);
-  const [licenseRecoveryLoading, setLicenseRecoveryLoading] = useState(false);
   const [licenseIssue, setLicenseIssue] = useState<LicenseConnectionIssue | null>(null);
+  const { reconcileEmergencyStop } = useSafetyOperation();
 
-  const applyRuntimeState = useCallback((runtime: RuntimeState) => {
+  const applyRuntimeHeartbeat = useCallback((daemonInstanceId: string, snapshotSequence: number) => {
+    const result = gateRuntimeSnapshot(runtimeSnapshotCursorRef.current, {
+      daemonInstanceId,
+      snapshotSequence,
+      kind: "heartbeat",
+      full: false,
+    });
+    runtimeSnapshotCursorRef.current = result.cursor;
+    return result.reason === "heartbeat_observed";
+  }, []);
+
+  const applyRuntimeState = useCallback((
+    runtime: RuntimeState,
+    options: { full?: boolean; requestGeneration?: number; source?: "stream" } = {},
+  ) => {
+    const currentDaemonId = runtimeSnapshotCursorRef.current.daemonInstanceId;
+    const fullSnapshot = options.full ?? true;
+    const switchingDaemon = currentDaemonId !== null
+      && currentDaemonId !== runtime.semantic.daemon_instance_id;
+    const mayResetDaemonIdentity = options.source === "stream"
+      || options.requestGeneration !== undefined;
+    if (
+      options.source === "stream"
+      && fullSnapshot
+      && switchingDaemon
+    ) {
+      // A full stream snapshot is the first authoritative evidence of a daemon
+      // restart. Invalidate every older REST callback before switching identity.
+      runtimeRequestGenerationRef.current += 1;
+    }
+    const result = gateRuntimeSnapshot(runtimeSnapshotCursorRef.current, {
+      daemonInstanceId: runtime.semantic.daemon_instance_id,
+      snapshotSequence: runtime.semantic.snapshot_sequence,
+      kind: "snapshot",
+      // Unversioned action callbacks may update the current daemon, but they
+      // cannot resurrect an older daemon after a stream/REST identity switch.
+      full: switchingDaemon && !mayResetDaemonIdentity ? false : fullSnapshot,
+      requestGeneration: options.requestGeneration,
+      currentRequestGeneration: runtimeRequestGenerationRef.current,
+    });
+    runtimeSnapshotCursorRef.current = result.cursor;
+    if (!result.accept) {
+      return false;
+    }
     const receivedAt = Date.now();
     setState((current) => {
-      if (
-        current.runtime !== null
-        && runtime.semantic.snapshot_sequence < current.runtime.semantic.snapshot_sequence
-      ) {
-        return current;
-      }
-      // Short-circuit when the new full frame is structurally equal to the
-      // current one. The status heartbeat and idle partial frames are a
-      // major source of paint churn; skipping them keeps `lastUpdated` and
-      // the per-frame setState call stable, which downstream memos/effects
-      // key off of.
       if (current.runtime !== null && runtimePayloadEqual(current.runtime, runtime)) {
         return current;
       }
-      runtimeRevisionRef.current += 1;
       return {
         ...current,
         errors: withoutError(current.errors, "runtime"),
@@ -292,44 +325,18 @@ function StudioApp() {
         lastUpdated: new Date(receivedAt)
       };
     });
+    return true;
   }, []);
 
   const applyRuntimeFrame = useCallback((frame: RuntimeStatusFrame) => {
-    if (frame.full) {
-      applyRuntimeState(frame.state as RuntimeState);
-      return;
-    }
-    const receivedAt = Date.now();
-    setState((current) => {
-      if (current.runtime === null) {
-        // The initial full REST request owns construction of RuntimeState.
-        // A partial frame may arrive first on a fast local WebSocket.
-        return current;
-      }
-      if (
-        frame.state.semantic
-        && frame.state.semantic.snapshot_sequence < current.runtime.semantic.snapshot_sequence
-      ) {
-        return current;
-      }
-      // Once a complete runtime exists, every partial WebSocket frame is an
-      // authoritative revision. Invalidate any slower REST fallback before
-      // deciding whether this frame changes an observable field.
-      runtimeRevisionRef.current += 1;
-      const merged = mergeRuntimePatch(current.runtime, frame.state);
-      if (runtimePayloadEqual(current.runtime, merged)) {
-        // No real change — preserve `lastUpdated` so the top-of-page timestamp
-        // doesn't tick on idle frames.
-        return current;
-      }
-      return {
-        ...current,
-        errors: withoutError(current.errors, "runtime"),
-        runtime: merged,
-        lastUpdated: new Date(receivedAt)
-      };
-    });
+    return applyRuntimeState(frame.state, { full: frame.full, source: "stream" });
   }, [applyRuntimeState]);
+
+  useEffect(() => {
+    if (state.runtime) {
+      reconcileEmergencyStop(state.runtime);
+    }
+  }, [reconcileEmergencyStop, state.runtime]);
 
   const applyRuntimeConfig = useCallback((config: RuntimeConfig) => {
     setState((current) => ({
@@ -378,7 +385,8 @@ function StudioApp() {
       loadRequestSeqRef.current += 1;
       setState(initialState);
       setRealtimeStatus("disconnected");
-      runtimeRevisionRef.current = 0;
+      runtimeRequestGenerationRef.current += 1;
+      runtimeSnapshotCursorRef.current = EMPTY_RUNTIME_SNAPSHOT_CURSOR;
       initialLoadStartedRef.current = false;
       backgroundLoadInFlightRef.current = false;
       healthLoadInFlightRef.current = false;
@@ -393,39 +401,6 @@ function StudioApp() {
       clearWebSocketFailure("status");
     }
   }, []);
-
-  const recoverTemporaryLicense = useCallback(async () => {
-    setLicenseRecoveryLoading(true);
-    try {
-      const response = await requestTemporaryLicense();
-      setLicenseIssue(null);
-      handleLicenseChange(response.status);
-      if (!response.supported) {
-        reportInfo(
-          "当前构建不支持临时权限",
-          "Release 后端需要正式签名授权；请使用 Debug 构建进行开发验证。",
-          "license-recovery"
-        );
-      } else if (!response.granted || !response.status.valid) {
-        reportError(new Error(response.status.message || "临时权限未获批准"), {
-          source: "license-recovery",
-          title: "临时权限未生效",
-          publicDetail: response.status.message || "请确认正在运行 Debug 后端。"
-        });
-      }
-    } catch (error) {
-      const issue = describeLicenseConnectionIssue(error);
-      setLicenseIssue(issue);
-      reportError(error, {
-        source: "license-recovery",
-        title: "临时权限恢复失败",
-        publicDetail: `${issue.description} ${issue.recovery}`,
-        exposeStatus: false
-      });
-    } finally {
-      setLicenseRecoveryLoading(false);
-    }
-  }, [handleLicenseChange]);
 
   const loadProjects = useCallback(async (force = false): Promise<ModelProject[]> => {
     if (!force && projectsLoadedRef.current) {
@@ -462,7 +437,8 @@ function StudioApp() {
 
   const load = useCallback(async () => {
     const requestSeq = loadRequestSeqRef.current + 1;
-    const runtimeRevisionAtRequest = runtimeRevisionRef.current;
+    const runtimeRequestGeneration = runtimeRequestGenerationRef.current + 1;
+    runtimeRequestGenerationRef.current = runtimeRequestGeneration;
     loadRequestSeqRef.current = requestSeq;
     foregroundLoadInFlightRef.current = true;
     setState((current) => ({ ...current, loading: true, errors: {} }));
@@ -487,17 +463,11 @@ function StudioApp() {
         });
       const runtimeRequest = getRuntimeState()
         .then((runtime) => {
-          if (
-            requestSeq !== loadRequestSeqRef.current ||
-            runtimeRevisionRef.current !== runtimeRevisionAtRequest
-          ) return;
-          applyRuntimeState(runtime);
+          if (requestSeq !== loadRequestSeqRef.current) return;
+          applyRuntimeState(runtime, { requestGeneration: runtimeRequestGeneration });
         })
         .catch((error) => {
-          if (
-            requestSeq !== loadRequestSeqRef.current ||
-            runtimeRevisionRef.current !== runtimeRevisionAtRequest
-          ) return;
+          if (requestSeq !== loadRequestSeqRef.current) return;
           setState((current) => ({
             ...current,
             errors: { ...current.errors, runtime: getErrorMessage(error) }
@@ -539,15 +509,13 @@ function StudioApp() {
       return;
     }
     backgroundLoadInFlightRef.current = true;
-    const runtimeRevisionAtRequest = runtimeRevisionRef.current;
+    const runtimeRequestGeneration = runtimeRequestGenerationRef.current + 1;
+    runtimeRequestGenerationRef.current = runtimeRequestGeneration;
     const abortController = new AbortController();
     runtimeFallbackAbortRef.current = abortController;
     try {
       const runtime = await getRuntimeState(abortController.signal);
-      if (runtimeRevisionRef.current !== runtimeRevisionAtRequest) {
-        return;
-      }
-      applyRuntimeState(runtime);
+      applyRuntimeState(runtime, { requestGeneration: runtimeRequestGeneration });
       setRealtimeStatus((current) => current === "connected" ? current : "fallback");
     } catch (err) {
       if (isAbortError(err)) {
@@ -699,7 +667,18 @@ function StudioApp() {
       if (staleTimer !== null) {
         window.clearInterval(staleTimer);
       }
-      const nextSocket = new WebSocket(statusWebSocketUrl(statusTopic));
+      let nextSocket: WebSocket;
+      try {
+        nextSocket = new WebSocket(statusWebSocketUrl(statusTopic));
+      } catch (error) {
+        failureReported = true;
+        setRealtimeStatus((current) => current === "fallback" ? current : "disconnected");
+        if (reportWebSocketFailure(error, "status")) {
+          void refreshHealth();
+        }
+        scheduleReconnect();
+        return;
+      }
       socket = nextSocket;
       nextSocket.onerror = (event) => {
         if (!active) {
@@ -724,6 +703,11 @@ function StudioApp() {
           void loadLicense().finally(scheduleReconnect);
           return;
         }
+        if (event.code === 4403) {
+          failureReported = true;
+          window.dispatchEvent(new CustomEvent("novasight:auth-required"));
+          return;
+        }
         if (!closedForStaleData && !failureReported && event.code !== 1000 && event.code !== 1001) {
           if (reportWebSocketFailure(event.reason || `code=${event.code}`, "status")) {
             void refreshHealth();
@@ -736,19 +720,32 @@ function StudioApp() {
           return;
         }
         try {
-          const payload = JSON.parse(String(event.data)) as RuntimeState | RuntimeStatusFrame;
-          const receivedAt = Date.now();
-          latestMessageAt = receivedAt;
-          reconnectAttempt = 0;
-          if (isRuntimeStatusFrame(payload)) {
-            applyRuntimeFrame(payload);
-          } else {
-            applyRuntimeState(payload);
+          if (typeof event.data !== "string") {
+            throw new Error("状态流必须发送 UTF-8 JSON 文本帧");
           }
-          setRealtimeStatus("connected");
-          reportWebSocketRecovered("status");
-        } catch {
-          // Ignore malformed status frames; REST refresh still provides recovery.
+          const payload = decodeRuntimeStatusMessage(JSON.parse(event.data));
+          let trustedMessage = false;
+          if ("kind" in payload && payload.kind === "runtime_heartbeat") {
+            trustedMessage = applyRuntimeHeartbeat(payload.daemon_instance_id, payload.snapshot_sequence);
+          } else if ("kind" in payload) {
+            trustedMessage = applyRuntimeFrame(payload);
+          } else {
+            trustedMessage = applyRuntimeState(payload, { full: true, source: "stream" });
+          }
+          if (trustedMessage) {
+            latestMessageAt = Date.now();
+            reconnectAttempt = 0;
+            setRealtimeStatus("connected");
+            reportWebSocketRecovered("status");
+          }
+        } catch (error) {
+          failureReported = true;
+          setRealtimeStatus((current) => current === "fallback" ? current : "disconnected");
+          if (reportWebSocketFailure(error, "status")) {
+            void refreshHealth();
+          }
+          void refreshRuntime();
+          nextSocket.close(4002, "invalid status contract");
         }
       };
 
@@ -785,7 +782,7 @@ function StudioApp() {
       }
       socket?.close(1000, "client suspended");
     };
-  }, [applyRuntimeFrame, applyRuntimeState, license?.valid, loadLicense, networkOnline, pageVisible, refreshHealth, statusTopic]);
+  }, [applyRuntimeFrame, applyRuntimeHeartbeat, applyRuntimeState, license?.valid, loadLicense, networkOnline, pageVisible, refreshHealth, refreshRuntime, statusTopic]);
 
   const realtimeConnected = realtimeStatus === "connected";
   const stableRealtimeStatus = useStableSemanticValue(realtimeStatus, realtimeStatus, 280);
@@ -824,8 +821,6 @@ function StudioApp() {
         loading={licenseLoading}
         issue={licenseIssue}
         onRefresh={() => void loadLicense()}
-        onTemporaryRecovery={() => void recoverTemporaryLicense()}
-        temporaryRecoveryLoading={licenseRecoveryLoading}
         onLicenseChange={handleLicenseChange}
       />
     );

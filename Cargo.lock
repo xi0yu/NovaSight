@@ -1151,8 +1151,8 @@ name = "novasight"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "clap",
  "novasight-config",
+ "rand 0.8.7",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1175,7 +1175,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2",
  "tokio",
  "tokio-tungstenite",
  "tower",
@@ -1324,6 +1323,28 @@ dependencies = [
  "cc",
  "novasight-core",
  "thiserror",
+]
+
+[[package]]
+name = "novasight-web"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64",
+ "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "novasight-config",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

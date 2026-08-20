@@ -16,27 +16,6 @@ pub(crate) struct RuntimeHealth {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub(crate) struct RuntimeStartResponse {
-    pub running: bool,
-    pub accepted: bool,
-    pub failed: bool,
-    pub epoch: Option<u64>,
-    pub operation_id: Option<String>,
-}
-
-impl From<&RuntimeSnapshot> for RuntimeStartResponse {
-    fn from(snapshot: &RuntimeSnapshot) -> Self {
-        Self {
-            running: snapshot.pipeline.state == PipelineState::Running,
-            accepted: snapshot.pipeline.state == PipelineState::Running,
-            failed: snapshot.pipeline.state == PipelineState::Faulted,
-            epoch: snapshot.pipeline.epoch.map(|epoch| epoch.0),
-            operation_id: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
 pub(crate) struct RuntimeStatusFrame<T> {
     pub kind: &'static str,
     pub topic: &'static str,
@@ -63,6 +42,7 @@ pub(crate) struct RuntimeStatusState {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RuntimeSemanticState {
+    pub daemon_instance_id: String,
     pub phase: &'static str,
     pub perception_phase: &'static str,
     pub epoch: Option<u64>,
@@ -516,6 +496,7 @@ impl RuntimeStatusState {
         crosshair: Option<&CrosshairSnapshot>,
     ) -> Self {
         Self::build(
+            "test-daemon",
             snapshot,
             config,
             config,
@@ -529,6 +510,7 @@ impl RuntimeStatusState {
 
     #[allow(clippy::too_many_arguments)]
     pub fn for_topic(
+        daemon_instance_id: &str,
         snapshot: &RuntimeSnapshot,
         config: Option<&AppConfig>,
         effective_config: Option<&AppConfig>,
@@ -539,6 +521,7 @@ impl RuntimeStatusState {
         topic: &'static str,
     ) -> Self {
         Self::build(
+            daemon_instance_id,
             snapshot,
             config,
             effective_config,
@@ -552,6 +535,7 @@ impl RuntimeStatusState {
 
     #[allow(clippy::too_many_arguments)]
     fn build(
+        daemon_instance_id: &str,
         snapshot: &RuntimeSnapshot,
         config: Option<&AppConfig>,
         effective_config: Option<&AppConfig>,
@@ -787,24 +771,14 @@ impl RuntimeStatusState {
             .last_error
             .as_ref()
             .map(|error| error.message.clone());
-        let output_trace = output_trace_state(
-            running,
-            inference_running,
+        let output_trace = OutputTraceProjection {
+            snapshot,
+            runtime_config,
+            target_pipeline: &target_pipeline,
             hardware_output_enabled,
-            snapshot.pipeline_metrics.output_gate_open,
-            snapshot.pipeline_metrics.device_connected,
-            snapshot.pipeline_metrics.output_delivery_state,
-            metrics.published_batches,
-            snapshot.pipeline_metrics.received_batches,
-            snapshot.pipeline_metrics.targeting_batches,
-            snapshot.telemetry.detection_data_age_ms,
-            runtime_config.map(|config| config.pipeline.freshness_threshold_ms),
-            &target_pipeline,
-            control_sample,
             control_reason,
-            control.emit_allowed,
-            control.trigger_active,
-        );
+        }
+        .state();
         let metadata_extractions = metrics
             .probed_buffers
             .saturating_sub(metrics.unavailable_snapshot_slots)
@@ -848,6 +822,7 @@ impl RuntimeStatusState {
 
         Self {
             semantic: RuntimeSemanticState {
+                daemon_instance_id: daemon_instance_id.to_owned(),
                 phase: semantic_phase,
                 perception_phase,
                 epoch: snapshot.pipeline.epoch.map(|epoch| epoch.0),
@@ -1301,156 +1276,160 @@ fn target_pipeline_state(selection: &TargetSelection, has_sample: bool) -> Targe
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn output_trace_state(
-    running: bool,
-    inference_running: bool,
+struct OutputTraceProjection<'a> {
+    snapshot: &'a RuntimeSnapshot,
+    runtime_config: Option<&'a AppConfig>,
+    target_pipeline: &'a TargetPipelineState,
     hardware_output_enabled: bool,
-    output_gate_open: bool,
-    device_connected: bool,
-    output_delivery_state: OutputDeliveryState,
-    published_batches: u64,
-    consumed_batches: u64,
-    targeting_batches: u64,
-    detection_data_age_ms: Option<f64>,
-    freshness_threshold_ms: Option<f64>,
-    target_pipeline: &TargetPipelineState,
-    control_sample: bool,
     control_reason: Option<&'static str>,
-    emit_allowed: bool,
-    trigger_active: bool,
-) -> OutputTraceState {
-    if !running {
-        return OutputTraceState {
-            code: "runtime_stopped",
-            state: "idle",
-            detail: "主链未运行，尚未产生检测、目标选择或控制输出。",
-            next_action: "start_mainline",
-        };
-    }
-    if !inference_running {
-        return OutputTraceState {
-            code: "inference_not_running",
-            state: "blocked",
-            detail: "推理子系统未进入运行态，无法产生 DetectionBatch。",
-            next_action: "check_model",
-        };
-    }
-    if published_batches == 0 {
-        return OutputTraceState {
-            code: "no_detection_batches",
-            state: "waiting",
-            detail: "DeepStream 尚未发布 DetectionBatch。",
-            next_action: "check_capture_or_model",
-        };
-    }
-    if consumed_batches == 0 && targeting_batches == 0 {
-        return OutputTraceState {
-            code: "runtime_not_consuming_batches",
-            state: "waiting",
-            detail: "检测批次已发布，但 Rust runtime 尚未消费。",
-            next_action: "inspect_runtime_ingress",
-        };
-    }
-    if detection_data_age_ms
-        .zip(freshness_threshold_ms)
-        .is_some_and(|(age, threshold)| age > threshold)
-    {
-        return OutputTraceState {
-            code: "stale_detection_batch",
-            state: "blocked",
-            detail: "最新检测批次超过控制新鲜度阈值。",
-            next_action: "check_latency",
-        };
-    }
-    if target_pipeline.code != "TARGET_SELECTED" {
-        return OutputTraceState {
-            code: "target_not_selected",
-            state: "blocked",
-            detail: "目标选择没有产出可控目标。",
-            next_action: "check_targeting",
-        };
-    }
-    if !control_sample {
-        return OutputTraceState {
-            code: "control_not_calculated",
-            state: "waiting",
-            detail: "目标已经选择，但控制器尚未产生命令样本。",
-            next_action: "inspect_control",
-        };
-    }
-    if !hardware_output_enabled {
-        return OutputTraceState {
-            code: "hardware_output_disabled",
-            state: "blocked",
-            detail: "当前构建未启用硬件输出能力。",
-            next_action: "check_license_or_build",
-        };
-    }
-    if !output_gate_open {
-        return OutputTraceState {
-            code: "output_gate_closed",
-            state: "blocked",
-            detail: "物理输出门关闭，控制量不会发送到设备。",
-            next_action: "enable_output_gate",
-        };
-    }
-    if !trigger_active {
-        return OutputTraceState {
-            code: "trigger_inactive",
-            state: "waiting",
-            detail: "触发条件未激活，控制器不会发送物理命令。",
-            next_action: "activate_trigger",
-        };
-    }
-    if !device_connected {
-        return OutputTraceState {
-            code: "device_not_connected",
-            state: "blocked",
-            detail: "kmNet 设备未连接，无法发送物理命令。",
-            next_action: "connect_kmnet",
-        };
-    }
-    if !emit_allowed {
-        return OutputTraceState {
-            code: control_reason
-                .filter(|reason| !reason.is_empty())
-                .unwrap_or("control_blocked"),
-            state: "blocked",
-            detail: "控制器已计算样本，但当前样本不允许发送。",
-            next_action: "inspect_control",
-        };
-    }
-    match output_delivery_state {
-        OutputDeliveryState::GenerationFenced => OutputTraceState {
-            code: "generation_fenced",
-            state: "waiting",
-            detail: "配置刚更新，旧 generation 命令已丢弃，等待下一帧。",
-            next_action: "wait_next_frame",
-        },
-        OutputDeliveryState::SendFailed => OutputTraceState {
-            code: "device_send_failed",
-            state: "blocked",
-            detail: "最近一次设备发送失败，等待设备恢复。",
-            next_action: "connect_kmnet",
-        },
-        OutputDeliveryState::DeviceDisabled => OutputTraceState {
-            code: "device_output_disabled",
-            state: "blocked",
-            detail: "设备输出已停用。",
-            next_action: "connect_kmnet",
-        },
-        OutputDeliveryState::Idle
-        | OutputDeliveryState::GateClosed
-        | OutputDeliveryState::TriggerInactive
-        | OutputDeliveryState::NoMovement
-        | OutputDeliveryState::Superseded
-        | OutputDeliveryState::Sent => OutputTraceState {
-            code: "ready",
-            state: "ready",
-            detail: "检测、目标选择、控制器、输出门和设备连接均已贯通。",
-            next_action: "monitor_output",
-        },
+}
+
+impl OutputTraceProjection<'_> {
+    fn state(self) -> OutputTraceState {
+        let pipeline = &self.snapshot.pipeline_metrics;
+        let running = self.snapshot.pipeline.state == PipelineState::Running;
+        let inference_running =
+            running && self.snapshot.subsystems.inference.state == SubsystemState::Running;
+
+        if !running {
+            return OutputTraceState {
+                code: "runtime_stopped",
+                state: "idle",
+                detail: "主链未运行，尚未产生检测、目标选择或控制输出。",
+                next_action: "start_mainline",
+            };
+        }
+        if !inference_running {
+            return OutputTraceState {
+                code: "inference_not_running",
+                state: "blocked",
+                detail: "推理子系统未进入运行态，无法产生 DetectionBatch。",
+                next_action: "check_model",
+            };
+        }
+        if self.snapshot.perception_metrics.published_batches == 0 {
+            return OutputTraceState {
+                code: "no_detection_batches",
+                state: "waiting",
+                detail: "DeepStream 尚未发布 DetectionBatch。",
+                next_action: "check_capture_or_model",
+            };
+        }
+        if pipeline.received_batches == 0 && pipeline.targeting_batches == 0 {
+            return OutputTraceState {
+                code: "runtime_not_consuming_batches",
+                state: "waiting",
+                detail: "检测批次已发布，但 Rust runtime 尚未消费。",
+                next_action: "inspect_runtime_ingress",
+            };
+        }
+        if self
+            .snapshot
+            .telemetry
+            .detection_data_age_ms
+            .zip(
+                self.runtime_config
+                    .map(|config| config.pipeline.freshness_threshold_ms),
+            )
+            .is_some_and(|(age, threshold)| age > threshold)
+        {
+            return OutputTraceState {
+                code: "stale_detection_batch",
+                state: "blocked",
+                detail: "最新检测批次超过控制新鲜度阈值。",
+                next_action: "check_latency",
+            };
+        }
+        if self.target_pipeline.code != "TARGET_SELECTED" {
+            return OutputTraceState {
+                code: "target_not_selected",
+                state: "blocked",
+                detail: "目标选择没有产出可控目标。",
+                next_action: "check_targeting",
+            };
+        }
+        if !pipeline.control.sample_available {
+            return OutputTraceState {
+                code: "control_not_calculated",
+                state: "waiting",
+                detail: "目标已经选择，但控制器尚未产生命令样本。",
+                next_action: "inspect_control",
+            };
+        }
+        if !self.hardware_output_enabled {
+            return OutputTraceState {
+                code: "hardware_output_disabled",
+                state: "blocked",
+                detail: "当前构建未启用硬件输出能力。",
+                next_action: "check_license_or_build",
+            };
+        }
+        if !pipeline.output_gate_open {
+            return OutputTraceState {
+                code: "output_gate_closed",
+                state: "blocked",
+                detail: "物理输出门关闭，控制量不会发送到设备。",
+                next_action: "enable_output_gate",
+            };
+        }
+        if !pipeline.control.trigger_active {
+            return OutputTraceState {
+                code: "trigger_inactive",
+                state: "waiting",
+                detail: "触发条件未激活，控制器不会发送物理命令。",
+                next_action: "activate_trigger",
+            };
+        }
+        if !pipeline.device_connected {
+            return OutputTraceState {
+                code: "device_not_connected",
+                state: "blocked",
+                detail: "kmNet 设备未连接，无法发送物理命令。",
+                next_action: "connect_kmnet",
+            };
+        }
+        if !pipeline.control.emit_allowed {
+            return OutputTraceState {
+                code: self
+                    .control_reason
+                    .filter(|reason| !reason.is_empty())
+                    .unwrap_or("control_blocked"),
+                state: "blocked",
+                detail: "控制器已计算样本，但当前样本不允许发送。",
+                next_action: "inspect_control",
+            };
+        }
+        match pipeline.output_delivery_state {
+            OutputDeliveryState::GenerationFenced => OutputTraceState {
+                code: "generation_fenced",
+                state: "waiting",
+                detail: "配置刚更新，旧 generation 命令已丢弃，等待下一帧。",
+                next_action: "wait_next_frame",
+            },
+            OutputDeliveryState::SendFailed => OutputTraceState {
+                code: "device_send_failed",
+                state: "blocked",
+                detail: "最近一次设备发送失败，等待设备恢复。",
+                next_action: "connect_kmnet",
+            },
+            OutputDeliveryState::DeviceDisabled => OutputTraceState {
+                code: "device_output_disabled",
+                state: "blocked",
+                detail: "设备输出已停用。",
+                next_action: "connect_kmnet",
+            },
+            OutputDeliveryState::Idle
+            | OutputDeliveryState::GateClosed
+            | OutputDeliveryState::TriggerInactive
+            | OutputDeliveryState::NoMovement
+            | OutputDeliveryState::Superseded
+            | OutputDeliveryState::Sent => OutputTraceState {
+                code: "ready",
+                state: "ready",
+                detail: "检测、目标选择、控制器、输出门和设备连接均已贯通。",
+                next_action: "monitor_output",
+            },
+        }
     }
 }
 

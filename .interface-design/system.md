@@ -30,6 +30,8 @@ The interface should feel quiet, dense, precise, and production-grade. It should
 
 ## Component Patterns
 
+- Browser access gate: use one centered task card with product identity, one access-code field, one primary action, contextual errors, and a quiet connection/status footer. Keep transport, CSRF, IPC, and trust-chain details out of the default view.
+- License activation gate: keep caller authentication separate from product licensing. Temporary and formal credentials share one activation form and one submit path; explain the resulting tier after validation instead of presenting separate pre-validation actions.
 - Diagnostic disclosure: summary row with title, short reason, and item count; content is collapsed by default and uses the same dense card grid when opened.
 - Output gate: primary user-facing safety control. Keep it visible in the parameter page and avoid duplicating it as a separate summary metric.
 - Prediction switch: user-facing algorithm switch. Keep it visible before advanced algorithm parameters.

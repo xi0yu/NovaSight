@@ -122,6 +122,31 @@ export function KvCard({ title, rows, notice }: { title: string; rows: [string, 
   );
 }
 
+export function WorkspaceNotice({
+  icon,
+  title,
+  detail,
+  action
+}: {
+  icon: NovaIconName;
+  title: string;
+  detail: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="studio-workspace-notice" role="status">
+      <span className="studio-workspace-notice-icon" aria-hidden="true">
+        <NovaIcon name={icon} size={22} />
+      </span>
+      <div>
+        <strong>{title}</strong>
+        <p>{detail}</p>
+      </div>
+      {action ? <div className="studio-workspace-notice-action">{action}</div> : null}
+    </div>
+  );
+}
+
 export function Event({
   label,
   value,

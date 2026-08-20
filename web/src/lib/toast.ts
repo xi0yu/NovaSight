@@ -11,6 +11,8 @@ export type Toast = {
   detail?: string;
   source: string;
   status: number | null;
+  count: number;
+  firstSeenAt: number;
   createdAt: number;
 };
 
@@ -101,6 +103,8 @@ function buildToast(input: {
     detail: input.detail,
     source: input.source,
     status: input.status,
+    count: 1,
+    firstSeenAt: Date.now(),
     createdAt: Date.now()
   };
 }
@@ -118,16 +122,28 @@ function pushToast(toast: Toast): void {
     }
   }
   const signature = `${toast.source}\u0000${toast.title}\u0000${toast.detail ?? ""}`;
+  if (toast.tone === "warn" || toast.tone === "error") {
+    const existingIndex = errorNotices.findIndex((notice) => (
+      notice.source === toast.source
+      && notice.title === toast.title
+      && notice.detail === toast.detail
+      && notice.status === toast.status
+    ));
+    if (existingIndex >= 0) {
+      errorNotices = errorNotices.map((notice, index) => index === existingIndex
+        ? { ...notice, count: notice.count + 1, createdAt: toast.createdAt }
+        : notice);
+    } else {
+      errorNotices = [...errorNotices, toast].slice(-20);
+    }
+    emitErrors();
+    return;
+  }
   const previousCreatedAt = lastToastAtBySignature.get(signature);
   if (previousCreatedAt !== undefined && toast.createdAt - previousCreatedAt <= DUPLICATE_WINDOW_MS) {
     return;
   }
   lastToastAtBySignature.set(signature, toast.createdAt);
-  if (toast.tone === "warn" || toast.tone === "error") {
-    errorNotices = [...errorNotices, toast].slice(-20);
-    emitErrors();
-    return;
-  }
   const next = [...toasts, toast].slice(-MAX_TOASTS);
   setToasts(next);
   if (toast.tone !== "info" || toast.title !== "请求已取消") {
@@ -137,7 +153,7 @@ function pushToast(toast: Toast): void {
   }
 }
 
-export function pushToastRaw(toast: Omit<Toast, "id" | "createdAt">): void {
+export function pushToastRaw(toast: Omit<Toast, "id" | "count" | "firstSeenAt" | "createdAt">): void {
   pushToast(buildToast(toast));
 }
 

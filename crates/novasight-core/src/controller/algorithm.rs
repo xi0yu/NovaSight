@@ -485,7 +485,7 @@ impl AimAlgorithm {
 
 #[cfg(test)]
 mod tests {
-    use super::{AimAlgorithm, AimAlgorithmConfig, AimSample, BlockReason, ControlMode};
+    use super::{AimAlgorithm, AimAlgorithmConfig, AimSample, ControlMode};
     use crate::prediction::PredictionMotionState;
 
     #[test]
@@ -553,6 +553,7 @@ mod tests {
     fn admitted_target_confidence_does_not_rescale_prediction() {
         let mut control = AimAlgorithm::new(AimAlgorithmConfig {
             prediction_enabled: true,
+            prediction_lead_ms: 0.0,
             ..AimAlgorithmConfig::default()
         });
         let mut decision = None;

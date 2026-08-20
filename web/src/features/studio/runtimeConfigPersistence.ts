@@ -16,11 +16,11 @@ export function persistRuntimeConfigField(
     if (typeof value !== "boolean") {
       throw new Error("物理输出开关需要布尔值。");
     }
-    return setRuntimeOutputGate(value);
+    return setRuntimeOutputGate(value, expectedRevision);
   }
   if (section === "control" && key === "trigger_mode") {
-    if (typeof value !== "string") {
-      throw new Error("触发模式需要字符串值。");
+    if (value !== "always" && value !== "hardware") {
+      throw new Error("触发模式必须为 always 或 hardware。");
     }
     return setRuntimeTriggerMode(value, expectedRevision);
   }

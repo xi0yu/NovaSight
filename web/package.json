@@ -3,10 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
     "icons:export": "node scripts/export-nova-icons.mjs",
+    "test:unit": "vitest",
+    "test:unit:ci": "vitest run",
+    "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "visual:audit": "node scripts/visual-system-audit.mjs",
     "build": "tsc --noEmit && vite build"
@@ -16,9 +22,15 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.5",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
+    "jsdom": "30.0.1",
     "typescript": "^5.5.4",
-    "vite": "^5.4.0"
+    "vite": "^5.4.0",
+    "vitest": "2.1.9"
   }
 }

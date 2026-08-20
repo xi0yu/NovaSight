@@ -71,12 +71,12 @@ cd out/package/NovaSight
 ./NovaSight
 ```
 
-The launcher starts `bin/novasightd` without startup arguments. The daemon uses
-the package conventions directly: `data/novasight.yaml`, `web/`, and
-`run/ready.json`.
+The launcher starts `bin/novasightd` without startup arguments and waits for
+`run/novasightd-ready.json`, then starts `bin/novasight-web`. The daemon exposes
+only `run/novasightd.sock`; the Web/API server is the only TCP/static boundary.
 
-Portable packages bind an ephemeral `0.0.0.0` port, write `run/ready.json`, and
-serve both Studio and the API from that origin. The launcher prints the
+Portable packages bind the configured `0.0.0.0:7351`, write `run/ready.json`, and
+serve both Studio and the authenticated API from that origin. The launcher prints the
 `0.0.0.0` listener URL, prints a LAN URL for another machine on the same
 network, and treats browser opening as best-effort.
 
@@ -132,6 +132,7 @@ Expected result:
 
 - No systemd unit is installed or enabled.
 - No NovaSight-owned file is created outside the package directory.
-- `run/ready.json` records the bound address and a package-local control socket.
-- `logs/novasightd.log` contains daemon stdout/stderr.
+- `run/novasightd-ready.json` records daemon IPC readiness and `run/ready.json`
+  records the Web/API address.
+- `logs/novasightd.log` and `logs/novasight-web.log` contain service stdout/stderr.
 - Web UI and API are served from the same origin.

@@ -1,6 +1,6 @@
 # NovaSight Project Health Ledger
 
-Last updated: 2026-08-10
+Last updated: 2026-08-20
 
 This file is the current engineering-health authority for NovaSight. It records
 the maintained product path, known risks, ownership boundaries, and the next
@@ -79,53 +79,64 @@ unverified edits pass the same gates.
   contracts.
 - Configuration loading rejects unknown control fields and unsafe path identity
   changes.
+- TCP API/WebSocket callers must establish a Web/API-process-local operator session;
+  the owner-only launcher access file is separate from license authorization.
+- Runtime and hardware license requirements are decided from the effective
+  output configuration, not the transient output gate.
 - Cargo, web, package, logs, models, and local runtime outputs stay ignored.
 
 ## Active Findings
 
-### P1: Verify the restored strict lint gate
+### Closed locally: Strict lint and workspace tests
 
-`README.md` declares `cargo clippy --workspace --all-targets -- -D warnings` as
-a development gate. At the 2026-08-10 audit it failed only on two prediction
-helpers with ungrouped argument lists. The current development batch groups
-projection and motion-classification inputs into typed internal contexts without
-changing the algorithm sequence. Verification was intentionally not run during
-that development-only batch.
+On 2026-08-20, manifest/lockfile validation, formatting, strict workspace
+Clippy, and the full workspace test suite completed successfully. The workspace
+test command needed normal localhost UDP permission for the kmNet loopback
+contract; the restricted sandbox failure was not a product failure. One stale
+prediction test had inherited the production default lead and was made explicit
+with `prediction_lead_ms: 0.0`, preserving the test's intended isolation.
 
-Acceptance: the declared command exits successfully without a broad lint allow.
+### P1: Bring the tracked host and Jetson quality gates online
 
-### P1: Bring the new host and Jetson quality gates online
-
-The current development batch adds `rust-toolchain.toml` and
-`.github/workflows/quality.yml`. Host checks are declared for GitHub-hosted
-macOS/Ubuntu runners. The production job remains disabled until a self-hosted
-Jetson runner is registered and `NOVASIGHT_JETSON_CI_ENABLED=true` is configured.
-No workflow result exists yet, so automation remains `PARTIAL` until its first
-successful run.
+The tracked `.github/workflows/quality.yml` declares host checks for
+GitHub-hosted macOS/Ubuntu runners, explicitly verifies manifest/lockfile
+agreement, and separates the Jetson release-build receipt from hardware
+production acceptance. The jobs remain disabled until a self-hosted Jetson
+runner and repository variables are configured. No workflow result exists yet,
+so automation remains `PARTIAL` until the relevant job completes successfully.
 
 Portable host gate (macOS; production Linux modules remain Jetson-gated):
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 pnpm --dir web typecheck
 pnpm --dir web visual:audit
 pnpm --dir web build
 ```
 
-Jetson gate:
+Jetson build/safe-start gate:
 
 ```bash
-cargo run -p novasight-packager -- --profile release
-cd out/package/NovaSight
-bin/novasightd --check
-./NovaSight
+NOVASIGHT_WEB_ACCESS_CODE=<64-hex-job-local-code> \
+  scripts/ci/jetson-production-acceptance.sh build
 ```
 
-The Jetson acceptance job must also confirm readiness, license status, model
-contract, real DeepStream metadata, freshness/latency, capture start/stop, and
-safe kmNet output behavior.
+Protected production receipt:
+
+```bash
+NOVASIGHT_WEB_ACCESS_CODE=<64-hex-job-local-code> \
+NOVASIGHT_JETSON_MODEL_FIXTURE_DIR=<runner-provisioned-model-directory> \
+  scripts/ci/jetson-production-acceptance.sh production
+```
+
+The production receipt validates caller rejection/authenticated session/CSRF, signed license
+activation, model registration/publish and `novasightd --check`, real DeepStream
+metadata, freshness/latency, capture start/stop/restart, emergency stop, and
+zero kmNet receipts while output is deliberately disabled. Physical kmNet
+actuation remains a separately supervised commissioning receipt; CI must not
+move operator hardware merely to make a build green.
 
 ### P1: Keep production truth separate from portable reference evidence
 
@@ -143,7 +154,7 @@ is explicitly in scope; do not inflate production modules with test-only seams.
 
 Priority boundaries:
 
-1. license and trusted-local-control middleware;
+1. panel identity, license, and trusted-local-control middleware;
 2. start/stop/emergency-stop HTTP behavior;
 3. WebSocket shutdown and reconnect behavior;
 4. configuration persistence failure/rollback;
@@ -204,7 +215,7 @@ of truth.
 | Dimension | Status | Current conclusion |
 | --- | --- | --- |
 | Rust domain/runtime design | YES | Typed ownership and fail-closed seams are present |
-| Host development baseline | PARTIAL | Tests/build passed at the recorded baseline; strict lint needed repair |
+| Host development baseline | YES | Locked metadata, formatting, strict Clippy, workspace tests, and Studio build pass locally |
 | Studio static health | YES | Typecheck, visual audit, and build passed at the recorded baseline |
 | Studio behavior coverage | NO | No automated interaction suite is configured |
 | Automated host CI | PARTIAL | Workflow is tracked; first successful run is pending |

@@ -1,5 +1,5 @@
-import type { LicenseStatus, RuntimeConfig, RuntimeState } from "../../api";
-import { getRuntimeMainlineStatus, type RuntimeMainlineStatus } from "../shared/runtimeStatus";
+import type { LicenseStatus, RuntimeState } from "../../api";
+import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 
 export type LaunchReadinessState = "ready" | "action" | "blocked" | "idle";
 
@@ -7,612 +7,139 @@ export type LaunchReadinessAction =
   | "open-license"
   | "open-model-manager"
   | "open-capture"
-  | "start-mainline"
   | "open-control"
+  | "open-latency"
   | "open-kmnet-test"
   | "open-params";
-
-export type LaunchReadinessItem = {
-  id: "license" | "model" | "capture" | "deepstream" | "control" | "kmnet";
-  label: string;
-  state: LaunchReadinessState;
-  detail: string;
-  evidence: string;
-  blocking: boolean;
-  action?: LaunchReadinessAction;
-  actionLabel?: string;
-};
-
-export type LaunchProductConfigRow = {
-  label: string;
-  value: string;
-  detail: string;
-};
 
 export type LaunchReadinessSummary = {
   state: LaunchReadinessState;
   title: string;
   detail: string;
-  readyCount: number;
-  blockingCount: number;
-  score: number;
   primaryAction?: LaunchReadinessAction;
   primaryActionLabel?: string;
-  secondaryAction?: LaunchReadinessAction;
-  secondaryActionLabel?: string;
-  items: LaunchReadinessItem[];
-  productConfig: LaunchProductConfigRow[];
 };
 
-export type BuildLaunchReadinessInput = {
-  license: LicenseStatus | null;
-  runtime: RuntimeState | null;
-  runtimeConfig: RuntimeConfig | null;
-};
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function nestedRecord(source: unknown, key: string): Record<string, unknown> {
-  return asRecord(asRecord(source)[key]);
-}
-
-function readString(value: unknown, fallback = ""): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-function readNumber(value: unknown, fallback = 0): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function readBoolean(value: unknown, fallback = false): boolean {
-  return typeof value === "boolean" ? value : fallback;
-}
-
-function formatTraceFragment(value: string | null | undefined): string {
-  const normalized = value?.trim();
-  if (!normalized) {
-    return "未生成";
-  }
-  if (normalized.length <= 16) {
-    return normalized.toUpperCase();
-  }
-  return `${normalized.slice(0, 8).toUpperCase()}-${normalized.slice(-6).toUpperCase()}`;
-}
-
-function formatTier(tier: string): string {
-  if (tier === "temporary") return "临时测试授权";
-  if (tier === "pro") return "专业版";
-  if (tier === "premium" || tier === "ultimate") return "旗舰版";
-  return tier || "未授权";
-}
-
-function formatBackend(value: string): string {
-  return value === "deepstream_nvinfer" ? "DeepStream 推理" : value || "未配置";
-}
-
-function traceAction(
-  status: RuntimeMainlineStatus,
-  runtime: RuntimeState | null
-): Pick<LaunchReadinessItem, "action" | "actionLabel"> | null {
-  const trace = status.outputTrace;
-  if (!trace) {
-    return null;
-  }
-  if (trace.next_action === "start_mainline") {
-    return { action: "start-mainline", actionLabel: "启动主链" };
-  }
-  if (trace.next_action === "check_model") {
-    return { action: "open-model-manager", actionLabel: "检查模型" };
-  }
-  if (trace.next_action === "check_capture_or_model") {
-    return runtime?.active_model
-      ? { action: "open-capture", actionLabel: "检查采集" }
-      : { action: "open-model-manager", actionLabel: "配置模型" };
-  }
-  if (trace.next_action === "check_latency") {
-    return { action: "open-capture", actionLabel: "检查采集" };
-  }
-  if (trace.next_action === "check_targeting" || trace.next_action === "inspect_control") {
-    return { action: "open-control", actionLabel: "查看控制" };
-  }
-  if (trace.next_action === "enable_output_gate") {
-    return { action: "open-params", actionLabel: "打开输出" };
-  }
-  if (trace.next_action === "activate_trigger") {
-    return { action: "open-control", actionLabel: "查看触发" };
-  }
-  if (trace.next_action === "connect_kmnet") {
-    return { action: "open-kmnet-test", actionLabel: "连接 kmNet" };
-  }
-  if (trace.next_action === "check_license_or_build") {
-    return { action: "open-license", actionLabel: "检查授权" };
-  }
-  if (trace.next_action === "inspect_runtime_ingress") {
-    return { action: "open-control", actionLabel: "查看运行链" };
-  }
-  return null;
-}
-
-function traceItemState(status: RuntimeMainlineStatus): LaunchReadinessState {
-  if (!status.outputTrace) {
-    return "idle";
-  }
-  if (status.outputTrace.state === "ready") {
-    return "ready";
-  }
-  if (status.outputTrace.state === "blocked") {
-    return "blocked";
-  }
-  return "action";
-}
-
-function formatOptionalInteger(value: number | null | undefined): string {
-  return typeof value === "number" && Number.isFinite(value) ? String(Math.trunc(value)) : "—";
-}
-
-function formatCaptureProfile(config: Record<string, unknown>, runtime: RuntimeState | null): string {
-  const pixelFormat = readString(config.pixel_format).toUpperCase();
-  const width = readNumber(config.width);
-  const height = readNumber(config.height);
-  const fps = readNumber(config.fps);
-  if (pixelFormat && width > 0 && height > 0 && fps > 0) {
-    return `${pixelFormat} ${width}x${height}@${fps}`;
-  }
-  const profile = runtime?.capture?.profile;
-  if (profile) {
-    return `${profile.pixel_format.toUpperCase()} ${profile.width}x${profile.height}@${profile.fps}`;
-  }
-  return "等待采集配置";
-}
-
-function hasConfiguredCaptureProfile(captureConfig: Record<string, unknown>, runtime: RuntimeState | null): boolean {
-  return (
-    readString(captureConfig.device).trim().length > 0 &&
-    readString(captureConfig.pixel_format).trim().length > 0 &&
-    readNumber(captureConfig.width) > 0 &&
-    readNumber(captureConfig.height) > 0 &&
-    readNumber(captureConfig.fps) > 0
-  ) || runtime?.capture?.profile !== null && runtime?.capture?.profile !== undefined;
-}
-
-function buildLicenseItem(license: LicenseStatus | null): LaunchReadinessItem {
-  if (license?.valid) {
-    const trace = formatTraceFragment(license.token_id || license.license_id || license.fingerprint);
-    return {
-      id: "license",
-      label: "个人授权",
-      state: "ready",
-      detail: `${formatTier(license.tier)} 已激活，授权可追溯。`,
-      evidence: `追踪码 ${trace}`,
-      blocking: true
-    };
-  }
-  return {
-    id: "license",
-    label: "个人授权",
-    state: "blocked",
-    detail: "需要先激活授权，才能进入工作台。",
-    evidence: license?.message || "等待授权",
-    blocking: true,
-    action: "open-license",
-    actionLabel: "处理授权"
-  };
-}
-
-function buildModelItem(runtime: RuntimeState | null, status: RuntimeMainlineStatus): LaunchReadinessItem {
-  const artifact = runtime?.active_model?.artifact;
-  const modelName = runtime?.active_model?.project?.name || "未发布模型";
-  if (runtime?.active_model && artifact) {
-    return {
-      id: "model",
-      label: "模型部署",
-      state: "ready",
-      detail: `${modelName} 已发布到运行配置。`,
-      evidence: `${artifact.kind} · ${artifact.status}`,
-      blocking: true
-    };
-  }
-  const failedBecauseModel = status.readinessCode === "model_load_failed";
-  return {
-    id: "model",
-    label: "模型部署",
-    state: failedBecauseModel ? "blocked" : "action",
-    detail: failedBecauseModel
-      ? "当前模型加载失败，需要重新验证或切换 TensorRT Engine。"
-      : "当前没有活动模型；主链可以先启动，感知链会等待模型发布。",
-    evidence: runtime?.model_catalog_error || modelName,
-    blocking: failedBecauseModel,
-    action: "open-model-manager",
-    actionLabel: failedBecauseModel ? "修复模型" : "配置模型"
-  };
-}
-
-function buildCaptureItem(
-  runtime: RuntimeState | null,
-  runtimeConfig: RuntimeConfig | null,
-  status: RuntimeMainlineStatus
-): LaunchReadinessItem {
-  const captureConfig = nestedRecord(runtimeConfig, "capture");
-  const device = readString(captureConfig.device, runtime?.capture?.device ?? "/dev/video0");
-  const captureProfile = formatCaptureProfile(captureConfig, runtime);
-  const configured = hasConfiguredCaptureProfile(captureConfig, runtime);
-  if (status.readinessCode === "no_video" || runtime?.capture?.state === "failed") {
-    return {
-      id: "capture",
-      label: "采集输入",
-      state: "blocked",
-      detail: "主链未收到有效画面，需要检查采集卡信号、格式或分辨率。",
-      evidence: runtime?.capture?.last_error || status.readinessDetail,
-      blocking: true,
-      action: "open-capture",
-      actionLabel: "检查采集"
-    };
-  }
-  if (configured) {
-    return {
-      id: "capture",
-      label: "采集输入",
-      state: "ready",
-      detail: `${device} 已有可提交的采集规格。`,
-      evidence: captureProfile,
-      blocking: true
-    };
-  }
-  return {
-    id: "capture",
-    label: "采集输入",
-    state: "action",
-    detail: "缺少明确采集规格，启动时只能依赖自动探测。",
-    evidence: `${device} · ${captureProfile}`,
-    blocking: true,
-    action: "open-capture",
-    actionLabel: "选择采集"
-  };
-}
-
-function buildDeepStreamItem(runtime: RuntimeState | null, status: RuntimeMainlineStatus): LaunchReadinessItem {
-  const backend = readString(runtime?.inference?.selected, "deepstream_nvinfer");
-  const trace = status.outputTrace;
-  const action = traceAction(status, runtime);
-  if (status.failed && status.readinessCode !== "no_video") {
-    return {
-      id: "deepstream",
-      label: "模型推理",
-      state: "blocked",
-      detail: status.readinessDetail,
-      evidence: status.failureMessage || formatBackend(backend),
-      blocking: true,
-      action: status.readinessCode === "model_load_failed" ? "open-model-manager" : "open-capture",
-      actionLabel: status.readinessCode === "model_load_failed" ? "修复模型" : "检查运行"
-    };
-  }
-  if (
-    status.running &&
-    trace &&
-    (
-      trace.code === "inference_not_running" ||
-      trace.code === "no_detection_batches" ||
-      trace.code === "runtime_not_consuming_batches" ||
-      trace.code === "stale_detection_batch"
-    )
-  ) {
-    return {
-      id: "deepstream",
-      label: "模型推理",
-      state: traceItemState(status),
-      detail: trace.detail || status.readinessDetail,
-      evidence: `${trace.code} · ${status.progressSummary}`,
-      blocking: true,
-      action: action?.action,
-      actionLabel: action?.actionLabel
-    };
-  }
-  if (status.running && status.hasInferenceSignal) {
-    return {
-      id: "deepstream",
-      label: "模型推理",
-      state: "ready",
-      detail: "模型推理已经产生识别结果。",
-      evidence: status.progressSummary,
-      blocking: true
-    };
-  }
-  return {
-    id: "deepstream",
-    label: "模型推理",
-    state: runtime?.inference?.configured ? "idle" : "action",
-    detail: runtime?.inference?.configured
-      ? "模型推理配置已就绪，启动后会显示识别结果。"
-      : "推理服务尚未报告可用配置。",
-    evidence: formatBackend(backend),
-    blocking: true,
-    action: "start-mainline",
-    actionLabel: "启动验证"
-  };
-}
-
-function buildControlItem(runtime: RuntimeState | null, status: RuntimeMainlineStatus): LaunchReadinessItem {
-  const trace = status.outputTrace;
-  const action = traceAction(status, runtime);
-  if (
-    status.running &&
-    trace &&
-    trace.code !== "ready" &&
-    ![
-      "runtime_stopped",
-      "inference_not_running",
-      "no_detection_batches",
-      "runtime_not_consuming_batches",
-      "stale_detection_batch"
-    ].includes(trace.code)
-  ) {
-    return {
-      id: "control",
-      label: "控制算法",
-      state: traceItemState(status),
-      detail: trace.detail || "控制链路尚未形成可输出闭环。",
-      evidence: `${trace.code} · ${status.progressSummary}`,
-      blocking: true,
-      action: action?.action ?? "open-control",
-      actionLabel: action?.actionLabel ?? "查看控制"
-    };
-  }
-  if (status.running && status.hasRuntimeConsumption) {
-    return {
-      id: "control",
-      label: "控制算法",
-      state: "ready",
-      detail: "选择主要目标、目标速度预测与连续非线性控制已经收到识别结果。",
-      evidence: `consumed=${formatOptionalInteger(status.consumedBatches)} · targeting=${formatOptionalInteger(status.targetingBatches)}`,
-      blocking: true
-    };
-  }
-  if (status.running && status.hasInferenceSignal) {
-    return {
-      id: "control",
-      label: "控制算法",
-      state: "idle",
-      detail: "推理链已产生数据，正在等待运行时消费。",
-      evidence: status.progressSummary,
-      blocking: true,
-      action: "open-control",
-      actionLabel: "查看控制"
-    };
-  }
-  return {
-    id: "control",
-    label: "控制算法",
-    state: runtime?.running ? "idle" : "action",
-    detail: "启动主链后才会验证目标选择、目标速度预测、连续非线性控制与命令输出。",
-    evidence: "等待识别结果",
-    blocking: true,
-    action: "start-mainline",
-    actionLabel: "启动主链"
-  };
-}
-
-function buildKmNetItem(
-  runtime: RuntimeState | null,
-  runtimeConfig: RuntimeConfig | null,
-  status: RuntimeMainlineStatus
-): LaunchReadinessItem {
-  const controlConfig = nestedRecord(runtimeConfig, "control");
-  const hardwareConfig = nestedRecord(runtimeConfig, "hardware");
-  const executor = runtime?.executor;
-  const kmnet = executor?.executors?.kmnet;
-  const outputEnabled = readBoolean(controlConfig.output_enabled, true);
-  const autoConnect = readBoolean(hardwareConfig.auto_connect, true);
-  const restartRequired = kmnet?.restart_required === true;
-  const host = readString(hardwareConfig.host, "192.168.2.188");
-  const port = readNumber(hardwareConfig.port, 8888);
-  if (!outputEnabled) {
-    return {
-      id: "kmnet",
-      label: "kmNet 输出",
-      state: "idle",
-      detail: "物理输出已安全暂停，主链仍可采集、推理和计算控制量。",
-      evidence: "output_enabled=false",
-      blocking: false,
-      action: "open-params",
-      actionLabel: "打开输出"
-    };
-  }
-  if (restartRequired) {
-    return {
-      id: "kmnet",
-      label: "kmNet 输出",
-      state: "action",
-      detail: "kmNet 新配置尚未完成当前进程内的适配器重载。",
-      evidence: kmnet?.blocked_reason || `${host}:${port}`,
-      blocking: false,
-      action: "open-kmnet-test",
-      actionLabel: "查看设备"
-    };
-  }
-  if (kmnet?.runtime_connected) {
-    return {
-      id: "kmnet",
-      label: "kmNet 输出",
-      state: "ready",
-      detail: "运行时设备通道已连接，可以接收新鲜控制命令。",
-      evidence: `${host}:${port} · accepted=${kmnet.accepted_command_count}`,
-      blocking: false
-    };
-  }
-  if (status.outputTrace?.code === "device_not_connected") {
-    return {
-      id: "kmnet",
-      label: "kmNet 输出",
-      state: "action",
-      detail: status.outputTrace.detail,
-      evidence: kmnet?.last_error || kmnet?.blocked_reason || `${host}:${port}`,
-      blocking: false,
-      action: "open-kmnet-test",
-      actionLabel: "配置 kmNet"
-    };
-  }
-  return {
-    id: "kmnet",
-    label: "kmNet 输出",
-    state: autoConnect ? "action" : "blocked",
-    detail: autoConnect
-      ? "输出已允许，但运行时设备通道尚未连接。"
-      : "输出已允许，但 kmNet 自动连接尚未配置。",
-    evidence: kmnet?.last_error || kmnet?.blocked_reason || `${host}:${port}`,
-    blocking: false,
-    action: "open-kmnet-test",
-    actionLabel: "配置 kmNet"
-  };
-}
-
-function choosePrimaryAction(items: LaunchReadinessItem[], status: RuntimeMainlineStatus): Pick<
+function actionForRuntime(runtime: RuntimeState): Pick<
   LaunchReadinessSummary,
-  "primaryAction" | "primaryActionLabel" | "secondaryAction" | "secondaryActionLabel"
+  "primaryAction" | "primaryActionLabel"
 > {
-  const blockingAction = items.find((item) => item.blocking && item.action && item.state !== "ready");
-  if (blockingAction?.action) {
-    const secondaryAction = status.running
-      ? undefined
-      : blockingAction.action === "start-mainline"
-        ? "open-capture"
-        : "start-mainline";
-    return {
-      primaryAction: blockingAction.action,
-      primaryActionLabel: blockingAction.actionLabel,
-      secondaryAction,
-      secondaryActionLabel: secondaryAction === "open-capture" ? "检查采集" : secondaryAction ? "启动主链" : undefined
-    };
+  const nextAction = runtime.vision.output_trace?.next_action;
+  switch (nextAction) {
+    case "check_model":
+      return { primaryAction: "open-model-manager", primaryActionLabel: "检查模型" };
+    case "check_capture_or_model":
+      return runtime.active_model
+        ? { primaryAction: "open-capture", primaryActionLabel: "检查采集" }
+        : { primaryAction: "open-model-manager", primaryActionLabel: "配置模型" };
+    case "check_latency":
+      return { primaryAction: "open-latency", primaryActionLabel: "检查延迟" };
+    case "enable_output_gate":
+      return { primaryAction: "open-params", primaryActionLabel: "配置输出" };
+    case "connect_kmnet":
+      return { primaryAction: "open-kmnet-test", primaryActionLabel: "配置 kmNet" };
+    case "check_license_or_build":
+      return { primaryAction: "open-license", primaryActionLabel: "检查授权" };
+    case "check_targeting":
+    case "inspect_control":
+    case "inspect_runtime_ingress":
+    case "activate_trigger":
+      return { primaryAction: "open-control", primaryActionLabel: "查看控制" };
+    default:
+      return {};
   }
-  if (!status.running) {
-    return {
-      primaryAction: "start-mainline",
-      primaryActionLabel: "启动主链",
-      secondaryAction: "open-capture",
-      secondaryActionLabel: "检查采集"
-    };
-  }
-  const optionalAction = items.find((item) => !item.blocking && item.action && item.state !== "ready");
-  if (optionalAction?.action) {
-    return {
-      primaryAction: "open-control",
-      primaryActionLabel: "查看控制链",
-      secondaryAction: optionalAction.action,
-      secondaryActionLabel: optionalAction.actionLabel
-    };
-  }
-  return {
-    primaryAction: "open-control",
-    primaryActionLabel: "查看控制链"
-  };
-}
-
-function buildProductConfig(
-  license: LicenseStatus | null,
-  runtime: RuntimeState | null,
-  runtimeConfig: RuntimeConfig | null,
-  status: RuntimeMainlineStatus
-): LaunchProductConfigRow[] {
-  const captureConfig = nestedRecord(runtimeConfig, "capture");
-  const inferenceConfig = nestedRecord(runtimeConfig, "inference");
-  const controlConfig = nestedRecord(runtimeConfig, "control");
-  const hardwareConfig = nestedRecord(runtimeConfig, "hardware");
-  const triggerMode = readString(controlConfig.trigger_mode, "always");
-  const outputEnabled = readBoolean(controlConfig.output_enabled, true);
-  const host = readString(hardwareConfig.host, "192.168.2.188");
-  const port = readNumber(hardwareConfig.port, 8888);
-  const uuid = readString(hardwareConfig.uuid, "12345678");
-
-  return [
-    {
-      label: "授权",
-      value: license?.valid ? formatTier(license.tier) : "等待授权",
-      detail: formatTraceFragment(license?.token_id || license?.license_id || license?.fingerprint)
-    },
-    {
-      label: "模型",
-      value: runtime?.active_model?.project?.name || "未发布",
-      detail: runtime?.active_model?.artifact
-        ? `${runtime.active_model.artifact.kind} · ${runtime.active_model.artifact.status}`
-        : "需要发布 Engine"
-    },
-    {
-      label: "采集",
-      value: readString(captureConfig.device, runtime?.capture?.device || "/dev/video0"),
-      detail: formatCaptureProfile(captureConfig, runtime)
-    },
-    {
-      label: "推理",
-      value: formatBackend(readString(inferenceConfig.backend, runtime?.inference?.selected || "deepstream_nvinfer")),
-      detail: status.progressSummary
-    },
-    {
-      label: "控制",
-      value: triggerMode === "hardware" ? "硬件触发" : "检测即控制",
-      detail: status.running && status.outputTrace?.detail
-        ? status.outputTrace.detail
-        : outputEnabled ? "允许输出" : "安全暂停"
-    },
-    {
-      label: "kmNet",
-      value: `${host}:${port}`,
-      detail: `UUID ${uuid || "未填写"}`
-    }
-  ];
 }
 
 export function buildLaunchReadiness({
   license,
   runtime,
-  runtimeConfig
-}: BuildLaunchReadinessInput): LaunchReadinessSummary {
-  const status = getRuntimeMainlineStatus(runtime);
-  const items = [
-    buildLicenseItem(license),
-    buildModelItem(runtime, status),
-    buildCaptureItem(runtime, runtimeConfig, status),
-    buildDeepStreamItem(runtime, status),
-    buildControlItem(runtime, status),
-    buildKmNetItem(runtime, runtimeConfig, status)
-  ];
-  const blockingItems = items.filter((item) => item.blocking);
-  const readyCount = blockingItems.filter((item) => item.state === "ready").length;
-  const blockingCount = blockingItems.length;
-  const score = blockingCount === 0 ? 100 : Math.round((readyCount / blockingCount) * 100);
-  const hasBlocked = blockingItems.some((item) => item.state === "blocked");
-  const hasAction = blockingItems.some((item) => item.state === "action");
-  const state: LaunchReadinessState = hasBlocked
-    ? "blocked"
-    : readyCount === blockingCount
-      ? "ready"
-      : hasAction
-        ? "action"
-        : "idle";
-  const title = state === "ready"
-    ? status.running ? "视觉控制正在运行" : "主链准备完成，等待启动"
-    : state === "blocked"
-      ? status.running ? "主链输出链路有阻断项" : "主链启动前有阻断项"
-      : status.running ? "主链等待排查处理" : "主链等待启动准备";
-  const detail = state === "ready"
-    ? status.running
-      ? status.readinessDetail
-      : "模型、采集和控制配置已就绪；可以启动。"
-    : status.running && status.outputTrace?.detail
-      ? status.outputTrace.detail
-      : "先处理第一条阻断或待配置项，再继续启动。";
+  serviceAvailable
+}: {
+  license: LicenseStatus | null;
+  runtime: RuntimeState | null;
+  serviceAvailable: boolean | null;
+}): LaunchReadinessSummary {
+  if (serviceAvailable !== true) {
+    return {
+      state: serviceAvailable === false ? "blocked" : "idle",
+      title: serviceAvailable === false ? "服务不可达" : "正在连接服务",
+      detail: serviceAvailable === false
+        ? "Studio 无法确认 NovaSight 当前运行状态，运行操作已暂停。"
+        : "Studio 正在等待 NovaSight 返回连接状态。"
+    };
+  }
+  if (!license?.valid) {
+    return {
+      state: "blocked",
+      title: "等待授权",
+      detail: license?.message || "激活授权后即可使用已保存配置运行主链。",
+      primaryAction: "open-license",
+      primaryActionLabel: "处理授权"
+    };
+  }
+  if (!runtime) {
+    return {
+      state: "idle",
+      title: "正在读取运行状态",
+      detail: "Studio 正在等待 NovaSight 返回权威运行状态。"
+    };
+  }
 
+  const status = getRuntimeMainlineStatus(runtime);
+  const phase = runtime.semantic.phase;
+  if (phase === "starting") {
+    return {
+      state: "idle",
+      title: "正在启动",
+      detail: "NovaSight 正在使用已保存配置启动采集、推理和控制链。"
+    };
+  }
+  if (phase === "stopping") {
+    return {
+      state: "idle",
+      title: "正在停止",
+      detail: "NovaSight 正在关闭运行链并失效待发送输出。"
+    };
+  }
+  if (phase === "faulted" || status.failed) {
+    return {
+      state: "blocked",
+      title: status.readinessLabel || "运行失败",
+      detail: status.readinessDetail || runtime.fatal_error?.message || "运行链发生错误。",
+      ...actionForRuntime(runtime)
+    };
+  }
+  if (phase === "waiting_model") {
+    return {
+      state: "action",
+      title: "主链运行 · 等待模型",
+      detail: "采集与控制运行态已建立；发布可用 TensorRT Engine 后会自动接入。",
+      primaryAction: "open-model-manager",
+      primaryActionLabel: "配置模型"
+    };
+  }
+  if (phase === "stopped") {
+    return {
+      state: "ready",
+      title: "可以运行",
+      detail: runtime.active_model
+        ? "点击运行后，NovaSight 会直接使用已保存配置启动主链。"
+        : "点击运行后主链会先启动并等待模型，不需要填写启动参数。"
+    };
+  }
+
+  const action = actionForRuntime(runtime);
+  if (action.primaryAction) {
+    return {
+      state: runtime.vision.output_trace?.state === "blocked" ? "action" : "ready",
+      title: status.readinessLabel || "主链运行中",
+      detail: status.readinessDetail || runtime.vision.output_trace?.detail || "运行状态正常。",
+      ...action
+    };
+  }
   return {
-    state,
-    title,
-    detail,
-    readyCount,
-    blockingCount,
-    score,
-    ...choosePrimaryAction(items, status),
-    items,
-    productConfig: buildProductConfig(license, runtime, runtimeConfig, status)
+    state: "ready",
+    title: "主链运行中",
+    detail: status.readinessDetail || "采集、推理和控制链正在运行。"
   };
 }

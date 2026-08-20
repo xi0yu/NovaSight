@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -23,10 +24,11 @@ pub mod jwt;
 use jwt::verify_license_jwt;
 
 const TEMPORARY_LICENSE_TIER: &str = "temporary";
-const DEVELOPMENT_SESSION_ID: &str = "debug-process-session";
 const LEGACY_CREDENTIAL_FORMAT: &str = "legacy_ns1";
 const JWT_CREDENTIAL_FORMAT: &str = "jwt_rs256";
-const DEBUG_CREDENTIAL_FORMAT: &str = "debug_session";
+const EPHEMERAL_CREDENTIAL_FORMAT: &str = "ephemeral_code";
+const MIN_TEMPORARY_ACCESS_CODE_BYTES: usize = 32;
+const MAX_TEMPORARY_ACCESS_CODE_BYTES: usize = 1024;
 const MAX_LICENSE_CREDENTIAL_BYTES: usize = 64 * 1024;
 const MAX_UNIX_TIMESTAMP: u64 = 253_402_300_799;
 const LICENSE_CLOCK_SKEW_SECONDS: f64 = 60.0;
@@ -40,24 +42,63 @@ const ALL_FEATURES: [&str; 7] = [
     "config_read",
     "config_write",
 ];
+const DEVELOPMENT_FEATURES: [&str; 6] = [
+    "capture",
+    "runtime",
+    "models",
+    "tensorrt",
+    "config_read",
+    "config_write",
+];
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LicensePolicy {
-    temporary_access_supported: bool,
+    temporary_access_digest: Option<[u8; 32]>,
     public_key_pem: Option<String>,
 }
 
 impl LicensePolicy {
-    pub fn new(temporary_access_supported: bool, public_key_pem: Option<String>) -> Self {
+    pub fn new(public_key_pem: Option<String>) -> Self {
         Self {
-            temporary_access_supported,
+            temporary_access_digest: None,
             public_key_pem,
         }
     }
 
-    pub const fn temporary_access_supported(&self) -> bool {
-        self.temporary_access_supported
+    pub fn with_temporary_access_code(mut self, code: &str) -> Result<Self, LicenseError> {
+        if code != code.trim() {
+            return Err(LicenseError::TemporaryAccessCodeInvalid(
+                "code must not have edge whitespace".to_owned(),
+            ));
+        }
+        if code.len() < MIN_TEMPORARY_ACCESS_CODE_BYTES {
+            return Err(LicenseError::TemporaryAccessCodeInvalid(format!(
+                "code must contain at least {MIN_TEMPORARY_ACCESS_CODE_BYTES} bytes"
+            )));
+        }
+        if code.len() > MAX_TEMPORARY_ACCESS_CODE_BYTES {
+            return Err(LicenseError::TemporaryAccessCodeInvalid(format!(
+                "code must not exceed {MAX_TEMPORARY_ACCESS_CODE_BYTES} bytes"
+            )));
+        }
+        self.temporary_access_digest = Some(Sha256::digest(code.as_bytes()).into());
+        Ok(self)
+    }
+
+    pub fn temporary_access_supported(&self) -> bool {
+        self.temporary_access_digest.is_some()
+    }
+
+    fn matches_temporary_access_code(&self, candidate: &str) -> bool {
+        let Some(expected) = self.temporary_access_digest.as_ref() else {
+            return false;
+        };
+        if candidate.len() > MAX_TEMPORARY_ACCESS_CODE_BYTES {
+            return false;
+        }
+        let candidate: [u8; 32] = Sha256::digest(candidate.as_bytes()).into();
+        constant_time_equal(expected, &candidate)
     }
 
     /// Validate the verifier before daemon readiness. Production requires a
@@ -69,6 +110,19 @@ impl LicensePolicy {
             None if required => Err(LicenseError::PublicKeyMissing),
             None => Ok(()),
         }
+    }
+}
+
+impl fmt::Debug for LicensePolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LicensePolicy")
+            .field(
+                "temporary_access_supported",
+                &self.temporary_access_supported(),
+            )
+            .field("public_key_configured", &self.public_key_pem.is_some())
+            .finish()
     }
 }
 
@@ -131,6 +185,35 @@ impl LicenseStatus {
             ..Self::unconfigured()
         }
     }
+
+    pub fn authorize_feature(&self, feature: &'static str) -> Result<(), LicenseDenial> {
+        if !self.configured || !self.valid {
+            return Err(LicenseDenial::Required);
+        }
+        if !self.features.iter().any(|candidate| candidate == feature) {
+            return Err(LicenseDenial::FeatureRequired(feature));
+        }
+        Ok(())
+    }
+
+    /// Authorize the compute runtime and, when the effective configuration can
+    /// produce physical output, the independent hardware-control capability.
+    /// A transient pipeline gate is intentionally not part of this policy.
+    pub fn authorize_runtime(&self, hardware_output_requested: bool) -> Result<(), LicenseDenial> {
+        self.authorize_feature("runtime")?;
+        if hardware_output_requested {
+            self.authorize_feature("hardware_control")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+pub enum LicenseDenial {
+    #[error("a valid license is required")]
+    Required,
+    #[error("license feature {0} is required")]
+    FeatureRequired(&'static str),
 }
 
 #[derive(Clone, Debug)]
@@ -212,6 +295,9 @@ impl FileLicenseRepository {
                 "license credential is too large".to_owned(),
             ));
         }
+        if self.policy.matches_temporary_access_code(key) {
+            return self.grant_temporary();
+        }
         let _operation = self
             .operation_lock
             .lock()
@@ -257,7 +343,7 @@ impl FileLicenseRepository {
 
     /// Enable full access for the lifetime of the current debug daemon.
     /// This state is deliberately process-local and never written to disk.
-    pub fn grant_temporary(&self) -> Result<LicenseStatus, LicenseError> {
+    fn grant_temporary(&self) -> Result<LicenseStatus, LicenseError> {
         if !self.temporary_access_supported() {
             return Err(LicenseError::TemporaryGrantDisabled);
         }
@@ -658,9 +744,12 @@ fn development_session_status(granted_at: f64) -> LicenseStatus {
         temporary_access_supported: true,
         fingerprint: String::new(),
         tier: TEMPORARY_LICENSE_TIER.to_owned(),
-        features: ALL_FEATURES.iter().map(ToString::to_string).collect(),
-        license_id: DEVELOPMENT_SESSION_ID.to_owned(),
-        credential_format: DEBUG_CREDENTIAL_FORMAT.to_owned(),
+        features: DEVELOPMENT_FEATURES
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        license_id: "ephemeral-process-session".to_owned(),
+        credential_format: EPHEMERAL_CREDENTIAL_FORMAT.to_owned(),
         token_id: String::new(),
         key_id: String::new(),
         created_at: Some(granted_at),
@@ -670,7 +759,7 @@ fn development_session_status(granted_at: f64) -> LicenseStatus {
         duration_value: None,
         duration_unit: "process".to_owned(),
         updated_at: Some(granted_at),
-        message: "Debug development access is active for the current novasightd process".to_owned(),
+        message: "Temporary access was verified with this daemon's per-start credential; it expires with the process and physical hardware output still requires a signed license".to_owned(),
     }
 }
 
@@ -939,6 +1028,8 @@ pub enum LicenseError {
     InvalidKey(String),
     #[error("temporary development access is unavailable in this build")]
     TemporaryGrantDisabled,
+    #[error("configured temporary license access code is invalid: {0}")]
+    TemporaryAccessCodeInvalid(String),
     #[error("a signed license is already active; development access was not enabled")]
     TemporaryGrantWouldReplaceActiveLicense,
     #[error("NOVASIGHT_LICENSE_PUBLIC_KEY is required for signed licenses")]
@@ -977,6 +1068,7 @@ impl LicenseError {
         match self {
             Self::InvalidKey(_) => "LICENSE_KEY_INVALID",
             Self::TemporaryGrantDisabled => "LICENSE_TEMPORARY_DISABLED",
+            Self::TemporaryAccessCodeInvalid(_) => "LICENSE_TEMPORARY_CODE_INVALID",
             Self::TemporaryGrantWouldReplaceActiveLicense => "LICENSE_ACTIVE_CREDENTIAL_PRESENT",
             Self::PublicKeyMissing => "LICENSE_PUBLIC_KEY_MISSING",
             Self::PublicKeyInvalid(_) => "LICENSE_PUBLIC_KEY_INVALID",
@@ -1002,7 +1094,12 @@ impl LicenseError {
     }
 
     pub const fn is_configuration_error(&self) -> bool {
-        matches!(self, Self::PublicKeyMissing | Self::PublicKeyInvalid(_))
+        matches!(
+            self,
+            Self::TemporaryAccessCodeInvalid(_)
+                | Self::PublicKeyMissing
+                | Self::PublicKeyInvalid(_)
+        )
     }
 
     fn io(operation: &'static str, path: &Path, source: io::Error) -> Self {
@@ -1023,5 +1120,118 @@ impl LicenseError {
                 | Self::UnsupportedSchema(_)
                 | Self::InvalidDocument { .. }
         )
+    }
+}
+
+fn constant_time_equal(left: &[u8; 32], right: &[u8; 32]) -> bool {
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
+#[cfg(test)]
+mod authorization_tests {
+    use super::{FileLicenseRepository, LicenseDenial, LicensePolicy, LicenseStatus};
+
+    const TEMPORARY_CODE: &str = "3fa74c4d6b6fe20a46a038d0b264aba59012b1f24e7b36fd1aa62da6356165d2";
+    const OTHER_TEMPORARY_CODE: &str =
+        "820d266c04c4cf681fbed3e673a6f53bb96c5e2390988f5b3c0e3b2f48ba79cf";
+
+    fn valid_status(features: &[&str]) -> LicenseStatus {
+        LicenseStatus {
+            configured: true,
+            valid: true,
+            features: features
+                .iter()
+                .map(|feature| (*feature).to_owned())
+                .collect(),
+            ..LicenseStatus::unconfigured()
+        }
+    }
+
+    #[test]
+    fn runtime_only_license_cannot_authorize_requested_hardware_output() {
+        let status = valid_status(&["runtime"]);
+        assert_eq!(
+            status.authorize_runtime(true),
+            Err(LicenseDenial::FeatureRequired("hardware_control"))
+        );
+        assert_eq!(status.authorize_runtime(false), Ok(()));
+    }
+
+    #[test]
+    fn invalid_license_never_authorizes_runtime_even_with_all_features() {
+        let mut status = valid_status(&["runtime", "hardware_control"]);
+        status.valid = false;
+        assert_eq!(status.authorize_runtime(true), Err(LicenseDenial::Required));
+    }
+
+    #[test]
+    fn runtime_and_hardware_features_authorize_physical_output() {
+        let status = valid_status(&["runtime", "hardware_control"]);
+        assert_eq!(status.authorize_runtime(true), Ok(()));
+    }
+
+    #[test]
+    fn temporary_development_session_never_grants_hardware_control() {
+        let status = super::development_session_status(1.0);
+        assert_eq!(status.authorize_runtime(false), Ok(()));
+        assert_eq!(
+            status.authorize_runtime(true),
+            Err(LicenseDenial::FeatureRequired("hardware_control"))
+        );
+    }
+
+    #[test]
+    fn temporary_code_must_match_the_current_policy_exactly() {
+        let policy = LicensePolicy::new(None)
+            .with_temporary_access_code(TEMPORARY_CODE)
+            .unwrap();
+        assert!(policy.matches_temporary_access_code(TEMPORARY_CODE));
+        assert!(!policy.matches_temporary_access_code(OTHER_TEMPORARY_CODE));
+        assert!(!LicensePolicy::new(None).temporary_access_supported());
+    }
+
+    #[test]
+    fn temporary_code_uses_the_same_activation_entry_without_persistence() {
+        let policy = LicensePolicy::new(None)
+            .with_temporary_access_code(TEMPORARY_CODE)
+            .unwrap();
+        let repository = FileLicenseRepository::new(
+            std::env::temp_dir().join(format!(
+                "novasight-license-activation-test-{}.json",
+                std::process::id()
+            )),
+            policy,
+        );
+
+        let status = repository.activate(TEMPORARY_CODE).unwrap();
+        assert!(status.valid);
+        assert_eq!(status.tier, "temporary");
+        assert_eq!(status.credential_format, "ephemeral_code");
+        assert!(
+            !status
+                .features
+                .iter()
+                .any(|feature| feature == "hardware_control")
+        );
+        assert!(!repository.path().exists());
+    }
+
+    #[test]
+    fn temporary_code_configuration_rejects_short_or_padded_values() {
+        assert!(
+            LicensePolicy::new(None)
+                .with_temporary_access_code("short")
+                .is_err()
+        );
+        assert!(
+            LicensePolicy::new(None)
+                .with_temporary_access_code(&format!(" {TEMPORARY_CODE}"))
+                .is_err()
+        );
     }
 }

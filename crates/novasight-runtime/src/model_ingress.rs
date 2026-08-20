@@ -357,7 +357,7 @@ pub(crate) fn validate_worker_output(
     artifact: &RuntimeModelArtifact,
     display_root: &Path,
     stage: ModelIngressStage,
-    output: ModelWorkerOutput,
+    mut output: ModelWorkerOutput,
 ) -> Result<(ModelIngressResult, ModelIngressCatalogUpdate), ModelIngressError> {
     let expected_profile_path = profile_path_for_engine(&artifact.artifact_path)?;
     let actual_profile_path = canonical_file(&output.profile_path, "profile_path")?;
@@ -438,6 +438,7 @@ pub(crate) fn validate_worker_output(
         .map(Path::to_string_lossy)
         .map(|value| value.replace('\\', "/"))
         .unwrap_or_else(|_| actual_profile_path.to_string_lossy().into_owned());
+    normalize_lossless_json_boundary(&mut output.profile);
     let result = ModelIngressResult {
         artifact_id: artifact.artifact.id,
         profile_path,
@@ -674,12 +675,26 @@ fn validate_existing_profile(
         .map(Path::to_string_lossy)
         .map(|value| value.replace('\\', "/"))
         .unwrap_or_else(|_| actual_profile_path.to_string_lossy().into_owned());
+    normalize_lossless_json_boundary(&mut output.profile);
     Ok(ModelIngressResult {
         artifact_id: artifact.artifact.id,
         profile_path,
         profile: output.profile,
         report: output.report,
     })
+}
+
+fn normalize_lossless_json_boundary(profile: &mut Value) {
+    let Some(modified_at_ns) = profile
+        .get_mut("engine")
+        .and_then(Value::as_object_mut)
+        .and_then(|engine| engine.get_mut("modified_at_ns"))
+    else {
+        return;
+    };
+    if modified_at_ns.is_number() {
+        *modified_at_ns = Value::String(modified_at_ns.to_string());
+    }
 }
 
 fn profile_path_for_engine(engine_path: &Path) -> Result<PathBuf, ModelIngressError> {

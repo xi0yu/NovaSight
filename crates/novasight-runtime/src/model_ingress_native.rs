@@ -525,7 +525,9 @@ fn inspected_profile(
             "path": canonical,
             "sha256": format!("sha256:{sha}"),
             "file_size": metadata.len(),
-            "modified_at_ns": metadata.modified().ok().and_then(|value| value.duration_since(UNIX_EPOCH).ok()).map(|value| value.as_nanos()).unwrap_or(0),
+            // Nanosecond Unix timestamps exceed JavaScript's safe integer range.
+            // Keep the JSON/TypeScript boundary lossless by serializing decimal text.
+            "modified_at_ns": metadata.modified().ok().and_then(|value| value.duration_since(UNIX_EPOCH).ok()).map(|value| value.as_nanos()).unwrap_or(0).to_string(),
         },
         "inspection": {
             "deserialize_ok": true,

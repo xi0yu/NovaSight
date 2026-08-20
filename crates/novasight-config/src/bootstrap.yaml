@@ -3,9 +3,10 @@
 schema_version: 16
 revision: 0
 server:
-  # Remote access belongs behind an authenticated TLS proxy.
+  # Public TCP belongs to novasight-web. novasightd listens only on control_socket.
+  # Untrusted or routed networks still belong behind a TLS reverse proxy.
   host: 0.0.0.0
-  port: 5174
+  port: 7351
   control_socket: run/novasightd.sock
 replay:
   enabled: true
@@ -60,7 +61,7 @@ pipeline:
   # 成功发送后，等待设备运动有机会反映到采集帧；实际门控还会加一帧测量周期。
   prediction_actuation_delay_ms: 4.0
 control:
-  output_enabled: true
+  output_enabled: false
   # always: 有效目标即可输出；hardware: 仅在设备按钮按下时输出。
   trigger_mode: hardware
   recoil:
@@ -92,7 +93,7 @@ inference:
   deepstream_startup_timeout_ms: 10000
   deepstream_shutdown_timeout_ms: 5000
 hardware:
-  auto_connect: true
+  auto_connect: false
   backend: native_udp
   host: "192.168.2.188"
   port: 8888
