@@ -55,7 +55,7 @@ export function AuthGate({ children }: AuthGateProps) {
   const [showAccessCode, setShowAccessCode] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [issue, setIssue] = useState("");
-  const startupRef = useRef(false);
+  const startupAccessCodeRef = useRef(accessCodeFromFragment());
 
   const verifyDaemon = useCallback(async () => {
     setDaemonState("checking");
@@ -92,16 +92,15 @@ export function AuthGate({ children }: AuthGateProps) {
   }, [applySession]);
 
   useEffect(() => {
-    if (startupRef.current) return;
-    startupRef.current = true;
     const controller = new AbortController();
-    const fragmentCode = accessCodeFromFragment();
+    const fragmentCode = startupAccessCodeRef.current;
     clearAccessFragment();
     const request = fragmentCode
       ? establishAuthSession(fragmentCode, controller.signal)
       : getAuthSession(controller.signal);
     void request
       .then((next) => {
+        startupAccessCodeRef.current = "";
         setGatewayState("reachable");
         applySession(
           next,
@@ -114,6 +113,7 @@ export function AuthGate({ children }: AuthGateProps) {
         if (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError") {
           return;
         }
+        startupAccessCodeRef.current = "";
         setGatewayState(error instanceof ApiError ? "reachable" : "unreachable");
         setIssue(
           fragmentCode

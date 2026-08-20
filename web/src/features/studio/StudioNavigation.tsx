@@ -8,6 +8,7 @@ export type ConsolePage =
   | "infer"
   | "control"
   | "models"
+  | "license"
   | "params"
   | "control-test"
   | "latency";
@@ -40,6 +41,7 @@ export const CONSOLE_PAGES = new Set<ConsolePage>([
   "infer",
   "control",
   "models",
+  "license",
   "params",
   "control-test",
   "latency"
@@ -61,6 +63,7 @@ const navigationGroups: NavigationGroup[] = [
     label: "配置管理",
     items: [
       { id: "models", label: "模型管理", detail: "选择、验证与切换", icon: "models" },
+      { id: "license", label: "授权管理", detail: "查看、更换与安全退出", icon: "shield-check" },
       { id: "params", label: "参数设置", detail: "触发到输出", icon: "settings" }
     ]
   },
@@ -100,6 +103,11 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
     title: "模型管理",
     description: "浏览设备上的模型产物，经后端验证后切换，并以 active artifact 对账结果。"
   },
+  license: {
+    group: "配置管理",
+    title: "授权管理",
+    description: "查看当前授权范围，更换许可证，或在安全停止并确认输出后退出授权。"
+  },
   params: {
     group: "配置管理",
     title: "参数设置",
@@ -137,6 +145,7 @@ export function StudioNavigation({
                   className={active ? "console-nav active" : "console-nav"}
                   key={item.id}
                   onClick={() => onNavigate(item.id)}
+                  aria-label={item.label}
                   aria-current={active ? "page" : undefined}
                   title={item.detail}
                 >

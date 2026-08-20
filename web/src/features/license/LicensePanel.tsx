@@ -110,36 +110,39 @@ export function LicensePanel({
             授权凭证由 NovaSight 服务保存和校验；界面只展示追踪片段，不回显完整凭证。
           </p>
         </div>
-        <dl className="license-status-trace">
-          <div>
-            <dt>状态追踪码</dt>
-            <dd>{statusTraceCode}</dd>
-          </div>
-          <div>
-            <dt>授权凭据指纹</dt>
-            <dd>{fingerprintTraceCode}</dd>
-          </div>
-          <div>
-            <dt>授权编号</dt>
-            <dd>{licenseTraceCode}</dd>
-          </div>
-          <div>
-            <dt>签发密钥</dt>
-            <dd>{keyTraceCode}</dd>
-          </div>
-          <div>
-            <dt>凭证片段</dt>
-            <dd>{tokenTraceCode}</dd>
-          </div>
-          <div>
-            <dt>生效时间</dt>
-            <dd>{validFrom}</dd>
-          </div>
-          <div>
-            <dt>激活时间</dt>
-            <dd>{activatedAt}</dd>
-          </div>
-        </dl>
+        <details className="compact-settings-details">
+          <summary>授权诊断信息 · 签发与凭证追踪 · 7 项</summary>
+          <dl className="license-status-trace">
+            <div>
+              <dt>状态追踪码</dt>
+              <dd>{statusTraceCode}</dd>
+            </div>
+            <div>
+              <dt>授权凭据指纹</dt>
+              <dd>{fingerprintTraceCode}</dd>
+            </div>
+            <div>
+              <dt>授权编号</dt>
+              <dd>{licenseTraceCode}</dd>
+            </div>
+            <div>
+              <dt>签发密钥</dt>
+              <dd>{keyTraceCode}</dd>
+            </div>
+            <div>
+              <dt>凭证片段</dt>
+              <dd>{tokenTraceCode}</dd>
+            </div>
+            <div>
+              <dt>生效时间</dt>
+              <dd>{validFrom}</dd>
+            </div>
+            <div>
+              <dt>激活时间</dt>
+              <dd>{activatedAt}</dd>
+            </div>
+          </dl>
+        </details>
       </div>
       {backendMessage ? (
         <div className="license-provenance-note">

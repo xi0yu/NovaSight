@@ -52,6 +52,7 @@ import {
 } from "../../api";
 import { reportError, reportInfo, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
+import { LicenseView } from "../license/LicenseView";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { useStableSemanticValue } from "../shared/useStableSemanticValue";
 import { NovaIcon, ThemeToggle } from "../../components/visual";
@@ -204,6 +205,7 @@ type StudioConsoleViewProps = {
   lastUpdated: Date | null;
   realtimeStatus: RuntimeDeliveryStatus;
   onEnsureProjects: (force?: boolean) => Promise<ModelProject[]>;
+  onLicenseChange: (license: LicenseStatus) => void;
   onRefresh: () => Promise<void>;
   onRuntimeConfigChange: (config: RuntimeConfig) => void;
   onRuntimeStateChange: (runtime: RuntimeState) => boolean;
@@ -693,6 +695,7 @@ export function StudioConsoleView({
   lastUpdated,
   realtimeStatus,
   onEnsureProjects,
+  onLicenseChange,
   onRefresh,
   onRuntimeConfigChange,
   onRuntimeStateChange,
@@ -3601,8 +3604,8 @@ export function StudioConsoleView({
       navigatePage("params");
       return;
     }
-    setLocalError("授权状态已在进入 Studio 前校验；如需更换授权，请返回授权入口。");
-  }, [navigatePage, setLocalError]);
+    navigatePage("license");
+  }, [navigatePage]);
   const handleRuntimeRecoveryAction = useCallback((action: RuntimeRecoveryAction) => {
     handleLaunchReadinessAction(action);
   }, [handleLaunchReadinessAction]);
@@ -3750,6 +3753,12 @@ export function StudioConsoleView({
               }}
             />
           </Suspense>
+        ) : null}
+
+        {activePage === "license" ? (
+          <section className="console-page">
+            <LicenseView license={license} onLicenseChange={onLicenseChange} />
+          </section>
         ) : null}
 
         {activePage !== "overview" && activePage !== "models" && activePage !== "params" && activePage !== "control-test" && runtimeLifecycleActive && runtimeMainlinePresentation.readinessCode !== "ready" ? (

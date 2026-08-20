@@ -852,6 +852,7 @@ function StudioApp() {
           lastUpdated={state.lastUpdated}
           realtimeStatus={displayedRealtimeStatus}
           onEnsureProjects={loadProjects}
+          onLicenseChange={handleLicenseChange}
           onRefresh={load}
           onRuntimeConfigChange={applyRuntimeConfig}
           onRuntimeStateChange={applyRuntimeState}
