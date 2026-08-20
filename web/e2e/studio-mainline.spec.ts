@@ -108,6 +108,16 @@ test("startup access link survives StrictMode cleanup and establishes a session"
   await expect(page.locator("body")).not.toContainText("one-time-access-code");
 });
 
+test("Studio navigation moves keyboard focus to the new page heading", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.goto("/?page=capture");
+
+  const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
+  await navigation.getByRole("button", { name: "运行总览" }).click();
+
+  await expect(page.getByRole("heading", { level: 1, name: "运行总览" })).toBeFocused();
+});
+
 test("authenticated operator can manage and safely exit the current license", async ({ page }) => {
   await mockStudioApi(page);
   await page.goto("/?page=capture");

@@ -75,7 +75,7 @@
 .runtime-overview-axes article[data-state="faulted"],
 .runtime-overview-axes article[data-state="stale"] { box-shadow: inset 3px 0 var(--status-error-border); }
 
-.runtime-overview-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, .7fr); gap: var(--space-3); }
+.runtime-overview-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, .7fr); align-items: start; gap: var(--space-3); }
 .runtime-overview-chain,
 .runtime-overview-evidence { padding: var(--space-4); }
 .runtime-overview-chain header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
@@ -87,6 +87,10 @@
 .runtime-overview-chain li span { position: relative; z-index: 1; display: grid; gap: 4px; padding-right: 9px; background: var(--bg-surface); color: var(--text-tertiary); font-size: 10px; }
 .runtime-overview-chain li strong { color: var(--text-primary); font-size: 12px; }
 
+.runtime-overview-evidence summary { min-height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); cursor: pointer; }
+.runtime-overview-evidence summary > span:first-child { display: grid; gap: 3px; }
+.runtime-overview-evidence summary strong { color: var(--text-primary); font-size: 13px; }
+.runtime-overview-evidence summary > span:last-child { color: var(--text-tertiary); font-size: 10px; text-align: right; }
 .runtime-overview-evidence dl { display: grid; gap: 0; margin: 15px 0 0; }
 .runtime-overview-evidence dl > div { display: flex; justify-content: space-between; gap: var(--space-3); padding: 9px 0; border-top: 1px solid var(--border-subtle); }
 .runtime-overview-evidence dt { color: var(--text-tertiary); font-size: 11px; }

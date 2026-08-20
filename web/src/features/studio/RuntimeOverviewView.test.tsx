@@ -56,4 +56,21 @@ describe("RuntimeOverviewView", () => {
     await userEvent.click(screen.getByRole("button", { name: "检查延迟" }));
     expect(onAction).toHaveBeenCalledWith("open-latency");
   });
+
+  it("keeps daemon and output proof collapsed until the operator asks for diagnostics", () => {
+    render(
+      <RuntimeOverviewView
+        runtime={runtime}
+        projection={projection}
+        readiness={{ state: "action", title: "需处理", detail: "请检查端到端延迟。" }}
+        lastUpdated={new Date("2026-08-20T08:00:00Z")}
+        onAction={() => undefined}
+      />
+    );
+
+    const disclosure = screen.getByText("运行诊断证据").closest("details");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(disclosure).toHaveTextContent("Daemon");
+    expect(disclosure).toHaveTextContent("当前样本可输出");
+  });
 });

@@ -111,11 +111,14 @@ export function RuntimeOverviewView({
           </ol>
         </article>
 
-        <article className="runtime-overview-evidence">
-          <header>
-            <small>权威凭证</small>
-            <h3>novasightd 快照</h3>
-          </header>
+        <details className="runtime-overview-evidence">
+          <summary>
+            <span>
+              <small>诊断</small>
+              <strong>运行诊断证据</strong>
+            </span>
+            <span>快照与输出门控 · 5 项</span>
+          </summary>
           <dl>
             <div><dt>Daemon</dt><dd title={runtime.semantic.daemon_instance_id}>{runtime.semantic.daemon_instance_id.slice(0, 12)}</dd></div>
             <div><dt>序列</dt><dd>#{runtime.semantic.snapshot_sequence}</dd></div>
@@ -123,7 +126,7 @@ export function RuntimeOverviewView({
             <div><dt>kmNet 运行连接</dt><dd>{kmnet?.runtime_connected === true ? "已连接" : kmnet?.runtime_connected === false ? "已断开" : "未知"}</dd></div>
             <div><dt>当前样本可输出</dt><dd>{runtime.vision.control.will_emit === true ? "是" : runtime.vision.control.will_emit === false ? "否" : "无样本"}</dd></div>
           </dl>
-        </article>
+        </details>
       </div>
     </section>
   );
