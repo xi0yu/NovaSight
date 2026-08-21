@@ -1970,7 +1970,7 @@ tbody tr:hover {
   }
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1024px) {
 
   .model-selection-workspace {
     grid-template-columns: 1fr;
@@ -3168,7 +3168,7 @@ tbody tr:hover {
   white-space: nowrap !important;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1024px) {
   .console-app {
     width: 100%;
     height: auto;
@@ -4841,7 +4841,7 @@ body::after {
   transform: none;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1024px) {
   .console-top {
     background-position: 0 0, right -150px center;
   }
@@ -4984,7 +4984,7 @@ body::after {
   .current-model-runtime-facts { grid-column: 1 / -1; grid-row: 2; }
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1024px) {
   .console-app { width: 100%; height: auto; min-height: 100vh; margin: 0; border-radius: 0; }
   .console-main { padding: 14px; }
   .control-output-gate-card { grid-template-columns: minmax(0, 1fr); }

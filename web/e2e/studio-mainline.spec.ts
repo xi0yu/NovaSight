@@ -220,6 +220,22 @@ test("narrow Studio keeps Chinese navigation and save action reachable", async (
   }
 });
 
+test("1024px Studio switches layout before Windows scrollbars cause overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await mockStudioApi(page);
+  await page.goto("/?page=params");
+
+  const gridColumns = await page.locator(".console-app").evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns,
+  );
+  expect(gridColumns.trim().split(/\s+/)).toHaveLength(1);
+  const viewportWidths = await page.locator("body").evaluate((body) => ({
+    client: document.documentElement.clientWidth,
+    scroll: body.scrollWidth,
+  }));
+  expect(viewportWidths.scroll).toBeLessThanOrEqual(viewportWidths.client);
+});
+
 test("375px Studio keeps shell actions and horizontal navigation accessible", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await mockStudioApi(page);

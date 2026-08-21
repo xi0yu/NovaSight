@@ -278,7 +278,7 @@
   padding-top: 4px;
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1024px) {
   .console-app,
   .console-top {
     grid-template-columns: 1fr;
