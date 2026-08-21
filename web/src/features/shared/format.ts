@@ -34,6 +34,13 @@ export function getErrorMessage(error: unknown): string {
   return "无法连接 NovaSight 服务";
 }
 
+export function formatRuntimeErrorMessage(message: string): string {
+  if (message.includes("pointer device is not commissioned")) {
+    return "kmNet 尚未完成设备配置；请填写真实的地址、端口和 UUID 后保存。";
+  }
+  return message;
+}
+
 export function formatTime(date: Date | null): string {
   if (!date) {
     return "从未更新";

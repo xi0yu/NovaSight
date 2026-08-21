@@ -759,7 +759,7 @@ fn development_session_status(granted_at: f64) -> LicenseStatus {
         duration_value: None,
         duration_unit: "process".to_owned(),
         updated_at: Some(granted_at),
-        message: "Temporary access was verified with this daemon's per-start credential; it expires with the process and physical hardware output still requires a signed license".to_owned(),
+        message: "临时授权仅在本次服务进程内有效；物理硬件输出仍需正式签名许可证。".to_owned(),
     }
 }
 

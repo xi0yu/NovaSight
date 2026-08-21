@@ -51,7 +51,7 @@ import {
   updateRuntimeConfig,
 } from "../../api";
 import { reportError, reportInfo, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
-import { getErrorMessage } from "../shared/format";
+import { formatRuntimeErrorMessage, getErrorMessage } from "../shared/format";
 import { LicenseView } from "../license/LicenseView";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { useStableSemanticValue } from "../shared/useStableSemanticValue";
@@ -4686,7 +4686,7 @@ export function StudioConsoleView({
                     <strong>{kmnetNotice.code === "restart_required" ? "kmNet 配置尚未进入当前进程" : kmnetNotice.code === "failed" ? "硬件适配器不可用" : kmnetNotice.code === "degraded" ? "最近一次设备会话异常" : "最近一次输出失败"}</strong>
                     <span>{kmnetNotice.code === "restart_required"
                       ? `当前进程使用 revision ${kmnetNotice.effectiveRevision}，已保存 revision ${kmnetNotice.desiredRevision}；单步测试保持锁定。`
-                      : kmnetNotice.lastError || kmnetNotice.lastDeviceError || "请检查地址、端口、UUID 和局域网连通性。"}</span>
+                      : formatRuntimeErrorMessage(kmnetNotice.lastError || kmnetNotice.lastDeviceError || "请检查地址、端口、UUID 和局域网连通性。")}</span>
                   </div>
                   <small>单步命令会独立执行“连接 → 发送一次 → 断开”，不会复用主链实时会话。</small>
                 </div>
