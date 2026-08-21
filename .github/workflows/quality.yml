@@ -64,6 +64,31 @@ jobs:
       - name: Run preprocess reference ABI
         run: ctest --test-dir out/ci/preprocess-reference --output-on-failure
 
+  rust-arm64:
+    name: Linux ARM64 portable contracts
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Show pinned ARM64 toolchain
+        run: rustc --version && cargo --version && uname -m
+
+      - name: Verify Cargo lockfile matches manifests
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Build ARM64 host-preview daemon
+        run: cargo build -p novasightd --no-default-features --locked
+
+      - name: Verify fail-closed ARM64 host preview
+        run: out/cargo/debug/novasightd --check --config crates/novasight-config/src/bootstrap.yaml
+
+      - name: Lint portable ARM64 workspace
+        run: cargo clippy --workspace --all-targets --no-default-features --locked -- -D warnings
+
+      - name: Run portable ARM64 workspace tests
+        run: cargo test --workspace --no-default-features --locked
+
   studio:
     name: Studio static quality
     runs-on: ubuntu-latest

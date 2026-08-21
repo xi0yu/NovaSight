@@ -5,13 +5,24 @@ on a camera or model fixture merely to prove that the product compiles and
 starts fail-closed. Production readiness must not be inferred from that build;
 it requires real DeepStream metadata from the protected hardware job.
 
+The ordinary quality workflow defines `Linux ARM64 portable contracts` on
+GitHub's `ubuntu-24.04-arm` hosted runner. For a given SHA, a successful job
+builds and preflights the fail-closed host-preview daemon, then runs the
+workspace without default hardware features. That receipt proves native ARM64
+Rust/Linux compatibility for the SHA without using a developer-owned machine.
+It cannot prove NVIDIA SDK headers/libraries, DeepStream plugins, TensorRT
+execution, NVMM, a real camera, or kmNet hardware.
+
 ## Runner contract
 
 Both jobs require a self-hosted runner labelled `self-hosted`, `Linux`, `ARM64`,
 and `jetson`, with the pinned Rust toolchain, CMake, curl, jq, pnpm, JetPack,
 DeepStream, TensorRT, and the native kmNet build dependencies installed.
 
-## One-time CI setup
+## Optional Jetson CI setup
+
+No setup is required for the GitHub-hosted ARM64 gate. The steps below are only
+for the two hardware-specific Jetson receipts.
 
 1. In the GitHub repository, add a Linux ARM64 self-hosted runner and run the
    generated registration commands on the dedicated Jetson build account.

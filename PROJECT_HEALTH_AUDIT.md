@@ -1,6 +1,6 @@
 # NovaSight Project Health Ledger
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 This file is the current engineering-health authority for NovaSight. It records
 the maintained product path, known risks, ownership boundaries, and the next
@@ -50,7 +50,7 @@ baseline:
 | Rust host checks | Full locked workspace suite passed | Strong domain/reference evidence, not Jetson proof |
 | Portable native contracts | 9 C++ tests passed | Latest-only and reference ABI contracts are covered |
 | Frontend checks | 35 unit/contract and 30 mocked browser cases passed, plus static/build gates | Interaction and presentation contracts are automated |
-| Hosted automation | Host Rust, Studio, browser, and dependency-audit jobs have successful runs | Jetson jobs remain separately gated |
+| Hosted automation | macOS Rust, Studio, browser, and dependency-audit gates are active; Linux ARM64 portable gate is configured | Jetson hardware jobs remain separately gated; Actions history supplies per-SHA results |
 
 This snapshot is revision-bound evidence, not a promise that later unverified
 edits pass the same gates.
@@ -103,12 +103,13 @@ with `prediction_lead_ms: 0.0`, preserving the test's intended isolation.
 
 ### P1: Complete the Jetson quality gates
 
-The tracked `.github/workflows/quality.yml` runs host checks on GitHub-hosted
-macOS/Ubuntu runners, explicitly verifies manifest/lockfile agreement, and has
-successful host Rust, Studio, browser, and dependency-audit runs. It separates
-the Jetson release-build receipt from hardware production acceptance. Those two
-jobs remain disabled until a self-hosted Jetson runner and repository variables
-are configured, so production automation remains `PARTIAL`.
+The tracked `.github/workflows/quality.yml` runs portable checks on GitHub-hosted
+macOS, x64 Ubuntu, and ARM64 Ubuntu runners, explicitly verifies
+manifest/lockfile agreement, and keeps the generic ARM64 build independent from
+NVIDIA hardware. It separates those hosted contracts from the Jetson release
+build and hardware production acceptance. The two hardware jobs remain disabled
+until a Jetson runner and repository variables are configured, so production
+automation remains `PARTIAL`.
 
 Portable host gate (macOS; production Linux modules remain Jetson-gated):
 
@@ -149,6 +150,9 @@ macOS can validate domain logic, pipeline ownership, DeepStream pipeline-string
 contracts, TensorRT reference ABI, and preprocess reference ABI. It cannot prove
 DeepStream SDK loading, NVMM import, real TensorRT execution, V4L2 capture, or
 kmNet hardware behavior. Those remain `UNKNOWN` until a Jetson receipt exists.
+A successful GitHub-hosted ARM64 gate proves for that SHA that the portable
+Rust/Linux composition compiles and its no-hardware tests pass on aarch64; it
+does not change the NVIDIA and physical-device boundary.
 
 ### P2: Extend behavior coverage at real external boundaries
 
@@ -225,7 +229,7 @@ of truth.
 | Host development baseline | YES | Locked metadata, formatting, strict Clippy, workspace tests, and Studio build pass locally |
 | Studio static health | YES | Typecheck, visual audit, and build passed at the recorded baseline |
 | Studio behavior coverage | YES | Unit/contract and mocked browser suites cover critical interaction states |
-| Automated host CI | YES | Rust, Studio, browser, and dependency-audit jobs have successful runs |
+| Automated host CI | YES | Existing hosted gates are active; Linux ARM64 is configured and requires its first successful per-SHA result |
 | Jetson production readiness | UNKNOWN | Requires current hardware receipts |
 | Dependency vulnerability status | YES | npm production and RustSec lockfile audits pass in hosted automation; RUSTSEC-2023-0071 is scope-reviewed and explicitly ignored |
 | Documentation authority | YES | This ledger supersedes the deleted Python-era audit content |
