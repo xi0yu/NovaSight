@@ -24,6 +24,9 @@ Browser -- LAN HTTP/HTTPS --> novasight-web -- HTTP/1 over Unix socket --> novas
    to owner-only `run/web-access-code`, and passes it only to `novasight-web`.
 2. Printed browser URLs carry the code in `#access=...`. URL fragments are not
    sent in HTTP requests; Studio reads and clears the fragment immediately.
+   The launcher also prints the same value as `NovaSight Web 接入码` for manual
+   login from a plain Local/Network listener URL. It is distinct from the debug
+   temporary license code.
 3. `POST /api/auth/session` compares a digest of the code in constant time and
    rate-limits each source IP after five failures in 60 seconds.
 4. A successful login creates an opaque random server-side session. The browser

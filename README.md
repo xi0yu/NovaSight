@@ -89,7 +89,8 @@ out/package/NovaSight/
 Users start `NovaSight`. The launcher creates package-local `data`, `logs`,
 and `run` directories, starts `bin/novasightd`, waits for daemon IPC readiness,
 then starts `bin/novasight-web` and prints the Chinese Studio LAN authenticated
-address followed by the local and detected IPv4 network listener addresses.
+address, the separate Web access code, and the local and detected IPv4 network
+listener addresses.
 Portable packages listen on the
 fixed `0.0.0.0:7351` address so a browser on another machine in the same LAN can
 open the printed authenticated LAN URL. On every launcher start, NovaSight creates a

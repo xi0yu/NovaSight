@@ -100,6 +100,9 @@ test("manual access code establishes an authenticated Studio session", async ({ 
   await mockStudioApi(page, unauthenticatedSession);
   await page.goto("/");
 
+  await expect(page.locator("#auth-code-help")).toHaveText(
+    "不要输入临时授权码；它用于登录后的产品授权。",
+  );
   await page.locator("#web-access-code").fill("one-time-access-code");
   await page.getByRole("button", { name: "进入控制台" }).click();
 

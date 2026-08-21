@@ -79,9 +79,9 @@ The launcher owns startup orchestration:
 - waits for daemon IPC readiness, then starts `bin/novasight-web` as the only
   TCP/static/API boundary;
 - creates a 256-bit per-start Web access code, stores it in owner-only
-  `run/web-access-code`, prints the Chinese authenticated LAN address plus the
-  local and detected IPv4 network listener addresses, and tries to open a local
-  desktop browser when one is available;
+  `run/web-access-code`, prints the Chinese authenticated LAN address, the Web
+  access code for manual login, and the local and detected IPv4 network listener
+  addresses, then tries to open a local desktop browser when one is available;
 - stays in the foreground so `Ctrl+C` stops both package-local services.
 
 NovaSight-owned runtime files stay inside the package:
@@ -148,9 +148,9 @@ The Web/API and Vite processes resolve their endpoint roles from
 keeps the authenticated Web/API at `127.0.0.1:5174`; the daemon remains on its
 Unix socket. It does not reuse or mutate
 `data/novasight.yaml`, install packages, or build Web assets. The
-launcher prints the authenticated LAN URL followed by the local and detected
-IPv4 network listener addresses; `Ctrl+C` stops all three child processes. The
-launcher selects this development layout from its own
+launcher prints the authenticated LAN URL, the separate Web access code, and
+the local and detected IPv4 network listener addresses; `Ctrl+C` stops all three
+child processes. The launcher selects this development layout from its own
 artifact path; users do not pass a startup mode.
 
 ## Same-Path Testing

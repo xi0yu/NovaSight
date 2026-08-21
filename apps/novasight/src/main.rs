@@ -651,6 +651,7 @@ fn studio_ready_messages(
         "NovaSight Studio 局域网授权访问地址：{}",
         access_url(&lan_url, access)
     )];
+    messages.push(format!("NovaSight Web 接入码：{}", access.code));
     messages.push(format!(
         "  ➜  Local:   http://localhost:{}/",
         address.port()
@@ -956,6 +957,7 @@ mod tests {
             messages,
             vec![
                 "NovaSight Studio 局域网授权访问地址：http://192.168.31.248:7351/#access=one-time-access".to_owned(),
+                "NovaSight Web 接入码：one-time-access".to_owned(),
                 "  ➜  Local:   http://localhost:7351/".to_owned(),
                 "  ➜  Network: http://192.168.31.248:7351/".to_owned(),
                 "  ➜  Network: http://100.106.210.36:7351/".to_owned(),
@@ -966,6 +968,7 @@ mod tests {
             studio_ready_messages(&ready, &access, &[]),
             vec![
                 "NovaSight Studio 局域网授权访问地址：http://<本机局域网IP>:7351/#access=one-time-access".to_owned(),
+                "NovaSight Web 接入码：one-time-access".to_owned(),
                 "  ➜  Local:   http://localhost:7351/".to_owned(),
             ]
         );

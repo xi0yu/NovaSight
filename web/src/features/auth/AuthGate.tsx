@@ -218,7 +218,7 @@ export function AuthGate({ children }: AuthGateProps) {
             <h1 id="auth-title">验证后继续</h1>
           </div>
         </header>
-        <p className="auth-intro">输入启动器显示的本次接入码。</p>
+        <p className="auth-intro">输入启动器显示的“NovaSight Web 接入码”。</p>
         <form onSubmit={submit}>
           <label htmlFor="web-access-code">接入码</label>
           <div className="auth-input-wrap">
@@ -241,7 +241,7 @@ export function AuthGate({ children }: AuthGateProps) {
               <NovaIcon name={showAccessCode ? "hide" : "show"} size={17} />
             </button>
           </div>
-          <small id="auth-code-help">使用启动器提供的链接时会自动验证。</small>
+          <small id="auth-code-help">不要输入临时授权码；它用于登录后的产品授权。</small>
           <Button variant="primary" type="submit" loading={submitting} leadingIcon="shield-check">
             进入控制台
           </Button>
