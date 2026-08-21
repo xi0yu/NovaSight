@@ -412,8 +412,21 @@
   }
 
   .theme-menu {
-    right: 0;
+    position: fixed;
+    top: 116px;
+    right: 12px;
     left: auto;
+    width: min(300px, calc(100vw - 24px));
+    max-height: min(420px, calc(100dvh - 140px));
+  }
+
+  .theme-option {
+    min-height: 52px;
+  }
+
+  .theme-option-art {
+    width: 38px;
+    height: 38px;
   }
 
   .console-live {
