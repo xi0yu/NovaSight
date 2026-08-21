@@ -207,6 +207,7 @@
   --theme-choice-swatch-tayama: linear-gradient(135deg, #2a2528 10%, #9e1838 58%, #080709);
   --theme-choice-swatch-rose-white: linear-gradient(135deg, #ffffff 12%, #fff0f5 48%, #e888a8 78%, #49363e);
   --theme-choice-swatch-graphite-red: linear-gradient(135deg, #050607 8%, #35383d 48%, #c92038 80%, #780f1f);
+  --theme-choice-swatch-frontier-industrial: linear-gradient(135deg, #10110e 8%, #30332b 48%, #e3d43f 49% 68%, #f2efdf 69%);
   --theme-choice-art-momo: var(--theme-choice-swatch-momo);
   --theme-choice-art-elysia: url("../assets/themes/elysia-sakura-portrait.webp");
   --theme-choice-art-rem: url("../assets/themes/rem-azure-portrait.webp");
@@ -214,6 +215,7 @@
   --theme-choice-art-tayama: url("../assets/themes/tayama-crimson-portrait.webp");
   --theme-choice-art-rose-white: var(--theme-choice-swatch-rose-white);
   --theme-choice-art-graphite-red: var(--theme-choice-swatch-graphite-red);
+  --theme-choice-art-frontier-industrial: var(--theme-choice-swatch-frontier-industrial);
 
   /* Status component tokens */
   --status-normal-bg: var(--ns-green-50);
@@ -603,6 +605,92 @@
   --theme-primary-gradient: linear-gradient(108deg, var(--brand-primary-active), var(--brand-primary) 58%, #a1182d);
   --button-radius: 5px;
   --card-radius: 5px;
+}
+
+[data-theme="frontier-industrial"] {
+  color-scheme: dark;
+  --bg-app: #0e100d;
+  --bg-surface: #171916;
+  --bg-subtle: #20231e;
+  --bg-elevated: #1b1e19;
+  --bg-sidebar: #0b0d0a;
+  --bg-hover: #272a23;
+  --bg-active: #303426;
+  --text-primary: #f2efdf;
+  --text-secondary: #c8c5b4;
+  --text-tertiary: #929487;
+  --text-muted: #929487;
+  --text-disabled: #65685f;
+  --text-inverse: #14150f;
+  --text-link: #eadf68;
+  --brand-primary: #e3d43f;
+  --brand-primary-hover: #f0e35a;
+  --brand-primary-active: #c2b536;
+  --brand-soft: #2b2916;
+  --brand-border: #625d28;
+  --border-default: #373a31;
+  --border-subtle: rgba(242, 239, 223, 0.08);
+  --border-strong: #55594b;
+  --border-focus: #f0e35a;
+  --divider: #2b2e27;
+  --input-bg: #11130f;
+  --input-border: #44483c;
+  --selection-strong-bg: #292a1c;
+  --selection-strong-fg: #f5f1dc;
+  --selection-strong-muted: #c6c19d;
+  --signal-target: #e3d43f;
+  --signal-compute: #8fcf72;
+  --signal-info: #77b8b0;
+  --signal-attention: #e6a64c;
+  --signal-ink: #11130f;
+  --status-normal-bg: #17251a;
+  --status-normal-border: #39583d;
+  --status-normal-fg: #a8dcae;
+  --status-normal-icon: #78bf81;
+  --status-running-bg: #162625;
+  --status-running-border: #355e5a;
+  --status-running-fg: #a4d7d1;
+  --status-running-icon: #77b8b0;
+  --status-waiting-bg: #20221d;
+  --status-waiting-border: #41443a;
+  --status-waiting-fg: #c8c5b4;
+  --status-waiting-icon: #929487;
+  --status-warning-bg: #2b2514;
+  --status-warning-border: #66532a;
+  --status-warning-fg: #efd18c;
+  --status-warning-icon: #e6a64c;
+  --status-error-bg: #2c1917;
+  --status-error-border: #6d3932;
+  --status-error-fg: #f0aaa0;
+  --status-error-icon: #df7567;
+  --status-disabled-bg: #1a1c18;
+  --status-disabled-border: #35382f;
+  --status-disabled-fg: #85887d;
+  --status-disabled-icon: #65685f;
+  --button-primary-fg: #14150f;
+  --overlay-scrim-bg: rgba(5, 6, 4, 0.7);
+  --overlay-scrim-strong-bg: rgba(5, 6, 4, 0.82);
+  --shadow-card: 0 0 0 1px rgba(242, 239, 223, 0.025);
+  --shadow-dialog: 0 0 0 1px rgba(227, 212, 63, 0.12), 0 24px 64px rgba(0, 0, 0, 0.4);
+  --font-heading: Bahnschrift, "DIN Alternate", "Segoe UI Variable Display", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "Cascadia Mono", "JetBrains Mono", Consolas, monospace;
+  --theme-keyart:
+    repeating-linear-gradient(135deg, rgba(227, 212, 63, 0.92) 0 5px, rgba(17, 19, 15, 0.94) 5px 10px),
+    linear-gradient(135deg, #11130f, #34382d);
+  --theme-portrait: var(--theme-choice-swatch-frontier-industrial);
+  --theme-scene:
+    linear-gradient(90deg, rgba(227, 212, 63, 0.1), transparent 38%),
+    linear-gradient(135deg, #11130f, #282b24);
+  --theme-art-position: center;
+  --theme-art-opacity: 0.16;
+  --theme-glow: rgba(227, 212, 63, 0.15);
+  --frontier-grid-line: rgba(227, 212, 63, 0.045);
+  --frontier-coordinate-line: rgba(242, 239, 223, 0.055);
+  --frontier-hazard-dark: #11130f;
+  --frontier-panel-corner: rgba(227, 212, 63, 0.11);
+  --button-radius: 3px;
+  --card-radius: 3px;
+  --input-radius: 3px;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -3375,9 +3375,9 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-:is([data-theme="tayama"], [data-theme="graphite-red"]) input,
-:is([data-theme="tayama"], [data-theme="graphite-red"]) select,
-:is([data-theme="tayama"], [data-theme="graphite-red"]) textarea {
+:is([data-theme="tayama"], [data-theme="graphite-red"], [data-theme="frontier-industrial"]) input,
+:is([data-theme="tayama"], [data-theme="graphite-red"], [data-theme="frontier-industrial"]) select,
+:is([data-theme="tayama"], [data-theme="graphite-red"], [data-theme="frontier-industrial"]) textarea {
   color-scheme: dark;
   border-color: var(--input-border);
   background-color: var(--input-bg);
@@ -3385,15 +3385,15 @@ button:focus-visible {
   caret-color: var(--brand-primary);
 }
 
-:is([data-theme="tayama"], [data-theme="graphite-red"]) option,
-:is([data-theme="tayama"], [data-theme="graphite-red"]) optgroup {
+:is([data-theme="tayama"], [data-theme="graphite-red"], [data-theme="frontier-industrial"]) option,
+:is([data-theme="tayama"], [data-theme="graphite-red"], [data-theme="frontier-industrial"]) optgroup {
   background: var(--bg-elevated);
   color: var(--text-primary);
 }
 
-:is([data-theme="tayama"], [data-theme="graphite-red"]) input:-webkit-autofill,
-:is([data-theme="tayama"], [data-theme="graphite-red"]) input:-webkit-autofill:hover,
-:is([data-theme="tayama"], [data-theme="graphite-red"]) input:-webkit-autofill:focus {
+:is([data-theme="tayama"], [data-theme="graphite-red"], [data-theme="frontier-industrial"]) input:-webkit-autofill,
+:is([data-theme="tayama"], [data-theme="graphite-red"], [data-theme="frontier-industrial"]) input:-webkit-autofill:hover,
+:is([data-theme="tayama"], [data-theme="graphite-red"], [data-theme="frontier-industrial"]) input:-webkit-autofill:focus {
   -webkit-text-fill-color: var(--text-primary);
   box-shadow: 0 0 0 1000px var(--input-bg) inset;
   transition: background-color 9999s ease-out;
@@ -4290,6 +4290,7 @@ body::after {
 .theme-swatch-tayama { --theme-choice-swatch: var(--theme-choice-swatch-tayama); }
 .theme-swatch-rose-white { --theme-choice-swatch: var(--theme-choice-swatch-rose-white); }
 .theme-swatch-graphite-red { --theme-choice-swatch: var(--theme-choice-swatch-graphite-red); }
+.theme-swatch-frontier-industrial { --theme-choice-swatch: var(--theme-choice-swatch-frontier-industrial); }
 
 .theme-menu {
   position: absolute;
@@ -4366,6 +4367,7 @@ body::after {
 .theme-option-art-tayama { --theme-choice-art: var(--theme-choice-art-tayama); }
 .theme-option-art-rose-white { --theme-choice-art: var(--theme-choice-art-rose-white); }
 .theme-option-art-graphite-red { --theme-choice-art: var(--theme-choice-art-graphite-red); }
+.theme-option-art-frontier-industrial { --theme-choice-art: var(--theme-choice-art-frontier-industrial); }
 
 .theme-option:hover,
 .theme-option[aria-pressed="true"] {
@@ -4582,6 +4584,172 @@ body::after {
 [data-theme="graphite-red"] .console-nav.active {
   border-color: var(--brand-border);
   background: var(--selection-strong-bg);
+}
+
+[data-theme="frontier-industrial"] body {
+  background:
+    radial-gradient(circle at 86% -10%, var(--theme-glow), transparent 31%),
+    linear-gradient(var(--frontier-coordinate-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--frontier-coordinate-line) 1px, transparent 1px),
+    var(--bg-app);
+  background-size: auto, 48px 48px, 48px 48px, auto;
+}
+
+[data-theme="frontier-industrial"] body::before {
+  background:
+    linear-gradient(90deg, transparent 0 8%, var(--frontier-grid-line) 8% 8.15%, transparent 8.15% 92%, var(--frontier-grid-line) 92% 92.15%, transparent 92.15%),
+    repeating-linear-gradient(90deg, transparent 0 95px, var(--frontier-grid-line) 95px 96px);
+  background-size: 100% 100%, 100% 22px;
+  opacity: 0.72;
+  mask-image: linear-gradient(to bottom, #000, transparent 78%);
+}
+
+[data-theme="frontier-industrial"] body::after {
+  right: 0;
+  bottom: 0;
+  width: min(42vw, 680px);
+  height: 72px;
+  background: var(--theme-keyart) center / auto 100% repeat-x;
+  opacity: 0.08;
+  filter: none;
+  mask-image: linear-gradient(to right, transparent, #000 45%);
+}
+
+[data-theme="frontier-industrial"] .auth-shell {
+  background:
+    linear-gradient(var(--frontier-coordinate-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--frontier-coordinate-line) 1px, transparent 1px),
+    radial-gradient(circle at 50% 38%, var(--theme-glow), transparent 34%),
+    var(--bg-app);
+  background-size: 48px 48px, 48px 48px, auto, auto;
+}
+
+[data-theme="frontier-industrial"] .auth-card,
+[data-theme="frontier-industrial"] .license-gate,
+[data-theme="frontier-industrial"] .console-app {
+  border-color: var(--border-default);
+  border-radius: var(--card-radius);
+  background:
+    linear-gradient(135deg, var(--frontier-panel-corner) 0 12px, transparent 12px),
+    var(--bg-surface);
+  box-shadow: var(--shadow-dialog);
+}
+
+[data-theme="frontier-industrial"] .console-app {
+  backdrop-filter: none;
+}
+
+[data-theme="frontier-industrial"] .console-top {
+  position: relative;
+  background:
+    linear-gradient(90deg, var(--bg-surface) 0%, var(--bg-surface) 72%, var(--brand-soft) 100%);
+}
+
+[data-theme="frontier-industrial"] .console-top::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  width: min(34vw, 460px);
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--brand-primary) 38%);
+  pointer-events: none;
+}
+
+[data-theme="frontier-industrial"] .console-sidebar {
+  background:
+    linear-gradient(180deg, var(--bg-sidebar), color-mix(in srgb, var(--bg-sidebar) 82%, var(--brand-soft)));
+}
+
+[data-theme="frontier-industrial"] .console-sidebar::after {
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 38px;
+  background: repeating-linear-gradient(135deg, var(--brand-primary) 0 6px, var(--frontier-hazard-dark) 6px 12px);
+  opacity: 0.2;
+  filter: none;
+  mask-image: linear-gradient(to bottom, transparent, #000);
+}
+
+[data-theme="frontier-industrial"] .console-main {
+  background:
+    linear-gradient(var(--frontier-coordinate-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--frontier-coordinate-line) 1px, transparent 1px),
+    var(--bg-app);
+  background-size: 48px 48px, 48px 48px, auto;
+}
+
+[data-theme="frontier-industrial"] .ui-panel,
+[data-theme="frontier-industrial"] .console-card,
+[data-theme="frontier-industrial"] .license-panel,
+[data-theme="frontier-industrial"] .console-process {
+  border-color: var(--border-default);
+  border-radius: var(--card-radius);
+  background-color: var(--bg-surface);
+  box-shadow: var(--shadow-card);
+}
+
+[data-theme="frontier-industrial"] .ui-panel::before {
+  background:
+    linear-gradient(135deg, var(--frontier-panel-corner) 0 12px, transparent 12px),
+    linear-gradient(90deg, var(--frontier-grid-line), transparent 26%);
+}
+
+[data-theme="frontier-industrial"] .console-title::before {
+  border-radius: 0;
+  background: var(--brand-primary);
+  box-shadow: none;
+}
+
+[data-theme="frontier-industrial"] .console-page-heading > span,
+[data-theme="frontier-industrial"] .console-nav-group-title,
+[data-theme="frontier-industrial"] .theme-menu-heading span {
+  font-family: var(--font-mono);
+  letter-spacing: 0.14em;
+}
+
+[data-theme="frontier-industrial"] .console-sidebar .console-nav.active {
+  border-color: var(--brand-border);
+  border-radius: var(--button-radius);
+  background: var(--selection-strong-bg);
+  color: var(--selection-strong-fg);
+  box-shadow: inset 3px 0 0 var(--brand-primary);
+}
+
+[data-theme="frontier-industrial"] .console-sidebar .console-nav.active .console-nav-icon {
+  border-color: var(--brand-border);
+  border-radius: 2px;
+  background: var(--brand-soft);
+  color: var(--brand-primary);
+}
+
+[data-theme="frontier-industrial"] .console-button.primary,
+[data-theme="frontier-industrial"] .ui-button-primary,
+[data-theme="frontier-industrial"] .button.primary,
+[data-theme="frontier-industrial"] .ui-button.primary {
+  border-color: var(--brand-primary);
+  background: var(--brand-primary);
+  color: var(--button-primary-fg);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--brand-primary-active) 62%, transparent);
+}
+
+[data-theme="frontier-industrial"] .console-button.primary:hover,
+[data-theme="frontier-industrial"] .ui-button-primary:hover,
+[data-theme="frontier-industrial"] .button.primary:hover,
+[data-theme="frontier-industrial"] .ui-button.primary:hover {
+  border-color: var(--brand-primary-hover);
+  background: var(--brand-primary-hover);
+}
+
+[data-theme="frontier-industrial"] .theme-toggle,
+[data-theme="frontier-industrial"] .theme-menu,
+[data-theme="frontier-industrial"] .theme-option-art {
+  border-radius: var(--button-radius);
+}
+
+[data-theme="frontier-industrial"] .theme-option-art-frontier-industrial {
+  transform: none;
 }
 
 @media (max-width: 980px) {

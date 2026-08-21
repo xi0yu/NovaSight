@@ -40,7 +40,7 @@ test("rate-limited authentication gives one bounded recovery message", async ({ 
   await expect(page.locator("body")).not.toContainText("not-a-real-code");
 });
 
-for (const theme of ["rose-white", "graphite-red"] as const) {
+for (const theme of ["rose-white", "graphite-red", "frontier-industrial"] as const) {
   test(`${theme} applies before the authentication screen paints`, async ({ page }) => {
     await page.addInitScript((selectedTheme) => localStorage.setItem("novasight.theme", selectedTheme), theme);
     await page.goto("/");

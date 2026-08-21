@@ -5,7 +5,8 @@ export type ThemeMode =
   | "lusha"
   | "tayama"
   | "rose-white"
-  | "graphite-red";
+  | "graphite-red"
+  | "frontier-industrial";
 
 export type ThemeOption = {
   id: ThemeMode;
@@ -24,7 +25,8 @@ export const THEME_OPTIONS: ThemeOption[] = [
   { id: "lusha", label: "鎏金王庭", character: "Gilded · 典藏档案", palette: "暖褐 · 象牙白 · 金" },
   { id: "tayama", label: "绯夜模式", character: "Crimson · 夜间档案", palette: "墨黑 · 深红" },
   { id: "rose-white", label: "粉白清昼", character: "Product · 明亮界面", palette: "柔粉 · 雾白 · 石墨" },
-  { id: "graphite-red", label: "黑灰红", character: "Product · 高对比界面", palette: "曜黑 · 石墨灰 · 安全红" }
+  { id: "graphite-red", label: "黑灰红", character: "Product · 高对比界面", palette: "曜黑 · 石墨灰 · 安全红" },
+  { id: "frontier-industrial", label: "边境工业", character: "NovaSight · 勘测终端", palette: "碳黑 · 工程黄 · 暖灰白" }
 ];
 
 export function isThemeMode(value: string | null): value is ThemeMode {
