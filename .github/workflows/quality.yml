@@ -86,6 +86,9 @@ jobs:
       - name: Verify fail-closed ARM64 host preview
         run: out/cargo/debug/novasightd --check --config crates/novasight-config/src/bootstrap.yaml
 
+      - name: Verify authenticated Web/API daemon composition
+        run: bash scripts/ci/host-composition-contract.sh
+
       - name: Lint portable ARM64 workspace
         run: cargo clippy --workspace --all-targets --no-default-features --locked -- -D warnings
 

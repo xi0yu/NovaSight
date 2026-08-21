@@ -8,6 +8,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::{RngCore, rngs::OsRng};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use tokio::sync::watch;
 
 pub const SESSION_COOKIE: &str = "novasight_web_session";
 pub const CSRF_HEADER: &str = "x-novasight-csrf";
@@ -46,6 +47,7 @@ struct AuthState {
 struct SessionRecord {
     csrf_token: String,
     expires_at: u64,
+    revocation: watch::Sender<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -80,6 +82,7 @@ pub struct SessionStatus {
 pub struct AuthenticatedSession {
     pub csrf_token: String,
     pub expires_at: u64,
+    pub revocation: watch::Receiver<bool>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -215,17 +218,21 @@ impl AuthService {
             else {
                 break;
             };
-            state.sessions.remove(&oldest);
+            if let Some(session) = state.sessions.remove(&oldest) {
+                session.revocation.send_replace(true);
+            }
         }
 
         let session_token = random_token();
         let csrf_token = random_token();
         let expires_at = now + SESSION_SECONDS;
+        let (revocation, _) = watch::channel(false);
         state.sessions.insert(
             token_digest(&session_token),
             SessionRecord {
                 csrf_token: csrf_token.clone(),
                 expires_at,
+                revocation,
             },
         );
         let secure = if self.secure_cookie { "; Secure" } else { "" };
@@ -251,6 +258,7 @@ impl AuthService {
         Ok(AuthenticatedSession {
             csrf_token: session.csrf_token.clone(),
             expires_at: session.expires_at,
+            revocation: session.revocation.subscribe(),
         })
     }
 
@@ -329,12 +337,15 @@ impl AuthService {
         if !constant_time_text_equal(&session.csrf_token, supplied) {
             return Err(AuthError::CsrfRejected);
         }
-        if let Some(token) = cookie_value(headers, SESSION_COOKIE) {
-            self.state
+        if let Some(token) = cookie_value(headers, SESSION_COOKIE)
+            && let Some(session) = self
+                .state
                 .lock()
                 .expect("auth state mutex poisoned")
                 .sessions
-                .remove(&token_digest(&token));
+                .remove(&token_digest(&token))
+        {
+            session.revocation.send_replace(true);
         }
         let secure = if self.secure_cookie { "; Secure" } else { "" };
         HeaderValue::from_str(&format!(
@@ -415,7 +426,13 @@ fn anonymous_status() -> SessionStatus {
 }
 
 fn prune(state: &mut AuthState, now: u64) {
-    state.sessions.retain(|_, session| session.expires_at > now);
+    state.sessions.retain(|_, session| {
+        let active = session.expires_at > now;
+        if !active {
+            session.revocation.send_replace(true);
+        }
+        active
+    });
     state.login_attempts.retain(|_, attempt| {
         attempt.blocked_until > now
             || now.saturating_sub(attempt.window_started_at) < LOGIN_WINDOW_SECONDS

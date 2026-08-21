@@ -154,22 +154,43 @@ A successful GitHub-hosted ARM64 gate proves for that SHA that the portable
 Rust/Linux composition compiles and its no-hardware tests pass on aarch64; it
 does not change the NVIDIA and physical-device boundary.
 
-### P2: Extend behavior coverage at real external boundaries
+### Closed locally: Authenticated Web/API/daemon composition
+
+The host composition contract starts the real host-preview daemon and Web/API
+processes, then crosses the public HTTP interface and private Unix socket. It
+verifies anonymous and invalid-code rejection, server-side login, CSRF,
+process-random temporary activation through the same endpoint as a formal
+license, fail-closed runtime state, emergency stop, configuration revision
+conflict, configuration write-failure containment, local-only shutdown denial,
+daemon-disconnect projection, and logout revocation. A separate public-interface
+WebSocket test proves logout closes an already-established status connection
+with code 4403.
+
+The contract runs in the GitHub-hosted ARM64 job. It proves portable process
+composition for the successful SHA, not DeepStream, TensorRT, camera, or kmNet
+hardware behavior.
+
+### P2: Extend behavior coverage at real hardware boundaries
 
 Current Rust coverage is strongest in domain, configuration, pipeline, runtime,
 and native-contract logic. Studio unit/contract tests and mocked Playwright
-journeys cover its critical interaction states. The remaining gap is real
-Web/API/daemon composition and hardware-backed behavior. Add coverage when test
-work is explicitly in scope; do not inflate production modules with test-only
-seams.
+journeys cover its critical interaction states. Authenticated Web/API/daemon
+composition is now exercised on a portable host. The remaining gap is
+hardware-backed behavior. Add coverage when test work is explicitly in scope;
+do not inflate production modules with test-only seams.
 
-Priority boundaries:
+Covered external boundaries:
 
 1. panel identity, license, and trusted-local-control middleware;
 2. start/stop/emergency-stop HTTP behavior;
-3. WebSocket shutdown and reconnect behavior;
-4. configuration persistence failure/rollback;
+3. established WebSocket shutdown on Session logout;
+4. configuration revision conflict plus unchanged file and in-memory state after
+   an injected persistence failure;
 5. Studio launch, save, retry, and runtime-disconnect flows.
+
+The first four have host-side public-interface receipts; Studio behavior stays
+covered by unit/contract and mocked browser journeys. Real
+camera, NVIDIA runtime, and physical-device receipts remain Jetson-gated.
 
 ### P2: Reduce concentrated ownership when related code is next touched
 

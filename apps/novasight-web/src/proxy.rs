@@ -9,6 +9,8 @@ use hyper_util::rt::TokioIo;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 
+use crate::auth::AuthenticatedSession;
+
 #[derive(Clone)]
 pub struct DaemonProxy {
     socket: PathBuf,
@@ -42,7 +44,7 @@ impl DaemonProxy {
     pub async fn forward(
         &self,
         mut request: Request<Body>,
-        session_expires_at: Option<u64>,
+        websocket_session: Option<AuthenticatedSession>,
     ) -> Result<Response<Body>, ProxyError> {
         let is_upgrade = request
             .headers()
@@ -82,7 +84,7 @@ impl DaemonProxy {
                     let upstream = upstream.await.map_err(ProxyError::Upgrade)?;
                     let mut downstream = TokioIo::new(downstream);
                     let mut upstream = TokioIo::new(upstream);
-                    if let Some(expires_at) = session_expires_at {
+                    if let Some(mut session) = websocket_session {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .map_or(0, |duration| duration.as_secs());
@@ -90,22 +92,29 @@ impl DaemonProxy {
                             &mut downstream,
                             &mut upstream,
                         ));
-                        tokio::select! {
+                        let reason: &[u8] = tokio::select! {
                             result = copy.as_mut() => {
                                 result.map_err(ProxyError::Relay)?;
+                                return Ok(());
                             }
-                            () = tokio::time::sleep(Duration::from_secs(expires_at.saturating_sub(now))) => {
-                                drop(copy);
-                                let reason = b"web session expired";
-                                let mut frame = Vec::with_capacity(4 + reason.len());
-                                frame.extend_from_slice(&[0x88, (2 + reason.len()) as u8]);
-                                frame.extend_from_slice(&4403_u16.to_be_bytes());
-                                frame.extend_from_slice(reason);
-                                downstream.write_all(&frame).await.map_err(ProxyError::Relay)?;
-                                downstream.flush().await.map_err(ProxyError::Relay)?;
-                                downstream.shutdown().await.map_err(ProxyError::Relay)?;
+                            () = tokio::time::sleep(Duration::from_secs(session.expires_at.saturating_sub(now))) => {
+                                b"web session expired"
                             }
-                        }
+                            _ = session.revocation.changed() => {
+                                b"web session revoked"
+                            }
+                        };
+                        drop(copy);
+                        let mut frame = Vec::with_capacity(4 + reason.len());
+                        frame.extend_from_slice(&[0x88, (2 + reason.len()) as u8]);
+                        frame.extend_from_slice(&4403_u16.to_be_bytes());
+                        frame.extend_from_slice(reason);
+                        downstream
+                            .write_all(&frame)
+                            .await
+                            .map_err(ProxyError::Relay)?;
+                        downstream.flush().await.map_err(ProxyError::Relay)?;
+                        downstream.shutdown().await.map_err(ProxyError::Relay)?;
                     } else {
                         tokio::io::copy_bidirectional(&mut downstream, &mut upstream)
                             .await

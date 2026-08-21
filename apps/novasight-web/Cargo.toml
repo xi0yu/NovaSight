@@ -27,4 +27,6 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
+futures-util.workspace = true
 http-body-util.workspace = true
+tokio-tungstenite = "0.29"

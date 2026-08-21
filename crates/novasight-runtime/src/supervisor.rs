@@ -771,6 +771,13 @@ impl SupervisorState {
     fn finish_stop(&mut self) {
         self.pipeline = PipelineState::Stopped;
         self.pipeline_metrics.status = PipelineStatus::Stopped;
+        self.pipeline_metrics.device_connected = false;
+        self.pipeline_metrics.device_connection_enabled = false;
+        self.pipeline_metrics.buttons_available = false;
+        self.pipeline_metrics.button_left = false;
+        self.pipeline_metrics.button_right = false;
+        self.pipeline_metrics.output_gate_open = false;
+        self.pipeline_metrics.control = Default::default();
         self.pipeline_started_at_ms = None;
         self.reset_telemetry();
         if self.perception_adapter_present {
@@ -3278,6 +3285,32 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopped_state_clears_safety_critical_output_metrics() {
+        let mut state = SupervisorState {
+            pipeline: PipelineState::Running,
+            ..SupervisorState::default()
+        };
+        state.pipeline_metrics.device_connected = true;
+        state.pipeline_metrics.device_connection_enabled = true;
+        state.pipeline_metrics.buttons_available = true;
+        state.pipeline_metrics.button_left = true;
+        state.pipeline_metrics.button_right = true;
+        state.pipeline_metrics.output_gate_open = true;
+        state.pipeline_metrics.control.emit_allowed = true;
+
+        state.finish_stop();
+
+        assert_eq!(state.pipeline, PipelineState::Stopped);
+        assert!(!state.pipeline_metrics.device_connected);
+        assert!(!state.pipeline_metrics.device_connection_enabled);
+        assert!(!state.pipeline_metrics.buttons_available);
+        assert!(!state.pipeline_metrics.button_left);
+        assert!(!state.pipeline_metrics.button_right);
+        assert!(!state.pipeline_metrics.output_gate_open);
+        assert!(!state.pipeline_metrics.control.emit_allowed);
+    }
 
     struct MissingActiveModelAdapter;
 

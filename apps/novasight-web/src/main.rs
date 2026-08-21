@@ -289,8 +289,8 @@ async fn dispatch(
         {
             return auth_error_response(error);
         }
-        let expires_at = path.starts_with("/ws/").then_some(session.expires_at);
-        return match state.daemon.forward(request, expires_at).await {
+        let websocket_session = path.starts_with("/ws/").then_some(session);
+        return match state.daemon.forward(request, websocket_session).await {
             Ok(response) => no_store(response),
             Err(error) => {
                 tracing::warn!(%error, "daemon IPC request failed");
@@ -604,14 +604,23 @@ impl WebServerError {
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use axum::Router;
     use axum::body::Body;
-    use axum::extract::ConnectInfo;
-    use axum::http::{Request, StatusCode, header};
+    use axum::extract::{ConnectInfo, WebSocketUpgrade};
+    use axum::http::{HeaderValue, Request, StatusCode, header};
+    use axum::routing::get;
+    use futures_util::StreamExt;
     use http_body_util::BodyExt;
+    use tokio::net::{TcpListener, UnixListener};
+    use tokio::time::timeout;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tower::ServiceExt;
 
-    use super::{AppState, AuthService, DaemonProxy, router};
+    use super::{AppState, AuthService, DaemonProxy, auth::CSRF_HEADER, router};
 
     const ACCESS_CODE: &str = "8f0ed8de1c54cb8c34a4369c02fd0c6883b2f3e2b7b3321c4b4cb08c1e0d7f50";
 
@@ -655,5 +664,159 @@ mod tests {
                 .as_str()
                 .is_some_and(|value| value.len() >= 32)
         );
+    }
+
+    #[tokio::test]
+    async fn authenticated_mutation_crosses_the_csrf_gate() {
+        let app = router(AppState {
+            auth: AuthService::new(ACCESS_CODE, false).unwrap(),
+            daemon: DaemonProxy::new("/tmp/novasight-web-test-missing.sock"),
+            web_root: None,
+        });
+        let login = Request::builder()
+            .method("POST")
+            .uri("/api/auth/session")
+            .header(header::HOST, "192.168.10.20:7351")
+            .header(header::CONTENT_TYPE, "application/json")
+            .extension(ConnectInfo(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 10, 21)),
+                50000,
+            )))
+            .body(Body::from(format!(r#"{{"access_code":"{ACCESS_CODE}"}}"#)))
+            .unwrap();
+        let response = app.clone().oneshot(login).await.unwrap();
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let csrf = body["csrf_token"].as_str().unwrap();
+
+        let mutation = Request::builder()
+            .method("POST")
+            .uri("/api/license/activate")
+            .header(header::HOST, "192.168.10.20:7351")
+            .header(header::COOKIE, cookie)
+            .header(CSRF_HEADER, csrf)
+            .header(header::CONTENT_TYPE, "application/json")
+            .extension(ConnectInfo(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 10, 21)),
+                50001,
+            )))
+            .body(Body::from(r#"{"key":"not-forwarded"}"#))
+            .unwrap();
+        let response = app.oneshot(mutation).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["code"], "DAEMON_UNAVAILABLE");
+    }
+
+    #[tokio::test]
+    async fn logout_closes_an_established_status_websocket() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket =
+            std::path::PathBuf::from(format!("/tmp/ns-ws-{}-{unique}.sock", std::process::id()));
+        let upstream_listener = UnixListener::bind(&socket).unwrap();
+        let upstream = Router::new().route(
+            "/ws/status",
+            get(|upgrade: WebSocketUpgrade| async move {
+                upgrade
+                    .on_upgrade(|mut socket| async move { while socket.recv().await.is_some() {} })
+            }),
+        );
+        let upstream_task = tokio::spawn(async move {
+            axum::serve(upstream_listener, upstream).await.unwrap();
+        });
+
+        let app = router(AppState {
+            auth: AuthService::new(ACCESS_CODE, false).unwrap(),
+            daemon: DaemonProxy::new(&socket),
+            web_root: None,
+        });
+        let login = Request::builder()
+            .method("POST")
+            .uri("/api/auth/session")
+            .header(header::HOST, "127.0.0.1:7351")
+            .header(header::CONTENT_TYPE, "application/json")
+            .extension(ConnectInfo(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                50000,
+            )))
+            .body(Body::from(format!(r#"{{"access_code":"{ACCESS_CODE}"}}"#)))
+            .unwrap();
+        let response = app.clone().oneshot(login).await.unwrap();
+        let cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let csrf = body["csrf_token"].as_str().unwrap().to_owned();
+
+        let web_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let web_address = web_listener.local_addr().unwrap();
+        let web_app = app.clone();
+        let web_task = tokio::spawn(async move {
+            axum::serve(
+                web_listener,
+                web_app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        let mut websocket_request = format!("ws://{web_address}/ws/status")
+            .into_client_request()
+            .unwrap();
+        websocket_request
+            .headers_mut()
+            .insert(header::COOKIE, HeaderValue::from_str(&cookie).unwrap());
+        let (mut websocket, _) = connect_async(websocket_request).await.unwrap();
+
+        let logout = Request::builder()
+            .method("DELETE")
+            .uri("/api/auth/session")
+            .header(header::HOST, "127.0.0.1:7351")
+            .header(header::COOKIE, &cookie)
+            .header(CSRF_HEADER, csrf)
+            .extension(ConnectInfo(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                50001,
+            )))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(logout).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let message = timeout(Duration::from_secs(5), websocket.next())
+            .await
+            .expect("logout must close an established WebSocket immediately")
+            .expect("WebSocket must return a close frame")
+            .expect("WebSocket close frame must be valid");
+        match message {
+            Message::Close(Some(frame)) => assert_eq!(u16::from(frame.code), 4403),
+            other => panic!("expected session-revoked close frame, got {other:?}"),
+        }
+
+        web_task.abort();
+        upstream_task.abort();
+        let _ = std::fs::remove_file(socket);
     }
 }
