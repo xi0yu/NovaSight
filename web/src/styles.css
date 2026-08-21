@@ -4911,7 +4911,9 @@ body::after {
 .error-center-item time { display: block; margin-top: 5px; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 10px; }
 .error-center-empty { min-height: 180px; display: grid; place-items: center; align-content: center; gap: 7px; color: var(--status-success-fg); text-align: center; }
 .error-center-empty span { color: var(--text-tertiary); font-size: 12px; }
-.error-center-footer { display: flex; justify-content: space-between; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border-subtle); }
+.error-center-footer { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border-subtle); }
+.error-center-clear-action { display: grid; gap: 6px; }
+.error-center-clear-action small { max-width: 420px; color: var(--text-tertiary); line-height: 1.45; }
 
 .model-switch-dialog-layer {
   position: fixed;

@@ -5450,14 +5450,21 @@ export function StudioConsoleView({
               )}
             </div>
             <footer className="error-center-footer">
-              <button
-                className="console-button"
-                disabled={errorNotices.length === 0}
-                onClick={clearErrorNotices}
-                type="button"
-              >
-                确认并清空本会话记录
-              </button>
+              <div className="error-center-clear-action">
+                <button
+                  aria-describedby={errorNotices.length === 0 && currentErrorDetails.length > 0 ? "error-center-clear-note" : undefined}
+                  className="console-button"
+                  disabled={errorNotices.length === 0}
+                  onClick={clearErrorNotices}
+                  title={errorNotices.length === 0 && currentErrorDetails.length > 0 ? "持续异常恢复后会自动消失" : undefined}
+                  type="button"
+                >
+                  {errorNotices.length > 0 ? "清空操作记录" : "没有可清空的记录"}
+                </button>
+                {errorNotices.length === 0 && currentErrorDetails.length > 0 ? (
+                  <small id="error-center-clear-note">当前异常仍由运行状态上报，恢复后会自动消失。</small>
+                ) : null}
+              </div>
               <button type="button" className="console-button primary" onClick={() => setErrorCenterOpen(false)}              >完成</button>
             </footer>
           </section>
