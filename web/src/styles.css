@@ -4588,45 +4588,30 @@ body::after {
 
 [data-theme="frontier-industrial"] body {
   background:
-    radial-gradient(circle at 86% -10%, var(--theme-glow), transparent 31%),
-    linear-gradient(var(--frontier-coordinate-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--frontier-coordinate-line) 1px, transparent 1px),
-    var(--bg-app);
-  background-size: auto, 48px 48px, 48px 48px, auto;
+    linear-gradient(var(--frontier-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--frontier-grid-line) 1px, transparent 1px),
+    var(--frontier-paper);
+  background-size: 56px 56px, 56px 56px, auto;
 }
 
 [data-theme="frontier-industrial"] body::before {
-  background:
-    linear-gradient(90deg, transparent 0 8%, var(--frontier-grid-line) 8% 8.15%, transparent 8.15% 92%, var(--frontier-grid-line) 92% 92.15%, transparent 92.15%),
-    repeating-linear-gradient(90deg, transparent 0 95px, var(--frontier-grid-line) 95px 96px);
-  background-size: 100% 100%, 100% 22px;
-  opacity: 0.72;
-  mask-image: linear-gradient(to bottom, #000, transparent 78%);
+  display: none;
 }
 
 [data-theme="frontier-industrial"] body::after {
-  right: 0;
-  bottom: 0;
-  width: min(42vw, 680px);
-  height: 72px;
-  background: var(--theme-keyart) center / auto 100% repeat-x;
-  opacity: 0.08;
-  filter: none;
-  mask-image: linear-gradient(to right, transparent, #000 45%);
+  display: none;
 }
 
 [data-theme="frontier-industrial"] .auth-shell {
   background:
-    linear-gradient(var(--frontier-coordinate-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--frontier-coordinate-line) 1px, transparent 1px),
-    radial-gradient(circle at 50% 38%, var(--theme-glow), transparent 34%),
-    var(--bg-app);
-  background-size: 48px 48px, 48px 48px, auto, auto;
+    linear-gradient(var(--frontier-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--frontier-grid-line) 1px, transparent 1px),
+    var(--frontier-paper);
+  background-size: 56px 56px, 56px 56px, auto;
 }
 
 [data-theme="frontier-industrial"] .auth-card,
-[data-theme="frontier-industrial"] .license-gate,
-[data-theme="frontier-industrial"] .console-app {
+[data-theme="frontier-industrial"] .license-gate {
   border-color: var(--border-default);
   border-radius: var(--card-radius);
   background:
@@ -4636,13 +4621,31 @@ body::after {
 }
 
 [data-theme="frontier-industrial"] .console-app {
+  border-color: var(--frontier-paper-line);
+  background: var(--frontier-paper);
   backdrop-filter: none;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.28);
 }
 
 [data-theme="frontier-industrial"] .console-top {
   position: relative;
-  background:
-    linear-gradient(90deg, var(--bg-surface) 0%, var(--bg-surface) 72%, var(--brand-soft) 100%);
+  --bg-surface: #f6f6f3;
+  --bg-subtle: #e7e6e3;
+  --bg-hover: #ffffff;
+  --text-primary: var(--frontier-paper-ink);
+  --text-secondary: #3c3c3a;
+  --text-tertiary: var(--frontier-paper-tertiary);
+  --border-default: var(--frontier-paper-line);
+  --border-subtle: rgba(20, 20, 20, 0.1);
+  --border-strong: #aeada9;
+  --button-secondary-bg: #f6f6f3;
+  --button-secondary-border: var(--frontier-paper-line);
+  --button-secondary-fg: var(--frontier-paper-ink);
+  --status-normal-fg: #2c7a3f;
+  --status-error-fg: #c53924;
+  --status-warning-fg: #777a00;
+  border-color: var(--frontier-paper-line);
+  background: linear-gradient(#f0efec, #e7e6e3);
 }
 
 [data-theme="frontier-industrial"] .console-top::after {
@@ -4657,8 +4660,14 @@ body::after {
 }
 
 [data-theme="frontier-industrial"] .console-sidebar {
-  background:
-    linear-gradient(180deg, var(--bg-sidebar), color-mix(in srgb, var(--bg-sidebar) 82%, var(--brand-soft)));
+  --bg-hover: rgba(0, 0, 0, 0.035);
+  --text-primary: var(--frontier-paper-ink);
+  --text-secondary: var(--frontier-paper-secondary);
+  --text-tertiary: #7c7c78;
+  --border-default: var(--frontier-paper-line);
+  --border-subtle: rgba(20, 20, 20, 0.1);
+  border-color: var(--frontier-paper-line);
+  background: linear-gradient(90deg, #edece9, #e8e7e4);
 }
 
 [data-theme="frontier-industrial"] .console-sidebar::after {
@@ -4667,7 +4676,7 @@ body::after {
   width: 100%;
   height: 38px;
   background: repeating-linear-gradient(135deg, var(--brand-primary) 0 6px, var(--frontier-hazard-dark) 6px 12px);
-  opacity: 0.2;
+  opacity: 0.16;
   filter: none;
   mask-image: linear-gradient(to bottom, transparent, #000);
 }
@@ -4678,6 +4687,24 @@ body::after {
     linear-gradient(90deg, var(--frontier-coordinate-line) 1px, transparent 1px),
     var(--bg-app);
   background-size: 48px 48px, 48px 48px, auto;
+  box-shadow: inset 8px 0 24px rgba(0, 0, 0, 0.22);
+}
+
+[data-theme="frontier-industrial"] .auth-session-bar {
+  --bg-surface: #f6f6f3;
+  --bg-app: var(--frontier-paper);
+  --text-primary: var(--frontier-paper-ink);
+  --text-secondary: #3c3c3a;
+  --text-tertiary: var(--frontier-paper-tertiary);
+  --border-subtle: rgba(20, 20, 20, 0.12);
+  --border-strong: #aeada9;
+  --button-secondary-bg: #f6f6f3;
+  --button-secondary-border: var(--frontier-paper-line);
+  --button-secondary-fg: var(--frontier-paper-ink);
+  --status-normal-fg: #2c7a3f;
+  --status-error-fg: #c53924;
+  --status-warning-fg: #777a00;
+  background: #e7e6e3;
 }
 
 [data-theme="frontier-industrial"] .ui-panel,
@@ -4710,17 +4737,32 @@ body::after {
 }
 
 [data-theme="frontier-industrial"] .console-sidebar .console-nav.active {
-  border-color: var(--brand-border);
+  border-color: rgba(20, 20, 20, 0.15);
   border-radius: var(--button-radius);
-  background: var(--selection-strong-bg);
-  color: var(--selection-strong-fg);
-  box-shadow: inset 3px 0 0 var(--brand-primary);
+  background: var(--brand-primary);
+  color: var(--frontier-paper-ink);
+  box-shadow: inset 4px 0 0 var(--frontier-paper-ink);
 }
 
 [data-theme="frontier-industrial"] .console-sidebar .console-nav.active .console-nav-icon {
-  border-color: var(--brand-border);
+  border-color: transparent;
   border-radius: 2px;
-  background: var(--brand-soft);
+  background: transparent;
+  color: var(--frontier-paper-ink);
+}
+
+[data-theme="frontier-industrial"] .console-sidebar .console-nav.active span,
+[data-theme="frontier-industrial"] .console-sidebar .console-nav.active .console-nav-copy small {
+  color: #4b4b00;
+}
+
+[data-theme="frontier-industrial"] .console-logo {
+  border-radius: 2px;
+  background: var(--frontier-paper-ink);
+  box-shadow: none;
+}
+
+[data-theme="frontier-industrial"] .console-logo svg {
   color: var(--brand-primary);
 }
 
