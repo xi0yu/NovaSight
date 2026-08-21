@@ -251,6 +251,31 @@ test("375px Studio keeps shell actions and horizontal navigation accessible", as
   expect(await page.locator("body").evaluate((body) => body.scrollWidth)).toBeLessThanOrEqual(375);
 });
 
+test("theme chooser exposes visible controls that a user can actually click", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.goto("/?page=overview");
+
+  const trigger = page.locator(".theme-toggle");
+  expect.soft(await trigger.evaluate((element) => element.tagName)).toBe("BUTTON");
+  expect.soft(await trigger.innerText()).toContain("主题");
+  await trigger.click();
+
+  const graphiteRed = page.getByRole("button", { name: /黑灰红/ });
+  await expect(graphiteRed).toBeVisible();
+  await graphiteRed.scrollIntoViewIfNeeded();
+  const optionReceivesPointer = await graphiteRed.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return hit !== null && element.contains(hit);
+  });
+  expect(optionReceivesPointer).toBe(true);
+
+  await graphiteRed.click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite-red");
+  await expect(trigger).toContainText("黑灰红");
+  expect(await page.evaluate(() => window.localStorage.getItem("novasight.theme"))).toBe("graphite-red");
+});
+
 test("760px Studio recovery actions keep touch-safe targets", async ({ page }) => {
   await page.setViewportSize({ width: 760, height: 812 });
   await mockStudioApi(page);

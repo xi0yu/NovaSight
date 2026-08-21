@@ -4239,16 +4239,18 @@ body::after {
   box-shadow: 0 8px 24px color-mix(in srgb, var(--theme-glow) 34%, transparent);
   font-size: var(--text-label);
   font-weight: 650;
+  font-family: inherit;
   line-height: var(--leading-label);
+  cursor: pointer;
 }
 
 .theme-toggle:hover,
-.theme-picker > summary:focus-visible {
+.theme-toggle:focus-visible {
   border-color: color-mix(in srgb, var(--brand-primary) 36%, var(--border-default));
   background: color-mix(in srgb, var(--brand-soft) 64%, var(--bg-surface));
 }
 
-.theme-picker > summary:focus-visible {
+.theme-toggle:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;
 }
@@ -4263,22 +4265,12 @@ body::after {
   flex: 0 0 auto;
 }
 
-.theme-picker > summary {
-  list-style: none;
-  cursor: pointer;
-  user-select: none;
-}
-
-.theme-picker > summary::-webkit-details-marker {
-  display: none;
-}
-
-.theme-picker[open] .theme-toggle {
+.theme-picker.is-open .theme-toggle {
   border-color: var(--brand-primary);
   background: var(--brand-soft);
 }
 
-.theme-picker[open] .theme-toggle-chevron {
+.theme-picker.is-open .theme-toggle-chevron {
   transform: rotate(180deg);
 }
 
@@ -4373,7 +4365,7 @@ body::after {
   width: 100%;
   min-height: 62px;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) 18px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 11px;
   padding: 7px 9px;
@@ -4382,6 +4374,8 @@ body::after {
   background: transparent;
   color: var(--text-secondary);
   text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
 }
 
 .theme-option-art {
@@ -4412,8 +4406,14 @@ body::after {
   background: color-mix(in srgb, var(--brand-soft) 72%, var(--bg-surface));
 }
 
-.theme-option > svg {
+.theme-option-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   color: var(--brand-primary);
+  font-size: 10px;
+  font-weight: 750;
+  white-space: nowrap;
 }
 
 @keyframes theme-menu-enter {

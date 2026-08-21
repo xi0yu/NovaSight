@@ -13,13 +13,27 @@ describe("ThemeToggle", () => {
   it("closes the open theme menu with Escape and restores toggle focus", async () => {
     const user = userEvent.setup();
     render(<ThemeToggle />);
-    const toggle = screen.getByLabelText(/当前主题/);
+    const toggle = screen.getByRole("button", { name: /主题设置/ });
 
     await user.click(toggle);
-    expect(document.querySelector("details.theme-picker")).toHaveAttribute("open");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
 
     await user.keyboard("{Escape}");
-    expect(document.querySelector("details.theme-picker")).not.toHaveAttribute("open");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(toggle).toHaveFocus();
+  });
+
+  it("applies a visibly selected theme and persists it", async () => {
+    const user = userEvent.setup();
+    render(<ThemeToggle />);
+    const toggle = screen.getByRole("button", { name: /主题设置/ });
+
+    await user.click(toggle);
+    await user.click(screen.getByRole("button", { name: /黑灰红/ }));
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "graphite-red");
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("graphite-red");
+    expect(toggle).toHaveTextContent("黑灰红");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
   });
 });

@@ -3,7 +3,14 @@
 }
 
 .console-top {
+  position: relative;
+  z-index: 50;
   grid-template-columns: 196px minmax(0, 1fr);
+  overflow: visible;
+}
+
+.console-toolbar > .console-group:last-child {
+  overflow: visible;
 }
 
 @media (min-width: 1280px) {
@@ -395,15 +402,16 @@
   }
 
   .console-toolbar-pending > span,
-  .theme-toggle-copy,
+  .theme-toggle-copy small,
   .theme-toggle-chevron {
     display: none;
   }
 
   .theme-toggle {
-    width: 44px;
+    width: auto;
+    min-width: 72px;
     min-height: 44px;
-    padding: 0;
+    padding: 0 10px;
   }
 
   .theme-swatch {

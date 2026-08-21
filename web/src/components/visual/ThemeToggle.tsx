@@ -14,7 +14,7 @@ function getInitialTheme(): ThemeMode {
 export function ThemeToggle() {
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const pickerRef = useRef<HTMLDetailsElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
   const activeTheme = THEME_OPTIONS.find((option) => option.id === theme) ?? THEME_OPTIONS[0];
 
   useEffect(() => {
@@ -24,43 +24,41 @@ export function ThemeToggle() {
 
   function selectTheme(nextTheme: ThemeMode) {
     setTheme(nextTheme);
-    if (pickerRef.current) {
-      pickerRef.current.open = false;
-    }
     setPickerOpen(false);
   }
 
   function closePickerFromKeyboard() {
-    if (!pickerRef.current) return;
-    pickerRef.current.open = false;
     setPickerOpen(false);
-    pickerRef.current.querySelector("summary")?.focus();
+    toggleRef.current?.focus();
   }
 
   return (
-    <details
-      className="theme-picker"
+    <div
+      className={`theme-picker${pickerOpen ? " is-open" : ""}`}
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || !event.currentTarget.open) return;
+        if (event.key !== "Escape" || !pickerOpen) return;
         event.preventDefault();
         closePickerFromKeyboard();
       }}
-      onToggle={(event) => setPickerOpen(event.currentTarget.open)}
-      ref={pickerRef}
     >
-      <summary
-        aria-label={`当前主题：${activeTheme.label}，角色：${activeTheme.character}`}
+      <button
+        aria-controls="novasight-theme-menu"
+        aria-expanded={pickerOpen}
+        aria-label={`主题设置，当前：${activeTheme.label}`}
         className="theme-toggle"
+        onClick={() => setPickerOpen((open) => !open)}
+        ref={toggleRef}
         title="选择网站主题"
+        type="button"
       >
         <span className={`theme-swatch theme-swatch-${activeTheme.id}`} aria-hidden="true" />
         <span className="theme-toggle-copy">
-          <strong>{activeTheme.label}</strong>
-          <small>{activeTheme.character}</small>
+          <strong>主题</strong>
+          <small>{activeTheme.label}</small>
         </span>
         <NovaIcon className="theme-toggle-chevron" name="expand" size={14} />
-      </summary>
-      {pickerOpen ? <div className="theme-menu" aria-label="网站主题">
+      </button>
+      {pickerOpen ? <div className="theme-menu" id="novasight-theme-menu" role="group" aria-label="网站主题">
         <div className="theme-menu-heading">
           <span>THEME ARCHIVE</span>
           <strong>选择视觉主题</strong>
@@ -79,11 +77,11 @@ export function ThemeToggle() {
                 <strong>{option.label}</strong>
                 <small>{option.character} · {option.palette}</small>
               </span>
-              {selected ? <NovaIcon name="check-circle" size={17} /> : null}
+              {selected ? <span className="theme-option-state"><NovaIcon name="check-circle" size={15} />当前</span> : null}
             </button>
           );
         })}
       </div> : null}
-    </details>
+    </div>
   );
 }
