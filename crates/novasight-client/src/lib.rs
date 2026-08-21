@@ -628,7 +628,7 @@ fn control_socket_address(configured: &Path) -> Result<PathBuf, ClientError> {
         let mut address = Vec::with_capacity(name.len());
         address.push(0);
         address.extend_from_slice(&name[1..]);
-        return Ok(PathBuf::from(std::ffi::OsString::from_vec(address)));
+        Ok(PathBuf::from(std::ffi::OsString::from_vec(address)))
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     Err(ClientError::InvalidSocketAddress(
