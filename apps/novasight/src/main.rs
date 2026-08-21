@@ -136,7 +136,7 @@ async fn run() -> Result<()> {
             }
         };
     open_studio(&ready, &access);
-    print_temporary_license_access(&layout, temporary_license.as_ref());
+    print_temporary_license_access(temporary_license.as_ref());
     supervise_stack(&layout, daemon, web).await
 }
 
@@ -485,7 +485,6 @@ fn read_file_tail(path: &Path, max_bytes: u64) -> Result<String> {
 }
 
 async fn supervise_stack(layout: &PortableLayout, mut daemon: Child, mut web: Child) -> Result<()> {
-    eprintln!("NOVASIGHT_RUNNING: press Ctrl+C to stop Web/API and novasightd");
     tokio::select! {
         status = daemon.wait() => {
             let status = status.context("wait for novasightd process")?;
@@ -625,29 +624,23 @@ fn studio_ready_messages(
 ) -> Vec<String> {
     let Some(address) = ready_address(ready) else {
         return vec![format!(
-            "NovaSight Studio authenticated URL: {}",
+            "NovaSight Studio 授权访问地址：{}",
             access_url(&ready.url, access)
         )];
     };
     if !address.ip().is_unspecified() {
         return vec![format!(
-            "NovaSight Studio authenticated URL: {}",
+            "NovaSight Studio 授权访问地址：{}",
             access_url(&ready.url, access)
         )];
     }
     let lan_url = lan_ip
         .map(|ip| http_url(SocketAddr::new(ip, address.port())))
-        .unwrap_or_else(|| format!("http://<this-machine-ip>:{}/", address.port()));
-    vec![
-        format!(
-            "NovaSight Studio LAN authenticated URL: {}",
-            access_url(&lan_url, access)
-        ),
-        format!(
-            "NovaSight Studio local authenticated URL: {}",
-            access_url(&http_url(connectable_local_address(address)), access)
-        ),
-    ]
+        .unwrap_or_else(|| format!("http://<本机局域网IP>:{}/", address.port()));
+    vec![format!(
+        "NovaSight Studio 局域网授权访问地址：{}",
+        access_url(&lan_url, access)
+    )]
 }
 
 fn access_url(url: &str, access: &WebAccess) -> String {
@@ -671,21 +664,19 @@ fn create_temporary_license_access(
     layout: &PortableLayout,
 ) -> Result<Option<TemporaryLicenseAccess>> {
     let path = layout.root.join(TEMPORARY_LICENSE_ACCESS_FILE);
-    if !cfg!(debug_assertions) {
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("remove stale {}", path.display()));
-            }
+    match fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("remove stale {}", path.display()));
         }
+    }
+    if !cfg!(debug_assertions) {
         return Ok(None);
     }
-    let access = TemporaryLicenseAccess {
+    Ok(Some(TemporaryLicenseAccess {
         code: random_access_code(),
-    };
-    persist_private_code(&path, &access.code, "temporary license")?;
-    Ok(Some(access))
+    }))
 }
 
 fn random_access_code() -> String {
@@ -717,21 +708,11 @@ fn persist_private_code(path: &Path, code: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn print_temporary_license_access(
-    layout: &PortableLayout,
-    access: Option<&TemporaryLicenseAccess>,
-) {
+fn print_temporary_license_access(access: Option<&TemporaryLicenseAccess>) {
     let Some(access) = access else {
         return;
     };
-    eprintln!(
-        "NovaSight temporary license code (current debug daemon only): {}",
-        access.code
-    );
-    eprintln!(
-        "NovaSight temporary license code file: {}",
-        layout.root.join(TEMPORARY_LICENSE_ACCESS_FILE).display()
-    );
+    eprintln!("NovaSight 临时授权码：{}", access.code);
 }
 
 fn ready_address(ready: &ReadyDocument) -> Option<SocketAddr> {
@@ -834,7 +815,22 @@ fn open_browser(_url: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::random_access_code;
+    use std::fs;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::path::PathBuf;
+
+    use super::{
+        LayoutMode, PortableLayout, ReadyDocument, TEMPORARY_LICENSE_ACCESS_FILE, WebAccess,
+        create_temporary_license_access, random_access_code, studio_ready_messages,
+    };
+
+    struct TestRoot(PathBuf);
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn generated_access_codes_are_full_width_hex_and_not_reused() {
@@ -843,5 +839,67 @@ mod tests {
         assert_eq!(first.len(), 64);
         assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn unspecified_listener_reports_only_the_chinese_lan_authenticated_url() {
+        let ready = ReadyDocument {
+            address: "0.0.0.0:7351".to_owned(),
+            url: "http://0.0.0.0:7351/".to_owned(),
+        };
+        let access = WebAccess {
+            code: "one-time-access".to_owned(),
+        };
+
+        let messages = studio_ready_messages(
+            &ready,
+            &access,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 31, 248))),
+        );
+
+        assert_eq!(
+            messages,
+            vec![
+                "NovaSight Studio 局域网授权访问地址：http://192.168.31.248:7351/#access=one-time-access"
+                    .to_owned()
+            ]
+        );
+
+        assert_eq!(
+            studio_ready_messages(&ready, &access, None),
+            vec![
+                "NovaSight Studio 局域网授权访问地址：http://<本机局域网IP>:7351/#access=one-time-access"
+                    .to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn temporary_license_is_unique_per_start_and_never_persisted() {
+        let root = TestRoot(std::env::temp_dir().join(format!(
+            "novasight-launcher-license-test-{}",
+            random_access_code()
+        )));
+        fs::create_dir_all(root.0.join("run")).unwrap();
+        let stale_path = root.0.join(TEMPORARY_LICENSE_ACCESS_FILE);
+        fs::write(&stale_path, "stale-license").unwrap();
+        let layout = PortableLayout::new(
+            LayoutMode::Developer,
+            root.0.clone(),
+            root.0.join("novasightd"),
+            root.0.join("novasight-web"),
+            root.0.join("novasightctl"),
+        );
+
+        let first = create_temporary_license_access(&layout)
+            .unwrap()
+            .expect("debug launcher must create temporary authorization");
+        assert!(!stale_path.exists());
+        let second = create_temporary_license_access(&layout)
+            .unwrap()
+            .expect("debug launcher must create temporary authorization");
+
+        assert_ne!(first.code, second.code);
+        assert!(!stale_path.exists());
     }
 }

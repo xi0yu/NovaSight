@@ -79,8 +79,8 @@ The launcher owns startup orchestration:
 - waits for daemon IPC readiness, then starts `bin/novasight-web` as the only
   TCP/static/API boundary;
 - creates a 256-bit per-start Web access code, stores it in owner-only
-  `run/web-access-code`, prints authenticated local/LAN URLs, and tries to open a
-  local desktop browser when one is available;
+  `run/web-access-code`, prints one Chinese authenticated LAN address, and tries
+  to open a local desktop browser when one is available;
 - stays in the foreground so `Ctrl+C` stops both package-local services.
 
 NovaSight-owned runtime files stay inside the package:
@@ -100,11 +100,11 @@ routed networks. IP literals and `localhost` are accepted by default; list
 intentional DNS names exactly in `NOVASIGHT_WEB_ALLOWED_HOSTS`. The Web/API server
 rejects unapproved Host values and Origin/Host mismatches.
 
-Source/debug launchers also create an independent owner-only
-`run/temporary-license-code`. It is entered in the same authorization form as a
-formal signed license, is valid only for the current debug daemon process, and
-never grants physical hardware output. Release packages do not create or accept
-this temporary credential.
+Source/debug launchers also create an independent per-start temporary license
+code in memory and pass it directly to the current debug daemon process without
+writing it to disk. It is entered in the same authorization form as a formal
+signed license and never grants physical hardware output. Release packages do
+not create or accept this temporary credential.
 
 Removing the `NovaSight/` directory removes NovaSight-owned state. The normal
 portable path does not install systemd units, does not require root, and does

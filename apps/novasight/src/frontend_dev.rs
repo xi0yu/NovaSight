@@ -6,14 +6,15 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use novasight_config::studio_endpoint_contract;
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::time;
 
 use super::{
     LayoutMode, PROCESS_READY_TIMEOUT, PortableLayout, ReadyDocument,
     create_temporary_license_access, create_web_access, health_check, http_url, print_studio_urls,
-    print_temporary_license_access, read_ready_file, spawn_daemon, spawn_web, stop_child,
-    stop_owned_daemon, wait_for_daemon_ready, wait_for_shutdown_signal, wait_for_web_ready,
+    print_temporary_license_access, read_ready_file, spawn_daemon, spawn_logged_process, spawn_web,
+    stop_child, stop_owned_daemon, wait_for_daemon_ready, wait_for_shutdown_signal,
+    wait_for_web_ready,
 };
 
 const FRONTEND_READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -47,7 +48,7 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
             return Err(error);
         }
     };
-    let api_ready =
+    let _api_ready =
         match wait_for_web_ready(layout, &mut web, &mut daemon, PROCESS_READY_TIMEOUT).await {
             Ok(ready) => ready,
             Err(error) => {
@@ -79,12 +80,8 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
         let _ = stop_owned_daemon(layout, &mut daemon).await;
         return Err(error);
     }
-    eprintln!(
-        "NOVASIGHT_FRONTEND_DEV_READY: authenticated API {} · Vite {} · daemon IPC",
-        api_ready.url, studio_ready.url
-    );
     print_studio_urls(&studio_ready, &access);
-    print_temporary_license_access(layout, temporary_license.as_ref());
+    print_temporary_license_access(temporary_license.as_ref());
     supervise(layout, daemon, web, vite).await
 }
 
@@ -120,8 +117,7 @@ fn validate_artifacts(layout: &PortableLayout) -> Result<()> {
 }
 
 fn refresh_rust_artifacts(layout: &PortableLayout) -> Result<()> {
-    eprintln!("NOVASIGHT_DEV_REFRESH: checking daemon, Web/API, and local client with Cargo");
-    let status = StdCommand::new("cargo")
+    let output = StdCommand::new("cargo")
         .args([
             "build",
             "--locked",
@@ -134,12 +130,14 @@ fn refresh_rust_artifacts(layout: &PortableLayout) -> Result<()> {
         ])
         .current_dir(&layout.root)
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
+        .output()
         .context("refresh frontend-development Rust binaries with Cargo")?;
-    if !status.success() {
-        bail!("Cargo could not refresh frontend-development Rust binaries: {status}");
+    if !output.status.success() {
+        bail!(
+            "Cargo could not refresh frontend-development Rust binaries: {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        );
     }
     Ok(())
 }
@@ -167,16 +165,14 @@ fn vite_executable(layout: &PortableLayout) -> PathBuf {
 
 fn spawn_vite(layout: &PortableLayout) -> Result<Child> {
     let executable = vite_executable(layout);
-    let mut command = Command::new(&executable);
-    command
-        .current_dir(layout.root.join("web"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true);
-    command
-        .spawn()
-        .with_context(|| format!("start Vite from {}", executable.display()))
+    spawn_logged_process(
+        &executable,
+        &layout.root.join("web"),
+        &layout.log_dir.join("vite.log"),
+        &[],
+        &[],
+    )
+    .with_context(|| format!("start Vite from {}", executable.display()))
 }
 
 fn studio_ready_document() -> Result<ReadyDocument> {
@@ -227,7 +223,6 @@ async fn supervise(
     mut web: Child,
     mut vite: Child,
 ) -> Result<()> {
-    eprintln!("NOVASIGHT_RUNNING: press Ctrl+C to stop Vite, Web/API, and daemon");
     tokio::select! {
         status = daemon.wait() => {
             let status = status.context("wait for novasightd")?;

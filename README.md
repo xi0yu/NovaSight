@@ -88,7 +88,8 @@ out/package/NovaSight/
 
 Users start `NovaSight`. The launcher creates package-local `data`, `logs`,
 and `run` directories, starts `bin/novasightd`, waits for daemon IPC readiness,
-then starts `bin/novasight-web` and prints the Studio Web UI listener and LAN URLs. Portable packages listen on the
+then starts `bin/novasight-web` and prints one Chinese Studio LAN authenticated
+address. Portable packages listen on the
 fixed `0.0.0.0:7351` address so a browser on another machine in the same LAN can
 open the printed authenticated LAN URL. On every launcher start, NovaSight creates a
 256-bit caller access code in the owner-only `run/web-access-code` file.
@@ -122,8 +123,8 @@ but direct HTTP still belongs to a trusted LAN; untrusted or routed networks
 must use an authenticated TLS reverse proxy.
 
 Debug launchers generate a separate random 256-bit temporary license code for
-each daemon start, store it in owner-only `run/temporary-license-code`, and pass
-it only to `novasightd`. Temporary codes and signed licenses are submitted to
+each daemon start and pass it directly to that `novasightd` process without
+writing it to disk. Temporary codes and signed licenses are submitted to
 the same `POST /api/license/activate` endpoint. A matching temporary code writes
 no license file and expires when that daemon process exits; restarting produces
 a different code. Release builds never enable this credential and require the

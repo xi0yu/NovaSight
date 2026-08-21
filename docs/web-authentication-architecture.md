@@ -80,9 +80,9 @@ rejection, and never stores it in local storage.
 Browser access and product licensing are separate gates. The per-start Web
 access code creates an operator session but is never accepted as a license.
 
-Debug launchers generate a second independent 256-bit value, write it to
-owner-only `run/temporary-license-code`, and pass it only to `novasightd` through
-`NOVASIGHT_TEMPORARY_LICENSE_CODE`. Studio submits both that ephemeral value and
+Debug launchers generate a second independent 256-bit value in memory and pass
+it only to `novasightd` through `NOVASIGHT_TEMPORARY_LICENSE_CODE` without
+writing it to disk. Studio submits both that ephemeral value and
 formal signed licenses through `POST /api/license/activate`. The repository
 compares only a SHA-256 digest of the temporary value in constant time; a match
 creates process-local authorization without writing a license file. A mismatch
