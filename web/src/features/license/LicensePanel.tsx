@@ -245,7 +245,7 @@ export function LicenseActivationForm({
       <div className="license-activation-copy">
         <strong>{gate ? "输入授权码" : "激活授权"}</strong>
         <span>{temporarySupported
-          ? "可使用本次 Debug 启动生成的临时授权码，或正式签名许可证。两者经过同一服务端验证流程。"
+          ? "可使用本次启动生成的临时授权码，或正式签名许可证。两者经过同一服务端验证流程。"
           : "请输入正式签名许可证。授权码只发送给本机服务验证，不会在页面中保存或回显。"}</span>
       </div>
       <form className="license-activation-controls" onSubmit={activate}>
