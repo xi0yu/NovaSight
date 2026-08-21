@@ -30,9 +30,21 @@ export function ThemeToggle() {
     setPickerOpen(false);
   }
 
+  function closePickerFromKeyboard() {
+    if (!pickerRef.current) return;
+    pickerRef.current.open = false;
+    setPickerOpen(false);
+    pickerRef.current.querySelector("summary")?.focus();
+  }
+
   return (
     <details
       className="theme-picker"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !event.currentTarget.open) return;
+        event.preventDefault();
+        closePickerFromKeyboard();
+      }}
       onToggle={(event) => setPickerOpen(event.currentTarget.open)}
       ref={pickerRef}
     >
