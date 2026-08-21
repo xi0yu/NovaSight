@@ -2,6 +2,7 @@ export type LicenseFeature =
   | "capture"
   | "runtime"
   | "models"
+  | "plugins"
   | "tensorrt"
   | "hardware_control"
   | "config_read"
@@ -32,6 +33,7 @@ const LICENSE_FEATURES = new Set<LicenseFeature>([
   "capture",
   "runtime",
   "models",
+  "plugins",
   "tensorrt",
   "hardware_control",
   "config_read",

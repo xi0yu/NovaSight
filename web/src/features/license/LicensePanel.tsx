@@ -331,6 +331,7 @@ function formatFeature(feature: string): string {
     capture: "真机采集",
     runtime: "运行控制",
     models: "模型仓库",
+    plugins: "旧版插件能力",
     tensorrt: "TensorRT",
     hardware_control: "硬件控制",
     config_read: "读取配置",
