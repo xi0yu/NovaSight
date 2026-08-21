@@ -4188,6 +4188,17 @@ body::after {
   border-color: var(--brand-primary-active);
 }
 
+.console-button.primary:disabled,
+.ui-button-primary:disabled,
+.button.primary:disabled,
+.ui-button.primary:disabled {
+  border-color: var(--border-default);
+  background: var(--bg-subtle);
+  color: var(--text-tertiary);
+  box-shadow: none;
+  opacity: 1;
+}
+
 .theme-toggle {
   display: inline-flex;
   align-items: center;
@@ -4782,6 +4793,16 @@ body::after {
 [data-theme="frontier-industrial"] .ui-button.primary:hover {
   border-color: var(--brand-primary-hover);
   background: var(--brand-primary-hover);
+}
+
+[data-theme="frontier-industrial"] .console-button.primary:disabled,
+[data-theme="frontier-industrial"] .ui-button-primary:disabled,
+[data-theme="frontier-industrial"] .button.primary:disabled,
+[data-theme="frontier-industrial"] .ui-button.primary:disabled {
+  border-color: var(--border-default);
+  background: var(--bg-subtle);
+  color: var(--text-tertiary);
+  box-shadow: none;
 }
 
 [data-theme="frontier-industrial"] .theme-toggle,
