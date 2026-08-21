@@ -175,6 +175,24 @@ test("parameter draft survives in-app navigation without a confirmation popup", 
   expect(dialogCount).toBe(0);
 });
 
+test("algorithm parameters explain the two-stage save flow", async ({ page }) => {
+  await mockStudioApi(page, authenticatedSession, {
+    revision: 1,
+    control: {
+      trigger_mode: "always",
+      recoil: { enabled: false, require_target: true, interval_ms: 16, y_counts: 1 },
+    },
+    pipeline: {},
+  });
+  await page.goto("/?page=params");
+
+  await page.getByRole("button", { name: "算法参数" }).click();
+
+  const dialog = page.getByRole("dialog", { name: "控制参数" });
+  await expect(dialog).toContainText("加入草稿并关闭");
+  await expect(dialog).toContainText("返回参数页后点击“保存修改”才会写入设备");
+});
+
 test("narrow Studio keeps Chinese navigation and save action reachable", async ({ page }) => {
   await page.setViewportSize({ width: 620, height: 812 });
   await mockStudioApi(page);

@@ -4928,6 +4928,7 @@ export function StudioConsoleView({
 
       {algorithmSettingsDialogOpen ? (
       <AdvancedSettingsDialog
+        description="“加入草稿并关闭”只保留在本页；返回参数页后点击“保存修改”才会写入设备。"
         dirty={configDialogDirty}
         eyebrow="算法配置"
         footerNote={controlModeLabel}
