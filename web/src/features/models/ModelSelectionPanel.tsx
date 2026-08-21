@@ -234,7 +234,7 @@ export function ModelSelectionPanel({
         </div>
       </section> : null}
 
-      <div className="model-selection-workspace">
+      <div className={models.length > 0 ? "model-selection-workspace" : "model-selection-workspace empty"}>
         <div className="model-selection-browser">
           {loading && root === null ? (
             <div className="model-catalog-placeholder">正在读取 models 目录...</div>
@@ -254,7 +254,7 @@ export function ModelSelectionPanel({
           )}
         </div>
 
-        <aside className="model-selection-preview" aria-live="polite">
+        {models.length > 0 ? <aside className="model-selection-preview" aria-live="polite">
           <div className="model-selection-preview-heading">
             <span className="model-selection-preview-icon" aria-hidden="true">
               <NovaIcon name="engine" size={20} />
@@ -399,20 +399,22 @@ export function ModelSelectionPanel({
               {busy === "model.metadata" ? "保存中..." : "保存整理结果"}
             </button>
           </section>
-        </aside>
+        </aside> : null}
       </div>
 
       {switchMessage ? <div className="model-switch-note good">{switchMessage}</div> : null}
 
-      <button
-        className="console-button primary console-full-button"
-        disabled={busy !== null || !canSwitch}
-        onClick={onSwitch}
-        type="button"
-      >
-        <NovaIcon name="model-switch" size={16} />
-        {switchLabel}
-      </button>
+      {models.length > 0 ? (
+        <button
+          className="console-button primary console-full-button"
+          disabled={busy !== null || !canSwitch}
+          onClick={onSwitch}
+          type="button"
+        >
+          <NovaIcon name="model-switch" size={16} />
+          {switchLabel}
+        </button>
+      ) : null}
 
       {selectedModel?.kind === "engine" ? (
         <p className="console-field-hint">

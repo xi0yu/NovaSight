@@ -40,6 +40,8 @@ describe("ModelSelectionPanel", () => {
     expect(screen.queryByRole("region", { name: "模型筛选" })).not.toBeInTheDocument();
     expect(screen.getByText(/将 \.onnx 或 \.engine 文件放入设备的 models 目录/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新模型" })).toBeEnabled();
+    expect(screen.queryByText("所选 Engine 文件")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "验证并切换到所选模型" })).not.toBeInTheDocument();
   });
 
   it("restores model filters when the operator returns during the same browser session", async () => {
