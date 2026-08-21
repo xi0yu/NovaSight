@@ -8,7 +8,7 @@ export default defineConfig({
         url: "http://127.0.0.1/"
       }
     },
-    include: ["src/**/*.test.{ts,tsx}"],
+    include: ["src/**/*.test.{ts,tsx,mjs}"],
     setupFiles: ["./src/test/setup.ts"],
     restoreMocks: true,
     clearMocks: true,

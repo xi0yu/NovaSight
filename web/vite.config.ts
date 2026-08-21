@@ -10,11 +10,19 @@ export default defineConfig({
     host: studioEndpoint.host,
     port: studioEndpoint.port,
     strictPort: true,
+    // novasight-web validates the browser Origin against this public Host.
     proxy: {
-      "/api": RUST_DEV_ORIGIN,
-      "/healthz": RUST_DEV_ORIGIN,
+      "/api": {
+        target: RUST_DEV_ORIGIN,
+        changeOrigin: false,
+      },
+      "/healthz": {
+        target: RUST_DEV_ORIGIN,
+        changeOrigin: false,
+      },
       "/ws": {
         target: RUST_DEV_ORIGIN,
+        changeOrigin: false,
         ws: true,
       },
     },

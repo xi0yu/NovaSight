@@ -635,6 +635,7 @@ mod tests {
             .method("POST")
             .uri("/api/auth/session")
             .header(header::HOST, "192.168.10.20:7351")
+            .header(header::ORIGIN, "http://192.168.10.20:7351")
             .header(header::CONTENT_TYPE, "application/json")
             .extension(ConnectInfo(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::new(192, 168, 10, 21)),

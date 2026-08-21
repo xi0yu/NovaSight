@@ -2,7 +2,9 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
 
-if (!window.localStorage) {
+const hasWindow = typeof window !== "undefined";
+
+if (hasWindow && !window.localStorage) {
   const values = new Map<string, string>();
   const storage: Storage = {
     get length() {
@@ -18,6 +20,7 @@ if (!window.localStorage) {
 }
 
 afterEach(() => {
+  if (!hasWindow) return;
   cleanup();
   window.localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
