@@ -2044,25 +2044,28 @@ export function StudioConsoleView({
       items.push({
         key: `notice-${notice.id}`,
         title: notice.title,
-        detail: notice.detail || notice.source,
+        detail: formatRuntimeErrorMessage(notice.detail || notice.source),
         time: notice.createdAt,
         count: notice.count
       });
     }
     for (const [source, detail] of Object.entries(errors)) {
       if (detail && !noticeStates.has(`${source}\u0000${detail}`)) {
-        items.push({ key: `state-${source}`, title: `${source} 通道异常`, detail });
+        items.push({ key: `state-${source}`, title: `${source} 通道异常`, detail: formatRuntimeErrorMessage(detail) });
       }
     }
-    const localErrorAlreadyCovered = localError !== "" && items.some((item) => (
-      localError === item.detail ||
-      localError === `${item.title}：${item.detail}` ||
-      localError === `${item.title}: ${item.detail}`
+    const formattedLocalError = localError ? formatRuntimeErrorMessage(localError) : "";
+    const localErrorAlreadyCovered = formattedLocalError !== "" && items.some((item) => (
+      formattedLocalError === item.detail ||
+      formattedLocalError === `${item.title}：${item.detail}` ||
+      formattedLocalError === `${item.title}: ${item.detail}`
     ));
     if (localError && !localErrorAlreadyCovered) {
-      items.push({ key: "local", title: "当前操作未完成", detail: localError });
+      items.push({ key: "local", title: "当前操作未完成", detail: formattedLocalError });
     }
-    if (capture?.last_error) items.push({ key: "capture", title: "采集链路异常", detail: capture.last_error });
+    if (capture?.last_error) {
+      items.push({ key: "capture", title: "采集链路异常", detail: formatRuntimeErrorMessage(capture.last_error) });
+    }
     return items.filter((item, index, all) => (
       all.findIndex((candidate) => candidate.title === item.title && candidate.detail === item.detail) === index
     ));

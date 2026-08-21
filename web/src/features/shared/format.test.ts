@@ -3,6 +3,12 @@ import { describe, expect, it } from "vitest";
 import { formatRuntimeErrorMessage } from "./format";
 
 describe("formatRuntimeErrorMessage", () => {
+  it("explains the host-preview perception adapter boundary in Chinese", () => {
+    expect(formatRuntimeErrorMessage(
+      "no perception adapter is installed for this daemon mode",
+    )).toBe("当前为主机预览模式，未启用 Jetson 感知适配器；可继续查看界面，真机运行请在 Jetson 上启动 NovaSight。");
+  });
+
   it("turns the uncommissioned pointer error into an actionable Chinese message", () => {
     expect(formatRuntimeErrorMessage(
       "pointer device is not commissioned; configure hardware.auto_connect with a provisioned host and UUID",

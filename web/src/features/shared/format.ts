@@ -35,6 +35,9 @@ export function getErrorMessage(error: unknown): string {
 }
 
 export function formatRuntimeErrorMessage(message: string): string {
+  if (message.includes("no perception adapter is installed for this daemon mode")) {
+    return "当前为主机预览模式，未启用 Jetson 感知适配器；可继续查看界面，真机运行请在 Jetson 上启动 NovaSight。";
+  }
   if (message.includes("pointer device is not commissioned")) {
     return "kmNet 尚未完成设备配置；请填写真实的地址、端口和 UUID 后保存。";
   }
