@@ -3013,6 +3013,28 @@ tbody tr:hover {
   font-weight: 800;
 }
 
+.console-info-recovery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.console-info-recovery > span {
+  min-width: 0;
+}
+
+.console-info-recovery .console-button {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 620px) {
+  .console-info-recovery {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .action-confirmation-layer {
   position: fixed;
   inset: 0;

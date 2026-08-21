@@ -3769,8 +3769,13 @@ export function StudioConsoleView({
         ) : null}
 
         {activePage !== "overview" && activePage !== "models" && activePage !== "params" && activePage !== "control-test" && runtimeLifecycleActive && runtimeMainlinePresentation.readinessCode !== "ready" ? (
-          <div className="console-info" role="status">
-            {runtimeMainlinePresentation.readinessLabel}：{runtimeMainlinePresentation.readinessDetail}
+          <div className="console-info console-info-recovery" role="status">
+            <span>{runtimeMainlinePresentation.readinessLabel}：{runtimeMainlinePresentation.readinessDetail}</span>
+            {runtimeMainlinePresentation.readinessCode === "no_video" && activePage !== "capture" ? (
+              <button className="console-button" onClick={() => navigatePage("capture")} type="button">
+                前往采集
+              </button>
+            ) : null}
           </div>
         ) : null}
 
