@@ -1,4 +1,5 @@
 import type { RuntimeState } from "../../api";
+import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 
 export type RuntimeTransportConfidence = "current" | "stale" | "unavailable";
 export type LifecycleProjectionState = RuntimeState["semantic"]["phase"];
@@ -87,6 +88,9 @@ function perceptionProjection(
 }
 
 function recoveryAction(runtime: RuntimeState): Pick<RuntimeProjection, "nextAction" | "nextActionLabel"> {
+  if (getRuntimeMainlineStatus(runtime).readinessCode === "no_video") {
+    return { nextAction: "open-capture", nextActionLabel: "检查采集" };
+  }
   switch (runtime.vision.output_trace.next_action) {
     case "check_model":
       return { nextAction: "open-model-manager", nextActionLabel: "检查模型" };

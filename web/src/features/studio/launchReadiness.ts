@@ -24,6 +24,9 @@ function actionForRuntime(runtime: RuntimeState): Pick<
   LaunchReadinessSummary,
   "primaryAction" | "primaryActionLabel"
 > {
+  if (getRuntimeMainlineStatus(runtime).readinessCode === "no_video") {
+    return { primaryAction: "open-capture", primaryActionLabel: "检查采集" };
+  }
   const nextAction = runtime.vision.output_trace?.next_action;
   switch (nextAction) {
     case "check_model":

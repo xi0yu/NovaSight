@@ -13,6 +13,7 @@ function runtime(overrides: {
   nextAction?: string;
 } = {}): RuntimeState {
   return {
+    running: overrides.phase === "running",
     semantic: {
       daemon_instance_id: "daemon-a",
       phase: overrides.phase ?? "stopped",
@@ -73,5 +74,11 @@ describe("runtime projection", () => {
   it("routes known recovery actions and leaves unknown actions inert", () => {
     expect(projectRuntimeState(runtime({ nextAction: "check_latency" }), "current")?.nextAction).toBe("open-latency");
     expect(projectRuntimeState(runtime({ nextAction: "future_action" }), "current")?.nextAction).toBeUndefined();
+  });
+
+  it("prioritizes capture recovery when the running mainline has no video", () => {
+    const projection = projectRuntimeState(runtime({ phase: "running", nextAction: "check_model" }), "current");
+    expect(projection?.nextAction).toBe("open-capture");
+    expect(projection?.nextActionLabel).toBe("检查采集");
   });
 });
