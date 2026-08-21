@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  ApiError,
   emergencyStopRuntimePipeline,
+  getApiErrorCode,
   getRuntimeState,
   startRuntimePipeline,
   stopRuntimePipeline,
@@ -36,7 +38,17 @@ function stopError(detail: string): string {
   return `停止主链未确认：${detail} · 建议：查看异常信息中的后端原因并确认当前运行状态。`;
 }
 
-function launchError(detail: string): string {
+export function formatMainlineLaunchError(error: unknown): string {
+  const errorDetail = error instanceof ApiError && typeof error.detail === "object" && error.detail !== null
+    ? error.detail as Record<string, unknown>
+    : null;
+  if (
+    getApiErrorCode(error) === "LICENSE_FEATURE_REQUIRED"
+    && errorDetail?.required_feature === "hardware_control"
+  ) {
+    return "启动主链失败：当前授权不包含硬件控制。已保存配置开启了物理输出；如需先运行采集、推理和算法预览，请在“控制 → 输出”关闭“发送鼠标偏移”，或使用包含硬件控制权限的正式许可证。";
+  }
+  const detail = getErrorMessage(error);
   return `启动主链失败：请求 NovaSight 使用已保存配置进入运行态 · ${detail} · 建议：查看异常信息中的后端原因后重试。`;
 }
 
@@ -120,8 +132,7 @@ export function useMainlineLaunch({
       }
 
       if (!acceptedByRuntime) {
-        const detail = getErrorMessage(requestError);
-        setLocalError(launchError(detail));
+        setLocalError(formatMainlineLaunchError(requestError));
         reportError(requestError, { source: "mainline-launch", title: "启动主链失败" });
       }
 
