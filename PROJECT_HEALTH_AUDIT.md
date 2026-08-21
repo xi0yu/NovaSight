@@ -229,7 +229,7 @@ of truth.
 | Host development baseline | YES | Locked metadata, formatting, strict Clippy, workspace tests, and Studio build pass locally |
 | Studio static health | YES | Typecheck, visual audit, and build passed at the recorded baseline |
 | Studio behavior coverage | YES | Unit/contract and mocked browser suites cover critical interaction states |
-| Automated host CI | YES | Existing hosted gates are active; Linux ARM64 is configured and requires its first successful per-SHA result |
+| Automated host CI | YES | Existing hosted gates are active; Linux ARM64 is configured and Actions history records each SHA's result |
 | Jetson production readiness | UNKNOWN | Requires current hardware receipts |
 | Dependency vulnerability status | YES | npm production and RustSec lockfile audits pass in hosted automation; RUSTSEC-2023-0071 is scope-reviewed and explicitly ignored |
 | Documentation authority | YES | This ledger supersedes the deleted Python-era audit content |

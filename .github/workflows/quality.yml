@@ -77,6 +77,9 @@ jobs:
       - name: Verify Cargo lockfile matches manifests
         run: cargo metadata --locked --format-version 1 > /dev/null
 
+      - name: Install ARM64 Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libacl1-dev
+
       - name: Build ARM64 host-preview daemon
         run: cargo build -p novasightd --no-default-features --locked
 
