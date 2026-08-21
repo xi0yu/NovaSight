@@ -190,6 +190,8 @@ test("narrow Studio keeps Chinese navigation and save action reachable", async (
   await expect(saveBar).toHaveCSS("position", "sticky");
   await page.locator("main.console-main").evaluate((main) => { main.scrollTop = 900; });
   await expect(page.getByRole("button", { name: "保存修改" })).toBeInViewport();
+  await expect(page.getByRole("button", { name: "Choose File" })).toHaveCount(0);
+  await expect(page.locator('input[type="file"]')).toHaveAttribute("tabindex", "-1");
 
   for (const control of [
     page.locator(".error-center-trigger"),

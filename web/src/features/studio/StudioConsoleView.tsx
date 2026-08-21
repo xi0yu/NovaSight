@@ -4253,7 +4253,15 @@ export function StudioConsoleView({
                   <NovaIcon name="import" size={15} />
                   导入
                 </button>
-                <input ref={fileInputRef} className="visually-hidden" type="file" accept="application/json,.json" onChange={importConfig} />
+                <input
+                  ref={fileInputRef}
+                  aria-hidden="true"
+                  className="visually-hidden"
+                  tabIndex={-1}
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={importConfig}
+                />
                 {parameterPageDirty ? (
                   <button
                     className="console-button"
