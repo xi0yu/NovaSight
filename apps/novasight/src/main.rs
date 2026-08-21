@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
@@ -16,8 +17,10 @@ use tokio::process::{Child, Command};
 use tokio::time;
 
 mod frontend_dev;
+mod lifecycle;
 
 const CONFIG_PATH: &str = "data/novasight.yaml";
+const DEVELOPMENT_CONFIG_PATH: &str = "data/novasight.frontend-dev.yaml";
 const DATA_DIR: &str = "data";
 const MODEL_DIR: &str = "data/models";
 const DATABASE_PATH: &str = "data/novasight.db";
@@ -137,7 +140,7 @@ async fn run() -> Result<()> {
         };
     open_studio(&ready, &access);
     print_temporary_license_access(temporary_license.as_ref());
-    supervise_stack(&layout, daemon, web).await
+    lifecycle::supervise(&layout, daemon, web, None).await
 }
 
 fn ensure_zero_arguments() -> Result<()> {
@@ -177,12 +180,16 @@ impl PortableLayout {
         control: PathBuf,
     ) -> Self {
         let log_dir = root.join(LOG_DIR);
+        let config_path = match mode {
+            LayoutMode::Package => CONFIG_PATH,
+            LayoutMode::Developer => DEVELOPMENT_CONFIG_PATH,
+        };
         Self {
             mode,
             daemon,
             web,
             control,
-            config: root.join(CONFIG_PATH),
+            config: root.join(config_path),
             data_dir: root.join(DATA_DIR),
             model_dir: root.join(MODEL_DIR),
             run_dir: root.join(RUN_DIR),
@@ -277,8 +284,19 @@ fn remove_stale_ready_files(layout: &PortableLayout) -> Result<()> {
 
 fn ensure_portable_config(layout: &PortableLayout) -> Result<()> {
     if !layout.config.exists() {
-        YamlConfigRepository::initialize_default(&layout.config)
-            .with_context(|| format!("initialize {}", layout.config.display()))?;
+        let production_config = layout.root.join(CONFIG_PATH);
+        if layout.mode == LayoutMode::Developer && production_config.is_file() {
+            fs::copy(&production_config, &layout.config).with_context(|| {
+                format!(
+                    "initialize {} from {}",
+                    layout.config.display(),
+                    production_config.display()
+                )
+            })?;
+        } else {
+            YamlConfigRepository::initialize_default(&layout.config)
+                .with_context(|| format!("initialize {}", layout.config.display()))?;
+        }
     }
     let mut document: Value = serde_yaml::from_reader(
         File::open(&layout.config).with_context(|| format!("open {}", layout.config.display()))?,
@@ -344,7 +362,7 @@ fn spawn_logged_process(
     executable: &Path,
     root: &Path,
     log_path: &Path,
-    args: &[&str],
+    args: &[OsString],
     environment: &[(&str, &str)],
 ) -> Result<Child> {
     let log = OpenOptions::new()
@@ -375,29 +393,35 @@ fn spawn_daemon(
     layout: &PortableLayout,
     temporary_license: Option<&TemporaryLicenseAccess>,
 ) -> Result<Child> {
+    let args = [
+        OsString::from("--config"),
+        layout.config.as_os_str().to_owned(),
+    ];
     match temporary_license {
         Some(access) => spawn_logged_process(
             &layout.daemon,
             &layout.root,
             &layout.daemon_log,
-            &[],
+            &args,
             &[(TEMPORARY_LICENSE_CODE_ENV, access.code.as_str())],
         ),
-        None => spawn_logged_process(&layout.daemon, &layout.root, &layout.daemon_log, &[], &[]),
+        None => spawn_logged_process(&layout.daemon, &layout.root, &layout.daemon_log, &args, &[]),
     }
 }
 
 fn spawn_web(layout: &PortableLayout, access: &WebAccess, frontend_dev: bool) -> Result<Child> {
-    let args = if frontend_dev {
-        &["--frontend-dev"][..]
-    } else {
-        &[][..]
-    };
+    let mut args = vec![
+        OsString::from("--config"),
+        layout.config.as_os_str().to_owned(),
+    ];
+    if frontend_dev {
+        args.push(OsString::from("--frontend-dev"));
+    }
     spawn_logged_process(
         &layout.web,
         &layout.root,
         &layout.web_log,
-        args,
+        &args,
         &[(WEB_ACCESS_CODE_ENV, access.code.as_str())],
     )
 }
@@ -482,27 +506,6 @@ fn read_file_tail(path: &Path, max_bytes: u64) -> Result<String> {
     let mut bytes = Vec::with_capacity((len - start).min(max_bytes) as usize);
     file.read_to_end(&mut bytes)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-async fn supervise_stack(layout: &PortableLayout, mut daemon: Child, mut web: Child) -> Result<()> {
-    tokio::select! {
-        status = daemon.wait() => {
-            let status = status.context("wait for novasightd process")?;
-            let _ = stop_child("novasight-web", &mut web).await;
-            bail!("novasightd exited with status {status}")
-        }
-        status = web.wait() => {
-            let status = status.context("wait for novasight-web process")?;
-            let _ = stop_owned_daemon(layout, &mut daemon).await;
-            bail!("novasight-web exited with status {status}")
-        }
-        signal = wait_for_shutdown_signal() => {
-            signal?;
-            let web_stop = stop_child("novasight-web", &mut web).await;
-            let daemon_stop = stop_owned_daemon(layout, &mut daemon).await;
-            web_stop.and(daemon_stop)
-        }
-    }
 }
 
 async fn stop_owned_daemon(layout: &PortableLayout, child: &mut Child) -> Result<()> {
@@ -911,10 +914,12 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        LayoutMode, PortableLayout, ReadyDocument, TEMPORARY_LICENSE_ACCESS_FILE, WebAccess,
-        create_temporary_license_access, parse_ifconfig_lan_ips, random_access_code,
-        studio_ready_messages,
+        CONFIG_PATH, DEVELOPMENT_CONFIG_PATH, LayoutMode, PortableLayout, ReadyDocument,
+        TEMPORARY_LICENSE_ACCESS_FILE, WebAccess, create_temporary_license_access,
+        ensure_portable_config, parse_ifconfig_lan_ips, random_access_code, studio_ready_messages,
     };
+    use novasight_config::YamlConfigRepository;
+    use serde_yaml::Value;
 
     struct TestRoot(PathBuf);
 
@@ -931,6 +936,58 @@ mod tests {
         assert_eq!(first.len(), 64);
         assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn developer_and_package_layouts_use_separate_config_files() {
+        let root = std::env::temp_dir().join("novasight-layout-test");
+        let developer = PortableLayout::new(
+            LayoutMode::Developer,
+            root.clone(),
+            root.join("novasightd"),
+            root.join("novasight-web"),
+            root.join("novasightctl"),
+        );
+        let package = PortableLayout::new(
+            LayoutMode::Package,
+            root.clone(),
+            root.join("novasightd"),
+            root.join("novasight-web"),
+            root.join("novasightctl"),
+        );
+
+        assert_eq!(developer.config, root.join(DEVELOPMENT_CONFIG_PATH));
+        assert_eq!(package.config, root.join(CONFIG_PATH));
+    }
+
+    #[test]
+    fn first_developer_config_inherits_production_without_rewriting_it() {
+        let root = TestRoot(std::env::temp_dir().join(format!(
+            "novasight-launcher-config-test-{}",
+            random_access_code()
+        )));
+        let production_config = root.0.join(CONFIG_PATH);
+        YamlConfigRepository::initialize_default(&production_config).unwrap();
+        let mut production_document = fs::read_to_string(&production_config).unwrap();
+        production_document.push_str("deployment_marker: jetson-calibrated\n");
+        fs::write(&production_config, production_document).unwrap();
+        let production_before = fs::read(&production_config).unwrap();
+        let layout = PortableLayout::new(
+            LayoutMode::Developer,
+            root.0.clone(),
+            root.0.join("novasightd"),
+            root.0.join("novasight-web"),
+            root.0.join("novasightctl"),
+        );
+
+        ensure_portable_config(&layout).unwrap();
+
+        assert_eq!(fs::read(&production_config).unwrap(), production_before);
+        let development = YamlConfigRepository::load(&layout.config).unwrap();
+        assert_eq!(
+            development.extra.get("deployment_marker"),
+            Some(&Value::String("jetson-calibrated".to_owned()))
+        );
     }
 
     #[test]

@@ -177,12 +177,13 @@ The Web/API and Vite processes read their endpoint roles from `deploy/studio-end
 Vite listens on `0.0.0.0:7351` with strict port ownership and proxies API,
 health, and WebSocket traffic to `novasight-web` at `127.0.0.1:5174`; that
 process reaches `novasightd` only through the Unix socket. The
-dedicated frontend-development configuration is initialized with the Rust
-development defaults on first use. The ordinary product configuration stays in
-`data/novasight.yaml` and is not read or rewritten by the HMR daemon. On a
+dedicated frontend-development configuration copies `data/novasight.yaml` once
+when that production configuration already exists; otherwise it starts from the
+Rust development defaults. Later development runs use only
+`data/novasight.frontend-dev.yaml` and do not rewrite the product configuration. On a
 headless Jetson, open `http://<Jetson-LAN-IP>:7351/` from another machine on the
 same LAN. The launcher prints the resolved authenticated LAN URL and `Ctrl+C`
-stops all three processes. It does not install packages or build the Web UI. Cargo dependency
+or `/exit` stops all three processes. It does not install packages or build the Web UI. Cargo dependency
 fingerprints make unchanged Rust startup checks cheap, while changed backend
 source is rebuilt before launch instead of running an older daemon.
 

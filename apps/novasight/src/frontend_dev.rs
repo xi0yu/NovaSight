@@ -10,11 +10,10 @@ use tokio::process::Child;
 use tokio::time;
 
 use super::{
-    LayoutMode, PROCESS_READY_TIMEOUT, PortableLayout, ReadyDocument,
-    create_temporary_license_access, create_web_access, health_check, http_url, print_studio_urls,
-    print_temporary_license_access, read_ready_file, spawn_daemon, spawn_logged_process, spawn_web,
-    stop_child, stop_owned_daemon, wait_for_daemon_ready, wait_for_shutdown_signal,
-    wait_for_web_ready,
+    LayoutMode, PortableLayout, ReadyDocument, create_temporary_license_access, create_web_access,
+    ensure_portable_config, health_check, http_url, lifecycle, log_tail, print_studio_urls,
+    print_temporary_license_access, read_daemon_ready_file, read_ready_file, spawn_daemon,
+    spawn_logged_process, spawn_web, stop_child, stop_owned_daemon,
 };
 
 const FRONTEND_READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -30,6 +29,7 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
             ready.url
         );
     }
+    ensure_portable_config(layout)?;
     validate_artifacts(layout)?;
     let _ = fs::remove_file(&layout.web_ready_file);
     let _ = fs::remove_file(&layout.daemon_ready_file);
@@ -37,10 +37,6 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     let temporary_license = create_temporary_license_access(layout)?;
 
     let mut daemon = spawn_daemon(layout, temporary_license.as_ref())?;
-    if let Err(error) = wait_for_daemon_ready(layout, &mut daemon, PROCESS_READY_TIMEOUT).await {
-        let _ = stop_child("novasightd", &mut daemon).await;
-        return Err(error);
-    }
     let mut web = match spawn_web(layout, &access, true) {
         Ok(web) => web,
         Err(error) => {
@@ -48,15 +44,6 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
             return Err(error);
         }
     };
-    let _api_ready =
-        match wait_for_web_ready(layout, &mut web, &mut daemon, PROCESS_READY_TIMEOUT).await {
-            Ok(ready) => ready,
-            Err(error) => {
-                let _ = stop_child("novasight-web", &mut web).await;
-                let _ = stop_owned_daemon(layout, &mut daemon).await;
-                return Err(error);
-            }
-        };
     let mut vite = match spawn_vite(layout) {
         Ok(vite) => vite,
         Err(error) => {
@@ -67,6 +54,7 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     };
     let studio_ready = studio_ready_document()?;
     if let Err(error) = wait_until_ready(
+        layout,
         &studio_ready.address,
         &mut daemon,
         &mut web,
@@ -82,7 +70,7 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     }
     print_studio_urls(&studio_ready, &access);
     print_temporary_license_access(temporary_license.as_ref());
-    supervise(layout, daemon, web, vite).await
+    lifecycle::supervise(layout, daemon, web, Some(vite)).await
 }
 
 fn validate_artifacts(layout: &PortableLayout) -> Result<()> {
@@ -188,6 +176,7 @@ fn studio_ready_document() -> Result<ReadyDocument> {
 }
 
 async fn wait_until_ready(
+    layout: &PortableLayout,
     address: &str,
     daemon: &mut Child,
     web: &mut Child,
@@ -202,52 +191,28 @@ async fn wait_until_ready(
             ("Vite", &mut *vite),
         ] {
             if let Some(status) = child.try_wait().with_context(|| format!("check {label}"))? {
-                bail!("{label} exited before frontend readiness with status {status}");
+                let log = match label {
+                    "novasightd" => log_tail(&layout.daemon_log),
+                    "novasight-web" => log_tail(&layout.web_log),
+                    _ => log_tail(&layout.log_dir.join("vite.log")),
+                };
+                bail!("{label} exited before frontend readiness with status {status}; {log}");
             }
         }
-        if health_check(address) {
+        let daemon_ready = read_daemon_ready_file(&layout.daemon_ready_file).is_ok_and(|ready| {
+            ready.transport == "http1-unix" && !ready.control_socket.trim().is_empty()
+        });
+        if daemon_ready && health_check(address) {
             return Ok(());
         }
         if started.elapsed() >= timeout {
             bail!(
-                "Vite did not proxy a healthy authenticated Studio within {timeout:?} at {address}"
+                "NovaSight frontend stack did not become healthy within {timeout:?} at {address}; daemon: {}; Web/API: {}; Vite: {}",
+                log_tail(&layout.daemon_log),
+                log_tail(&layout.web_log),
+                log_tail(&layout.log_dir.join("vite.log")),
             );
         }
         time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-async fn supervise(
-    layout: &PortableLayout,
-    mut daemon: Child,
-    mut web: Child,
-    mut vite: Child,
-) -> Result<()> {
-    tokio::select! {
-        status = daemon.wait() => {
-            let status = status.context("wait for novasightd")?;
-            let _ = stop_child("Vite", &mut vite).await;
-            let _ = stop_child("novasight-web", &mut web).await;
-            bail!("novasightd exited during frontend development with status {status}")
-        }
-        status = web.wait() => {
-            let status = status.context("wait for novasight-web")?;
-            let _ = stop_child("Vite", &mut vite).await;
-            let _ = stop_owned_daemon(layout, &mut daemon).await;
-            bail!("novasight-web exited during frontend development with status {status}")
-        }
-        status = vite.wait() => {
-            let status = status.context("wait for Vite")?;
-            let _ = stop_child("novasight-web", &mut web).await;
-            let _ = stop_owned_daemon(layout, &mut daemon).await;
-            bail!("Vite exited during frontend development with status {status}")
-        }
-        signal = wait_for_shutdown_signal() => {
-            signal?;
-            let vite_stop = stop_child("Vite", &mut vite).await;
-            let web_stop = stop_child("novasight-web", &mut web).await;
-            let daemon_stop = stop_owned_daemon(layout, &mut daemon).await;
-            vite_stop.and(web_stop).and(daemon_stop)
-        }
     }
 }
