@@ -83,7 +83,7 @@ export function LicenseGate({
 export function LicenseView({ license, onLicenseChange }: LicenseProps) {
   return (
     <div className="view-grid">
-      <Panel title="授权管理" eyebrow="本机授权">
+      <Panel title="当前授权" eyebrow="本机授权">
         <LicensePanel license={license} onLicenseChange={onLicenseChange} />
       </Panel>
     </div>

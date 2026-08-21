@@ -66,6 +66,7 @@ describe("LicenseView", () => {
     const user = userEvent.setup();
     render(<LicenseTransitionHarness />);
 
+    expect(screen.getByRole("heading", { name: "当前授权" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "退出当前授权" }));
     expect(clearLicenseKeyMock).not.toHaveBeenCalled();
     expect(screen.getByText(/再次点击将先紧急停止当前设备/)).toBeInTheDocument();
