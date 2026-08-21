@@ -612,7 +612,8 @@ fn open_studio(ready: &ReadyDocument, access: &WebAccess) {
 }
 
 fn print_studio_urls(ready: &ReadyDocument, access: &WebAccess) {
-    for message in studio_ready_messages(ready, access, detect_lan_ip()) {
+    let lan_ips = detect_lan_ips();
+    for message in studio_ready_messages(ready, access, &lan_ips) {
         println!("{message}");
     }
 }
@@ -620,7 +621,7 @@ fn print_studio_urls(ready: &ReadyDocument, access: &WebAccess) {
 fn studio_ready_messages(
     ready: &ReadyDocument,
     access: &WebAccess,
-    lan_ip: Option<IpAddr>,
+    lan_ips: &[IpAddr],
 ) -> Vec<String> {
     let Some(address) = ready_address(ready) else {
         return vec![format!(
@@ -634,13 +635,33 @@ fn studio_ready_messages(
             access_url(&ready.url, access)
         )];
     }
-    let lan_url = lan_ip
-        .map(|ip| http_url(SocketAddr::new(ip, address.port())))
+    let mut unique_lan_ips = Vec::new();
+    for ip in lan_ips.iter().copied().filter_map(candidate_lan_ip) {
+        if ip.is_ipv4() {
+            unique_lan_ips.push(ip);
+        }
+    }
+    unique_lan_ips.sort_by_key(lan_ip_sort_key);
+    unique_lan_ips.dedup();
+    let lan_url = unique_lan_ips
+        .first()
+        .map(|ip| http_url(SocketAddr::new(*ip, address.port())))
         .unwrap_or_else(|| format!("http://<本机局域网IP>:{}/", address.port()));
-    vec![format!(
+    let mut messages = vec![format!(
         "NovaSight Studio 局域网授权访问地址：{}",
         access_url(&lan_url, access)
-    )]
+    )];
+    messages.push(format!(
+        "  ➜  Local:   http://localhost:{}/",
+        address.port()
+    ));
+    messages.extend(unique_lan_ips.into_iter().map(|ip| {
+        format!(
+            "  ➜  Network: {}",
+            http_url(SocketAddr::new(ip, address.port()))
+        )
+    }));
+    messages
 }
 
 fn access_url(url: &str, access: &WebAccess) -> String {
@@ -733,8 +754,14 @@ fn http_url(address: SocketAddr) -> String {
     format!("http://{address}/")
 }
 
-fn detect_lan_ip() -> Option<IpAddr> {
-    detect_lan_ip_by_udp_route().or_else(detect_lan_ip_from_hostname)
+fn detect_lan_ips() -> Vec<IpAddr> {
+    let mut ips = detect_lan_ips_from_interfaces();
+    if let Some(ip) = detect_lan_ip_by_udp_route()
+        && !ips.contains(&ip)
+    {
+        ips.push(ip);
+    }
+    ips
 }
 
 fn detect_lan_ip_by_udp_route() -> Option<IpAddr> {
@@ -744,18 +771,66 @@ fn detect_lan_ip_by_udp_route() -> Option<IpAddr> {
 }
 
 #[cfg(target_os = "linux")]
-fn detect_lan_ip_from_hostname() -> Option<IpAddr> {
-    let output = StdCommand::new("hostname").arg("-I").output().ok()?;
-    String::from_utf8(output.stdout)
-        .ok()?
-        .split_whitespace()
-        .filter_map(|candidate| candidate.parse().ok())
-        .find_map(candidate_lan_ip)
+fn detect_lan_ips_from_interfaces() -> Vec<IpAddr> {
+    let Ok(output) = StdCommand::new("hostname").arg("-I").output() else {
+        return Vec::new();
+    };
+    parse_whitespace_lan_ips(&output.stdout)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn detect_lan_ip_from_hostname() -> Option<IpAddr> {
-    None
+#[cfg(target_os = "macos")]
+fn detect_lan_ips_from_interfaces() -> Vec<IpAddr> {
+    let Ok(output) = StdCommand::new("/sbin/ifconfig").arg("-a").output() else {
+        return Vec::new();
+    };
+    parse_ifconfig_lan_ips(&output.stdout)
+}
+
+#[cfg(target_os = "windows")]
+fn detect_lan_ips_from_interfaces() -> Vec<IpAddr> {
+    let Ok(output) = StdCommand::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.AddressState -eq 'Preferred' } | Select-Object -ExpandProperty IPAddress",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    parse_whitespace_lan_ips(&output.stdout)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn detect_lan_ips_from_interfaces() -> Vec<IpAddr> {
+    Vec::new()
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn parse_whitespace_lan_ips(output: &[u8]) -> Vec<IpAddr> {
+    String::from_utf8_lossy(output)
+        .split_whitespace()
+        .filter_map(|candidate| candidate.parse().ok())
+        .filter_map(candidate_lan_ip)
+        .filter(IpAddr::is_ipv4)
+        .collect()
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_ifconfig_lan_ips(output: &[u8]) -> Vec<IpAddr> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            if fields.next()? != "inet" {
+                return None;
+            }
+            fields.next()?.parse().ok()
+        })
+        .filter_map(candidate_lan_ip)
+        .filter(IpAddr::is_ipv4)
+        .collect()
 }
 
 fn candidate_lan_ip(ip: IpAddr) -> Option<IpAddr> {
@@ -767,6 +842,21 @@ fn candidate_lan_ip(ip: IpAddr) -> Option<IpAddr> {
         IpAddr::V6(ip) if ip.is_unicast_link_local() => None,
         _ => Some(ip),
     }
+}
+
+fn lan_ip_sort_key(ip: &IpAddr) -> (u8, u32) {
+    let IpAddr::V4(ip) = ip else {
+        return (u8::MAX, u32::MAX);
+    };
+    let [first, second, _, _] = ip.octets();
+    let network_rank = if ip.is_private() {
+        0
+    } else if first == 100 && (64..=127).contains(&second) {
+        1
+    } else {
+        2
+    };
+    (network_rank, u32::from(*ip))
 }
 
 #[cfg(target_os = "linux")]
@@ -821,7 +911,8 @@ mod tests {
 
     use super::{
         LayoutMode, PortableLayout, ReadyDocument, TEMPORARY_LICENSE_ACCESS_FILE, WebAccess,
-        create_temporary_license_access, random_access_code, studio_ready_messages,
+        create_temporary_license_access, parse_ifconfig_lan_ips, random_access_code,
+        studio_ready_messages,
     };
 
     struct TestRoot(PathBuf);
@@ -842,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn unspecified_listener_reports_only_the_chinese_lan_authenticated_url() {
+    fn unspecified_listener_reports_authenticated_local_and_all_network_urls() {
         let ready = ReadyDocument {
             address: "0.0.0.0:7351".to_owned(),
             url: "http://0.0.0.0:7351/".to_owned(),
@@ -854,22 +945,48 @@ mod tests {
         let messages = studio_ready_messages(
             &ready,
             &access,
-            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 31, 248))),
+            &[
+                IpAddr::V4(Ipv4Addr::new(100, 106, 210, 36)),
+                IpAddr::V4(Ipv4Addr::new(192, 168, 31, 248)),
+                IpAddr::V4(Ipv4Addr::new(192, 168, 31, 248)),
+            ],
         );
 
         assert_eq!(
             messages,
             vec![
-                "NovaSight Studio 局域网授权访问地址：http://192.168.31.248:7351/#access=one-time-access"
-                    .to_owned()
+                "NovaSight Studio 局域网授权访问地址：http://192.168.31.248:7351/#access=one-time-access".to_owned(),
+                "  ➜  Local:   http://localhost:7351/".to_owned(),
+                "  ➜  Network: http://192.168.31.248:7351/".to_owned(),
+                "  ➜  Network: http://100.106.210.36:7351/".to_owned(),
             ]
         );
 
         assert_eq!(
-            studio_ready_messages(&ready, &access, None),
+            studio_ready_messages(&ready, &access, &[]),
             vec![
-                "NovaSight Studio 局域网授权访问地址：http://<本机局域网IP>:7351/#access=one-time-access"
-                    .to_owned()
+                "NovaSight Studio 局域网授权访问地址：http://<本机局域网IP>:7351/#access=one-time-access".to_owned(),
+                "  ➜  Local:   http://localhost:7351/".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn macos_interface_output_discovers_lan_and_tailscale_ipv4s() {
+        let output = b"\
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST>\n\
+    inet 127.0.0.1 netmask 0xff000000\n\
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST>\n\
+    inet 192.168.31.248 netmask 0xffffff00 broadcast 192.168.31.255\n\
+utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST>\n\
+    inet 100.106.210.36 --> 100.106.210.36 netmask 0xffffffff\n\
+    inet6 fe80::1%utun4 prefixlen 64 scopeid 0x16\n";
+
+        assert_eq!(
+            parse_ifconfig_lan_ips(output),
+            vec![
+                IpAddr::V4(Ipv4Addr::new(192, 168, 31, 248)),
+                IpAddr::V4(Ipv4Addr::new(100, 106, 210, 36)),
             ]
         );
     }
