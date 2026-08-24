@@ -274,6 +274,12 @@ test("theme chooser exposes visible controls that a user can actually click", as
   await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite-red");
   await expect(trigger).toContainText("黑灰红");
   expect(await page.evaluate(() => window.localStorage.getItem("novasight.theme"))).toBe("graphite-red");
+
+  await trigger.click();
+  const viewport = page.viewportSize();
+  await page.mouse.click(12, (viewport?.height ?? 720) - 12);
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("group", { name: "网站主题" })).toHaveCount(0);
 });
 
 test("760px Studio recovery actions keep touch-safe targets", async ({ page }) => {

@@ -14,6 +14,7 @@ function getInitialTheme(): ThemeMode {
 export function ThemeToggle() {
   const [theme, setTheme] = useState<ThemeMode>(getInitialTheme);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
   const activeTheme = THEME_OPTIONS.find((option) => option.id === theme) ?? THEME_OPTIONS[0];
 
@@ -22,9 +23,22 @@ export function ThemeToggle() {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
 
+  useEffect(() => {
+    if (!pickerOpen) return;
+
+    function closePickerFromOutside(event: PointerEvent) {
+      if (!(event.target instanceof Node) || pickerRef.current?.contains(event.target)) return;
+      setPickerOpen(false);
+    }
+
+    document.addEventListener("pointerdown", closePickerFromOutside);
+    return () => document.removeEventListener("pointerdown", closePickerFromOutside);
+  }, [pickerOpen]);
+
   function selectTheme(nextTheme: ThemeMode) {
     setTheme(nextTheme);
     setPickerOpen(false);
+    toggleRef.current?.focus();
   }
 
   function closePickerFromKeyboard() {
@@ -40,6 +54,7 @@ export function ThemeToggle() {
         event.preventDefault();
         closePickerFromKeyboard();
       }}
+      ref={pickerRef}
     >
       <button
         aria-controls="novasight-theme-menu"

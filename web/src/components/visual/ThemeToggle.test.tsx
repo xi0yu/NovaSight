@@ -35,5 +35,19 @@ describe("ThemeToggle", () => {
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("graphite-red");
     expect(toggle).toHaveTextContent("黑灰红");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveFocus();
+  });
+
+  it("closes the theme menu when the user continues elsewhere", async () => {
+    const user = userEvent.setup();
+    render(<><ThemeToggle /><button type="button">运行</button></>);
+    const toggle = screen.getByRole("button", { name: /主题设置/ });
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.click(screen.getByRole("button", { name: "运行" }));
+
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("group", { name: "网站主题" })).not.toBeInTheDocument();
   });
 });
