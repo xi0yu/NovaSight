@@ -45,6 +45,37 @@ impl Clock for LaneClock {
 }
 
 #[test]
+fn perception_failure_retires_pending_control_before_supervisor_cleanup() {
+    let epoch = RuntimeEpoch(7);
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(RecordingPointerDevice::default());
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            ..PipelineConfig::default()
+        },
+        clock,
+        device.clone(),
+    )
+    .unwrap();
+    ingress.fail_perception("GPU execution failed");
+    runtime.open_output_gate();
+    ingress.set_trigger_active(true);
+    let batch = DetectionBatch::new(
+        FrameStamp::new(epoch, 1, 1_000_000_000),
+        640,
+        640,
+        vec![Detection::new(1, 0, 380.0, 330.0, 40.0, 40.0, 0.95).unwrap()],
+    )
+    .unwrap();
+    assert!(ingress.try_submit(batch).is_err());
+    assert_eq!(runtime.metrics().status, PipelineStatus::Faulted);
+    assert!(!runtime.metrics().output_gate_open);
+    runtime.shutdown().unwrap();
+    assert!(device.receipts().is_empty());
+}
+
+#[test]
 fn pipeline_runtime_drives_current_algorithms_and_device_on_owned_threads() {
     let epoch = RuntimeEpoch(7);
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));

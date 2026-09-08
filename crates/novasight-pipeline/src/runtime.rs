@@ -859,6 +859,14 @@ impl std::fmt::Debug for PipelineIngress {
 }
 
 impl PipelineIngress {
+    /// Retire perception results immediately, before asynchronous supervisor
+    /// cleanup. An already-entered device call cannot be recalled.
+    pub fn fail_perception(&self, message: impl Into<String>) {
+        self.shared.fault(message);
+        self.batches.close();
+        self.command_slot.close();
+    }
+
     /// Publish the newest generation while sharing the same safety boundary as
     /// the final device send. Once this returns, no older command can enter the
     /// vendor call.

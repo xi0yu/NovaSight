@@ -325,6 +325,8 @@ impl SnapshotExchange {
 
 #[derive(Debug)]
 struct ProbeState {
+    ingress: PipelineIngress,
+    latest_frames: LatestFrameExchange,
     closed: AtomicBool,
     generation: AtomicU64,
     first_published: AtomicBool,
@@ -354,6 +356,9 @@ impl ProbeState {
     fn fault(&self, message: impl Into<String>) {
         self.closed.store(true, Ordering::Release);
         let message = message.into();
+        self.record_rejection("perception fault", &message);
+        self.ingress.fail_perception(message.clone());
+        self.latest_frames.clear();
         let _ = self.events.try_send(SessionEvent::Faulted {
             message: message.clone(),
         });
@@ -502,6 +507,8 @@ impl DeepStreamSession {
         let (event_tx, event_rx) = sync_channel(EVENT_CAPACITY);
         let (startup_tx, startup_rx) = sync_channel(1);
         let state = Arc::new(ProbeState {
+            ingress: ingress.clone(),
+            latest_frames: latest_frames.clone(),
             closed: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             first_published: AtomicBool::new(false),
@@ -1656,7 +1663,7 @@ fn wait_until_ready(
             return Ok(());
         }
         if state.closed.load(Ordering::Acquire) {
-            return Err(SessionError::StoppedBeforeReady);
+            return Err(SessionError::StartupFailed(state.last_rejection()));
         }
         match commands.try_recv() {
             Ok(SessionCommand::Stop) | Err(TryRecvError::Disconnected) => {
