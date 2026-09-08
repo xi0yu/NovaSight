@@ -70,6 +70,8 @@ GstPadProbeReturn probe(GstPad*, GstPadProbeInfo* info, gpointer user) {
 }
 void attach(GstElement* element) {
     if (!GST_IS_BIN(element)) return;
+    if (g_object_get_data(G_OBJECT(element), "novasight-p0-probes")) return;
+    g_object_set_data(G_OBJECT(element), "novasight-p0-probes", GINT_TO_POINTER(1));
     auto* iterator = gst_bin_iterate_recurse(GST_BIN(element));
     GValue value = G_VALUE_INIT;
     bool done = false;
@@ -118,6 +120,15 @@ extern "C" GstElement* gst_parse_launch(const gchar* description, GError** error
     static auto launch = reinterpret_cast<Launch>(dlsym(RTLD_NEXT, "gst_parse_launch"));
     if (!launch) return nullptr;
     auto* element = launch(description, error);
+    if (element) attach(element);
+    return element;
+}
+
+extern "C" GstElement* gst_parse_launchv(const gchar** argv, GError** error) {
+    using Launch = GstElement* (*)(const gchar**, GError**);
+    static auto launch = reinterpret_cast<Launch>(dlsym(RTLD_NEXT, "gst_parse_launchv"));
+    if (!launch) return nullptr;
+    auto* element = launch(argv, error);
     if (element) attach(element);
     return element;
 }

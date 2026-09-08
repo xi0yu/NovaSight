@@ -42,7 +42,7 @@ def paired(stages, first, last, begin, end, end_field="start_ns"):
             "unmatched": missing, "ambiguous": ambiguous, "reversed": reversed_count}
 
 
-def analyze(directory, gpu_candidate=False):
+def analyze(directory, gpu_candidate=False, visual_only=False):
     with (directory / "trace.csv").open() as source:
         header = source.readline().strip()
         if header != "# dropped=0":
@@ -50,11 +50,11 @@ def analyze(directory, gpu_candidate=False):
         stages = collections.defaultdict(list)
         for record in csv.DictReader(source):
             stages[record.pop("stage")].append({k: int(v) for k, v in record.items()})
-    samples = [] if gpu_candidate else [json.loads(line) for line in (directory / "snapshots.jsonl").read_text().splitlines()]
-    if gpu_candidate:
-        results = stages.get("gpu_candidate/result", [])
+    samples = [] if gpu_candidate or visual_only else [json.loads(line) for line in (directory / "snapshots.jsonl").read_text().splitlines()]
+    if gpu_candidate or visual_only:
+        results = stages.get("gpu_candidate/result" if gpu_candidate else "nvinfer/primary-infer/src", [])
         if not results:
-            raise ValueError("No GPU candidate result spans")
+            raise ValueError("No visual result timestamps")
         begin, end = results[0]["start_ns"] + 2_000_000_000, results[-1]["start_ns"]
     else:
         begin, end = samples[0]["observed_ns"] + 2_000_000_000, samples[-1]["observed_ns"]
@@ -99,6 +99,7 @@ def analyze(directory, gpu_candidate=False):
         if type(value) is int and type(before) is int:
             counters[name] = value - before
     return {"directory": directory.name, "gpu_capture_candidate": gpu_candidate,
+            "visual_only_baseline": visual_only,
             "window_seconds": (end - begin) / 1e9,
             "window_monotonic_ns": [begin, end], "stages": stage_info,
             "segments": segments, "runtime_counter_delta": counters,
@@ -125,14 +126,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path, nargs="?")
     parser.add_argument("--self-test", action="store_true")
-    parser.add_argument("--gpu-candidate", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--gpu-candidate", action="store_true")
+    mode.add_argument("--visual-only", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         self_test()
     elif args.directory is None:
         parser.error("directory is required")
     else:
-        report = analyze(args.directory, args.gpu_candidate)
+        report = analyze(args.directory, args.gpu_candidate, args.visual_only)
         output = args.directory / "analysis.json"
         output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
         print(output)
