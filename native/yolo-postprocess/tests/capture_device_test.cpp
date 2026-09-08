@@ -217,6 +217,8 @@ void run(const char* engine_path, unsigned seconds) {
         const auto end = now_ns();
         if (span) span("gpu_candidate/result", begin, end, pts, result.count);
         lease.release();
+        if (frames == 0)
+            trt_ok(novasight_tensorrt_capture_device_graph(runtime.engine, error, sizeof(error)));
         last = end;
         ++frames;
         if (begin - first >= 2000000000ULL) {
@@ -231,7 +233,7 @@ void run(const char* engine_path, unsigned seconds) {
         "Capture failed to stop");
     std::sort(latency.begin(), latency.end());
     auto percentile = [&](double p) { return latency[std::size_t(std::ceil(latency.size() * p)) - 1]; };
-    std::cout << "{\"capture_gpu_pass\":true,\"physical_output\":false,\"frames\":" << frames
+    std::cout << "{\"capture_gpu_pass\":true,\"cuda_graph\":true,\"physical_output\":false,\"frames\":" << frames
         << ",\"steady_samples\":" << latency.size() << ",\"nonempty_frames\":" << nonempty
         << ",\"truncated\":" << truncated << ",\"elapsed_ns\":" << last - first
         << ",\"image_ready_to_result_p50_us\":" << percentile(.5)

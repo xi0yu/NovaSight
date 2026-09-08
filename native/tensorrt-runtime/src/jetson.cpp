@@ -195,9 +195,18 @@ struct novasight_tensorrt_engine {
     std::vector<OutputSlot> outputs;
     bool device_pending = false;
     bool device_failed = false;
+    uint64_t bound_input = 0;
+    bool warmed_up = false;
+    cudaGraphExec_t device_graph = nullptr;
+
+    void discard_graph() noexcept {
+        if (device_graph) cudaGraphExecDestroy(device_graph);
+        device_graph = nullptr;
+    }
 
     ~novasight_tensorrt_engine() noexcept {
         if (device_pending && stream != nullptr) (void)cudaStreamSynchronize(stream);
+        discard_graph();
         if (stream != nullptr) cudaStreamDestroy(stream);
     }
 };
@@ -355,10 +364,15 @@ void bind_input(
             throw std::runtime_error("device tensor shape does not match TensorRT input");
         }
     }
-    if (!engine->context->setTensorAddress(
-            expected.name,
-            reinterpret_cast<void*>(static_cast<uintptr_t>(input->device_ptr)))) {
-        throw std::runtime_error("TensorRT rejected input tensor address");
+    if (engine->bound_input != input->device_ptr) {
+        // Captured contexts cannot be mutated and then replayed with stale bindings.
+        engine->discard_graph();
+        engine->warmed_up = false;
+        if (!engine->context->setTensorAddress(expected.name,
+                reinterpret_cast<void*>(static_cast<uintptr_t>(input->device_ptr)))) {
+            throw std::runtime_error("TensorRT rejected input tensor address");
+        }
+        engine->bound_input = input->device_ptr;
     }
 }
 
@@ -377,6 +391,7 @@ int execute_engine(
         throw std::runtime_error("TensorRT output view capacity is too small");
     }
     bind_input(engine, input);
+    engine->discard_graph();
     StreamDrainGuard drain{engine->stream, true};
     if (!engine->context->enqueueV3(engine->stream)) {
         const cudaError_t drain_result = drain.drain();
@@ -409,6 +424,7 @@ int execute_engine(
         }
     }
     cuda_check(drain.drain(), "cudaStreamSynchronize");
+    engine->warmed_up = true;
     for (size_t index = 0; index < engine->outputs.size(); ++index) {
         outputs[index].host_ptr = engine->outputs[index].host;
         outputs[index].nbytes = engine->outputs[index].spec.nbytes;
@@ -546,7 +562,11 @@ extern "C" int novasight_tensorrt_enqueue_device(
             cuda_check(cudaStreamWaitEvent(engine->stream,
                 reinterpret_cast<cudaEvent_t>(static_cast<uintptr_t>(input_ready_event)), 0),
                 "TensorRT input-ready event wait");
-        if (!engine->context->enqueueV3(engine->stream)) {
+        if (engine->device_graph) {
+            const auto status = cudaGraphLaunch(engine->device_graph, engine->stream);
+            engine->device_failed = status != cudaSuccess;
+            cuda_check(status, "TensorRT CUDA graph launch");
+        } else if (!engine->context->enqueueV3(engine->stream)) {
             engine->device_failed = true;
             throw std::runtime_error("TensorRT device enqueueV3 failed; engine invalidated");
         }
@@ -584,12 +604,45 @@ extern "C" int novasight_tensorrt_finish_device(
         engine->device_pending = false;
         engine->device_failed = status != cudaSuccess;
         cuda_check(status, "TensorRT device frame completion");
+        engine->warmed_up = true;
         return 0;
     } catch (const std::exception& error) {
         write_error(error_out, error_out_size, error.what());
         return 1;
     } catch (...) {
         write_error(error_out, error_out_size, "unexpected TensorRT device completion exception");
+        return 2;
+    }
+}
+
+extern "C" int novasight_tensorrt_capture_device_graph(
+    novasight_tensorrt_engine* engine, char* error_out, size_t error_out_size
+) {
+    cudaGraph_t graph = nullptr;
+    bool attempted = false;
+    try {
+        if (!engine || engine->device_pending || engine->device_failed || !engine->warmed_up)
+            throw std::runtime_error("TensorRT graph requires a completed warm-up frame");
+        if (engine->device_graph) return 0;
+        attempted = true;
+        cuda_check(cudaStreamBeginCapture(engine->stream, cudaStreamCaptureModeThreadLocal), "graph capture begin");
+        const bool enqueued = engine->context->enqueueV3(engine->stream);
+        // End capture even if TensorRT rejects it, so the stream exits capture mode.
+        const auto ended = cudaStreamEndCapture(engine->stream, &graph);
+        cuda_check(ended, "graph capture end");
+        if (!enqueued || !graph) throw std::runtime_error("TensorRT graph capture failed");
+        cuda_check(cudaGraphInstantiate(&engine->device_graph, graph, nullptr, nullptr, 0), "graph instantiate");
+        cudaGraphDestroy(graph);
+        return 0;
+    } catch (const std::exception& error) {
+        if (graph) cudaGraphDestroy(graph);
+        if (attempted) engine->device_failed = true;
+        write_error(error_out, error_out_size, error.what());
+        return 1;
+    } catch (...) {
+        if (graph) cudaGraphDestroy(graph);
+        if (attempted) engine->device_failed = true;
+        write_error(error_out, error_out_size, "unexpected TensorRT graph capture exception");
         return 2;
     }
 }

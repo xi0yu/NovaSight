@@ -95,6 +95,14 @@ extern "C" int novasight_tensorrt_finish_device(
     return 2;
 }
 
+extern "C" int novasight_tensorrt_capture_device_graph(
+    novasight_tensorrt_engine* engine, char* error_out, size_t error_out_size
+) {
+    (void)engine;
+    write_error(error_out, error_out_size, "reference TensorRT runtime cannot capture CUDA graphs");
+    return 2;
+}
+
 extern "C" int novasight_tensorrt_probe_zero(
     novasight_tensorrt_engine* engine,
     novasight_host_tensor_view* outputs,

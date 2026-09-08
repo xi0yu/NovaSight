@@ -124,6 +124,16 @@ int novasight_tensorrt_finish_device(
     size_t error_out_size
 );
 
+/* Optional inference-only CUDA graph, captured after a completed warm-up frame.
+ * The last input allocation must still be alive. Stable device enqueues replay
+ * it; changing the input address or using the host API discards it BEFORE the
+ * execution context is modified. Capture/launch failure invalidates the engine.
+ * No model rewrite, CPU path, extra output copy or change to frame ownership.
+ */
+int novasight_tensorrt_capture_device_graph(
+    novasight_tensorrt_engine* engine, char* error_out, size_t error_out_size
+);
+
 /* Execute one deterministic all-zero input owned by this runtime. This is
  * used only by the offline model-ingress probe and never by the live path. */
 int novasight_tensorrt_probe_zero(

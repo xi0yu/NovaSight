@@ -53,5 +53,6 @@ int main() {
         &output_count, &stream, error, sizeof(error)) == 2);
     assert(output_count == 0 && stream == 0);
     assert(novasight_tensorrt_finish_device(nullptr, error, sizeof(error)) == 2);
+    assert(novasight_tensorrt_capture_device_graph(nullptr, error, sizeof(error)) == 2);
     return 0;
 }

@@ -273,13 +273,15 @@ void engine_check(const char* path, bool trace_only) {
     // Engine owner must drain before its externally owned input can be freed.
     std::unique_ptr<novasight_tensorrt_engine, decltype(&novasight_tensorrt_destroy)>
         engine(raw, novasight_tensorrt_destroy);
-    require(spec.output_count == 1 && spec.input.dimensions[2] == 256 && spec.input.dimensions[3] == 256,
+    require(spec.output_count == 1 && spec.input.dtype == NOVASIGHT_TENSOR_DTYPE_FLOAT32
+        && spec.input.dimensions[2] == 256 && spec.input.dimensions[3] == 256,
         "This engine check requires the measured 256px raw YOLO fixture");
     const auto& output = spec.outputs[0];
     require(output.rank == 3 && output.dimensions[0] == 1 && output.dimensions[1] == 9
         && output.dimensions[2] == 1344 && output.dtype == NOVASIGHT_TENSOR_DTYPE_FLOAT32,
         "This engine check requires explicit [1,9,1344] FP32 output, five classes, no objectness");
     void* input_memory = nullptr;
+    void* alternate_memory = nullptr;
     cuda_ok(cudaMalloc(&input_memory, spec.input.nbytes));
     cudaStream_t producer = nullptr;
     cudaEvent_t input_ready = nullptr;
@@ -289,6 +291,7 @@ void engine_check(const char* path, bool trace_only) {
         if (input_ready) cudaEventDestroy(input_ready);
         if (producer) cudaStreamDestroy(producer);
         cudaFree(input_memory);
+        if (alternate_memory) cudaFree(alternate_memory);
     };
     try {
         cuda_ok(cudaStreamCreateWithFlags(&producer, cudaStreamNonBlocking));
@@ -325,6 +328,8 @@ void engine_check(const char* path, bool trace_only) {
                 NOVASIGHT_TENSORRT_MAX_OUTPUTS, &count, &stream, error, sizeof(error)));
             require(count == 1 && device_outputs[0].nbytes == output.nbytes, "device output spec mismatch");
             if (!trace_only && iteration == 0) {
+                require(novasight_tensorrt_capture_device_graph(engine.get(), error, sizeof(error)) != 0,
+                    "graph capture accepted an outstanding device frame");
                 unsigned rejected_count = 99; std::uint64_t rejected_stream = 99;
                 require(novasight_tensorrt_enqueue_device(engine.get(), &input, ready, device_outputs,
                     NOVASIGHT_TENSORRT_MAX_OUTPUTS, &rejected_count, &rejected_stream, error, sizeof(error)) != 0
@@ -338,6 +343,8 @@ void engine_check(const char* path, bool trace_only) {
             const auto& result = post.wait();
             status_ok(novasight_tensorrt_finish_device(engine.get(), error, sizeof(error)));
             const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+            if (iteration == 0)
+                status_ok(novasight_tensorrt_capture_device_graph(engine.get(), error, sizeof(error)));
             if (!trace_only) compare(result, expected);
             detections = result.count;
             if (iteration >= 20) times.push_back(us);
@@ -347,11 +354,36 @@ void engine_check(const char* path, bool trace_only) {
             status_ok(novasight_tensorrt_execute(engine.get(), &input, host_outputs,
                 NOVASIGHT_TENSORRT_MAX_OUTPUTS, &count, error, sizeof(error)));
             require(reference(Input(), host_outputs[0].host_ptr).size() == expected.size(), "host API changed after device use");
+            const auto* zero = static_cast<const float*>(host_outputs[0].host_ptr);
+            std::vector<float> zero_raw(zero, zero + 9 * 1344);
+            cuda_ok(cudaMalloc(&alternate_memory, spec.input.nbytes));
+            std::vector<float> alternate_values(spec.input.nbytes / sizeof(float), .75f);
+            cuda_ok(cudaMemcpy(alternate_memory, alternate_values.data(), spec.input.nbytes, cudaMemcpyHostToDevice));
+            auto alternate = input;
+            alternate.device_ptr = reinterpret_cast<std::uintptr_t>(alternate_memory);
+            status_ok(novasight_tensorrt_execute(engine.get(), &alternate, host_outputs,
+                NOVASIGHT_TENSORRT_MAX_OUTPUTS, &count, error, sizeof(error)));
+            const auto* values = static_cast<const float*>(host_outputs[0].host_ptr);
+            std::vector<float> alternate_raw(values, values + 9 * 1344);
+            require(alternate_raw != zero_raw, "Graph binding check needs input-dependent fixture output");
+            status_ok(novasight_tensorrt_execute(engine.get(), &input, host_outputs,
+                NOVASIGHT_TENSORRT_MAX_OUTPUTS, &count, error, sizeof(error)));
+            status_ok(novasight_tensorrt_capture_device_graph(engine.get(), error, sizeof(error)));
+            // The captured zero-input binding must not survive a different pointer.
+            status_ok(novasight_tensorrt_enqueue_device(engine.get(), &alternate, 0, device_outputs,
+                NOVASIGHT_TENSORRT_MAX_OUTPUTS, &count, &stream, error, sizeof(error)));
+            status_ok(novasight_tensorrt_finish_device(engine.get(), error, sizeof(error)));
+            std::vector<float> actual(alternate_raw.size());
+            cuda_ok(cudaMemcpy(actual.data(), reinterpret_cast<void*>(device_outputs[0].device_ptr),
+                actual.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            for (std::size_t i = 0; i < actual.size(); ++i)
+                require(std::isfinite(actual[i]) && std::fabs(actual[i] - alternate_raw[i])
+                    <= 1e-5f * std::max(1.0f, std::fabs(alternate_raw[i])), "Graph reused a stale input binding");
             status_ok(novasight_tensorrt_enqueue_device(engine.get(), &input, ready, device_outputs,
                 NOVASIGHT_TENSORRT_MAX_OUTPUTS, &count, &stream, error, sizeof(error)));
             engine.reset(); // Exercise drain-on-destroy with outstanding inference.
         }
-        std::cout << "{\"engine_gpu_pass\":true,\"zero_input\":true,\"trace_only\":" << (trace_only ? "true" : "false")
+        std::cout << "{\"engine_gpu_pass\":true,\"cuda_graph\":true,\"zero_input\":true,\"trace_only\":" << (trace_only ? "true" : "false")
             << ",\"samples\":100,\"detections\":" << detections << ",\"infer_post_host_p50_us\":" << percentile(times, .5)
             << ",\"infer_post_host_p95_us\":" << percentile(times, .95) << ",\"final_d2h_bytes\":" << sizeof(YoloGpuResult) << "}\n";
         cleanup();
