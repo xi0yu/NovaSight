@@ -34,7 +34,8 @@ if(BUILD_TESTING)
     pkg_check_modules(GSTREAMER REQUIRED gstreamer-app-1.0)
     find_library(NVBUFSURFACE_LIBRARY nvbufsurface
         HINTS /opt/nvidia/deepstream/deepstream-7.1/lib REQUIRED)
-    add_executable(capture_device_test tests/capture_device_test.cu ../tensorrt-runtime/src/jetson.cpp)
+    add_executable(capture_device_test tests/capture_device_test.cpp tests/rgba_preprocess.cu
+        ../tensorrt-runtime/src/jetson.cpp)
     set_target_properties(capture_device_test PROPERTIES CUDA_STANDARD 17)
     target_include_directories(capture_device_test PRIVATE ${GSTREAMER_INCLUDE_DIRS}
         ${NVDSINFER_INCLUDE_DIR} ${TENSORRT_INCLUDE_DIR} ../tensorrt-runtime/include)

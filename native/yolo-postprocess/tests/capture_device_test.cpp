@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+void enqueue_rgba_to_rgb_chw(const unsigned char*, unsigned, float*, cudaStream_t);
+
 namespace {
 constexpr unsigned side = 256, pixels = side * side;
 void require(bool ok, const char* error) { if (!ok) throw std::runtime_error(error); }
@@ -31,13 +33,6 @@ std::uint64_t now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
-__global__ void rgba_to_rgb_chw(const unsigned char* rgba, unsigned pitch, float* tensor) {
-    const unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= pixels) return;
-    const auto* p = rgba + (i / side) * pitch + (i % side) * 4;
-    for (unsigned c = 0; c < 3; ++c) tensor[c * pixels + i] = float(p[c]) * (1.0f / 255.0f);
-}
-
 struct Runtime {
     novasight_tensorrt_engine* engine = nullptr;
     void* input = nullptr;
@@ -124,8 +119,8 @@ void self_test() {
     cuda_ok(cudaMalloc(&device_rgba, rgba.size()));
     try {
         cuda_ok(cudaMemcpy(device_rgba, rgba.data(), rgba.size(), cudaMemcpyHostToDevice));
-        rgba_to_rgb_chw<<<pixels / 256, 256, 0, fixture.producer>>>(
-            static_cast<const unsigned char*>(device_rgba), pitch, static_cast<float*>(fixture.input));
+        enqueue_rgba_to_rgb_chw(static_cast<const unsigned char*>(device_rgba), pitch,
+            static_cast<float*>(fixture.input), fixture.producer);
         cuda_ok(cudaGetLastError());
         cuda_ok(cudaStreamSynchronize(fixture.producer));
         std::vector<float> actual(pixels * 3);
@@ -205,8 +200,8 @@ void run(const char* engine_path, unsigned seconds) {
             "Missing or nonmonotonic capture frame identity");
         last_pts = pts;
         const auto frame = lease.import();
-        rgba_to_rgb_chw<<<pixels / 256, 256, 0, runtime.producer>>>(
-            static_cast<const unsigned char*>(frame.frame.pPitch[0]), frame.pitch, static_cast<float*>(runtime.input));
+        enqueue_rgba_to_rgb_chw(static_cast<const unsigned char*>(frame.frame.pPitch[0]), frame.pitch,
+            static_cast<float*>(runtime.input), runtime.producer);
         cuda_ok(cudaGetLastError());
         cuda_ok(cudaEventRecord(runtime.ready, runtime.producer));
         novasight_device_tensor_view output[NOVASIGHT_TENSORRT_MAX_OUTPUTS]{};
