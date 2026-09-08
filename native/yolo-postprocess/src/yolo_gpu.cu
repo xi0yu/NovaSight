@@ -98,21 +98,28 @@ __global__ void select_survivors(const YoloGpuDetection* boxes, const float* sco
     extern __shared__ Mask removed[];
     const unsigned words = (n + tile - 1) / tile;
     for (unsigned w = threadIdx.x; w < words; w += blockDim.x) removed[w] = 0;
-    __shared__ unsigned count;
-    if (threadIdx.x == 0) count = 0;
+    unsigned count = 0;
     __syncwarp();
-    for (unsigned i = 0; i < n; ++i) {
-        // SDK defaults to post-cluster-threshold=0 (strict >). Lower-scoring
-        // boxes cannot suppress earlier survivors, so this also ends the scan.
-        if (!(scores[i] > 0) || count == top_k) break;
-        // All lanes inspect the same candidate. One warp per class avoids a
-        // block barrier for every rejected/different-class candidate.
-        if (boxes[order[i]].class_id != blockIdx.x
-            || (removed[i / tile] & (Mask{1} << (i % tile)))) continue;
-        if (threadIdx.x == 0) kept[blockIdx.x * top_k + count++] = order[i];
-        for (unsigned w = i / tile + threadIdx.x; w < words; w += blockDim.x)
-            removed[w] |= masks[std::size_t(i) * words + w];
-        __syncwarp();
+    for (unsigned base = 0; base < n && count < top_k; base += 32) {
+        // Read 32 consecutive candidates together instead of serial dependent
+        // global loads. Ballot/shuffle preserve the exact sorted greedy order.
+        const unsigned position = base + threadIdx.x;
+        const bool valid = position < n && scores[position] > 0; // SDK post-threshold > 0.
+        if (!__any_sync(0xffffffff, valid)) break;
+        const unsigned original = valid ? order[position] : 0;
+        unsigned matches = __ballot_sync(0xffffffff, valid && boxes[original].class_id == blockIdx.x);
+        while (matches && count < top_k) {
+            const unsigned lane = __ffs(matches) - 1;
+            const unsigned i = base + lane;
+            const unsigned selected = __shfl_sync(0xffffffff, original, lane);
+            matches &= matches - 1;
+            if (removed[i / tile] & (Mask{1} << (i % tile))) continue;
+            if (threadIdx.x == 0) kept[blockIdx.x * top_k + count] = selected;
+            ++count;
+            for (unsigned w = i / tile + threadIdx.x; w < words; w += blockDim.x)
+                removed[w] |= masks[std::size_t(i) * words + w];
+            __syncwarp();
+        }
     }
     if (threadIdx.x == 0) counts[blockIdx.x] = count;
 }
