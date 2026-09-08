@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -86,7 +87,10 @@ int main(int argc, char** argv) {
         init.copyInputToHostBuffers = 0;
         init.outputBufferPoolSize = 2;
         init.autoIncMem = 0;
-        ds_ok(createNvDsInferContext(&fixture.context, init));
+        ds_ok(createNvDsInferContext(&fixture.context, init, nullptr,
+            [](NvDsInferContextHandle, unsigned, NvDsInferLogLevel, const char* message, void*) {
+                if (message) std::fprintf(stderr, "%s\n", message);
+            }));
         std::vector<NvDsInferLayerInfo> layers;
         fixture.context->fillLayersInfo(layers);
         require(layers.size() == 2, "Expected one input and one output binding");
