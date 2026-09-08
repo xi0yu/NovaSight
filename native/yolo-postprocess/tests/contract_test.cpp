@@ -1,5 +1,6 @@
 #include "novasight_yolo_gpu.hpp"
 #include "novasight_deepstream_bridge.h"
+#include "novasight_tensorrt_runtime.h"
 #include <nvdsinfer_custom_impl.h>
 #include <cuda_fp16.h>
 
@@ -263,9 +264,108 @@ void benchmark(const char* name, Input input) {
         << ",\"gpu_stream_p95_us\":" << percentile(gpu, .95) << ",\"d2h_bytes\":" << sizeof(YoloGpuResult) << "}\n";
 }
 
+void engine_check(const char* path, bool trace_only) {
+    novasight_tensorrt_engine* raw = nullptr;
+    novasight_engine_spec spec{};
+    char error[1024]{};
+    auto status_ok = [&](int status) { if (status) throw std::runtime_error(error); };
+    status_ok(novasight_tensorrt_create(path, nullptr, 0, &raw, &spec, error, sizeof(error)));
+    // Engine owner must drain before its externally owned input can be freed.
+    std::unique_ptr<novasight_tensorrt_engine, decltype(&novasight_tensorrt_destroy)>
+        engine(raw, novasight_tensorrt_destroy);
+    require(spec.output_count == 1 && spec.input.dimensions[2] == 256 && spec.input.dimensions[3] == 256,
+        "This engine check requires the measured 256px raw YOLO fixture");
+    const auto& output = spec.outputs[0];
+    require(output.rank == 3 && output.dimensions[0] == 1 && output.dimensions[1] == 9
+        && output.dimensions[2] == 1344 && output.dtype == NOVASIGHT_TENSOR_DTYPE_FLOAT32,
+        "This engine check requires explicit [1,9,1344] FP32 output, five classes, no objectness");
+    void* input_memory = nullptr;
+    cuda_ok(cudaMalloc(&input_memory, spec.input.nbytes));
+    cudaStream_t producer = nullptr;
+    cudaEvent_t input_ready = nullptr;
+    const auto cleanup = [&] {
+        engine.reset();
+        if (producer) cudaStreamSynchronize(producer);
+        if (input_ready) cudaEventDestroy(input_ready);
+        if (producer) cudaStreamDestroy(producer);
+        cudaFree(input_memory);
+    };
+    try {
+        cuda_ok(cudaStreamCreateWithFlags(&producer, cudaStreamNonBlocking));
+        cuda_ok(cudaEventCreateWithFlags(&input_ready, cudaEventDisableTiming));
+        cuda_ok(cudaMemsetAsync(input_memory, 0, spec.input.nbytes, producer));
+        cuda_ok(cudaEventRecord(input_ready, producer));
+        const auto ready = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(input_ready));
+        novasight_device_tensor_view input{};
+        input.device_ptr = reinterpret_cast<std::uintptr_t>(input_memory);
+        input.nbytes = spec.input.nbytes; input.rank = spec.input.rank; input.dtype = spec.input.dtype;
+        for (unsigned d = 0; d < input.rank; ++d) input.dimensions[d] = spec.input.dimensions[d];
+        novasight_device_tensor_view device_outputs[NOVASIGHT_TENSORRT_MAX_OUTPUTS]{};
+        novasight_host_tensor_view host_outputs[NOVASIGHT_TENSORRT_MAX_OUTPUTS]{};
+        unsigned count = 0;
+        std::uint64_t stream = 0;
+        YoloGpuPostprocessor post(Input().cfg);
+        std::vector<Box> expected;
+        if (!trace_only) {
+            cuda_ok(cudaEventSynchronize(input_ready)); // Old host API has no event argument.
+            status_ok(novasight_tensorrt_execute(engine.get(), &input, host_outputs,
+                NOVASIGHT_TENSORRT_MAX_OUTPUTS, &count, error, sizeof(error)));
+            expected = reference(Input(), host_outputs[0].host_ptr);
+            require(novasight_tensorrt_finish_device(engine.get(), error, sizeof(error)) != 0, "finish without enqueue accepted");
+            count = 99; stream = 99;
+            require(novasight_tensorrt_enqueue_device(engine.get(), &input, ready, device_outputs,
+                0, &count, &stream, error, sizeof(error)) != 0 && count == 0 && stream == 0,
+                "device output capacity guard failed");
+        }
+        std::vector<double> times;
+        unsigned detections = 0;
+        for (unsigned iteration = 0; iteration < 120; ++iteration) {
+            const auto start = std::chrono::steady_clock::now();
+            status_ok(novasight_tensorrt_enqueue_device(engine.get(), &input, ready, device_outputs,
+                NOVASIGHT_TENSORRT_MAX_OUTPUTS, &count, &stream, error, sizeof(error)));
+            require(count == 1 && device_outputs[0].nbytes == output.nbytes, "device output spec mismatch");
+            if (!trace_only && iteration == 0) {
+                unsigned rejected_count = 99; std::uint64_t rejected_stream = 99;
+                require(novasight_tensorrt_enqueue_device(engine.get(), &input, ready, device_outputs,
+                    NOVASIGHT_TENSORRT_MAX_OUTPUTS, &rejected_count, &rejected_stream, error, sizeof(error)) != 0
+                    && rejected_count == 0 && rejected_stream == 0, "outstanding device frame overwritten");
+                require(novasight_tensorrt_execute(engine.get(), &input, host_outputs,
+                    NOVASIGHT_TENSORRT_MAX_OUTPUTS, &rejected_count, error, sizeof(error)) != 0,
+                    "host execution overwrote an outstanding device frame");
+            }
+            post.enqueue(reinterpret_cast<void*>(device_outputs[0].device_ptr), device_outputs[0].nbytes,
+                reinterpret_cast<cudaStream_t>(stream));
+            const auto& result = post.wait();
+            status_ok(novasight_tensorrt_finish_device(engine.get(), error, sizeof(error)));
+            const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+            if (!trace_only) compare(result, expected);
+            detections = result.count;
+            if (iteration >= 20) times.push_back(us);
+        }
+        if (!trace_only) {
+            // Old offline ABI remains usable after the device frame is released.
+            status_ok(novasight_tensorrt_execute(engine.get(), &input, host_outputs,
+                NOVASIGHT_TENSORRT_MAX_OUTPUTS, &count, error, sizeof(error)));
+            require(reference(Input(), host_outputs[0].host_ptr).size() == expected.size(), "host API changed after device use");
+            status_ok(novasight_tensorrt_enqueue_device(engine.get(), &input, ready, device_outputs,
+                NOVASIGHT_TENSORRT_MAX_OUTPUTS, &count, &stream, error, sizeof(error)));
+            engine.reset(); // Exercise drain-on-destroy with outstanding inference.
+        }
+        std::cout << "{\"engine_gpu_pass\":true,\"zero_input\":true,\"trace_only\":" << (trace_only ? "true" : "false")
+            << ",\"samples\":100,\"detections\":" << detections << ",\"infer_post_host_p50_us\":" << percentile(times, .5)
+            << ",\"infer_post_host_p95_us\":" << percentile(times, .95) << ",\"final_d2h_bytes\":" << sizeof(YoloGpuResult) << "}\n";
+        cleanup();
+    } catch (...) {
+        cleanup();
+        throw;
+    }
+}
+
 int main(int argc, char** argv) {
     try {
-        if (argc == 2 && std::strcmp(argv[1], "--benchmark") == 0) {
+        if (argc == 3 && (std::strcmp(argv[1], "--engine") == 0 || std::strcmp(argv[1], "--trace-engine") == 0)) {
+            engine_check(argv[2], std::strcmp(argv[1], "--trace-engine") == 0);
+        } else if (argc == 2 && std::strcmp(argv[1], "--benchmark") == 0) {
             benchmark("empty_1344", Input());
             Input sparse;
             for (unsigned i = 0; i < 20; ++i) sparse.box(i, 10 + i * 8, 100, 10, 10, .8f, i % 5);

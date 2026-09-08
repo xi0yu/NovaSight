@@ -75,6 +75,26 @@ extern "C" int novasight_tensorrt_execute(
     return 2;
 }
 
+extern "C" int novasight_tensorrt_enqueue_device(
+    novasight_tensorrt_engine* engine, const novasight_device_tensor_view* input, uint64_t input_ready_event,
+    novasight_device_tensor_view* outputs, uint32_t output_capacity,
+    uint32_t* output_count, uint64_t* stream_out, char* error_out, size_t error_out_size
+) {
+    (void)engine; (void)input; (void)input_ready_event; (void)outputs; (void)output_capacity;
+    if (output_count != nullptr) *output_count = 0;
+    if (stream_out != nullptr) *stream_out = 0;
+    write_error(error_out, error_out_size, "reference TensorRT runtime cannot enqueue CUDA work");
+    return 2;
+}
+
+extern "C" int novasight_tensorrt_finish_device(
+    novasight_tensorrt_engine* engine, char* error_out, size_t error_out_size
+) {
+    (void)engine;
+    write_error(error_out, error_out_size, "reference TensorRT runtime has no CUDA work to finish");
+    return 2;
+}
+
 extern "C" int novasight_tensorrt_probe_zero(
     novasight_tensorrt_engine* engine,
     novasight_host_tensor_view* outputs,

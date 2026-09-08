@@ -92,6 +92,36 @@ int novasight_tensorrt_execute(
     size_t error_out_size
 );
 
+/* Additive device-output API; existing ABI-3 layouts and host API are unchanged.
+ * Single-threaded owner: at most one outstanding enqueue per engine. input_ready_event is a borrowed cudaEvent_t encoded as uint64_t; inference
+ * waits for it on the GPU. Zero means the input is already ready.
+ * Returns borrowed device views in spec.outputs order and a borrowed cudaStream_t
+ * encoded as uint64_t. Queue GPU consumers on that stream; do not destroy it.
+ * Input, views and engine must remain alive until finish_device returns. A second
+ * enqueue or host execution is rejected until finish_device. No raw D2H copy.
+ */
+int novasight_tensorrt_enqueue_device(
+    novasight_tensorrt_engine* engine,
+    const novasight_device_tensor_view* input,
+    uint64_t input_ready_event,
+    novasight_device_tensor_view* outputs,
+    uint32_t output_capacity,
+    uint32_t* output_count,
+    uint64_t* stream_out,
+    char* error_out,
+    size_t error_out_size
+);
+
+/* Drain inference and any consumers queued on the borrowed stream, then release
+ * the outstanding frame. Completion failure poisons the engine; never publish its
+ * results. destroy also drains outstanding device work before freeing storage.
+ */
+int novasight_tensorrt_finish_device(
+    novasight_tensorrt_engine* engine,
+    char* error_out,
+    size_t error_out_size
+);
+
 /* Execute one deterministic all-zero input owned by this runtime. This is
  * used only by the offline model-ingress probe and never by the live path. */
 int novasight_tensorrt_probe_zero(

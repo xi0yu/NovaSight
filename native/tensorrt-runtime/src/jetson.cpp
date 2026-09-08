@@ -193,8 +193,11 @@ struct novasight_tensorrt_engine {
     cudaStream_t stream = nullptr;
     novasight_engine_spec spec{};
     std::vector<OutputSlot> outputs;
+    bool device_pending = false;
+    bool device_failed = false;
 
     ~novasight_tensorrt_engine() noexcept {
+        if (device_pending && stream != nullptr) (void)cudaStreamSynchronize(stream);
         if (stream != nullptr) cudaStreamDestroy(stream);
     }
 };
@@ -329,19 +332,15 @@ std::unique_ptr<novasight_tensorrt_engine> create_engine(
     return owner;
 }
 
-int execute_engine(
+void bind_input(
     novasight_tensorrt_engine* engine,
-    const novasight_device_tensor_view* input,
-    novasight_host_tensor_view* outputs,
-    uint32_t output_capacity,
-    uint32_t* output_count
+    const novasight_device_tensor_view* input
 ) {
-    if (engine == nullptr || input == nullptr || outputs == nullptr || output_count == nullptr) {
+    if (engine == nullptr || input == nullptr) {
         throw std::runtime_error("TensorRT execute arguments are null");
     }
-    *output_count = 0;
-    if (output_capacity < engine->outputs.size()) {
-        throw std::runtime_error("TensorRT output view capacity is too small");
+    if (engine->device_pending || engine->device_failed) {
+        throw std::runtime_error("TensorRT device frame is outstanding or engine has failed");
     }
     const auto& expected = engine->spec.input;
     if (input->device_ptr == 0 || input->nbytes != expected.nbytes
@@ -361,6 +360,23 @@ int execute_engine(
             reinterpret_cast<void*>(static_cast<uintptr_t>(input->device_ptr)))) {
         throw std::runtime_error("TensorRT rejected input tensor address");
     }
+}
+
+int execute_engine(
+    novasight_tensorrt_engine* engine,
+    const novasight_device_tensor_view* input,
+    novasight_host_tensor_view* outputs,
+    uint32_t output_capacity,
+    uint32_t* output_count
+) {
+    if (engine == nullptr || outputs == nullptr || output_count == nullptr) {
+        throw std::runtime_error("TensorRT execute arguments are null");
+    }
+    *output_count = 0;
+    if (output_capacity < engine->outputs.size()) {
+        throw std::runtime_error("TensorRT output view capacity is too small");
+    }
+    bind_input(engine, input);
     StreamDrainGuard drain{engine->stream, true};
     if (!engine->context->enqueueV3(engine->stream)) {
         const cudaError_t drain_result = drain.drain();
@@ -506,6 +522,78 @@ extern "C" int novasight_tensorrt_execute(
     }
 }
 
+extern "C" int novasight_tensorrt_enqueue_device(
+    novasight_tensorrt_engine* engine,
+    const novasight_device_tensor_view* input,
+    uint64_t input_ready_event,
+    novasight_device_tensor_view* outputs,
+    uint32_t output_capacity,
+    uint32_t* output_count,
+    uint64_t* stream_out,
+    char* error_out,
+    size_t error_out_size
+) {
+    if (output_count != nullptr) *output_count = 0;
+    if (stream_out != nullptr) *stream_out = 0;
+    try {
+        if (engine == nullptr || outputs == nullptr || output_count == nullptr || stream_out == nullptr
+            || output_capacity < engine->outputs.size()) {
+            throw std::runtime_error("TensorRT device output arguments/capacity are invalid");
+        }
+        bind_input(engine, input);
+        StreamDrainGuard drain{engine->stream, true};
+        if (input_ready_event != 0)
+            cuda_check(cudaStreamWaitEvent(engine->stream,
+                reinterpret_cast<cudaEvent_t>(static_cast<uintptr_t>(input_ready_event)), 0),
+                "TensorRT input-ready event wait");
+        if (!engine->context->enqueueV3(engine->stream)) {
+            engine->device_failed = true;
+            throw std::runtime_error("TensorRT device enqueueV3 failed; engine invalidated");
+        }
+        for (size_t i = 0; i < engine->outputs.size(); ++i) {
+            const auto& slot = engine->outputs[i];
+            auto& view = outputs[i];
+            view = {};
+            view.device_ptr = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(slot.device));
+            view.nbytes = slot.spec.nbytes;
+            view.rank = slot.spec.rank;
+            view.dtype = slot.spec.dtype;
+            for (uint32_t d = 0; d < view.rank; ++d) view.dimensions[d] = slot.spec.dimensions[d];
+        }
+        *output_count = static_cast<uint32_t>(engine->outputs.size());
+        *stream_out = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(engine->stream));
+        engine->device_pending = true;
+        drain.armed = false;  // finish_device/destroy now own the drain obligation.
+        return 0;
+    } catch (const std::exception& error) {
+        write_error(error_out, error_out_size, error.what());
+        return 1;
+    } catch (...) {
+        write_error(error_out, error_out_size, "unexpected TensorRT device enqueue exception");
+        return 2;
+    }
+}
+
+extern "C" int novasight_tensorrt_finish_device(
+    novasight_tensorrt_engine* engine, char* error_out, size_t error_out_size
+) {
+    try {
+        if (engine == nullptr || !engine->device_pending || engine->device_failed)
+            throw std::runtime_error("TensorRT has no valid outstanding device frame");
+        const auto status = cudaStreamSynchronize(engine->stream);
+        engine->device_pending = false;
+        engine->device_failed = status != cudaSuccess;
+        cuda_check(status, "TensorRT device frame completion");
+        return 0;
+    } catch (const std::exception& error) {
+        write_error(error_out, error_out_size, error.what());
+        return 1;
+    } catch (...) {
+        write_error(error_out, error_out_size, "unexpected TensorRT device completion exception");
+        return 2;
+    }
+}
+
 extern "C" int novasight_tensorrt_probe_zero(
     novasight_tensorrt_engine* engine,
     novasight_host_tensor_view* outputs,
@@ -516,8 +604,8 @@ extern "C" int novasight_tensorrt_probe_zero(
 ) {
     void* input_device = nullptr;
     try {
-        if (engine == nullptr) {
-            throw std::runtime_error("TensorRT zero probe engine is null");
+        if (engine == nullptr || engine->device_pending || engine->device_failed) {
+            throw std::runtime_error("TensorRT zero probe engine is null, busy or failed");
         }
         const auto& input_spec = engine->spec.input;
         if (input_spec.nbytes > std::numeric_limits<size_t>::max()) {

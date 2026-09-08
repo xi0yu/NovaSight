@@ -47,5 +47,11 @@ int main() {
            ) == 2);
     assert(output_count == 0);
     assert(std::strstr(error, "cannot execute") != nullptr);
+    uint64_t stream = 99;
+    output_count = 99;
+    assert(novasight_tensorrt_enqueue_device(nullptr, nullptr, 0, nullptr, 0,
+        &output_count, &stream, error, sizeof(error)) == 2);
+    assert(output_count == 0 && stream == 0);
+    assert(novasight_tensorrt_finish_device(nullptr, error, sizeof(error)) == 2);
     return 0;
 }

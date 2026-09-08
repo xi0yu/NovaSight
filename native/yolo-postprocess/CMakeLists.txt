@@ -11,10 +11,13 @@ target_compile_options(novasight_yolo_gpu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--f
 
 include(CTest)
 if(BUILD_TESTING)
+    find_path(TENSORRT_INCLUDE_DIR NvInfer.h HINTS /usr/include/aarch64-linux-gnu REQUIRED)
+    find_library(TENSORRT_LIBRARY nvinfer HINTS /usr/lib/aarch64-linux-gnu REQUIRED)
     add_executable(yolo_gpu_contract_test tests/contract_test.cpp
-        ../deepstream-parser/src/novasight_parser.cpp)
+        ../deepstream-parser/src/novasight_parser.cpp ../tensorrt-runtime/src/jetson.cpp)
     target_include_directories(yolo_gpu_contract_test PRIVATE
-        ../deepstream-parser/tests ../deepstream-bridge/include)
-    target_link_libraries(yolo_gpu_contract_test PRIVATE novasight_yolo_gpu)
+        ../deepstream-parser/tests ../deepstream-bridge/include
+        ../tensorrt-runtime/include ${TENSORRT_INCLUDE_DIR})
+    target_link_libraries(yolo_gpu_contract_test PRIVATE novasight_yolo_gpu ${TENSORRT_LIBRARY})
     add_test(NAME yolo_gpu_contract COMMAND yolo_gpu_contract_test)
 endif()
