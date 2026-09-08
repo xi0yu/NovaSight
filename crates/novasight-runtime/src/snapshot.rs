@@ -85,8 +85,9 @@ pub struct RuntimeTelemetrySnapshot {
     /// count of emitted control decisions or device commands.
     pub targeting_batch_fps: Option<f64>,
     pub detection_data_age_ms: Option<f64>,
-    /// Latest correlated nvinfer sink-to-src duration. This includes the
-    /// element's preprocessing, TensorRT execution, and parser work.
+    /// Latest backend computation interval; see PerceptionMetrics. Direct GPU
+    /// sessions include image import, CUDA preprocessing, TensorRT and CUDA NMS.
+    /// This is not the complete source-to-control latency.
     pub inference_latency_ms: Option<f64>,
 }
 

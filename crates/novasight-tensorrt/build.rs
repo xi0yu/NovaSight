@@ -98,6 +98,11 @@ fn main() {
         build.compile("novasight_gpu_frame");
         cc::Build::new()
             .cuda(true)
+            // cc otherwise adds nvcc -G in Rust debug builds, disabling device
+            // optimization. Keep kernel performance and line-level profiling.
+            .debug(false)
+            .opt_level(3)
+            .flag("-lineinfo")
             .cudart("shared")
             .std("c++17")
             .cargo_metadata(false)

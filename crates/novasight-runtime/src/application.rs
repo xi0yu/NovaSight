@@ -146,7 +146,14 @@ impl Application {
     pub async fn shutdown(self) -> Result<(), ApplicationError> {
         let supervisor_already_exited = !self.runtime.is_supervisor_alive();
         if supervisor_already_exited {
+            let snapshot = self.runtime.snapshot();
             return match self.supervisor.join().await {
+                Ok(())
+                    if snapshot.daemon.state == crate::DaemonState::ShuttingDown
+                        && snapshot.pipeline.state == crate::PipelineState::Stopped =>
+                {
+                    Ok(())
+                }
                 Ok(()) => Err(ApplicationError::RuntimeExitedUnexpectedly),
                 Err(error) => Err(error.into()),
             };
@@ -159,6 +166,23 @@ impl Application {
             (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error.into()),
             (Err(command), Err(join)) => Err(ApplicationError::RuntimeShutdown { command, join }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn application_cleanup_accepts_completed_control_plane_shutdown() {
+        let app = LoadedApplication {
+            config_path: PathBuf::from("unused.yaml"),
+            config: AppConfig::default(),
+        }
+        .start(RuntimeDependencies::recording());
+        app.runtime().shutdown_daemon().await.unwrap();
+        app.runtime().wait_for_supervisor_exit().await;
+        app.shutdown().await.unwrap();
     }
 }
 
