@@ -99,24 +99,20 @@ __global__ void select_survivors(const YoloGpuDetection* boxes, const float* sco
     const unsigned words = (n + tile - 1) / tile;
     for (unsigned w = threadIdx.x; w < words; w += blockDim.x) removed[w] = 0;
     __shared__ unsigned count;
-    __shared__ bool selected;
     if (threadIdx.x == 0) count = 0;
-    __syncthreads();
+    __syncwarp();
     for (unsigned i = 0; i < n; ++i) {
         // SDK defaults to post-cluster-threshold=0 (strict >). Lower-scoring
         // boxes cannot suppress earlier survivors, so this also ends the scan.
         if (!(scores[i] > 0) || count == top_k) break;
-        if (threadIdx.x == 0) {
-            selected = boxes[order[i]].class_id == blockIdx.x
-                && !(removed[i / tile] & (Mask{1} << (i % tile)));
-            if (selected) kept[blockIdx.x * top_k + count++] = order[i];
-        }
-        __syncthreads();
-        if (selected) {
-            for (unsigned w = i / tile + threadIdx.x; w < words; w += blockDim.x)
-                removed[w] |= masks[std::size_t(i) * words + w];
-        }
-        __syncthreads();
+        // All lanes inspect the same candidate. One warp per class avoids a
+        // block barrier for every rejected/different-class candidate.
+        if (boxes[order[i]].class_id != blockIdx.x
+            || (removed[i / tile] & (Mask{1} << (i % tile)))) continue;
+        if (threadIdx.x == 0) kept[blockIdx.x * top_k + count++] = order[i];
+        for (unsigned w = i / tile + threadIdx.x; w < words; w += blockDim.x)
+            removed[w] |= masks[std::size_t(i) * words + w];
+        __syncwarp();
     }
     if (threadIdx.x == 0) counts[blockIdx.x] = count;
 }
@@ -222,7 +218,7 @@ void YoloGpuPostprocessor::enqueue(const void* input, std::size_t nbytes, cudaSt
             s.scores, s.sorted_scores, s.indices, s.order, n, 0, 32, stream), "YOLO stable sort");
         overlap_masks<<<dim3(words, words), tile, 0, stream>>>(s.boxes, s.sorted_scores, s.order, n, s.config.nms_threshold, s.masks);
         check(cudaGetLastError(), "YOLO overlap launch");
-        select_survivors<<<s.config.classes, 128, words * sizeof(Mask), stream>>>(s.boxes,
+        select_survivors<<<s.config.classes, 32, words * sizeof(Mask), stream>>>(s.boxes,
             s.sorted_scores, s.order, s.masks, n, s.config.top_k, s.counts, s.kept);
         check(cudaGetLastError(), "YOLO NMS selection launch");
         pack_result<<<1, YoloGpuResult::capacity, 0, stream>>>(s.boxes, s.kept,
