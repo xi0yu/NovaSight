@@ -6,6 +6,7 @@ changes the source checkout, activates a deployment, or connects a pointer.
 """
 import argparse
 import configparser
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -56,6 +57,8 @@ def run(args):
         raise RuntimeError("P0 run duration must be 1..120 seconds")
     if args.profile_cuda and not args.no_probe:
         raise RuntimeError("Use --no-probe for the separate Nsight run")
+    if args.fault_gpu_after and (args.no_probe or args.profile_cuda):
+        raise RuntimeError("GPU fault injection requires the diagnostic probe without Nsight")
     used = subprocess.run(["fuser", "/dev/video0"], capture_output=True, text=True)
     if used.returncode == 0:
         raise RuntimeError("P0 capture device is already in use")
@@ -66,6 +69,9 @@ def run(args):
     for name in ("data", "run", "logs"):
         (work / name).mkdir(mode=0o700)
     cfg = yaml.safe_load((repo / args.config).read_text())
+    if args.capture_fps:
+        cfg["capture"]["fps"] = args.capture_fps
+        cfg["capture"]["preference"] = "manual"
     cfg["control"]["output_enabled"] = False
     cfg["hardware"]["auto_connect"] = False
     cfg.setdefault("server", {})["control_socket"] = str(work / "run/control.sock")
@@ -97,6 +103,8 @@ def run(args):
                NOVASIGHT_P0_TRACE=str(work / "trace.csv"))
     if not args.no_probe:
         env["LD_PRELOAD"] = str(probe)
+    if args.fault_gpu_after:
+        env["NOVASIGHT_P0_FAIL_GPU_AFTER"] = str(args.fault_gpu_after)
     client_env = dict(os.environ, NOVASIGHT_CONTROL_SOCKET=str(work / "run/control.sock"))
     client_env.pop("LD_PRELOAD", None)
 
@@ -113,7 +121,10 @@ def run(args):
     summary = {"directory": str(work), "instrumented": not args.no_probe,
                "profile_cuda": args.profile_cuda,
                "config_source": args.config, "capture": cfg["capture"],
-               "seconds_requested": args.seconds, "binary": str(daemon)}
+               "seconds_requested": args.seconds, "binary": str(daemon),
+               "binary_sha256": hashlib.sha256(daemon.read_bytes()).hexdigest(),
+               "checkout_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
+               "fault_gpu_after": args.fault_gpu_after}
     print(json.dumps({"event": "P0_ISOLATED_START", **summary}), flush=True)
     command = [str(daemon), "--config", str(config_path)]
     if args.profile_cuda:
@@ -151,9 +162,16 @@ def run(args):
                     snapshots.write(json.dumps({"observed_ns": time.monotonic_ns(), "snapshot": snapshot}) + "\n")
                     snapshots.flush()
                     if snapshot["pipeline"]["state"] != "running":
+                        error = snapshot["pipeline"].get("last_error") or {}
+                        if (args.fault_gpu_after and snapshot["pipeline"]["state"] == "faulted"
+                                and "Strict GPU frame failed" in error.get("message", "")):
+                            summary["expected_gpu_fault"] = True
+                            break
                         raise RuntimeError("P0 runtime stopped during measurement")
                     time.sleep(1)
             summary["final_snapshot"] = snapshot
+            if args.fault_gpu_after and not summary.get("expected_gpu_fault"):
+                raise RuntimeError("Requested GPU fault was not observed")
             stopped = call("stop")
             require_closed(stopped)
             summary["stop_state"] = stopped["pipeline"]["state"]
@@ -192,6 +210,8 @@ if __name__ == "__main__":
     parser.add_argument("--repo", type=Path)
     parser.add_argument("--stage", type=Path)
     parser.add_argument("--binary-dir", type=Path, help="Use isolated build artifacts without replacing deployed binaries")
+    parser.add_argument("--capture-fps", type=int, choices=[120, 240], help="Temporary capture override; resolves the device fraction")
+    parser.add_argument("--fault-gpu-after", type=int, choices=range(100, 2001), metavar="100..2000")
     parser.add_argument("--config", default="data/novasight.yaml",
                         choices=["data/novasight.yaml", "data/novasight.frontend-dev.yaml"])
     parser.add_argument("--seconds", type=int, default=15)

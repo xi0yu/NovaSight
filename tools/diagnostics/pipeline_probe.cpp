@@ -3,6 +3,8 @@
 #include <gst/gst.h>
 #include <gstnvdsmeta.h>
 #include <nvdsinfer_custom_impl.h>
+#include <cudaEGL.h>
+#include <atomic>
 #include <dlfcn.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -122,6 +124,23 @@ extern "C" GstElement* gst_parse_launch(const gchar* description, GError** error
     auto* element = launch(description, error);
     if (element) attach(element);
     return element;
+}
+
+// Explicit isolated-run fault injection. Normal probe runs forward unchanged.
+extern "C" CUresult CUDAAPI cuGraphicsEGLRegisterImage(CUgraphicsResource* resource,
+    EGLImageKHR image, unsigned flags) {
+    using Register = CUresult (CUDAAPI *)(CUgraphicsResource*, EGLImageKHR, unsigned);
+    static auto original = reinterpret_cast<Register>(dlsym(RTLD_NEXT, "cuGraphicsEGLRegisterImage"));
+    static const unsigned limit = [] {
+        const char* value = std::getenv("NOVASIGHT_P0_FAIL_GPU_AFTER");
+        return value ? unsigned(std::strtoul(value, nullptr, 10)) : 0U;
+    }();
+    static std::atomic<unsigned> calls{0};
+    if (limit && calls.fetch_add(1) >= limit) {
+        std::fputs("P0_INJECTED_GPU_IMPORT_FAILURE\n", stderr);
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    return original ? original(resource, image, flags) : CUDA_ERROR_NOT_FOUND;
 }
 
 extern "C" GstElement* gst_parse_launchv(const gchar** argv, GError** error) {
