@@ -116,7 +116,7 @@ extern "C" int novasight_gpu_frame_create(const char* engine, const char* input_
             "Engine bindings differ from admitted manifest");
         const auto& output = spec.outputs[0];
         const unsigned start = output.rank == 3 ? 1 : 0;
-        const uint64_t channels = c.classes + (c.has_objectness ? 5 : 4);
+        const int64_t channels = c.classes + (c.has_objectness ? 5 : 4);
         require((output.rank == 2 || (output.rank == 3 && output.dimensions[0] == 1))
             && output.dtype == c.output_dtype && output.dimensions[start] == (c.channels_first ? channels : c.candidates)
             && output.dimensions[start + 1] == (c.channels_first ? c.candidates : channels),

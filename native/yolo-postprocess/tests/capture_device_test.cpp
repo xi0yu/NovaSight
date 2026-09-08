@@ -3,6 +3,7 @@
 #include "novasight_yolo_gpu.hpp"
 #include "novasight_tensorrt_runtime.h"
 #include <cudaEGL.h>
+#include <cuda_fp16.h>
 #include <nvbufsurface.h>
 #include <gst/app/gstappsink.h>
 #include <dlfcn.h>
@@ -18,6 +19,8 @@
 #include <vector>
 
 void enqueue_rgba_to_rgb_chw(const unsigned char*, unsigned, float*, cudaStream_t);
+void enqueue_rgba_to_chw(const unsigned char*, unsigned, void*, unsigned, unsigned,
+                        bool, bool, float, cudaStream_t);
 
 namespace {
 constexpr unsigned side = 256, pixels = side * side;
@@ -130,6 +133,26 @@ void self_test() {
                 require(std::fabs(actual[c * pixels + y * side + x]
                     - float(rgba[y * pitch + x * 4 + c]) / 255.0f) <= 1e-7f,
                     "RGBA stride / channel / normalization mismatch");
+        // Exercise the production kernel's non-square, partial-block, FP16/BGR
+        // contract using the same padded input allocation.
+        constexpr unsigned width = 251, height = 127, count = width * height;
+        for (bool half : {false, true}) for (bool bgr : {false, true}) {
+            enqueue_rgba_to_chw(static_cast<const unsigned char*>(device_rgba), pitch,
+                fixture.input, width, height, half, bgr, 0.003f, fixture.producer);
+            cuda_ok(cudaGetLastError());
+            cuda_ok(cudaStreamSynchronize(fixture.producer));
+            std::vector<unsigned char> bytes(count * 3 * (half ? sizeof(__half) : sizeof(float)));
+            cuda_ok(cudaMemcpy(bytes.data(), fixture.input, bytes.size(), cudaMemcpyDeviceToHost));
+            for (unsigned y = 0; y < height; ++y) for (unsigned x = 0; x < width; ++x)
+                for (unsigned c = 0; c < 3; ++c) {
+                    const auto i = c * count + y * width + x;
+                    float value;
+                    if (half) { __half v; std::memcpy(&v, bytes.data() + i * sizeof(v), sizeof(v)); value = __half2float(v); }
+                    else { std::memcpy(&value, bytes.data() + i * sizeof(value), sizeof(value)); }
+                    const float expected = rgba[y * pitch + x * 4 + (bgr ? 2 - c : c)] * 0.003f;
+                    require(std::fabs(value - expected) <= (half ? 0.00025f : 1e-7f), "Generic GPU preprocessing mismatch");
+                }
+        }
         cudaFree(device_rgba);
     } catch (...) {
         cudaStreamSynchronize(fixture.producer);
