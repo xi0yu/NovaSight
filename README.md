@@ -225,5 +225,7 @@ camera/DeepStream receipt. See
 The milestone commands, evidence identity, rollback boundary, and explicit
 staging ledger are in the [D1A implementation runbook](docs/d1a-implementation-runbook.md).
 
+Pipeline performance work follows the [GPU optimization plan and execution boundaries](docs/pipeline-gpu-optimization-plan.md), including feature preservation, staged measurements, and Jetson operation limits.
+
 Local runtime databases, models, logs, generated native artifacts, Cargo
 outputs, and Web build output are ignored and must not be committed.
