@@ -4,7 +4,7 @@
 
 用户随后明确：关键视觉计算硬件执行与完整识别 / 推理 / 控制不弱于 RK3588，是必须同时通过的交付条件。**本报告的 0.1 ms 只用于定位耗时，不豁免 CPU parser / NMS 迁移。** 当前版本未达标；空检测和缺少对照不阻止 GPU 计算的实现与正确性验证，但不能据此通过性能验收。具体判定见[计划第 1 节](pipeline-gpu-optimization-plan.md#1-目标与优先级)。
 
-导航：[测量条件](#测量条件) · [数据通路](#数据通路) · [测量结果](#测量结果) · [执行证据](#执行证据) · [问题与下一步](#问题与下一步) · [复现](#复现)
+导航：[测量条件](#测量条件) · [数据通路](#数据通路) · [测量结果](#测量结果) · [执行证据](#执行证据) · [GPU 候选](#gpu-候选实机进展) · [问题与下一步](#问题与下一步) · [复现](#复现)
 
 ## 测量条件
 
@@ -85,6 +85,124 @@ flowchart LR
 
 当前采集确实运行了 NVIDIA 的 `nvv4l2decoder mjpeg=1` 路径并产出 NVMM 表面；官方将该插件列为硬件解码通路。[DeepStream 7.1 插件说明](https://docs.nvidia.com/metropolis/deepstream/7.1/text/DS_plugin_gst-nvvideo4linux2.html)、[Jetson R36 图像加速说明](https://docs.nvidia.com/jetson/archives/r36.4.3/DeveloperGuide/SD/Multimedia/AcceleratedGstreamer.html)。本轮尚未记录专用解码/VIC 引擎的完整活动时间线，因此不能将插件名称当作严格硬件执行验收的全部证据。
 
+## GPU 候选实机进展
+
+以下是 P0 之后新增的隔离候选证据，不能与上文原 debug 产品混为一版。
+源码通过 `develop-alpha` 的 push / pull 同步；原部署程序、配置、模型、SDK
+和功耗设置未替换。实现和命令见 [CUDA 模块](../native/yolo-postprocess/README.md)。
+
+### 已实现的计算与所有权
+
+```mermaid
+flowchart LR
+    A["原采集卡\n1080p120 MJPG"] --> B["jpegparse → 硬件解码\nNVMM I420"]
+    B --> C["VIC\n同一 320² ROI → RGBA 256²"]
+    C --> D["保留采集帧\nEGL 导入 CUDA"]
+    D --> E["CUDA RGB / 255\nCHW FP32，常驻输入张量"]
+    E -->|"input-ready event"| F["原生 TensorRT 设备接口"]
+    F --> G["CUDA 候选解码 / 过滤\n稳定排序 / 完整贪心 NMS"]
+    G --> H["6,152 B 最终结果\n完成后释放本帧"]
+    H -.-> I["尚未接入\nDetectionBatch / 控制 / 准星"]
+```
+
+- 复用当前 parser 作为测试解码参考，并核对安装的 DS 7.1 稳定排序、类别顺序、IoU 边界和 NMS 后每类 Top-K 规则。GPU 完成全部贪心抑制选择；没有添加 NMS 前 Top-K，也没有改成近似 FastNMS。
+- 共享 GPU 模块覆盖 FP16/FP32、两种排布、有无 objectness、非法数值、相同分数、抑制链及 256 框有界前缀；40 项契约通过，Compute Sanitizer memcheck 为 0 errors、racecheck 为 0 hazards。该证据属于 GPU 后处理模块，不代表全部产品模型和图像处理已验收。
+- 原 TensorRT 封装新增设备输出 / 完成接口，旧主机 ABI 保留；设备张量与 stream 借用期间禁止重入，异步失败使候选失效。最终结果仍须由未来适配器绑定帧身份并复制到原业务类型。
+- 真实采集候选只映射 NVMM 描述符，通过 EGL 访问设备图像。新 CUDA RGB 归一化检查覆盖 65,536 像素、三通道及带 padding 的 stride；真实 EGL 契约检查通过。图像质量与原 nvinfer 预处理的像素/检测对照尚未完成。
+
+### DeepStream 设备输出候选暴露的实际限制
+
+`NvDsInferContext` 的预处理张量 / 设备输出接口已实跑，零输入的完整原始输出与直接 TensorRT 一致。**但 `networkType=Other` 配合 `disableOutputHostCopy=1`，并未消除原始输出回传。**
+
+在提交 `874ad4e` 的独立 Nsight 追踪中：
+
+| 路径，120 帧零输入 | 原始输出 48,384 B D2H | 最终结果 6,152 B D2H |
+| --- | --- | --- |
+| 直接 TensorRT + GPU 后处理 | **0 次** | 120 次 |
+| DS 7.1 Other + 相同 GPU 后处理 | **120 次** | 120 次 |
+
+安装源码 `nvdsinfer_context_impl.cpp:1012` 的 `OtherPostprocessor::initResource()`
+直接返回，没有调用在第 590 行读取关闭复制参数的基类初始化；复制判断在第 626 行。
+这与实测持续回传一致。未修补 SDK。此前候选的空日志回调还曾引起初始化段错误，
+提供回调后已解决；它属于候选调用错误，不能说成原产品问题。
+
+这说明原产品 CPU parser / NMS 是当前实现和配置组合的问题，而该 SDK 的 Other
+通路又有额外限制。不能据此说所有 DeepStream 接入方式都无法 GPU 后处理。
+当前直接 TensorRT 通路已满足本轮的设备输出要求，继续用它推进真实采集验证。
+
+### 三轮 release 视觉链对照，不含 CUDA Graph
+
+原 CPU parser 另编译为 Release，通过 `gst-launch-1.0` 运行原
+NV12 → mux → nvinfer → CPU parser/NMS 视觉构造；对照程序均不含产品控制或发送。
+两边相同 engine、采集设备、1080p120/MJPG、ROI、256px 输入、0.65/0.45 阈值及
+latest-only 规则，交替各跑三次，每次约 12 秒并排除前 2 秒。
+原路径保留 NV12/mux/nvinfer 的组合，新候选由 VIC 直接输出 RGBA 并通过 CUDA
+归一化；这是数据通路整体对比，不能将全部差值归因于 NMS 或框架名称。
+
+源码 `fe2268f`，采集可执行文件的 GPU 实现来自 `545a602`。同一探针按照唯一
+JPEG 输出 PTS 关联最终结果，GPU 终点取 span 的完成时间；不是 enqueue 返回时间。
+
+| JPEG 解析输出 → 最终结果，ms | 原 release 视觉链 P95 / P99 | GPU 候选 P95 / P99 | P95 降幅 |
+| --- | --- | --- | --- |
+| 第一轮 | 12.243 / 12.393 | 11.260 / 11.342 | 8.0% |
+| 第二轮 | 12.313 / 12.457 | 11.092 / 11.153 | 9.9% |
+| 第三轮 | 12.294 / 12.392 | 11.173 / 11.291 | 9.1% |
+
+每轮稳态匹配 1,198–1,200 帧，均无缺失、歧义或倒序；稳态结果约 120 帧/秒。
+所有轮次仍为空检测。此前首轮候选曾测到 P95 10.098 ms；最终采用上述交替三轮
+报告，不能挑最好一轮宣称提速。此对照仍未完成同画面回放、检测质量、预览/准星、
+产品结果交付、控制、完整驱动帧龄和长期稳定性，更没有 RK3588 同条件结果。
+
+独立真实采集 Nsight 追踪覆盖 **832 帧**：RGB CHW、候选解码、CUB 稳定排序、
+完整 NMS 和结果打包各执行 832 次；仅有 832 次 6,152 B 最终结果 D2H，
+没有 48,384 B 原始输出回传。另有一次约 22.3 MB 权重 H2D 和四次 64 B D2H。
+CUDA 追踪有测量开销，不能用其延迟替代上述未开启 Nsight 的计时。
+媒体专用引擎的完整活动时间线和各启用分支仍待严格验收。
+
+### CUDA Graph：正确性通过，整链速度暂不采用
+
+实测发现每帧推理提交上百个 kernel，因此在原 TensorRT 封装中增加了显式、可选的
+推理图捕获，未改变模型或 GPU 后处理。相同地址才重放；输入地址变化或主机执行
+之前销毁旧图。实机检查验证了新旧接口切换及不同输入数据不会复用旧图绑定。
+零输入引擎测试的推理加后处理 P95 为 2.085 ms，但不能据此决定实时采集默认值。
+
+在 `f607341` 的同一采集程序中，交替三轮开关 Graph，仍为相同空检测画面规格：
+
+| JPEG 解析输出 → 最终结果，ms | 普通 GPU 提交 P95 / P99 | CUDA Graph P95 / P99 |
+| --- | --- | --- |
+| 第一轮 | 11.170 / 11.320 | 10.216 / 10.296 |
+| 第二轮 | 10.044 / 10.169 | 10.218 / 10.358 |
+| 第三轮 | 10.038 / 10.130 | 10.253 / 10.411 |
+
+**一次改善、两次 P95 回退，没有证明稳定整链优势。** 因此采集候选默认使用普通 GPU
+提交，Graph 仅由 `--graph` 显式选择。日志仍保留原实验参数。普通路径自身也出现
+约 1 ms 的跨轮变化，具体来源尚未闭合；本轮没有记录高频 GPU/CPU 时钟，不能把
+波动直接归因于动态调频，更不能通过改锁频设置掩盖它。六轮的匹配均无缺失、
+歧义或倒序；`capture-graph-comparison.json` 保留这些没有被选择性删去的结果。
+
+另一次节点级追踪确认 593 帧中的 592 次图重放（首帧预热），RGB / 解码 / 排序 /
+NMS / 打包各执行 593 次，最终结果 D2H 593 次且没有原始输出回传。
+新增 RGB 预处理及 Graph/输入地址生命周期的 memcheck 均为 0 errors；检查工具
+下的延迟不计入性能结果。
+真实 NVMM/EGL 采集还在 memcheck 下完成 21 帧并正常退出，报告 0 errors。
+本地 TensorRT FFI 的 16 项测试、C ABI 检查及两个诊断脚本自检通过；这些主机
+检查不替代 Jetson 功能验收。最终核对原 daemon 和原模型 SHA-256 与 P0 一致，
+采集设备已释放，远端既存未跟踪文件保留。
+
+### 后处理微基准及证据位置
+
+当前矩阵移除 / 按类块并行 NMS 实现 `97f9709` 的一次合成微基准中，GPU 后处理
+主机壁钟 P95：空结果 0.143 ms、20 个候选 0.164 ms、密集 1,344 个候选
+0.820 ms。原 Release parser + 顺序 NMS 参考对应为 0.013、0.016、1.189 ms。
+密集用例更快，空/稀疏用例仍较慢；它们不是产品速度，也不是跨平台成绩。
+GPU event 与主机壁钟来自不同执行，不能将分位数当同帧构成相加。
+
+远端证据位于本次独立 GPU 临时目录，本地归档目标为被忽略的
+`out/diagnostics/jetson-gpu-20260908/`。`capture-comparison.json` 汇总三轮结果；
+`execution-proof-final.json`、`capture-execution-proof.json`、Nsight 文件和每轮
+`trace.csv` / `analysis.json` / `receipt.json` 保留原始依据。
+不提交模型文件、图像或私网连接信息。
+
 ## 问题与下一步
 
 1. **已确认的实现问题：当前后处理是 CPU 路径。** 责任落在现有 NovaSight parser + nvinfer 输出/聚类配置组合，不能由此推导 DeepStream 无法接入 GPU 后处理。它违反用户的关键计算执行要求，但本轮 0.1 ms parser 不能解释显著的整链慢速；非空 NMS 仍需测量。
@@ -93,7 +211,10 @@ flowchart LR
 4. **守护进程退出问题复现。** 五次完成测量的运行均能停止视觉管线，但随后 daemon shutdown 返回退出码 1，日志为 `RUNTIME_SUPERVISOR_EXITED`。首轮旧脚本的 `PASS` 只代表测量及输出检查，不能当生命周期验收；脚本现已将这类结果标成 `MEASURED_WITH_SHUTDOWN_ERROR`。本轮未修改产品停机逻辑。
 5. **连接指标有误导性。** 空适配器继承默认 no-op `connect() -> Ok(())`，runtime 因此报告 `device_connected=true`、`device_connection_enabled=true`。这不代表实际连接设备；诊断核验实际生效的 `auto_connect=false`、输出门关闭及零发送记录，不放宽产品输出保护。
 
-后续先完成上述测量边界与有目标负载，并建立 release 对照。随后按[已同意的计划](pipeline-gpu-optimization-plan.md)设计数据所有权/调度，做 DeepStream GPU 后处理与直接 TensorRT 的最小同条件比较。采集格式、预处理、CUDA 提交和同步都需按证据评估；不预先将收益归因于某一框架。没有香橙派的同条件整链数据，仍不承诺 Jetson 的性能倍率或价格价值。
+P1 已取得上述 GPU 计算和 release 空检测视觉链对照。下一步补齐非空检测质量、
+可靠采集帧龄及功能接入的选型证据，再扩大生产适配范围；遵循[已同意的计划](pipeline-gpu-optimization-plan.md)。
+采集格式、预处理、CUDA 提交和同步仍需按证据评估；不能将全部收益归因于某一框架。
+没有香橙派的同条件整链数据，仍不承诺 Jetson 的性能倍率或价格价值。
 
 ## 复现
 

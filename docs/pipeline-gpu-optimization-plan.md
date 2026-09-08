@@ -1,6 +1,6 @@
 # NovaSight pipeline 提升计划与执行边界
 
-日期：2026-09-08。状态：用户已同意开始，P0 已取得部分实机基线；架构未定案，GPU 改造尚未实施。
+日期：2026-09-08。状态：P0 部分基线、P1 的共享 CUDA 后处理 / TensorRT 设备输出 / NVMM 真实采集候选已有有限实机证据。三轮 release 空检测视觉链 P95 降低约 8%–10%，不能当完整产品收益。DS 7.1 Other 候选仍回传原始输出；Graph 整链收益不稳定，保持显式实验。生产路径未切换，完整产品尚未验收。
 
 本文件记录用户要求及后续优化的操作边界。每次继续这项工作，先读取本文件、`PROJECT_HEALTH_AUDIT.md` 和工作区当前状态；现场证据变化时更新本文件，不把历史设计当作当前实现。用户后续明确指令优先。用户同意后已开始独立目录中的 P0 真实采集、计时和 CUDA 追踪；物理输出关闭，未替换远端程序。
 
@@ -74,7 +74,7 @@ P0 进展见 [2026-09-08 实机基线报告](pipeline-gpu-baseline-20260908.md)�
 
 依据：[生产管线](../crates/novasight-platform-jetson/src/deepstream/pipeline.rs)、[结果交付](../crates/novasight-platform-jetson/src/deepstream/session.rs)、[结果类型](../crates/novasight-core/src/perception/types.rs)、[控制与发送](../crates/novasight-pipeline/src/runtime.rs)、[设备组合](../apps/novasightd/src/live_perception.rs)。
 
-当前仅增加诊断工具与记录，新的 GPU 中间处理尚未接入这些边界。现有代码仍有 CPU raw parser / NMS；准星路径存在 JPEG 编码后再 CPU 解码 / 匹配；采集帧龄关联、完整功能性能和严格硬件执行检查也未完成。故入口 / 出口契约可沿用，不等于 GPU 方案已经对接通过，更不能称中间流程已优化到极致。
+共享 GPU raw YOLO 后处理和原 TensorRT 封装的设备输出接口已有独立实机候选，见 [CUDA 模块](../native/yolo-postprocess/README.md)。候选尚未接入采集 / `DetectionBatch` / 控制边界。现有生产代码仍有 CPU raw parser / NMS；准星路径存在 JPEG 编码后再 CPU 解码 / 匹配；采集帧龄关联、完整功能性能和严格硬件执行检查也未完成。故入口 / 出口契约可沿用，不等于 GPU 产品方案已经对接通过，更不能称中间流程已优化到极致。
 
 ### 必须保持的业务语义
 
@@ -192,9 +192,9 @@ P0 的有目标输入、帧龄和 RK3588 对照尚未齐备时，已确认的 CP
 | --- | --- | --- |
 | 现场访问与单模型 GPU 测速 | 已完成有限检查 | 本文第 2 节；不含完整 pipeline / 物理输出 |
 | P0 完整基线与计时 | 部分完成，尚未通过 | [实机报告](pipeline-gpu-baseline-20260908.md)；补齐有目标输入、采集时间关联和控制计算，使用可比 release 构建后再选型 |
-| P1 数据流设计与可比实验 | 未开始 | DeepStream 和直接 TensorRT 均未选定；先设计缓冲/调度再验证 |
-| P2 GPU 计算与产品接入 | 未开始 | 按 P1 证据选择路线，覆盖真实在用模型 |
-| P3 图像路径与准星 | 未开始 | 保留功能，取消内部 JPEG 中转 |
+| P1 数据流设计与可比实验 | 进行中，已有真实采集对照 | GPU raw 计算通过 40 项契约、memcheck/racecheck；NVMM → CUDA RGB → TensorRT → GPU NMS 已运行。三轮与 release 原视觉链对照见报告；缺非空质量、完整功能和帧龄，尚无完整产品选型结论。DS Other 仍回传 raw；Graph 保持显式实验 |
+| P2 GPU 计算与产品接入 | 产品接入未开始 | raw GPU 计算在 P1 候选中验证；正式接入与其余模型覆盖仍需完成 |
+| P3 图像路径与准星 | 主线图像仅在 P1 候选中验证，产品迁移未开始 | 候选复用硬件解码 / VIC，并验证 NVMM EGL → CUDA RGB；准星 JPEG 往返、预览和功能保持仍待完成 |
 | P4 硬件执行与停止约束 | 未开始 | 随 P2/P3 接入并验证，不留到发布后 |
 | P5 产品性能和稳定性验收 | 未开始 | 必须同时满足关键计算硬件执行与整链不弱于 RK3588；对照程序和实测待补，物理输出另需明确授权 |
 
