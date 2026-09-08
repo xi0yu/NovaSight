@@ -12,7 +12,8 @@ mod linux {
     use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 
     use novasight_core::{
-        CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError,
+        CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureFrameRate,
+        CaptureProbeError,
     };
 
     const VIDEO_CAPTURE: u32 = 1;
@@ -212,7 +213,8 @@ mod linux {
                     ));
                 }
             };
-            let mut profiles: BTreeMap<(String, u32, u32), BTreeSet<u32>> = BTreeMap::new();
+            let mut profiles: BTreeMap<(String, u32, u32), BTreeSet<CaptureFrameRate>> =
+                BTreeMap::new();
             for pixel_format in formats {
                 for (width, height) in enumerate_sizes(descriptor, pixel_format)? {
                     let frame_rates = enumerate_intervals(descriptor, pixel_format, width, height)?;
@@ -227,13 +229,18 @@ mod linux {
             let capabilities = profiles
                 .into_iter()
                 .map(|((pixel_format, width, height), frame_rates)| {
-                    let mut fps_list = frame_rates.into_iter().collect::<Vec<_>>();
+                    let mut fps_list = frame_rates
+                        .iter()
+                        .filter_map(|rate| rate.rounded_fps())
+                        .collect::<Vec<_>>();
                     fps_list.sort_unstable_by(|left, right| right.cmp(left));
+                    fps_list.dedup();
                     CaptureCapability {
                         pixel_format,
                         width,
                         height,
                         fps_list,
+                        frame_rates: frame_rates.into_iter().collect(),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -322,7 +329,7 @@ mod linux {
         pixel_format: u32,
         width: u32,
         height: u32,
-    ) -> Result<BTreeSet<u32>, CaptureProbeError> {
+    ) -> Result<BTreeSet<CaptureFrameRate>, CaptureProbeError> {
         let mut frame_rates = BTreeSet::new();
         for index in 0..MAX_ENUMERATED_ITEMS {
             let mut interval = V4l2FrameIntervalEnum::new(index, pixel_format, width, height);
@@ -332,8 +339,11 @@ mod linux {
                 Ok(_) if interval.frame_interval_type == FRAME_INTERVAL_DISCRETE => {
                     // SAFETY: the kernel selected the discrete union variant.
                     let fraction = unsafe { interval.frame_interval.discrete };
-                    if let Some(fps) = rounded_fps(fraction) {
-                        frame_rates.insert(fps);
+                    if let Some(rate) =
+                        CaptureFrameRate::new(fraction.denominator, fraction.numerator)
+                            .filter(|rate| rate.rounded_fps().is_some())
+                    {
+                        frame_rates.insert(rate);
                     }
                 }
                 Ok(_) => {}
@@ -345,16 +355,6 @@ mod linux {
             }
         }
         Ok(frame_rates)
-    }
-
-    fn rounded_fps(fraction: V4l2Fraction) -> Option<u32> {
-        if fraction.numerator == 0 || fraction.denominator == 0 {
-            return None;
-        }
-        let numerator = u64::from(fraction.numerator);
-        let denominator = u64::from(fraction.denominator);
-        let rounded = denominator.saturating_add(numerator / 2) / numerator;
-        u32::try_from(rounded).ok().filter(|fps| *fps > 0)
     }
 
     fn fourcc(value: u32) -> String {
@@ -400,10 +400,7 @@ mod linux {
         fn fourcc_and_fraction_match_v4l2_ctl_projection() {
             assert_eq!(fourcc(u32::from_le_bytes(*b"MJPG")), "MJPG");
             assert_eq!(
-                rounded_fps(V4l2Fraction {
-                    numerator: 1_001,
-                    denominator: 30_000,
-                }),
+                CaptureFrameRate::new(30_000, 1_001).unwrap().rounded_fps(),
                 Some(30)
             );
         }

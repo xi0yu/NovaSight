@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use novasight_core::CaptureFrameRate;
 use thiserror::Error;
 
 const LATEST_ONLY_QUEUE: &str =
@@ -16,7 +17,7 @@ pub enum CaptureFormat {
 pub struct CaptureProfile {
     pub width: u32,
     pub height: u32,
-    pub fps: u32,
+    pub frame_rate: CaptureFrameRate,
     pub format: CaptureFormat,
 }
 
@@ -77,8 +78,11 @@ impl DeepStreamPipelineSpec {
             CaptureFormat::Mjpeg => {
                 elements.extend([
                     format!(
-                        "image/jpeg,width={},height={},framerate={}/1",
-                        self.capture.width, self.capture.height, self.capture.fps
+                        "image/jpeg,width={},height={},framerate={}/{}",
+                        self.capture.width,
+                        self.capture.height,
+                        self.capture.frame_rate.numerator,
+                        self.capture.frame_rate.denominator
                     ),
                     LATEST_ONLY_QUEUE.to_owned(),
                     "jpegparse".to_owned(),
@@ -95,8 +99,11 @@ impl DeepStreamPipelineSpec {
                 };
                 elements.extend([
                     format!(
-                        "video/x-raw,format={format},width={},height={},framerate={}/1",
-                        self.capture.width, self.capture.height, self.capture.fps
+                        "video/x-raw,format={format},width={},height={},framerate={}/{}",
+                        self.capture.width,
+                        self.capture.height,
+                        self.capture.frame_rate.numerator,
+                        self.capture.frame_rate.denominator
                     ),
                     LATEST_ONLY_QUEUE.to_owned(),
                 ]);
@@ -205,7 +212,14 @@ impl DeepStreamPipelineSpec {
         for (field, value) in [
             ("capture.width", self.capture.width),
             ("capture.height", self.capture.height),
-            ("capture.fps", self.capture.fps),
+            (
+                "capture.frame_rate.numerator",
+                self.capture.frame_rate.numerator,
+            ),
+            (
+                "capture.frame_rate.denominator",
+                self.capture.frame_rate.denominator,
+            ),
             ("roi.width", self.roi.width),
             ("roi.height", self.roi.height),
             ("model_input.width", self.model_input.width),
@@ -214,6 +228,11 @@ impl DeepStreamPipelineSpec {
             if value == 0 {
                 return Err(PipelineSpecError::NonPositive { field });
             }
+        }
+        if self.capture.frame_rate.numerator > i32::MAX as u32
+            || self.capture.frame_rate.denominator > i32::MAX as u32
+        {
+            return Err(PipelineSpecError::InvalidFrameRate);
         }
         let right = self
             .roi
@@ -271,6 +290,8 @@ fn gst_string(path: &Path) -> String {
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum PipelineSpecError {
+    #[error("capture frame rate exceeds GStreamer fraction bounds")]
+    InvalidFrameRate,
     #[error("capture device must not be blank")]
     BlankDevice,
     #[error("nvinfer config path must not be blank")]

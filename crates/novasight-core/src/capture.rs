@@ -1,12 +1,47 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Frames per second, preserving the device's fraction through caps negotiation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+pub struct CaptureFrameRate {
+    pub numerator: u32,
+    pub denominator: u32,
+}
+
+impl CaptureFrameRate {
+    pub fn new(numerator: u32, denominator: u32) -> Option<Self> {
+        if numerator == 0 || denominator == 0 {
+            return None;
+        }
+        let (mut a, mut b) = (numerator, denominator);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        Some(Self {
+            numerator: numerator / a,
+            denominator: denominator / a,
+        })
+    }
+
+    /// UI/selection preference only; never use this value as negotiated caps.
+    pub fn rounded_fps(self) -> Option<u32> {
+        if self.numerator == 0 || self.denominator == 0 {
+            return None;
+        }
+        let fps = (u64::from(self.numerator) + u64::from(self.denominator) / 2)
+            / u64::from(self.denominator);
+        u32::try_from(fps).ok().filter(|fps| *fps > 0)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CaptureCapability {
     pub pixel_format: String,
     pub width: u32,
     pub height: u32,
     pub fps_list: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frame_rates: Vec<CaptureFrameRate>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -38,6 +73,7 @@ pub struct SelectedCaptureProfile {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    pub frame_rate: CaptureFrameRate,
     pub preference: CaptureSelectionPreference,
     pub selection_reason: &'static str,
 }
@@ -103,9 +139,27 @@ pub fn select_capture_profile_for_formats(
                     capability.width,
                     capability.height,
                     *fps,
+                    capability
+                        .frame_rates
+                        .iter()
+                        .copied()
+                        .filter(|rate| rate.rounded_fps() == Some(*fps))
+                        .min_by_key(|rate| {
+                            // Prefer an exact integer mode when both it and e.g. 59.94 exist.
+                            u64::from(rate.numerator)
+                                .abs_diff(u64::from(*fps) * u64::from(rate.denominator))
+                        })
+                        .or_else(|| {
+                            capability
+                                .frame_rates
+                                .is_empty()
+                                .then(|| CaptureFrameRate::new(*fps, 1))
+                                .flatten()
+                        }),
                 )
             })
         })
+        .filter(|choice| choice.4.is_some())
         .collect::<Vec<_>>();
     if choices.is_empty() {
         if device_has_profiles && !supported_formats.is_empty() {
@@ -126,7 +180,10 @@ pub fn select_capture_profile_for_formats(
             let pixel_format = canonical_pixel_format(pixel_format);
             let choice = choices
                 .iter()
-                .find(|choice| **choice == (pixel_format.clone(), width, height, fps))
+                .find(|choice| {
+                    (choice.0.as_str(), choice.1, choice.2, choice.3)
+                        == (pixel_format.as_str(), width, height, fps)
+                })
                 .cloned()
                 .ok_or_else(|| CaptureSelectionError::UnsupportedProfile {
                     device: capabilities.device.clone(),
@@ -173,7 +230,9 @@ pub fn select_capture_profile_for_formats(
         CaptureSelectionPreference::AutoHighFps => {
             let choice = choices
                 .iter()
-                .min_by_key(|choice| jetson_nvmm_rank(choice))
+                .min_by_key(|choice| {
+                    jetson_nvmm_rank(&(choice.0.clone(), choice.1, choice.2, choice.3))
+                })
                 .expect("non-empty choices")
                 .clone();
             (choice, "auto_high_fps selected jetson nvmm profile")
@@ -186,6 +245,7 @@ pub fn select_capture_profile_for_formats(
         width: choice.1,
         height: choice.2,
         fps: choice.3,
+        frame_rate: choice.4.expect("filtered valid device rate"),
         preference,
         selection_reason,
     })
@@ -252,12 +312,14 @@ mod tests {
                     width: 1920,
                     height: 1080,
                     fps_list: vec![60],
+                    frame_rates: vec![],
                 },
                 CaptureCapability {
                     pixel_format: "MJPG".to_owned(),
                     width: 1920,
                     height: 1080,
                     fps_list: vec![60, 120],
+                    frame_rates: vec![],
                 },
             ],
             reason: "kernel capabilities".to_owned(),

@@ -26,8 +26,8 @@ pub use assessment::{
     score_algorithm_trace, score_prediction_truth,
 };
 pub use capture::{
-    CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureProbeError,
-    CaptureSelectionError, CaptureSelectionPreference, SelectedCaptureProfile,
+    CaptureCapabilities, CaptureCapability, CaptureCapabilityProbe, CaptureFrameRate,
+    CaptureProbeError, CaptureSelectionError, CaptureSelectionPreference, SelectedCaptureProfile,
     select_capture_profile, select_capture_profile_for_formats,
 };
 #[cfg(feature = "replay-tools")]

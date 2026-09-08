@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use novasight_core::{
-    CaptureCapabilityProbe, CaptureSelectionPreference, Clock, PointerDevice, RuntimeEpoch,
-    select_capture_profile_for_formats,
+    CaptureCapabilityProbe, CaptureFrameRate, CaptureSelectionPreference, Clock, PointerDevice,
+    RuntimeEpoch, select_capture_profile_for_formats,
 };
 use novasight_pipeline::{
     CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, CrosshairHubSlot, ModelCandidate,
@@ -268,11 +268,9 @@ fn build_live_dependencies(
     Ok(dependencies)
 }
 
-fn resolve_capture_plan(capture: &CaptureConfig) -> Result<CaptureConfig, LivePerceptionError> {
-    if capture.preference == CapturePreference::Manual {
-        parse_capture_format(&capture.pixel_format)?;
-        return Ok(capture.clone());
-    }
+fn resolve_capture_plan(
+    capture: &CaptureConfig,
+) -> Result<(CaptureConfig, CaptureFrameRate), LivePerceptionError> {
     let capabilities = V4l2CapabilityProbe
         .probe(&capture.device.to_string_lossy())
         .map_err(|error| LivePerceptionError::CaptureProbe(error.to_string()))?;
@@ -280,12 +278,17 @@ fn resolve_capture_plan(capture: &CaptureConfig) -> Result<CaptureConfig, LivePe
         CapturePreference::AutoHighFps => CaptureSelectionPreference::AutoHighFps,
         CapturePreference::AutoLowLatency => CaptureSelectionPreference::AutoLowLatency,
         CapturePreference::AutoBalanced => CaptureSelectionPreference::AutoBalanced,
-        CapturePreference::Manual => unreachable!(),
+        CapturePreference::Manual => CaptureSelectionPreference::Manual,
     };
     let selected = select_capture_profile_for_formats(
         &capabilities,
         preference,
-        None,
+        (capture.preference == CapturePreference::Manual).then_some((
+            capture.pixel_format.as_str(),
+            capture.width,
+            capture.height,
+            capture.fps,
+        )),
         &["MJPG", "NV12", "YUYV"],
     )
     .map_err(|error| LivePerceptionError::CaptureSelection(error.to_string()))?;
@@ -304,7 +307,7 @@ fn resolve_capture_plan(capture: &CaptureConfig) -> Result<CaptureConfig, LivePe
     resolved
         .validate_runtime_plan()
         .map_err(LivePerceptionError::Config)?;
-    Ok(resolved)
+    Ok((resolved, selected.frame_rate))
 }
 
 #[derive(Clone, Debug)]
@@ -355,7 +358,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
 
     fn runtime_contract(&self) -> Result<Option<PerceptionRuntimeContract>, PerceptionError> {
         let config = self.config.blocking_effective_snapshot();
-        let capture = config
+        let (capture, _) = config
             .require_vision_adapters()
             .map_err(|error| PerceptionError::new(error.to_string()))
             .and_then(|adapters| {
@@ -423,7 +426,7 @@ fn build_deepstream_session_config(
     let adapters = config
         .require_vision_adapters()
         .map_err(LivePerceptionError::Config)?;
-    let capture = resolve_capture_plan(adapters.capture)?;
+    let (capture, frame_rate) = resolve_capture_plan(adapters.capture)?;
     let format = parse_capture_format(&capture.pixel_format)?;
     let io_mode = u32::try_from(adapters.inference.deepstream_io_mode)
         .map_err(|_| LivePerceptionError::InvalidIoMode(adapters.inference.deepstream_io_mode))?;
@@ -439,7 +442,7 @@ fn build_deepstream_session_config(
         capture: CaptureProfile {
             width: capture.width,
             height: capture.height,
-            fps: capture.fps,
+            frame_rate,
             format,
         },
         io_mode,

@@ -11,7 +11,7 @@ fn spec(format: CaptureFormat) -> DeepStreamPipelineSpec {
         capture: CaptureProfile {
             width: 1920,
             height: 1080,
-            fps: 120,
+            frame_rate: novasight_core::CaptureFrameRate::new(120, 1).unwrap(),
             format,
         },
         io_mode: 2,
@@ -95,6 +95,47 @@ fn raw_capture_does_not_insert_the_mjpeg_decoder() {
     assert!(pipeline.contains("video/x-raw,format=YUY2"));
     assert!(!pipeline.contains("jpegparse"));
     assert!(!pipeline.contains("nvv4l2decoder"));
+}
+
+#[test]
+fn device_fraction_survives_selection_and_all_capture_caps() {
+    use novasight_core::{
+        CaptureCapabilities, CaptureFrameRate, CaptureSelectionPreference, select_capture_profile,
+    };
+    let capabilities: CaptureCapabilities = serde_json::from_str(
+        r#"{
+        "available":true,"device":"/dev/video0","reason":"kernel",
+        "capabilities":[{"pixel_format":"MJPG","width":1920,"height":1080,
+            "fps_list":[120,240],"frame_rates":[
+                {"numerator":120,"denominator":1},
+                {"numerator":5000000,"denominator":20833}]}]
+    }"#,
+    )
+    .unwrap();
+    for (fps, caps) in [(120, "framerate=120/1"), (240, "framerate=5000000/20833")] {
+        let selected = select_capture_profile(
+            &capabilities,
+            CaptureSelectionPreference::Manual,
+            Some(("MJPG", 1920, 1080, fps)),
+        )
+        .unwrap();
+        assert_eq!(selected.frame_rate.rounded_fps(), Some(fps));
+        for format in [
+            CaptureFormat::Mjpeg,
+            CaptureFormat::Nv12,
+            CaptureFormat::Yuy2,
+        ] {
+            let mut pipeline = spec(format);
+            pipeline.capture.frame_rate = selected.frame_rate;
+            assert!(pipeline.build().unwrap().contains(caps));
+        }
+    }
+    let mut invalid = spec(CaptureFormat::Nv12);
+    invalid.capture.frame_rate = CaptureFrameRate {
+        numerator: 240,
+        denominator: 0,
+    };
+    assert!(invalid.build().is_err());
 }
 
 #[test]
