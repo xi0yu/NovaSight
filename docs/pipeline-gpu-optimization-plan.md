@@ -1,12 +1,12 @@
 # NovaSight pipeline 提升计划与执行边界
 
-日期：2026-09-08。状态：P0 部分基线、P1 的共享 CUDA 后处理 / TensorRT 设备输出 / NVMM 真实采集候选已有有限实机证据。三轮 release 空检测视觉链 P95 降低约 8%–10%，不能当完整产品收益。DS 7.1 Other 候选仍回传原始输出；Graph 整链收益不稳定，保持显式实验。生产路径未切换，完整产品尚未验收。
+日期：2026-09-08。状态：P0 部分基线、P1 的共享 CUDA 后处理 / TensorRT 设备输出 / NVMM 真实采集候选已有有限实机证据。三轮 release 空检测视觉链 P95 降低约 8%–10%，不能当完整产品收益。DS 7.1 Other 候选仍回传原始输出。随后吞吐补测：同 engine 普通 TensorRT 为 490–495 次/秒、Graph 为 704–707 次/秒；约 240 FPS 采集请求下，纯采集与 GPU 视觉候选均约 202 FPS。Graph 在该负载减少处理时间，未提高受输入限制的结果率；生产精确帧率传递仍有取整问题。生产路径未切换，完整产品尚未验收。
 
 本文件记录用户要求及后续优化的操作边界。每次继续这项工作，先读取本文件、`PROJECT_HEALTH_AUDIT.md` 和工作区当前状态；现场证据变化时更新本文件，不把历史设计当作当前实现。用户后续明确指令优先。用户同意后已开始独立目录中的 P0 真实采集、计时和 CUDA 追踪；物理输出关闭，未替换远端程序。
 
 ## 1. 目标与优先级
 
-在保留现有有效功能、模型语义和控制约束的前提下，降低完整 pipeline 的延迟，重点关注 P95/P99、帧龄及持续运行稳定性。推理 FPS 和 GPU 占用率只作辅助指标。
+在保留现有有效功能、模型语义和控制约束的前提下，同时提高完整 pipeline 的持续有效吞吐、降低 P95/P99 延迟和帧龄，并保持持续运行稳定性。用户进一步明确以 RK3588 的 240 FPS 推理表现追问差距：必须分别测量模型持续推理吞吐、输入实际供帧率、完整检测结果率及有效控制更新率。固定 120 FPS 输入下延迟降低 9% 不能回答 240 FPS 的吞吐要求；GPU 占用率和理论算力不能代替实测。
 
 **2026-09-08 用户补充的交付硬条件：完整 YOLO 识别、推理、控制表现不得弱于指定的香橙派 RK3588 实际方案，且关键视觉计算必须使用 GPU / 适用专用硬件。两项必须同时通过。** CPU parser 即使只有 0.1 ms 也必须迁移；耗时小、没有检测目标或缺少 RK3588 对照，都不能成为保留产品 CPU 关键计算的理由。缺少对照只阻止性能验收，不能阻止已明确的 GPU 路径设计、实现和正确性验证。
 
@@ -74,7 +74,7 @@ P0 进展见 [2026-09-08 实机基线报告](pipeline-gpu-baseline-20260908.md)�
 
 依据：[生产管线](../crates/novasight-platform-jetson/src/deepstream/pipeline.rs)、[结果交付](../crates/novasight-platform-jetson/src/deepstream/session.rs)、[结果类型](../crates/novasight-core/src/perception/types.rs)、[控制与发送](../crates/novasight-pipeline/src/runtime.rs)、[设备组合](../apps/novasightd/src/live_perception.rs)。
 
-共享 GPU raw YOLO 后处理和原 TensorRT 封装的设备输出接口已有独立实机候选，见 [CUDA 模块](../native/yolo-postprocess/README.md)。候选尚未接入采集 / `DetectionBatch` / 控制边界。现有生产代码仍有 CPU raw parser / NMS；准星路径存在 JPEG 编码后再 CPU 解码 / 匹配；采集帧龄关联、完整功能性能和严格硬件执行检查也未完成。故入口 / 出口契约可沿用，不等于 GPU 产品方案已经对接通过，更不能称中间流程已优化到极致。
+共享 GPU raw YOLO 后处理和原 TensorRT 封装的设备输出接口已有独立实机候选，见 [CUDA 模块](../native/yolo-postprocess/README.md)。诊断程序已接入真实 NVMM 采集，但尚未接入生产采集生命周期 / `DetectionBatch` / 控制边界。现有生产代码仍有 CPU raw parser / NMS；准星路径存在 JPEG 编码后再 CPU 解码 / 匹配；采集帧龄关联、完整功能性能和严格硬件执行检查也未完成。故入口 / 出口契约可沿用，不等于 GPU 产品方案已经对接通过，更不能称中间流程已优化到极致。
 
 ### 必须保持的业务语义
 
