@@ -20,4 +20,14 @@ if(BUILD_TESTING)
         ../tensorrt-runtime/include ${TENSORRT_INCLUDE_DIR})
     target_link_libraries(yolo_gpu_contract_test PRIVATE novasight_yolo_gpu ${TENSORRT_LIBRARY})
     add_test(NAME yolo_gpu_contract COMMAND yolo_gpu_contract_test)
+    find_path(NVDSINFER_INCLUDE_DIR nvdsinfer_context.h
+        HINTS /opt/nvidia/deepstream/deepstream-7.1/sources/includes REQUIRED)
+    find_library(NVDSINFER_LIBRARY nvds_infer
+        HINTS /opt/nvidia/deepstream/deepstream-7.1/lib REQUIRED)
+    add_executable(deepstream_device_test tests/deepstream_device_test.cpp
+        ../tensorrt-runtime/src/jetson.cpp)
+    target_include_directories(deepstream_device_test PRIVATE
+        ${NVDSINFER_INCLUDE_DIR} ${TENSORRT_INCLUDE_DIR} ../tensorrt-runtime/include)
+    target_link_libraries(deepstream_device_test PRIVATE
+        novasight_yolo_gpu ${NVDSINFER_LIBRARY} ${TENSORRT_LIBRARY})
 endif()
