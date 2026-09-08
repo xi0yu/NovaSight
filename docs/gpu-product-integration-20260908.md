@@ -61,15 +61,15 @@ Nsight 正式 daemon 运行 `1788872972932930462`：
 ## 可执行检查
 
 - 本地：TensorRT FFI / 最终结果边界 17 项；GPU 模型契约 3 项；采集构造 8 项；控制 pipeline 回归 13 项；正常 API 关机回归 1 项；隔离脚本自检通过。
-- Jetson：正式 daemon 构建、上述真实采集 / Nsight / 故障注入通过。
+- Jetson：正式 daemon 构建、上述真实采集 / Nsight / 故障注入通过；修正测试中的 GStreamer 初始化后，帧生命周期 / 会话 / 模型契约 10 项、采集构造 8 项全部通过。
 - 新增生产预处理内核覆盖 FP32/FP16、RGB/BGR、带行填充、251×127 非方形及非整线程块边界，数值检查通过。Compute Sanitizer 初次因缺少调试权限未执行成功；随后仅为诊断进程使用已有 `debug` 组，**memcheck 0 errors**。没有修改系统组成员或驱动设置。
 - 原部署 daemon SHA-256 仍为 `39af10e1e0707eb5ef886b6a374facc6de00ff41a8f0e92c11f50a95686baaaa`；模型哈希不变；摄像设备已释放；远端原有 `config/`、`pyds-1.2.0-cp310-cp310-linux_aarch64.whl`、`run/` 未跟踪项保留。
 
 ## 代码与证据
 
-源码同步提交：`5d034b9` 精确帧率，`2d83bb2` 正式 GPU 接入，`6220147` 预处理验证，`f3697c8` 故障立即关闭，`ba05646` CUDA 编译 / 正常关机修复，`5ed650e` 诊断工具。实跑 daemon 由 `ba05646` 构建，SHA-256 `660732a586580aa23fe7ffc35edad1a683dea05654361c036cd2fcfd340056fa`；之后 `5ed650e` 仅更新诊断脚本。
+源码同步提交：`5d034b9` 精确帧率，`2d83bb2` 正式 GPU 接入，`6220147` 预处理验证，`f3697c8` 故障立即关闭，`ba05646` CUDA 编译 / 正常关机修复，`5ed650e` 诊断工具。实跑 daemon 由 `ba05646` 构建，SHA-256 `660732a586580aa23fe7ffc35edad1a683dea05654361c036cd2fcfd340056fa`；之后 `5ed650e` 仅更新诊断脚本。最终 `8c8084e` 还修正了多分母帧率的距离比较及测试初始化；该版本重新构建并通过 5 秒启动/停止检查 `1788874067103488729`，二进制 SHA-256 为 `a0e60be66ad045406bf6e588d8b63ac3c914f0cef6b1d9d3246b5958c49b8d19`。这个短检查不计入三轮性能成绩。
 
-本地收据目录：[product](../out/diagnostics/jetson-gpu-20260908/product/)，包含 7 次运行的收据、状态序列及 Nsight 汇总；[统计](../out/diagnostics/jetson-gpu-20260908/product/summary.json)、[哈希](../out/diagnostics/jetson-gpu-20260908/product/sha256.json)。远端隔离目录 `/tmp/novasight-p0-gpu-product-20260908` 保留二进制、构建日志和完整 Nsight 报告。未把临时配置、数据库、许可证或访问码取回作为性能证据。
+本地收据目录：[product](../out/diagnostics/jetson-gpu-20260908/product/)，包含 7 次测量/故障运行和最终启动停止检查的收据、状态序列及 Nsight 汇总；[统计](../out/diagnostics/jetson-gpu-20260908/product/summary.json)、[哈希](../out/diagnostics/jetson-gpu-20260908/product/sha256.json)。远端隔离目录 `/tmp/novasight-p0-gpu-product-20260908` 保留二进制、构建日志和完整 Nsight 报告。未把临时配置、数据库、许可证或访问码取回作为性能证据。
 
 ```sh
 # Jetson，保留原配置，关闭物理输出的隔离运行
