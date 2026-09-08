@@ -248,12 +248,12 @@ int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::strcmp(argv[1], "--self-test") == 0) self_test();
         else {
-            require(argc == 3 || (argc == 4 && std::strcmp(argv[3], "--no-graph") == 0),
-                "Usage: capture_device_test ENGINE SECONDS(1..30) [--no-graph] | --self-test");
+            require(argc == 3 || (argc == 4 && std::strcmp(argv[3], "--graph") == 0),
+                "Usage: capture_device_test ENGINE SECONDS(1..30) [--graph] | --self-test");
             std::size_t used = 0;
             const auto seconds = std::stoul(argv[2], &used);
             require(used == std::strlen(argv[2]) && seconds >= 1 && seconds <= 30, "Invalid capture duration");
-            run(argv[1], static_cast<unsigned>(seconds), argc == 3);
+            run(argv[1], static_cast<unsigned>(seconds), argc == 4);
         }
         return 0;
     } catch (const std::exception& error) {
