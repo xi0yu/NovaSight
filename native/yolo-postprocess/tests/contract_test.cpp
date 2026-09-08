@@ -375,9 +375,11 @@ int main(int argc, char** argv) {
             for (unsigned i = 0; i < 1344; ++i)
                 dense.box(i, float(rng() % 256), float(rng() % 256), 20, 20, .65f + float(rng() % 350) / 1000, i % 5);
             benchmark("dense_1344", dense);
-        } else {
+        } else if (argc == 1) {
             contracts();
             std::cout << "YOLO_GPU_CONTRACT_PASS cases=" << checks << '\n';
+        } else {
+            throw std::invalid_argument("Usage: yolo_gpu_contract_test [--benchmark | --engine PATH | --trace-engine PATH]");
         }
         return 0;
     } catch (const std::exception& error) {

@@ -93,8 +93,10 @@ int novasight_tensorrt_execute(
 );
 
 /* Additive device-output API; existing ABI-3 layouts and host API are unchanged.
- * Single-threaded owner: at most one outstanding enqueue per engine. input_ready_event is a borrowed cudaEvent_t encoded as uint64_t; inference
- * waits for it on the GPU. Zero means the input is already ready.
+ * Single-threaded owner: at most one outstanding enqueue per engine.
+ * input_ready_event is a borrowed cudaEvent_t encoded as uint64_t; inference
+ * waits for it on the GPU. Zero means the input is already ready. The event must
+ * be recorded before enqueue and remain alive until finish_device returns.
  * Returns borrowed device views in spec.outputs order and a borrowed cudaStream_t
  * encoded as uint64_t. Queue GPU consumers on that stream; do not destroy it.
  * Input, views and engine must remain alive until finish_device returns. A second

@@ -10,9 +10,6 @@
 
 namespace novasight {
 namespace {
-using Mask = unsigned long long;
-constexpr unsigned tile = 64;
-
 void check(cudaError_t status, const char* operation) {
     if (status != cudaSuccess)
         throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(status));
@@ -69,58 +66,40 @@ __device__ float iou(const YoloGpuDetection& a, const YoloGpuDetection& b) {
     return area == 0 ? 0 : overlap / area;
 }
 
-__global__ void overlap_masks(const YoloGpuDetection* boxes, const float* scores,
-                             const unsigned* order, unsigned n, float threshold, Mask* masks) {
-    if (blockIdx.y < blockIdx.x) return;
-    const unsigned row = blockIdx.x * tile + threadIdx.x;
-    const unsigned column = blockIdx.y * tile;
-    __shared__ YoloGpuDetection other[tile];
-    if (column + threadIdx.x < n)
-        other[threadIdx.x] = boxes[order[column + threadIdx.x]];
-    __syncthreads();
-    if (row >= n) return;
-    Mask mask = 0;
-    if (scores[row] != -CUDART_INF_F) {
-        const auto box = boxes[order[row]];
-        for (unsigned j = (blockIdx.x == blockIdx.y ? threadIdx.x + 1 : 0);
-             j < tile && column + j < n; ++j) {
-            if (scores[column + j] != -CUDART_INF_F && box.class_id == other[j].class_id
-                && !(iou(box, other[j]) <= threshold))
-                mask |= Mask{1} << j;
-        }
-    }
-    masks[std::size_t(row) * gridDim.y + blockIdx.y] = mask;
-}
-
 __global__ void select_survivors(const YoloGpuDetection* boxes, const float* scores,
-                                const unsigned* order, const Mask* masks, unsigned n,
+                                const unsigned* order, float threshold, unsigned n,
                                 unsigned top_k, unsigned* counts, unsigned* kept) {
-    extern __shared__ Mask removed[];
-    const unsigned words = (n + tile - 1) / tile;
-    for (unsigned w = threadIdx.x; w < words; w += blockDim.x) removed[w] = 0;
+    __shared__ YoloGpuDetection survivors[YoloGpuResult::capacity];
     unsigned count = 0;
-    __syncwarp();
     for (unsigned base = 0; base < n && count < top_k; base += 32) {
-        // Read 32 consecutive candidates together instead of serial dependent
-        // global loads. Ballot/shuffle preserve the exact sorted greedy order.
         const unsigned position = base + threadIdx.x;
         const bool valid = position < n && scores[position] > 0; // SDK post-threshold > 0.
         if (!__any_sync(0xffffffff, valid)) break;
         const unsigned original = valid ? order[position] : 0;
-        unsigned matches = __ballot_sync(0xffffffff, valid && boxes[original].class_id == blockIdx.x);
+        const auto row = boxes[original];
+        unsigned matches = __ballot_sync(0xffffffff, valid && row.class_id == blockIdx.x);
         while (matches && count < top_k) {
             const unsigned lane = __ffs(matches) - 1;
-            const unsigned i = base + lane;
-            const unsigned selected = __shfl_sync(0xffffffff, original, lane);
             matches &= matches - 1;
-            if (removed[i / tile] & (Mask{1} << (i % tile))) continue;
-            if (threadIdx.x == 0) kept[blockIdx.x * top_k + count] = selected;
+            const unsigned selected = __shfl_sync(0xffffffff, original, lane);
+            const YoloGpuDetection candidate{
+                __shfl_sync(0xffffffff, row.left, lane), __shfl_sync(0xffffffff, row.top, lane),
+                __shfl_sync(0xffffffff, row.width, lane), __shfl_sync(0xffffffff, row.height, lane),
+                __shfl_sync(0xffffffff, row.confidence, lane), blockIdx.x};
+            bool suppressed = false;
+            for (unsigned k = threadIdx.x; k < count; k += 32)
+                suppressed |= !(iou(candidate, survivors[k]) <= threshold);
+            if (__any_sync(0xffffffff, suppressed)) continue;
+            if (threadIdx.x == 0) {
+                kept[blockIdx.x * top_k + count] = selected;
+                survivors[count] = candidate;
+            }
             ++count;
-            for (unsigned w = i / tile + threadIdx.x; w < words; w += blockDim.x)
-                removed[w] |= masks[std::size_t(i) * words + w];
             __syncwarp();
         }
     }
+    // This is the exact prefix of full greedy NMS followed by per-class Top-K:
+    // later lower-scoring candidates cannot suppress any earlier survivor.
     if (threadIdx.x == 0) counts[blockIdx.x] = count;
 }
 
@@ -148,7 +127,6 @@ struct YoloGpuPostprocessor::State {
     YoloGpuDetection* boxes = nullptr;
     float *scores = nullptr, *sorted_scores = nullptr;
     unsigned *indices = nullptr, *order = nullptr, *counts = nullptr, *kept = nullptr;
-    Mask* masks = nullptr;
     void* sort_storage = nullptr;
     std::size_t sort_bytes = 0, input_bytes = 0;
     YoloGpuResult *device_result = nullptr, *host_result = nullptr;
@@ -163,15 +141,14 @@ struct YoloGpuPostprocessor::State {
         if (done) cudaEventDestroy(done);
         cudaFree(boxes); cudaFree(scores); cudaFree(sorted_scores);
         cudaFree(indices); cudaFree(order); cudaFree(counts); cudaFree(kept);
-        cudaFree(masks); cudaFree(sort_storage); cudaFree(device_result);
+        cudaFree(sort_storage); cudaFree(device_result);
         if (host_result) cudaFreeHost(host_result);
     }
 };
 
 YoloGpuPostprocessor::YoloGpuPostprocessor(YoloGpuConfig config)
     : state_(std::make_unique<State>(config)) {
-    // ponytail: quadratic bit-mask storage, at most 128 MiB at 32768 rows.
-    // Larger contracts need a tiled workspace design before they are admitted.
+    // Bounded raw contract for this candidate; larger models need separate validation.
     if (config.candidates == 0 || config.candidates > 32768 || config.classes == 0
         || config.classes > 1024 || config.width == 0 || config.width > 16384
         || config.height == 0 || config.height > 16384 || config.top_k == 0
@@ -188,7 +165,6 @@ YoloGpuPostprocessor::YoloGpuPostprocessor(YoloGpuConfig config)
     allocate(s.boxes, n); allocate(s.scores, n); allocate(s.sorted_scores, n);
     allocate(s.indices, n); allocate(s.order, n); allocate(s.counts, config.classes);
     allocate(s.kept, std::size_t(config.classes) * config.top_k);
-    allocate(s.masks, std::size_t(n) * ((n + tile - 1) / tile));
     allocate(s.device_result, 1);
     check(cudaMallocHost(reinterpret_cast<void**>(&s.host_result), sizeof(YoloGpuResult)), "YOLO pinned result");
     check(cudaEventCreateWithFlags(&s.done, cudaEventDisableTiming), "YOLO event create");
@@ -215,7 +191,7 @@ void YoloGpuPostprocessor::enqueue(const void* input, std::size_t nbytes, cudaSt
     s.stream = stream;
     s.pending = true;
     try {
-        const unsigned n = s.config.candidates, words = (n + tile - 1) / tile;
+        const unsigned n = s.config.candidates;
         if (s.config.float16)
             decode<<<(n + 255) / 256, 256, 0, stream>>>(static_cast<const __half*>(input), s.config, s.boxes, s.scores, s.indices);
         else
@@ -223,10 +199,8 @@ void YoloGpuPostprocessor::enqueue(const void* input, std::size_t nbytes, cudaSt
         check(cudaGetLastError(), "YOLO decode launch");
         check(cub::DeviceRadixSort::SortPairsDescending(s.sort_storage, s.sort_bytes,
             s.scores, s.sorted_scores, s.indices, s.order, n, 0, 32, stream), "YOLO stable sort");
-        overlap_masks<<<dim3(words, words), tile, 0, stream>>>(s.boxes, s.sorted_scores, s.order, n, s.config.nms_threshold, s.masks);
-        check(cudaGetLastError(), "YOLO overlap launch");
-        select_survivors<<<s.config.classes, 32, words * sizeof(Mask), stream>>>(s.boxes,
-            s.sorted_scores, s.order, s.masks, n, s.config.top_k, s.counts, s.kept);
+        select_survivors<<<s.config.classes, 32, 0, stream>>>(s.boxes,
+            s.sorted_scores, s.order, s.config.nms_threshold, n, s.config.top_k, s.counts, s.kept);
         check(cudaGetLastError(), "YOLO NMS selection launch");
         pack_result<<<1, YoloGpuResult::capacity, 0, stream>>>(s.boxes, s.kept,
             s.counts, s.config.classes, s.config.top_k, s.device_result);
