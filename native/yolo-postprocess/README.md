@@ -94,6 +94,8 @@ or GPU errors stop the experiment; there is no software image path.
 /tmp/novasight-yolo-gpu-build/capture_device_test /path/to/model.engine 10
 # Experimental graph submission; it did not consistently improve capture P95:
 /tmp/novasight-yolo-gpu-build/capture_device_test /path/to/model.engine 10 --graph
+# Request 1080p240 to measure throughput; count delivered/completed PTS with the probe.
+/tmp/novasight-yolo-gpu-build/capture_device_test /path/to/model.engine 10 --fps=240
 ```
 
 It has no control/device-output code and is not connected to the daemon.

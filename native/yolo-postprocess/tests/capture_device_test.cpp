@@ -1,4 +1,4 @@
-// Bounded, output-free experiment for the measured 1080p120 / 320px ROI fixture.
+// Bounded, output-free experiment for the 1080p120/240 / 320px ROI fixture.
 // This is not a production adapter: no model activation, preview or control.
 #include "novasight_yolo_gpu.hpp"
 #include "novasight_tensorrt_runtime.h"
@@ -139,7 +139,7 @@ void self_test() {
     std::cout << "CAPTURE_PREPROCESS_PASS pixels=65536 channels=3 padded_stride=true\n";
 }
 
-void run(const char* engine_path, unsigned seconds, bool graph) {
+void run(const char* engine_path, unsigned seconds, bool graph, unsigned fps) {
     Runtime runtime;
     novasight_engine_spec spec{};
     char error[1024]{};
@@ -164,15 +164,16 @@ void run(const char* engine_path, unsigned seconds, bool graph) {
 
     gst_init(nullptr, nullptr);
     GError* parse_error = nullptr;
-    runtime.pipeline = gst_parse_launch(
+    const std::string pipeline =
         "v4l2src name=capture-source device=/dev/video0 io-mode=2 do-timestamp=true ! "
-        "image/jpeg,width=1920,height=1080,framerate=120/1 ! "
+        "image/jpeg,width=1920,height=1080,framerate=" + std::to_string(fps) + "/1 ! "
         "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
         "jpegparse ! nvv4l2decoder mjpeg=1 ! video/x-raw(memory:NVMM),format=I420 ! "
         "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
         "nvvidconv left=800 right=1120 top=380 bottom=700 ! "
         "video/x-raw(memory:NVMM),format=RGBA,width=256,height=256,pixel-aspect-ratio=1/1 ! "
-        "appsink name=gpu-input max-buffers=1 drop=true sync=false wait-on-eos=false", &parse_error);
+        "appsink name=gpu-input max-buffers=1 drop=true sync=false wait-on-eos=false";
+    runtime.pipeline = gst_parse_launch(pipeline.c_str(), &parse_error);
     if (parse_error) {
         std::string message = parse_error->message;
         g_error_free(parse_error);
@@ -186,7 +187,7 @@ void run(const char* engine_path, unsigned seconds, bool graph) {
     using Span = void (*)(const char*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
     auto span = reinterpret_cast<Span>(dlsym(RTLD_DEFAULT, "novasight_p0_span"));
     std::vector<double> latency;
-    latency.reserve(120 * seconds + 120);
+    latency.reserve(fps * seconds + fps);
     std::uint64_t first = 0, last_pts = GST_CLOCK_TIME_NONE, last = 0;
     unsigned frames = 0, nonempty = 0, truncated = 0;
     for (;;) {
@@ -234,6 +235,7 @@ void run(const char* engine_path, unsigned seconds, bool graph) {
     std::sort(latency.begin(), latency.end());
     auto percentile = [&](double p) { return latency[std::size_t(std::ceil(latency.size() * p)) - 1]; };
     std::cout << "{\"capture_gpu_pass\":true,\"cuda_graph\":" << (graph ? "true" : "false")
+        << ",\"requested_fps\":" << fps
         << ",\"physical_output\":false,\"frames\":" << frames
         << ",\"steady_samples\":" << latency.size() << ",\"nonempty_frames\":" << nonempty
         << ",\"truncated\":" << truncated << ",\"elapsed_ns\":" << last - first
@@ -248,12 +250,19 @@ int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::strcmp(argv[1], "--self-test") == 0) self_test();
         else {
-            require(argc == 3 || (argc == 4 && std::strcmp(argv[3], "--graph") == 0),
-                "Usage: capture_device_test ENGINE SECONDS(1..30) [--graph] | --self-test");
+            require(argc >= 3 && argc <= 5,
+                "Usage: capture_device_test ENGINE SECONDS(1..30) [--graph] [--fps=240] | --self-test");
+            bool graph = false;
+            unsigned fps = 120;
+            for (int i = 3; i < argc; ++i) {
+                if (std::strcmp(argv[i], "--graph") == 0 && !graph) graph = true;
+                else if (std::strcmp(argv[i], "--fps=240") == 0 && fps == 120) fps = 240;
+                else throw std::runtime_error("Unknown or repeated capture option");
+            }
             std::size_t used = 0;
             const auto seconds = std::stoul(argv[2], &used);
             require(used == std::strlen(argv[2]) && seconds >= 1 && seconds <= 30, "Invalid capture duration");
-            run(argv[1], static_cast<unsigned>(seconds), argc == 4);
+            run(argv[1], static_cast<unsigned>(seconds), graph, fps);
         }
         return 0;
     } catch (const std::exception& error) {
