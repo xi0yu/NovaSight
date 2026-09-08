@@ -2,6 +2,7 @@
 
 #include <cub/device/device_radix_sort.cuh>
 #include <cuda_fp16.h>
+#include <math_constants.h>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -150,6 +151,7 @@ struct YoloGpuPostprocessor::State {
     YoloGpuResult *device_result = nullptr, *host_result = nullptr;
     cudaEvent_t done = nullptr;
     cudaStream_t stream = nullptr;
+    int device = 0;
     bool pending = false, failed = false;
 
     explicit State(YoloGpuConfig c) : config(c) {}
@@ -176,6 +178,7 @@ YoloGpuPostprocessor::YoloGpuPostprocessor(YoloGpuConfig config)
         || config.nms_threshold < 0 || config.nms_threshold > 1)
         throw std::invalid_argument("Unsupported raw YOLO GPU contract");
     auto& s = *state_;
+    check(cudaGetDevice(&s.device), "YOLO owning device");
     const unsigned n = config.candidates;
     s.input_bytes = std::size_t(n) * (config.classes + (config.has_objectness ? 5 : 4))
         * (config.float16 ? 2 : 4);
@@ -201,8 +204,11 @@ void YoloGpuPostprocessor::enqueue(const void* input, std::size_t nbytes, cudaSt
         throw std::invalid_argument("YOLO device tensor does not match the configured contract");
     cudaPointerAttributes attributes{};
     check(cudaPointerGetAttributes(&attributes, input), "YOLO input memory type");
-    if (attributes.type != cudaMemoryTypeDevice)
-        throw std::invalid_argument("YOLO input must be CUDA device memory");
+    int current_device = 0;
+    check(cudaGetDevice(&current_device), "YOLO current device");
+    if (attributes.type != cudaMemoryTypeDevice || attributes.device != s.device
+        || current_device != s.device)
+        throw std::invalid_argument("YOLO input and caller must use the owning CUDA device");
     s.stream = stream;
     s.pending = true;
     try {
