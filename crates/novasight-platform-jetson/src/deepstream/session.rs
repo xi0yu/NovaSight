@@ -1935,6 +1935,7 @@ mod tests {
 
     #[test]
     fn snapshot_exchange_keeps_the_newest_pending_frame_under_sustained_overload() {
+        gst::init().unwrap();
         let exchange = SnapshotExchange::new(LatestFrameExchange::new());
         // Model the single perception worker holding the current frame while
         // the streaming thread repeatedly replaces the one pending frame.

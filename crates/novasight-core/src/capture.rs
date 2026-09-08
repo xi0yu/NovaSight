@@ -144,10 +144,14 @@ pub fn select_capture_profile_for_formats(
                         .iter()
                         .copied()
                         .filter(|rate| rate.rounded_fps() == Some(*fps))
-                        .min_by_key(|rate| {
-                            // Prefer an exact integer mode when both it and e.g. 59.94 exist.
-                            u64::from(rate.numerator)
-                                .abs_diff(u64::from(*fps) * u64::from(rate.denominator))
+                        .min_by(|left, right| {
+                            // Compare distance in FPS, independent of denominator.
+                            let distance = |rate: &CaptureFrameRate| {
+                                u128::from(rate.numerator)
+                                    .abs_diff(u128::from(*fps) * u128::from(rate.denominator))
+                            };
+                            (distance(left) * u128::from(right.denominator))
+                                .cmp(&(distance(right) * u128::from(left.denominator)))
                         })
                         .or_else(|| {
                             capability
@@ -324,6 +328,38 @@ mod tests {
             ],
             reason: "kernel capabilities".to_owned(),
         }
+    }
+
+    #[test]
+    fn fractional_mode_preference_compares_fps_not_numerator_error() {
+        let mut caps = capabilities();
+        caps.capabilities[0].frame_rates = vec![
+            CaptureFrameRate::new(601, 10).unwrap(),
+            CaptureFrameRate::new(59997, 1000).unwrap(),
+        ];
+        let selected = select_capture_profile(
+            &caps,
+            CaptureSelectionPreference::Manual,
+            Some(("NV12", 1920, 1080, 60)),
+        )
+        .unwrap();
+        assert_eq!(
+            selected.frame_rate,
+            CaptureFrameRate::new(59997, 1000).unwrap()
+        );
+        caps.capabilities[0]
+            .frame_rates
+            .push(CaptureFrameRate::new(60, 1).unwrap());
+        assert_eq!(
+            select_capture_profile(
+                &caps,
+                CaptureSelectionPreference::Manual,
+                Some(("NV12", 1920, 1080, 60))
+            )
+            .unwrap()
+            .frame_rate,
+            CaptureFrameRate::new(60, 1).unwrap()
+        );
     }
 
     #[test]

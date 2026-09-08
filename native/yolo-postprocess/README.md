@@ -1,7 +1,7 @@
 # CUDA raw YOLO postprocessing candidate
 
-This is the shared compute candidate for the GPU pipeline experiment, not yet
-connected to the production daemon. It accepts explicit FP32/FP16 raw YOLO
+This shared compute module is now connected to the production daemon through
+`gpu_frame.cpp` and its Rust session worker. The current admitted path accepts explicit FP32/FP16 raw YOLO
 contracts with or without objectness, in `[C,N]` or `[N,C]` layout. It does not
 claim decoded-NMS, EfficientNMS or Rockchip head support.
 
@@ -19,8 +19,11 @@ storage. The producer orders its work before `enqueue` on the same CUDA stream;
 the input must stay alive through `wait`. A second outstanding frame is rejected.
 Launch/completion failures invalidate the instance; no CPU fallback exists.
 Only the 6,152-byte bounded result is copied to the host. The caller must consume
-or copy it before reuse and retain its frame/epoch identity. The candidate does
-not yet manage capture frames or decide between DeepStream and direct TensorRT.
+or copy it before reuse and retain its frame/epoch identity. The frame composition
+imports hardware RGBA NVMM surfaces and uses direct TensorRT device outputs; the
+Rust session owns capture timestamps, latest-only admission and failure closure.
+See [the integration receipt](../../docs/gpu-product-integration-20260908.md) for
+the admitted model limits, real-daemon checks and outstanding acceptance work.
 
 Build and run on the Jetson, with the installed toolkit and an isolated build:
 

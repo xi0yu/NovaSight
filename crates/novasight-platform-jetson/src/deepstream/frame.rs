@@ -141,6 +141,7 @@ mod tests {
     fn assert_send_sync<T: Send + Sync>() {}
 
     fn lease(epoch: u64, generation: u64, captured_at: u64) -> FrameLease {
+        gst::init().unwrap();
         FrameLease::new(
             gst::Buffer::new(),
             RuntimeEpoch(epoch),

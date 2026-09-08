@@ -1,6 +1,6 @@
 # NovaSight pipeline 提升计划与执行边界
 
-日期：2026-09-08。状态：P0 部分基线、P1 的共享 CUDA 后处理 / TensorRT 设备输出 / NVMM 真实采集候选已有有限实机证据。三轮 release 空检测视觉链 P95 降低约 8%–10%，不能当完整产品收益。DS 7.1 Other 候选仍回传原始输出。随后吞吐补测：同 engine 普通 TensorRT 为 490–495 次/秒、Graph 为 704–707 次/秒；约 240 FPS 采集请求下，纯采集与 GPU 视觉候选均约 202 FPS。Graph 在该负载减少处理时间，未提高受输入限制的结果率；生产精确帧率传递仍有取整问题。生产路径未切换，完整产品尚未验收。
+日期：2026-09-08。最新状态：[正式 TensorRT / CUDA 接入收据](gpu-product-integration-20260908.md)。精确帧率传递已修复；当前 raw YOLO 模型已接入正式 daemon 的硬件媒体链、CUDA 前后处理、TensorRT 和原有业务入口。三轮标称 240 FPS 模式的实际检测提交率为 202.011 / 202.000 / 201.977 FPS，基本跟上实际供帧。Nsight 确认没有逐帧 raw 输出回传，GPU 故障注入及正常清理通过。现阶段仍为空检测，GPU 准星 / 全模型覆盖、非空控制、逐帧完整延迟、长时稳定性和 RK3588 对标未验收。没有替换部署程序。
 
 本文件记录用户要求及后续优化的操作边界。每次继续这项工作，先读取本文件、`PROJECT_HEALTH_AUDIT.md` 和工作区当前状态；现场证据变化时更新本文件，不把历史设计当作当前实现。用户后续明确指令优先。用户同意后已开始独立目录中的 P0 真实采集、计时和 CUDA 追踪；物理输出关闭，未替换远端程序。
 
@@ -128,7 +128,7 @@ P0 进展见 [2026-09-08 实机基线报告](pipeline-gpu-baseline-20260908.md)�
 
 依据：[生产管线](../crates/novasight-platform-jetson/src/deepstream/pipeline.rs)、[结果交付](../crates/novasight-platform-jetson/src/deepstream/session.rs)、[结果类型](../crates/novasight-core/src/perception/types.rs)、[控制与发送](../crates/novasight-pipeline/src/runtime.rs)、[设备组合](../apps/novasightd/src/live_perception.rs)。
 
-共享 GPU raw YOLO 后处理和原 TensorRT 封装的设备输出接口已有独立实机候选，见 [CUDA 模块](../native/yolo-postprocess/README.md)。诊断程序已接入真实 NVMM 采集，但尚未接入生产采集生命周期 / `DetectionBatch` / 控制边界。现有生产代码仍有 CPU raw parser / NMS；准星路径存在 JPEG 编码后再 CPU 解码 / 匹配；采集帧龄关联、完整功能性能和严格硬件执行检查也未完成。故入口 / 出口契约可沿用，不等于 GPU 产品方案已经对接通过，更不能称中间流程已优化到极致。
+共享 GPU raw YOLO 后处理和原 TensorRT 封装的设备输出接口已有独立实机候选，见 [CUDA 模块](../native/yolo-postprocess/README.md)。当前 raw 模型已接入正式采集生命周期 / `DetectionBatch` / 原控制入口并绕过 CPU raw parser / NMS；采集时间关联和 GPU 故障关闭已有实机检查。准星的 GPU 实现与其余模型、完整功能性能仍未完成；严格会话拒绝进入现有 CPU 准星路径。故入口 / 出口契约可沿用，不等于 GPU 产品方案已经对接通过，更不能称中间流程已优化到极致。
 
 ### 必须保持的业务语义
 
@@ -249,9 +249,9 @@ NVMM 采集和完整 CUDA 后处理。本轮选择直接 TensorRT 为实施路�
 | 现场访问与单模型 GPU 测速 | 已完成有限检查 | 本文第 2 节；不含完整 pipeline / 物理输出 |
 | P0 完整基线与计时 | 部分完成，尚未通过 | [实机报告](pipeline-gpu-baseline-20260908.md)；补齐有目标输入、采集时间关联和控制计算，使用可比 release 构建后再选型 |
 | P1 数据流设计与可比实验 | 选择直接 TensorRT / CUDA 实施，产品验证未完成 | 当前 fixture 的 GPU 契约、真实采集及吞吐证据见报告；修精确帧率并开始正式产品接入，补齐非空质量/完整功能/帧龄。DS Other 仍回传 raw；Graph 按实际负载验证 |
-| P2 GPU 计算与产品接入 | 产品接入未开始 | raw GPU 计算在 P1 候选中验证；正式接入与其余模型覆盖仍需完成 |
-| P3 图像路径与准星 | 主线图像仅在 P1 候选中验证，产品迁移未开始 | 候选复用硬件解码 / VIC，并验证 NVMM EGL → CUDA RGB；准星 JPEG 往返、预览和功能保持仍待完成 |
-| P4 硬件执行与停止约束 | 未开始 | 随 P2/P3 接入并验证，不留到发布后 |
+| P2 GPU 计算与产品接入 | 当前 raw 模型的正式 GPU 会话已实跑，完整功能未验收 | 见正式接入收据；其余模型、非空结果质量与控制仍需完成 |
+| P3 图像路径与准星 | 当前 MJPG 硬件图像路径已正式接入；准星待迁移 | 采集时间元数据关联通过；准星启用时严格拒绝 CPU observer，不能据此称功能完成；预览订阅负载仍待测 |
+| P4 硬件执行与停止约束 | 当前 GPU 路径的显式拒绝及运行中故障关闭已验证 | 第 501 次 GPU 导入故障注入通过；其余输入/模型、资源及压力故障待覆盖 |
 | P5 产品性能和稳定性验收 | 未开始 | 必须同时满足关键计算硬件执行与整链不弱于 RK3588；对照程序和实测待补，物理输出另需明确授权 |
 
 ## 7. 代码与接口依据
