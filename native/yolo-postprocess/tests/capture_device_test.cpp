@@ -164,9 +164,11 @@ void run(const char* engine_path, unsigned seconds, bool graph, unsigned fps) {
 
     gst_init(nullptr, nullptr);
     GError* parse_error = nullptr;
+    // This capture fixture advertises 240.00384 fps; exact 240/1 fails negotiation.
+    const std::string rate = fps == 240 ? "5000000/20833" : "120/1";
     const std::string pipeline =
         "v4l2src name=capture-source device=/dev/video0 io-mode=2 do-timestamp=true ! "
-        "image/jpeg,width=1920,height=1080,framerate=" + std::to_string(fps) + "/1 ! "
+        "image/jpeg,width=1920,height=1080,framerate=" + rate + " ! "
         "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
         "jpegparse ! nvv4l2decoder mjpeg=1 ! video/x-raw(memory:NVMM),format=I420 ! "
         "queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream ! "
