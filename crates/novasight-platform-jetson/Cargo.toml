@@ -13,10 +13,12 @@ deepstream = [
   "dep:novasight-pipeline",
   "dep:novasight-store",
   "novasight-deepstream-bridge/ffi",
+  "novasight-tensorrt/gpu-frame",
 ]
 
 [dependencies]
 novasight-core = { path = "../novasight-core" }
+novasight-tensorrt = { path = "../novasight-tensorrt" }
 novasight-store = { path = "../novasight-store", optional = true }
 serde.workspace = true
 serde_json.workspace = true

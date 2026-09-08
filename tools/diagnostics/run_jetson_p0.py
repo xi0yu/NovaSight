@@ -85,8 +85,9 @@ def run(args):
     source.backup(copied)
     source.close()
     copied.close()
-    daemon = repo / "out/cargo/debug/novasightd"
-    ctl = repo / "out/cargo/debug/novasightctl"
+    binary_dir = args.binary_dir.resolve() if args.binary_dir else repo / "out/cargo/debug"
+    daemon = binary_dir / "novasightd"
+    ctl = binary_dir / "novasightctl"
     code = secrets.token_hex(24)
     code_path = work / "run/development-access"
     code_path.write_text(code)
@@ -190,6 +191,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path)
     parser.add_argument("--stage", type=Path)
+    parser.add_argument("--binary-dir", type=Path, help="Use isolated build artifacts without replacing deployed binaries")
     parser.add_argument("--config", default="data/novasight.yaml",
                         choices=["data/novasight.yaml", "data/novasight.frontend-dev.yaml"])
     parser.add_argument("--seconds", type=int, default=15)

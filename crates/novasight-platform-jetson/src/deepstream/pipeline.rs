@@ -48,6 +48,7 @@ pub struct CrosshairPipelineConfig {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InferenceStage {
+    TensorRt,
     DeepStreamNvinfer { config: PathBuf },
     DeepStreamNvinferAspectPreserving { config: PathBuf },
 }
@@ -131,13 +132,18 @@ impl DeepStreamPipelineSpec {
         } else {
             self.model_input.height
         };
+        let pixel_format = if matches!(self.inference, InferenceStage::TensorRt) {
+            "RGBA"
+        } else {
+            "NV12"
+        };
         elements.extend([
             format!(
                 "nvvidconv left={} right={right} top={} bottom={bottom}",
                 self.roi.left, self.roi.top
             ),
             format!(
-                "video/x-raw(memory:NVMM),format=NV12,width={},height={},pixel-aspect-ratio=1/1",
+                "video/x-raw(memory:NVMM),format={pixel_format},width={},height={},pixel-aspect-ratio=1/1",
                 inference_width, inference_height
             ),
             LATEST_ONLY_QUEUE.to_owned(),
@@ -146,6 +152,7 @@ impl DeepStreamPipelineSpec {
         // syntax deliberately has no `!` between `mux.sink_0` and the named mux
         // declaration that starts the downstream branch.
         let inference = match &self.inference {
+            InferenceStage::TensorRt => format!("identity name={}", self.inference_element),
             InferenceStage::DeepStreamNvinfer { config }
             | InferenceStage::DeepStreamNvinferAspectPreserving { config } => format!(
                 "nvinfer name={} config-file-path={} batch-size=1",
@@ -153,13 +160,20 @@ impl DeepStreamPipelineSpec {
                 gst_string(config)
             ),
         };
-        let main = format!(
-            "{} ! mux.sink_0 nvstreammux name=mux batch-size=1 live-source=1 width={} height={} sync-inputs=0 batched-push-timeout={} ! {inference} ! fakesink name=deepstream-sink sync=false async=false qos=false",
-            elements.join(" ! "),
-            inference_width,
-            inference_height,
-            self.batched_push_timeout_us,
-        );
+        let main = if matches!(self.inference, InferenceStage::TensorRt) {
+            format!(
+                "{} ! {inference} ! fakesink name=deepstream-sink sync=false async=false qos=false",
+                elements.join(" ! ")
+            )
+        } else {
+            format!(
+                "{} ! mux.sink_0 nvstreammux name=mux batch-size=1 live-source=1 width={} height={} sync-inputs=0 batched-push-timeout={} ! {inference} ! fakesink name=deepstream-sink sync=false async=false qos=false",
+                elements.join(" ! "),
+                inference_width,
+                inference_height,
+                self.batched_push_timeout_us,
+            )
+        };
         let mut branches = Vec::new();
         if let Some(preview) = self.preview {
             branches.push(format!(

@@ -1271,6 +1271,7 @@ dependencies = [
  "novasight-deepstream-bridge",
  "novasight-pipeline",
  "novasight-store",
+ "novasight-tensorrt",
  "serde",
  "serde_json",
  "thiserror",

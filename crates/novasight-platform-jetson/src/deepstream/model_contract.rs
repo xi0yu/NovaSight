@@ -1,6 +1,93 @@
 use novasight_core::MAX_DETECTIONS;
 use novasight_store::model_manifest::ModelManifest;
+use novasight_tensorrt::gpu::{GpuFrameConfig, GpuModelConfig};
 use thiserror::Error;
+
+/// Admit only contracts implemented by the CUDA path. Never select a CPU parser.
+pub fn gpu_model_config(
+    manifest: &ModelManifest,
+    engine: std::path::PathBuf,
+    confidence_threshold: f64,
+    nms_threshold: f64,
+) -> Result<GpuModelConfig, DeepStreamModelContractError> {
+    validate_probability("confidence_threshold", confidence_threshold)?;
+    validate_probability("nms_threshold", nms_threshold)?;
+    deepstream_parser_contract(manifest)?;
+    if !manifest.postprocess.parser.eq_ignore_ascii_case("yolo")
+        || !manifest.output.scores_are_sigmoid
+        || !manifest.postprocess.class_aware_nms
+        || !manifest.output.bindings.is_empty()
+        || manifest.input.maintain_aspect_ratio
+    {
+        return Err(error(
+            "CUDA path currently requires single-output raw YOLO, sigmoid scores, class-aware NMS and direct resize; CPU fallback forbidden",
+        ));
+    }
+    let [1, 3, height, width] = manifest.input.shape.as_slice() else {
+        return Err(error("CUDA input must be batch-one NCHW RGB/BGR"));
+    };
+    if !manifest.input.layout.eq_ignore_ascii_case("NCHW")
+        || *width == 0
+        || *height == 0
+        || *width > 16384
+        || *height > 16384
+        || manifest.runtime.batch_size != 1
+    {
+        return Err(error("unsupported CUDA input layout or dimensions"));
+    }
+    let shape = &manifest.output.shape[manifest.output.shape.len() - 2..];
+    let channels =
+        u64::from(manifest.output.class_count) + if manifest.output.has_objectness { 5 } else { 4 };
+    let channels_first = shape[0] == channels;
+    let candidates = shape[usize::from(channels_first)];
+    if candidates == 0
+        || candidates > 32768
+        || manifest.output.class_count == 0
+        || manifest.output.class_count > 1024
+        || manifest.postprocess.max_detections == 0
+    {
+        return Err(error("CUDA postprocessing capacity exceeded"));
+    }
+    let dtype = |value: &str| match value.to_ascii_lowercase().as_str() {
+        "float32" | "fp32" => Ok(1),
+        "float16" | "fp16" => Ok(2),
+        _ => Err(error("CUDA input/output must be FP32 or FP16")),
+    };
+    let bgr = match color_format(manifest)? {
+        0 => 0,
+        1 => 1,
+        _ => return Err(error("CUDA preprocessing requires RGB/BGR")),
+    };
+    let scale = manifest.input.scale_factor as f32;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(error("invalid CUDA normalization scale"));
+    }
+    Ok(GpuModelConfig {
+        engine,
+        input_name: manifest.input.name.clone(),
+        output_name: manifest.output.name.clone(),
+        frame: GpuFrameConfig {
+            abi_version: 1,
+            width: *width as u32,
+            height: *height as u32,
+            candidates: candidates as u32,
+            classes: manifest.output.class_count,
+            channels_first: u32::from(channels_first),
+            has_objectness: u32::from(manifest.output.has_objectness),
+            input_dtype: dtype(&manifest.input.dtype)?,
+            output_dtype: dtype(&manifest.output.dtype)?,
+            bgr,
+            top_k: manifest
+                .postprocess
+                .max_detections
+                .min(MAX_DETECTIONS as u32),
+            cuda_graph: 1,
+            scale,
+            confidence_threshold: confidence_threshold as f32,
+            nms_threshold: nms_threshold as f32,
+        },
+    })
+}
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 #[error("{message}")]
@@ -346,5 +433,29 @@ mod tests {
         let mut manifest = manifest();
         manifest.output.has_objectness = true;
         assert!(deepstream_parser_contract(&manifest).is_err());
+    }
+
+    #[test]
+    fn gpu_admission_preserves_contract_and_rejects_cpu_only_modes() {
+        let mut m = manifest();
+        let c = gpu_model_config(&m, "detector.engine".into(), 0.65, 0.45).unwrap();
+        assert_eq!(
+            (c.frame.channels_first, c.frame.candidates, c.frame.classes),
+            (1, 8400, 80)
+        );
+        assert_eq!(c.frame.confidence_threshold, 0.65);
+        m.output.shape = vec![1, 8400, 84];
+        assert_eq!(
+            gpu_model_config(&m, "x".into(), 0.65, 0.45)
+                .unwrap()
+                .frame
+                .channels_first,
+            0
+        );
+        m.input.maintain_aspect_ratio = true;
+        assert!(gpu_model_config(&m, "x".into(), 0.65, 0.45).is_err());
+        m.input.maintain_aspect_ratio = false;
+        m.output.scores_are_sigmoid = false;
+        assert!(gpu_model_config(&m, "x".into(), 0.65, 0.45).is_err());
     }
 }

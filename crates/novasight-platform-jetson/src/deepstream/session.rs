@@ -12,7 +12,7 @@ use crossbeam_queue::ArrayQueue;
 use gst::glib::prelude::*;
 use gst::prelude::*;
 use gstreamer as gst;
-use novasight_core::{Clock, Generation, RuntimeEpoch};
+use novasight_core::{Clock, FrameStamp, Generation, RuntimeEpoch};
 use novasight_deepstream_bridge::{
     AdmissionContext, FRAME_BUFFER_PTS_VALID, FRAME_META_PTS_VALID, PipelineClockSample,
     admit_snapshot, extract_frame_into, validate_loaded_abi,
@@ -23,7 +23,10 @@ use novasight_pipeline::{
 };
 use thiserror::Error;
 
-use super::{DeepStreamPipelineSpec, FrameLease, LatestFrameExchange};
+use super::{
+    DeepStreamPipelineSpec, FrameLease, GpuFrame, GpuModelConfig, InferenceStage,
+    LatestFrameExchange,
+};
 
 const EVENT_CAPACITY: usize = 8;
 const BUS_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -32,6 +35,7 @@ const INFERENCE_INPUT_TIMELINE_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct DeepStreamSessionConfig {
+    pub gpu: Option<GpuModelConfig>,
     pub pipeline: DeepStreamPipelineSpec,
     pub probe_pad: String,
     pub source_id: u32,
@@ -46,6 +50,25 @@ pub struct DeepStreamSessionConfig {
 impl DeepStreamSessionConfig {
     fn validate(&self) -> Result<(), SessionError> {
         self.pipeline.build()?;
+        if matches!(self.pipeline.inference, InferenceStage::TensorRt) != self.gpu.is_some() {
+            return Err(SessionError::Gpu(
+                "GPU configuration and pipeline disagree".into(),
+            ));
+        }
+        if let Some(gpu) = &self.gpu {
+            if self.crosshair.is_some() || self.pipeline.crosshair.is_some() {
+                return Err(SessionError::Gpu(
+                    "CPU crosshair observer is forbidden in strict GPU sessions".into(),
+                ));
+            }
+            if gpu.frame.width != self.pipeline.model_input.width
+                || gpu.frame.height != self.pipeline.model_input.height
+            {
+                return Err(SessionError::Gpu(
+                    "GPU model and pipeline dimensions disagree".into(),
+                ));
+            }
+        }
         if self.probe_pad.trim().is_empty() {
             return Err(SessionError::BlankProbePad);
         }
@@ -552,6 +575,9 @@ impl DeepStreamSession {
 pub fn preflight_deepstream_runtime(config: &DeepStreamSessionConfig) -> Result<(), SessionError> {
     config.validate()?;
     let _prepared = prepare_pipeline(config)?;
+    if let Some(gpu) = &config.gpu {
+        GpuFrame::new(&gpu.engine, gpu).map_err(|error| SessionError::Gpu(error.to_string()))?;
+    }
     Ok(())
 }
 
@@ -775,16 +801,26 @@ fn start_pipeline(
     let inference_input_probe_timeline = Arc::clone(&inference_input_timeline);
     let inference_input_probe_clock = Arc::clone(&monotonic_clock);
     let inference_input_probe_state = Arc::clone(&state);
+    let direct_gpu = config.gpu.is_some();
+    let capture_reference = gst::Caps::builder("timestamp/x-novasight-capture").build();
+    let input_reference = capture_reference.clone();
     let inference_input_probe_id = inference_input_pad
         .add_probe(gst::PadProbeType::BUFFER, move |_pad, info| {
-            let Some(buffer) = info.buffer() else {
+            let Some(buffer) = info.buffer_mut() else {
                 return gst::PadProbeReturn::Ok;
             };
             inference_input_probe_state
                 .metrics
                 .input_buffers
                 .fetch_add(1, Ordering::Relaxed);
-            if let Some(pts) = buffer.pts() {
+            if direct_gpu {
+                gst::ReferenceTimestampMeta::add(
+                    buffer.make_mut(),
+                    &input_reference,
+                    gst::ClockTime::from_nseconds(inference_input_probe_clock.now().0),
+                    None,
+                );
+            } else if let Some(pts) = buffer.pts() {
                 inference_input_probe_timeline
                     .observe(pts.nseconds(), inference_input_probe_clock.now());
             }
@@ -818,6 +854,38 @@ fn start_pipeline(
                     .fetch_add(1, Ordering::Relaxed);
                 return gst::PadProbeReturn::Ok;
             };
+            if direct_gpu {
+                let captured_at = buffer
+                    .iter_meta::<gst::ReferenceTimestampMeta>()
+                    .find(|meta| meta.reference() == capture_reference.as_ref())
+                    .map(|meta| meta.timestamp().nseconds());
+                let Some(captured_at) = captured_at else {
+                    probe_state
+                        .metrics
+                        .timestamp_correlation_misses
+                        .fetch_add(1, Ordering::Relaxed);
+                    probe_state.fault(
+                        "Hardware media chain lost capture timestamp; refusing to invent frame age",
+                    );
+                    probe_exchange.recycle(slot);
+                    return gst::PadProbeReturn::Ok;
+                };
+                slot.monotonic_now = novasight_core::MonotonicNanos(captured_at);
+                slot.inference_duration_ns = None;
+                slot.observed_at_inference_input = false;
+                slot.frame = Some(buffer.to_owned());
+                match probe_exchange.publish(slot) {
+                    Ok(true) => {
+                        probe_state
+                            .metrics
+                            .overwritten_snapshots
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    Ok(false) => {}
+                    Err(slot) => probe_exchange.recycle(slot),
+                }
+                return gst::PadProbeReturn::Ok;
+            }
             let Some(buffer_ptr) = NonNull::new(buffer.as_ptr().cast_mut().cast::<c_void>()) else {
                 probe_state
                     .metrics
@@ -973,7 +1041,9 @@ fn start_pipeline(
 }
 
 fn prepare_pipeline(config: &DeepStreamSessionConfig) -> Result<PreparedPipeline, SessionError> {
-    validate_loaded_abi().map_err(SessionError::BridgeAbi)?;
+    if config.gpu.is_none() {
+        validate_loaded_abi().map_err(SessionError::BridgeAbi)?;
+    }
     gst::init().map_err(|error| SessionError::GstreamerInit(error.to_string()))?;
     let description = config.pipeline.build()?;
     let element = gst::parse::launch(&description)
@@ -987,12 +1057,18 @@ fn prepare_pipeline(config: &DeepStreamSessionConfig) -> Result<PreparedPipeline
         .ok_or_else(|| SessionError::MissingInferenceElement {
             name: config.pipeline.inference_element.clone(),
         })?;
-    let inference_input_pad =
+    let inference_input_pad = if config.gpu.is_some() {
+        pipeline
+            .by_name("capture-source")
+            .and_then(|source| source.static_pad("src"))
+            .ok_or_else(|| SessionError::Gpu("capture source pad unavailable".into()))?
+    } else {
         inference
             .static_pad("sink")
             .ok_or_else(|| SessionError::MissingInferenceInputPad {
                 element: config.pipeline.inference_element.clone(),
-            })?;
+            })?
+    };
     let probe_pad =
         inference
             .static_pad(&config.probe_pad)
@@ -1086,6 +1162,7 @@ fn finish_started_pipeline(
     };
 
     let worker_context = SnapshotWorkerContext {
+        gpu: config.gpu.clone(),
         epoch,
         source_id: config.source_id,
         inference_component_id: config.inference_component_id,
@@ -1315,6 +1392,7 @@ fn install_crosshair_probe(
 }
 
 struct SnapshotWorkerContext {
+    gpu: Option<GpuModelConfig>,
     epoch: RuntimeEpoch,
     source_id: u32,
     inference_component_id: i32,
@@ -1347,20 +1425,23 @@ fn run_snapshot_worker(
     state: &ProbeState,
     context: &SnapshotWorkerContext,
 ) {
+    // CUDA ownership stays on this worker for its entire lifetime.
+    let mut gpu = match context
+        .gpu
+        .as_ref()
+        .map(|config| GpuFrame::new(&config.engine, config))
+        .transpose()
+    {
+        Ok(gpu) => gpu,
+        Err(error) => {
+            state.fault(format!("GPU initialization failed: {error}"));
+            return;
+        }
+    };
     while let Some(mut slot) = exchange.wait_take() {
         if state.closed.load(Ordering::Acquire) {
             recycle_from_worker(exchange, slot);
             break;
-        }
-        if let Some(inference_duration_ns) = slot.inference_duration_ns {
-            state
-                .metrics
-                .latest_inference_duration_ns
-                .store(inference_duration_ns.saturating_add(1), Ordering::Relaxed);
-            state
-                .metrics
-                .inference_duration_samples
-                .fetch_add(1, Ordering::Relaxed);
         }
         let generation =
             match state
@@ -1375,24 +1456,83 @@ fn run_snapshot_worker(
                     break;
                 }
             };
-        // The producer publishes a slot only after the C bridge reports a
-        // successful full initialization of FrameSnapshot. Ownership of this
-        // Box stays with the worker until it is recycled into the fixed pool.
-        let snapshot = unsafe { slot.snapshot.assume_init_ref() };
-        let admission_context = AdmissionContext {
-            epoch: context.epoch,
-            generation,
-            clock: PipelineClockSample::new(slot.pipeline_running_now_ns, slot.monotonic_now),
-            source_id: context.source_id,
-            inference_component_id: context.inference_component_id,
+        let admitted = if let Some(gpu) = &mut gpu {
+            let stamp = FrameStamp {
+                epoch: context.epoch,
+                generation,
+                captured_at: slot.monotonic_now,
+            };
+            let started = context.monotonic_clock.now();
+            let age = started.0.checked_sub(stamp.captured_at.0);
+            if age.is_none()
+                || context
+                    .max_batch_age_ns
+                    .is_some_and(|maximum| age.unwrap() > maximum)
+            {
+                state
+                    .metrics
+                    .admission_rejections
+                    .fetch_add(1, Ordering::Relaxed);
+                state.record_rejection(
+                    "GPU input freshness",
+                    "captured frame expired before GPU submission",
+                );
+                recycle_from_worker(exchange, slot);
+                continue;
+            }
+            let buffer = slot
+                .frame
+                .as_ref()
+                .expect("published GPU slot owns its buffer");
+            let pointer =
+                NonNull::new(buffer.as_ptr().cast_mut().cast::<c_void>()).expect("live GstBuffer");
+            // SAFETY: slot retains the immutable NVMM frame until GPU work completes.
+            let result = unsafe { gpu.process(pointer, stamp) };
+            slot.inference_duration_ns = context.monotonic_clock.now().0.checked_sub(started.0);
+            match result {
+                Ok((batch, truncated)) => {
+                    state
+                        .metrics
+                        .truncated_detections
+                        .fetch_add(u64::from(truncated), Ordering::Relaxed);
+                    Ok(batch)
+                }
+                Err(error) => {
+                    state.fault(format!("Strict GPU frame failed: {error}"));
+                    recycle_from_worker(exchange, slot);
+                    break;
+                }
+            }
+        } else {
+            // Only the legacy bridge producer initializes FrameSnapshot.
+            let snapshot = unsafe { slot.snapshot.assume_init_ref() };
+            let admission_context = AdmissionContext {
+                epoch: context.epoch,
+                generation,
+                clock: PipelineClockSample::new(slot.pipeline_running_now_ns, slot.monotonic_now),
+                source_id: context.source_id,
+                inference_component_id: context.inference_component_id,
+            };
+            admit_snapshot(snapshot, admission_context)
+                .map(|admitted| {
+                    state.metrics.truncated_detections.fetch_add(
+                        u64::from(admitted.truncated_detections()),
+                        Ordering::Relaxed,
+                    );
+                    admitted.into_batch()
+                })
+                .map_err(|error| format!("{}: {error}", error.code()))
         };
-        let admitted = admit_snapshot(snapshot, admission_context).map(|admitted| {
-            state.metrics.truncated_detections.fetch_add(
-                u64::from(admitted.truncated_detections()),
-                Ordering::Relaxed,
-            );
-            admitted.into_batch()
-        });
+        if let Some(inference_duration_ns) = slot.inference_duration_ns {
+            state
+                .metrics
+                .latest_inference_duration_ns
+                .store(inference_duration_ns.saturating_add(1), Ordering::Relaxed);
+            state
+                .metrics
+                .inference_duration_samples
+                .fetch_add(1, Ordering::Relaxed);
+        }
         let admitted = match admitted {
             Ok(admitted) => admitted,
             Err(error) => {
@@ -1400,10 +1540,7 @@ fn run_snapshot_worker(
                     .metrics
                     .admission_rejections
                     .fetch_add(1, Ordering::Relaxed);
-                state.record_rejection(
-                    "snapshot admission",
-                    format_args!("{}: {error}", error.code()),
-                );
+                state.record_rejection("snapshot admission", error);
                 recycle_from_worker(exchange, slot);
                 continue;
             }
@@ -1439,7 +1576,9 @@ fn run_snapshot_worker(
                 format_args!(
                     "age {batch_age_ns} ns exceeds configured maximum {:?} ns; timestamp_source={}",
                     context.max_batch_age_ns,
-                    if slot.observed_at_inference_input {
+                    if context.gpu.is_some() {
+                        "capture_source_reference_meta"
+                    } else if slot.observed_at_inference_input {
                         "nvinfer_input_probe"
                     } else {
                         "pipeline_clock_pts"
@@ -1680,6 +1819,8 @@ fn startup_timeout_error(
 
 #[derive(Debug, Error)]
 pub enum SessionError {
+    #[error("strict GPU runtime: {0}")]
+    Gpu(String),
     #[error(transparent)]
     PipelineSpec(#[from] super::PipelineSpecError),
     #[error("DeepStream probe pad must not be blank")]

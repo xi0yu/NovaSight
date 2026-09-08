@@ -36,6 +36,24 @@ fn spec(format: CaptureFormat) -> DeepStreamPipelineSpec {
 }
 
 #[test]
+fn direct_tensorrt_receives_hardware_rgba_without_cpu_infer_or_parser() {
+    for format in [
+        CaptureFormat::Mjpeg,
+        CaptureFormat::Nv12,
+        CaptureFormat::Yuy2,
+    ] {
+        let mut candidate = spec(format);
+        candidate.inference = InferenceStage::TensorRt;
+        let pipeline = candidate.build().unwrap();
+        assert!(pipeline.contains("video/x-raw(memory:NVMM),format=RGBA,width=640,height=640"));
+        assert!(pipeline.contains("identity name=primary-infer"));
+        assert!(!pipeline.contains("nvinfer"));
+        assert!(!pipeline.contains("nvstreammux"));
+        assert!(!pipeline.contains("videoconvert"));
+    }
+}
+
+#[test]
 fn crosshair_branch_is_independent_latest_only_center_crop() {
     let mut spec = spec(CaptureFormat::Mjpeg);
     spec.crosshair = Some(CrosshairPipelineConfig { size: 96, fps: 10 });

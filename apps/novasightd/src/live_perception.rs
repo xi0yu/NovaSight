@@ -23,9 +23,9 @@ use novasight_pipeline::{
 use novasight_platform_jetson::SystemMonotonicClock;
 use novasight_platform_jetson::deepstream::{
     CaptureFormat, CaptureProfile, CrosshairPipelineConfig, DeepStreamAdapter,
-    DeepStreamPipelineSpec, DeepStreamSessionConfig, InferenceStage, LatestFrameExchange,
-    ModelInput, PreviewPipelineConfig, Roi, SessionError, deepstream_parser_contract,
-    preflight_deepstream_runtime, render_deepstream_nvinfer_config,
+    DeepStreamPipelineSpec, DeepStreamSessionConfig, GpuModelConfig, InferenceStage,
+    LatestFrameExchange, ModelInput, PreviewPipelineConfig, Roi, SessionError, gpu_model_config,
+    preflight_deepstream_runtime,
 };
 use novasight_platform_jetson::kmnet::{KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError};
 use novasight_platform_jetson::v4l2::V4l2CapabilityProbe;
@@ -345,7 +345,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             .model_catalog
             .runtime_artifact(candidate.project_id, candidate.artifact_id)
             .map_err(|error| PerceptionError::new(error.to_string()))?;
-        resolve_model_nvinfer_config(
+        resolve_model_gpu_config(
             &config,
             &model,
             Some(candidate.parser_preset.as_str()),
@@ -366,7 +366,7 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
                     .map_err(|error| PerceptionError::new(error.to_string()))
             })?;
         let model = active_runtime_model(&self.model_catalog).map_err(perception_error)?;
-        let model = resolve_model_nvinfer_config(
+        let model = resolve_model_gpu_config(
             &config,
             &model,
             None,
@@ -430,13 +430,9 @@ fn build_deepstream_session_config(
     let format = parse_capture_format(&capture.pixel_format)?;
     let io_mode = u32::try_from(adapters.inference.deepstream_io_mode)
         .map_err(|_| LivePerceptionError::InvalidIoMode(adapters.inference.deepstream_io_mode))?;
-    let (path, model_contract) =
-        resolve_active_nvinfer_config(config, model_catalog, parser_library, model_identity_cache)?;
-    let inference = if model_contract.preserves_roi_coordinates {
-        InferenceStage::DeepStreamNvinferAspectPreserving { config: path }
-    } else {
-        InferenceStage::DeepStreamNvinfer { config: path }
-    };
+    let (gpu, model_contract) =
+        resolve_active_gpu_config(config, model_catalog, parser_library, model_identity_cache)?;
+    let inference = InferenceStage::TensorRt;
     let pipeline = DeepStreamPipelineSpec {
         device: capture.device.clone(),
         capture: CaptureProfile {
@@ -471,6 +467,7 @@ fn build_deepstream_session_config(
         .build()
         .map_err(|error| LivePerceptionError::Pipeline(error.to_string()))?;
     Ok(DeepStreamSessionConfig {
+        gpu: Some(gpu),
         pipeline,
         probe_pad: adapters.inference.deepstream_probe_pad.clone(),
         source_id: adapters.inference.deepstream_source_id,
@@ -524,28 +521,14 @@ fn resolve_data_artifact(data_dir: &Path, artifact: &Path) -> Result<PathBuf, Li
     }
 }
 
-fn resolve_process_path(path: &Path) -> Result<PathBuf, LivePerceptionError> {
-    let resolved = if path.is_absolute() {
-        path.to_owned()
-    } else {
-        std::env::current_dir()
-            .map_err(LivePerceptionError::CurrentDirectory)?
-            .join(path)
-    };
-    if !resolved.is_file() {
-        return Err(LivePerceptionError::ParserLibraryMissing(resolved));
-    }
-    Ok(resolved)
-}
-
-fn resolve_active_nvinfer_config(
+fn resolve_active_gpu_config(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
     parser_library: &Path,
     model_identity_cache: &ModelIdentityCache,
-) -> Result<(PathBuf, PerceptionModelContract), LivePerceptionError> {
+) -> Result<(GpuModelConfig, PerceptionModelContract), LivePerceptionError> {
     let model = active_runtime_model(model_catalog)?;
-    resolve_model_nvinfer_config(config, &model, None, parser_library, model_identity_cache)
+    resolve_model_gpu_config(config, &model, None, parser_library, model_identity_cache)
 }
 
 fn active_runtime_model(
@@ -565,14 +548,13 @@ fn active_runtime_model(
     })
 }
 
-fn resolve_model_nvinfer_config(
+fn resolve_model_gpu_config(
     config: &AppConfig,
     model: &RuntimeModelArtifact,
     requested_preset: Option<&str>,
-    parser_library: &Path,
+    _parser_library: &Path,
     model_identity_cache: &ModelIdentityCache,
-) -> Result<(PathBuf, PerceptionModelContract), LivePerceptionError> {
-    let candidate_preflight = requested_preset.is_some();
+) -> Result<(GpuModelConfig, PerceptionModelContract), LivePerceptionError> {
     let inference = config
         .require_inference_adapter()
         .map_err(LivePerceptionError::Config)?;
@@ -583,29 +565,15 @@ fn resolve_model_nvinfer_config(
         manifest.output.has_objectness,
     )
     .map_err(|error| manifest_error(error.message()))?;
-    let parser_library = resolve_process_path(parser_library)?;
-    let source = generate_nvinfer_config(
-        manifest,
-        &model.artifact_path,
-        &parser_library,
-        inference.deepstream_component_id,
+    let mut admitted_manifest = manifest.clone();
+    admitted_manifest.postprocess.parser_preset = requested_preset.clone();
+    let gpu = gpu_model_config(
+        &admitted_manifest,
+        model.artifact_path.clone(),
         inference.confidence_threshold,
         inference.nms_threshold,
-    )?;
-    let runtime_directory =
-        resolve_data_artifact(&config.paths.data_dir, Path::new("runtime/deepstream"))?;
-    fs::create_dir_all(&runtime_directory).map_err(|source| LivePerceptionError::WriteNvinfer {
-        path: runtime_directory.clone(),
-        source,
-    })?;
-    let path = if candidate_preflight {
-        runtime_directory.join(format!("candidate-{}.nvinfer.ini", model.artifact.id))
-    } else {
-        runtime_directory.join("active-nvinfer.ini")
-    };
-    write_if_changed(&path, source.as_bytes())?;
-    let parser =
-        deepstream_parser_contract(manifest).map_err(|error| manifest_error(error.to_string()))?;
+    )
+    .map_err(|error| manifest_error(error.to_string()))?;
     let input_shape = manifest
         .input
         .shape
@@ -627,12 +595,12 @@ fn resolve_model_nvinfer_config(
                 "yolov8_yolo11".to_owned()
             },
             has_objectness: manifest.output.has_objectness,
-            parser_library: "novasight_builtin".to_owned(),
-            parser_function: parser.function.to_owned(),
-            nms_owner: "deepstream".to_owned(),
+            parser_library: "novasight_builtin_cuda".to_owned(),
+            parser_function: "YoloGpuPostprocessor".to_owned(),
+            nms_owner: "cuda".to_owned(),
         },
     };
-    Ok((path, contract))
+    Ok((gpu, contract))
 }
 
 fn manifest_input_dimension(
@@ -708,68 +676,6 @@ fn normalize_registry_checksum(value: &str) -> Option<String> {
         .unwrap_or(checksum);
     (checksum.len() == 64 && checksum.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .then(|| checksum.to_ascii_lowercase())
-}
-
-fn generate_nvinfer_config(
-    manifest: &ModelManifest,
-    engine: &Path,
-    parser_library: &Path,
-    component_id: i32,
-    confidence_threshold: f64,
-    nms_threshold: f64,
-) -> Result<String, LivePerceptionError> {
-    let engine = engine
-        .canonicalize()
-        .map_err(|source| LivePerceptionError::ReadEngine {
-            path: engine.to_owned(),
-            source,
-        })?;
-    let parser_library = parser_library.canonicalize().map_err(|source| {
-        LivePerceptionError::CanonicalizeParser {
-            path: parser_library.to_owned(),
-            source,
-        }
-    })?;
-    let engine_value = safe_nvinfer_path("model-engine-file", &engine)?;
-    let parser_value = safe_nvinfer_path("custom-lib-path", &parser_library)?;
-    render_deepstream_nvinfer_config(
-        manifest,
-        engine_value,
-        parser_value,
-        component_id,
-        confidence_threshold,
-        nms_threshold,
-    )
-    .map_err(|error| manifest_error(error.to_string()))
-}
-
-fn safe_nvinfer_path<'a>(
-    label: &'static str,
-    path: &'a Path,
-) -> Result<&'a str, LivePerceptionError> {
-    let value = path
-        .to_str()
-        .filter(|value| !value.contains(['\r', '\n']))
-        .ok_or_else(|| LivePerceptionError::InvalidNvinferPath {
-            label,
-            path: path.to_owned(),
-        })?;
-    Ok(value)
-}
-
-fn write_if_changed(path: &Path, contents: &[u8]) -> Result<(), LivePerceptionError> {
-    if fs::read(path).ok().as_deref() == Some(contents) {
-        return Ok(());
-    }
-    let temporary = path.with_extension(format!("ini.{}.tmp", std::process::id()));
-    fs::write(&temporary, contents).map_err(|source| LivePerceptionError::WriteNvinfer {
-        path: temporary.clone(),
-        source,
-    })?;
-    fs::rename(&temporary, path).map_err(|source| LivePerceptionError::WriteNvinfer {
-        path: path.to_owned(),
-        source,
-    })
 }
 
 fn parse_capture_format(value: &str) -> Result<CaptureFormat, LivePerceptionError> {
@@ -1010,15 +916,6 @@ mod tests {
                 .expect("explicit class names require the canonical fingerprint")
         );
     }
-
-    #[test]
-    fn nvinfer_paths_reject_line_injection() {
-        assert!(safe_nvinfer_path("engine", Path::new("/tmp/model\ninterval=99")).is_err());
-        assert_eq!(
-            safe_nvinfer_path("engine", Path::new("/tmp/model.engine")).unwrap(),
-            "/tmp/model.engine"
-        );
-    }
 }
 
 #[derive(Debug, Error)]
@@ -1056,24 +953,8 @@ pub(super) enum LivePerceptionError {
     UnsupportedCaptureFormat(String),
     #[error("invalid DeepStream I/O mode: {0}")]
     InvalidIoMode(i32),
-    #[error("DeepStream parser library does not exist: {}", .0.display())]
-    ParserLibraryMissing(PathBuf),
     #[error("failed to read current working directory: {0}")]
     CurrentDirectory(std::io::Error),
-    #[error("failed to write generated nvinfer configuration {}: {source}", path.display())]
-    WriteNvinfer {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("failed to resolve DeepStream parser library {}: {source}", path.display())]
-    CanonicalizeParser {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("generated nvinfer {label} path is not safe UTF-8: {}", path.display())]
-    InvalidNvinferPath { label: &'static str, path: PathBuf },
     #[error("TensorRT engine does not exist: {}", .0.display())]
     EngineMissing(PathBuf),
     #[error("TensorRT engine path has no file name: {}", .0.display())]

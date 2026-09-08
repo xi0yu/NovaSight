@@ -12,6 +12,12 @@ use std::sync::Arc;
 use novasight_core::{Generation, MonotonicNanos, RuntimeEpoch};
 use thiserror::Error;
 
+#[cfg_attr(
+    not(all(feature = "gpu-frame", target_os = "linux", target_arch = "aarch64")),
+    allow(dead_code)
+)]
+pub mod gpu;
+
 mod decoder;
 pub use decoder::{DecodeContract, DecodeError, DetectionDecoder};
 

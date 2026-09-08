@@ -62,9 +62,64 @@ fn main() {
         .flag_if_supported("-Wpedantic")
         .include(source.join("include"))
         .include(tensorrt_include)
-        .include(cuda_include)
+        .include(&cuda_include)
         .file(implementation)
         .compile("novasight_tensorrt");
+
+    if env::var_os("CARGO_FEATURE_GPU_FRAME").is_some() {
+        let gpu = source.parent().unwrap().join("yolo-postprocess");
+        for file in [
+            "src/gpu_frame.cpp",
+            "src/rgba_preprocess.cu",
+            "src/yolo_gpu.cu",
+            "include/novasight_gpu_frame.h",
+            "include/novasight_yolo_gpu.hpp",
+        ] {
+            println!("cargo:rerun-if-changed={}", gpu.join(file).display());
+        }
+        let flags = std::process::Command::new("pkg-config")
+            .args(["--cflags", "gstreamer-1.0"])
+            .output()
+            .expect("pkg-config installed on Jetson");
+        assert!(flags.status.success(), "GStreamer headers unavailable");
+        let mut build = cc::Build::new();
+        build
+            .cpp(true)
+            .std("c++17")
+            .cargo_metadata(false)
+            .include(gpu.join("include"))
+            .include(source.join("include"))
+            .include(&cuda_include)
+            .include("/opt/nvidia/deepstream/deepstream-7.1/sources/includes")
+            .file(gpu.join("src/gpu_frame.cpp"));
+        for flag in String::from_utf8(flags.stdout).unwrap().split_whitespace() {
+            build.flag(flag);
+        }
+        build.compile("novasight_gpu_frame");
+        cc::Build::new()
+            .cuda(true)
+            .cudart("shared")
+            .std("c++17")
+            .cargo_metadata(false)
+            .flag("-arch=sm_87")
+            .flag("--fmad=false")
+            .include(gpu.join("include"))
+            .file(gpu.join("src/yolo_gpu.cu"))
+            .file(gpu.join("src/rgba_preprocess.cu"))
+            .compile("novasight_gpu_kernels");
+        println!("cargo:rustc-link-lib=static=novasight_gpu_frame");
+        println!("cargo:rustc-link-lib=static=novasight_gpu_kernels");
+        println!("cargo:rustc-link-search=native=/opt/nvidia/deepstream/deepstream-7.1/lib");
+        for library in [
+            "nvbufsurface",
+            "cuda",
+            "gstreamer-1.0",
+            "glib-2.0",
+            "gobject-2.0",
+        ] {
+            println!("cargo:rustc-link-lib=dylib={library}");
+        }
+    }
 
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo provides OUT_DIR"));
     println!("cargo:rustc-link-search=native={}", output.display());
