@@ -139,7 +139,7 @@ void self_test() {
     std::cout << "CAPTURE_PREPROCESS_PASS pixels=65536 channels=3 padded_stride=true\n";
 }
 
-void run(const char* engine_path, unsigned seconds) {
+void run(const char* engine_path, unsigned seconds, bool graph) {
     Runtime runtime;
     novasight_engine_spec spec{};
     char error[1024]{};
@@ -217,7 +217,7 @@ void run(const char* engine_path, unsigned seconds) {
         const auto end = now_ns();
         if (span) span("gpu_candidate/result", begin, end, pts, result.count);
         lease.release();
-        if (frames == 0)
+        if (graph && frames == 0)
             trt_ok(novasight_tensorrt_capture_device_graph(runtime.engine, error, sizeof(error)));
         last = end;
         ++frames;
@@ -233,7 +233,8 @@ void run(const char* engine_path, unsigned seconds) {
         "Capture failed to stop");
     std::sort(latency.begin(), latency.end());
     auto percentile = [&](double p) { return latency[std::size_t(std::ceil(latency.size() * p)) - 1]; };
-    std::cout << "{\"capture_gpu_pass\":true,\"cuda_graph\":true,\"physical_output\":false,\"frames\":" << frames
+    std::cout << "{\"capture_gpu_pass\":true,\"cuda_graph\":" << (graph ? "true" : "false")
+        << ",\"physical_output\":false,\"frames\":" << frames
         << ",\"steady_samples\":" << latency.size() << ",\"nonempty_frames\":" << nonempty
         << ",\"truncated\":" << truncated << ",\"elapsed_ns\":" << last - first
         << ",\"image_ready_to_result_p50_us\":" << percentile(.5)
@@ -247,11 +248,12 @@ int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::strcmp(argv[1], "--self-test") == 0) self_test();
         else {
-            require(argc == 3, "Usage: capture_device_test ENGINE SECONDS(1..30) | --self-test");
+            require(argc == 3 || (argc == 4 && std::strcmp(argv[3], "--no-graph") == 0),
+                "Usage: capture_device_test ENGINE SECONDS(1..30) [--no-graph] | --self-test");
             std::size_t used = 0;
             const auto seconds = std::stoul(argv[2], &used);
             require(used == std::strlen(argv[2]) && seconds >= 1 && seconds <= 30, "Invalid capture duration");
-            run(argv[1], static_cast<unsigned>(seconds));
+            run(argv[1], static_cast<unsigned>(seconds), argc == 3);
         }
         return 0;
     } catch (const std::exception& error) {
