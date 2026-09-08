@@ -631,7 +631,7 @@ extern "C" int novasight_tensorrt_capture_device_graph(
         const auto ended = cudaStreamEndCapture(engine->stream, &graph);
         cuda_check(ended, "graph capture end");
         if (!enqueued || !graph) throw std::runtime_error("TensorRT graph capture failed");
-        cuda_check(cudaGraphInstantiate(&engine->device_graph, graph, nullptr, nullptr, 0), "graph instantiate");
+        cuda_check(cudaGraphInstantiate(&engine->device_graph, graph, 0), "graph instantiate");
         cudaGraphDestroy(graph);
         return 0;
     } catch (const std::exception& error) {
