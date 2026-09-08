@@ -70,36 +70,42 @@ __global__ void select_survivors(const YoloGpuDetection* boxes, const float* sco
                                 const unsigned* order, float threshold, unsigned n,
                                 unsigned top_k, unsigned* counts, unsigned* kept) {
     __shared__ YoloGpuDetection survivors[YoloGpuResult::capacity];
+    __shared__ YoloGpuDetection candidates[256];
+    __shared__ unsigned originals[256], matches[8];
     unsigned count = 0;
-    for (unsigned base = 0; base < n && count < top_k; base += 32) {
+    for (unsigned base = 0; base < n && count < top_k; base += 256) {
         const unsigned position = base + threadIdx.x;
         const bool valid = position < n && scores[position] > 0; // SDK post-threshold > 0.
-        if (!__any_sync(0xffffffff, valid)) break;
         const unsigned original = valid ? order[position] : 0;
         const auto row = boxes[original];
-        unsigned matches = __ballot_sync(0xffffffff, valid && row.class_id == blockIdx.x);
-        while (matches && count < top_k) {
-            const unsigned lane = __ffs(matches) - 1;
-            matches &= matches - 1;
-            const unsigned selected = __shfl_sync(0xffffffff, original, lane);
-            const YoloGpuDetection candidate{
-                __shfl_sync(0xffffffff, row.left, lane), __shfl_sync(0xffffffff, row.top, lane),
-                __shfl_sync(0xffffffff, row.width, lane), __shfl_sync(0xffffffff, row.height, lane),
-                __shfl_sync(0xffffffff, row.confidence, lane), blockIdx.x};
-            bool suppressed = false;
-            for (unsigned k = threadIdx.x; k < count; k += 32)
-                suppressed |= !(iou(candidate, survivors[k]) <= threshold);
-            if (__any_sync(0xffffffff, suppressed)) continue;
-            if (threadIdx.x == 0) {
-                kept[blockIdx.x * top_k + count] = selected;
-                survivors[count] = candidate;
+        candidates[threadIdx.x] = row;
+        originals[threadIdx.x] = original;
+        const unsigned ballot = __ballot_sync(0xffffffff, valid && row.class_id == blockIdx.x);
+        if (threadIdx.x % 32 == 0) matches[threadIdx.x / 32] = ballot;
+        if (!__syncthreads_or(valid)) break;
+        // Candidates remain in stable score order. Compare only to earlier
+        // survivors, across the block, rather than materializing all pairwise IoUs.
+        for (unsigned group = 0; group < 8 && count < top_k; ++group) {
+            unsigned remaining = matches[group];
+            while (remaining && count < top_k) {
+                const unsigned index = group * 32 + __ffs(remaining) - 1;
+                remaining &= remaining - 1;
+                const auto candidate = candidates[index];
+                const bool suppressed = threadIdx.x < count
+                    && !(iou(candidate, survivors[threadIdx.x]) <= threshold);
+                if (__syncthreads_or(suppressed)) continue;
+                if (threadIdx.x == 0) {
+                    kept[blockIdx.x * top_k + count] = originals[index];
+                    survivors[count] = candidate;
+                }
+                ++count;
+                __syncthreads();
             }
-            ++count;
-            __syncwarp();
         }
+        __syncthreads(); // All readers finish before the next candidate tile overwrites it.
     }
-    // This is the exact prefix of full greedy NMS followed by per-class Top-K:
-    // later lower-scoring candidates cannot suppress any earlier survivor.
+    // Exact prefix of full greedy NMS followed by per-class Top-K: later
+    // lower-scoring candidates cannot suppress an earlier survivor.
     if (threadIdx.x == 0) counts[blockIdx.x] = count;
 }
 
@@ -199,7 +205,7 @@ void YoloGpuPostprocessor::enqueue(const void* input, std::size_t nbytes, cudaSt
         check(cudaGetLastError(), "YOLO decode launch");
         check(cub::DeviceRadixSort::SortPairsDescending(s.sort_storage, s.sort_bytes,
             s.scores, s.sorted_scores, s.indices, s.order, n, 0, 32, stream), "YOLO stable sort");
-        select_survivors<<<s.config.classes, 32, 0, stream>>>(s.boxes,
+        select_survivors<<<s.config.classes, 256, 0, stream>>>(s.boxes,
             s.sorted_scores, s.order, s.config.nms_threshold, n, s.config.top_k, s.counts, s.kept);
         check(cudaGetLastError(), "YOLO NMS selection launch");
         pack_result<<<1, YoloGpuResult::capacity, 0, stream>>>(s.boxes, s.kept,
