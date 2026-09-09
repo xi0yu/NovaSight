@@ -1,0 +1,137 @@
+import { memo } from "react";
+
+import { NovaIcon, type NovaIconName } from "../../components/visual";
+import type {
+  ProductConfigAction,
+  ProductConfigItem,
+  ProductConfigItemId,
+  ProductConfigProfile,
+  ProductConfigState
+} from "./productConfigProfile";
+
+const ITEM_ICONS: Record<ProductConfigItemId, NovaIconName> = {
+  capture: "capture",
+  model: "models",
+  control: "control",
+  output: "device-send",
+  kmnet: "hid",
+  reload: "restart"
+};
+
+const STATE_ICONS: Record<ProductConfigState, NovaIconName> = {
+  live: "check-circle",
+  saved: "save",
+  restart: "clock",
+  missing: "triangle-alert",
+  paused: "pause-output",
+  applying: "restart"
+};
+
+const STATE_LABELS: Record<ProductConfigState, string> = {
+  live: "已生效",
+  saved: "已保存",
+  restart: "基础项待接管",
+  missing: "缺失",
+  paused: "暂停",
+  applying: "正在应用"
+};
+
+const TONE_CLASSES: Record<ProductConfigState, "ready" | "waiting" | "blocked"> = {
+  live: "ready",
+  saved: "waiting",
+  restart: "waiting",
+  missing: "blocked",
+  paused: "waiting",
+  // Transient state while a write is in flight; same tone as "waiting"
+  // (informational) rather than "blocked" (action required) so users
+  // don't read it as a hard error.
+  applying: "waiting"
+};
+
+function ProductConfigItemCard({
+  item,
+  busy,
+  onAction
+}: {
+  item: ProductConfigItem;
+  busy: boolean;
+  onAction: (action: ProductConfigAction) => void;
+}) {
+  const tone = TONE_CLASSES[item.state];
+  return (
+    <li className={`control-trace-step product-config-profile-item ${tone} ${item.state}`}>
+      <span className="control-trace-step-icon product-config-profile-item-icon" aria-hidden="true">
+        <NovaIcon name={ITEM_ICONS[item.id]} size={18} strokeWidth={1.9} />
+      </span>
+      <div className="control-trace-step-copy">
+        <div className="control-trace-step-heading product-config-profile-item-heading">
+          <strong>{item.label}</strong>
+          <span className={`control-trace-state product-config-profile-state ${tone} ${item.state}`}>
+            <NovaIcon name={STATE_ICONS[item.state]} size={12} />
+            {STATE_LABELS[item.state]}
+          </span>
+        </div>
+        <b>{item.value}</b>
+        <p>{item.detail}</p>
+        <small>{item.evidence}</small>
+      </div>
+      {item.action ? (
+        <button type="button"
+          className="product-config-profile-action"
+          disabled={busy}
+          onClick={() => onAction(item.action as ProductConfigAction)}
+        >
+          {item.actionLabel}
+        </button>
+      ) : null}
+    </li>
+  );
+}
+
+export const ProductConfigProfilePanel = memo(function ProductConfigProfilePanel({
+  profile,
+  busy,
+  onAction
+}: {
+  profile: ProductConfigProfile;
+  busy: boolean;
+  onAction: (action: ProductConfigAction) => void;
+}) {
+  const tone = TONE_CLASSES[profile.state];
+  return (
+    <section className={`control-trace-panel product-config-profile-panel ${tone} ${profile.state}`} aria-labelledby="product-config-profile-title">
+      <header className="control-trace-header product-config-profile-header">
+        <div>
+          <span className="class-config-eyebrow">配置摘要</span>
+          <h2 id="product-config-profile-title">{profile.title}</h2>
+          <p>{profile.detail}</p>
+        </div>
+        <div className="control-trace-count product-config-profile-score" aria-label={`配置生效 ${profile.liveCount}/${profile.totalCount}`}>
+          <strong>{profile.liveCount}</strong>
+          <span>/ {profile.totalCount}</span>
+          <small>{profile.attentionCount > 0 ? `${profile.attentionCount} 项需处理` : "配置项"}</small>
+        </div>
+      </header>
+
+      <details className="product-config-profile-details">
+        <summary>
+          <span>
+            <b>查看配置来源与生效状态</b>
+            <small>采集、模型、控制、设备和配置版本的逐项证据</small>
+          </span>
+          <i>{profile.attentionCount > 0 ? `${profile.attentionCount} 项需处理` : `${profile.totalCount} 项`}</i>
+        </summary>
+        <ol className="control-trace-steps product-config-profile-items" aria-label="配置检查项">
+          {profile.items.map((item) => (
+            <ProductConfigItemCard
+              key={item.id}
+              item={item}
+              busy={busy}
+              onAction={onAction}
+            />
+          ))}
+        </ol>
+      </details>
+    </section>
+  );
+});

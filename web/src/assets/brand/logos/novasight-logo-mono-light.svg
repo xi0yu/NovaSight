@@ -1,0 +1,8 @@
+<svg viewBox="0 0 220 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="2" y="2" width="44" height="44" rx="13" fill="none" stroke="#FFFFFF" stroke-width="2"/>
+  <path d="M14 19V13H20" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M34 29V35H28" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M15 33L21 16L27 32L33 15" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="25" cy="24" r="3" fill="#FFFFFF"/>
+  <text x="58" y="29" fill="#FFFFFF" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="650">NovaSight</text>
+</svg>

@@ -1,0 +1,252 @@
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - develop-alpha
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-host:
+    name: Rust host contracts
+    runs-on: macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Show pinned toolchain
+        run: rustc --version && cargo --version
+
+      - name: Verify Cargo lockfile matches manifests
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint workspace
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo test --workspace --locked
+
+      - name: Configure latest-only native contracts
+        run: cmake -S native/latest-frame-exchange -B out/ci/latest-frame -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build latest-only native contracts
+        run: cmake --build out/ci/latest-frame --parallel
+
+      - name: Run latest-only native contracts
+        run: ctest --test-dir out/ci/latest-frame --output-on-failure
+
+      - name: Configure TensorRT reference ABI
+        run: cmake -S native/tensorrt-runtime -B out/ci/tensorrt-reference -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build TensorRT reference ABI
+        run: cmake --build out/ci/tensorrt-reference --parallel
+
+      - name: Run TensorRT reference ABI
+        run: ctest --test-dir out/ci/tensorrt-reference --output-on-failure
+
+      - name: Configure preprocess reference ABI
+        run: cmake -S novasight_jetson_preprocess_native/native -B out/ci/preprocess-reference -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build preprocess reference ABI
+        run: cmake --build out/ci/preprocess-reference --parallel
+
+      - name: Run preprocess reference ABI
+        run: ctest --test-dir out/ci/preprocess-reference --output-on-failure
+
+  rust-arm64:
+    name: Linux ARM64 portable contracts
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Show pinned ARM64 toolchain
+        run: rustc --version && cargo --version && uname -m
+
+      - name: Verify Cargo lockfile matches manifests
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Install ARM64 Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libacl1-dev
+
+      - name: Build ARM64 host-preview daemon
+        run: cargo build -p novasightd --no-default-features --locked
+
+      - name: Verify fail-closed ARM64 host preview
+        run: out/cargo/debug/novasightd --check --config crates/novasight-config/src/bootstrap.yaml
+
+      - name: Verify authenticated Web/API daemon composition
+        run: bash scripts/ci/host-composition-contract.sh
+
+      - name: Lint portable ARM64 workspace
+        run: cargo clippy --workspace --all-targets --no-default-features --locked -- -D warnings
+
+      - name: Run portable ARM64 workspace tests
+        run: cargo test --workspace --no-default-features --locked
+
+  studio:
+    name: Studio static quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install locked dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Check Studio types
+        run: pnpm --dir web typecheck
+
+      - name: Run Studio unit and contract tests
+        run: pnpm --dir web test:unit:ci
+
+      - name: Audit visual-system contracts
+        run: pnpm --dir web visual:audit
+
+      - name: Build Studio assets
+        run: pnpm --dir web build
+
+      - name: Audit production dependencies
+        run: pnpm --dir web audit --prod
+
+  studio-browser:
+    name: Studio browser behavior
+    needs: studio
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install locked dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Install Chromium runtime
+        run: pnpm --dir web exec playwright install --with-deps chromium
+
+      - name: Run mocked browser behavior suite
+        run: pnpm --dir web test:e2e
+
+      - name: Upload browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: studio-browser-evidence
+          path: |
+            out/playwright-report
+            out/playwright-results
+          if-no-files-found: ignore
+          retention-days: 14
+
+  rust-security:
+    name: RustSec advisory audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit Cargo lockfile
+        # RUSTSEC-2023-0071 affects RSA private-key operations. NovaSight's
+        # direct and JWT license paths only perform public-key verification.
+        run: cargo audit --file Cargo.lock --ignore RUSTSEC-2023-0071
+
+  jetson-build:
+    name: Jetson release build and safe startup
+    if: >-
+      vars.NOVASIGHT_JETSON_CI_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/develop-alpha'))
+    runs-on: [self-hosted, Linux, ARM64, jetson]
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Show Jetson toolchain
+        run: rustc --version && cargo --version && uname -a
+
+      - name: Generate job-local Web access identity
+        run: echo "NOVASIGHT_WEB_ACCESS_CODE=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Build and verify fail-closed package startup
+        run: scripts/ci/jetson-production-acceptance.sh build
+
+      - name: Upload Jetson build receipt
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: jetson-build-receipt
+          path: out/jetson-acceptance/build
+          if-no-files-found: error
+          retention-days: 30
+
+  jetson-production:
+    name: Jetson real camera and DeepStream receipt
+    needs: jetson-build
+    if: >-
+      vars.NOVASIGHT_JETSON_PRODUCTION_ACCEPTANCE_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/develop-alpha'))
+    runs-on: [self-hosted, Linux, ARM64, jetson]
+    timeout-minutes: 120
+    environment: jetson-production
+    env:
+      NOVASIGHT_JETSON_MODEL_FIXTURE_DIR: ${{ vars.NOVASIGHT_JETSON_MODEL_FIXTURE_DIR }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Show Jetson production identity
+        run: rustc --version && cargo --version && uname -a && command -v tegrastats
+
+      - name: Generate job-local Web access identity
+        run: echo "NOVASIGHT_WEB_ACCESS_CODE=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Produce hardware production receipt
+        run: scripts/ci/jetson-production-acceptance.sh production
+
+      - name: Upload Jetson production receipt
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: jetson-production-receipt
+          path: out/jetson-acceptance/production
+          if-no-files-found: error
+          retention-days: 90

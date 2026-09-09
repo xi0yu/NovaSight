@@ -1,0 +1,73 @@
+[workspace]
+members = [
+  "apps/novasight",
+  "apps/novasight-packager",
+  "apps/novasight-web",
+  "apps/novasightd",
+  "apps/novasightctl",
+  "crates/novasight-api",
+  "crates/novasight-config",
+  "crates/novasight-core",
+  "crates/novasight-deepstream-bridge",
+  "crates/novasight-tensorrt",
+  "crates/novasight-pipeline",
+  "crates/novasight-platform-jetson",
+  "crates/novasight-runtime",
+  "crates/novasight-client",
+  "crates/novasight-store",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Proprietary"
+
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = 0
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test.package."*"]
+debug = 0
+
+[profile.release]
+strip = "symbols"
+incremental = false
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+crossbeam-queue = "0.3"
+fs2 = "0.4"
+futures-util = "0.3"
+gstreamer = "0.25"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
+rand = "0.8"
+rsa = { version = "0.9", features = ["sha2"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["serde", "v4"] }

@@ -1,0 +1,461 @@
+use novasight_core::MAX_DETECTIONS;
+use novasight_store::model_manifest::ModelManifest;
+use novasight_tensorrt::gpu::{GpuFrameConfig, GpuModelConfig};
+use thiserror::Error;
+
+/// Admit only contracts implemented by the CUDA path. Never select a CPU parser.
+pub fn gpu_model_config(
+    manifest: &ModelManifest,
+    engine: std::path::PathBuf,
+    confidence_threshold: f64,
+    nms_threshold: f64,
+) -> Result<GpuModelConfig, DeepStreamModelContractError> {
+    validate_probability("confidence_threshold", confidence_threshold)?;
+    validate_probability("nms_threshold", nms_threshold)?;
+    deepstream_parser_contract(manifest)?;
+    if !manifest.postprocess.parser.eq_ignore_ascii_case("yolo")
+        || !manifest.output.scores_are_sigmoid
+        || !manifest.postprocess.class_aware_nms
+        || !manifest.output.bindings.is_empty()
+        || manifest.input.maintain_aspect_ratio
+    {
+        return Err(error(
+            "CUDA path currently requires single-output raw YOLO, sigmoid scores, class-aware NMS and direct resize; CPU fallback forbidden",
+        ));
+    }
+    let [1, 3, height, width] = manifest.input.shape.as_slice() else {
+        return Err(error("CUDA input must be batch-one NCHW RGB/BGR"));
+    };
+    if !manifest.input.layout.eq_ignore_ascii_case("NCHW")
+        || *width == 0
+        || *height == 0
+        || *width > 16384
+        || *height > 16384
+        || manifest.runtime.batch_size != 1
+    {
+        return Err(error("unsupported CUDA input layout or dimensions"));
+    }
+    let shape = &manifest.output.shape[manifest.output.shape.len() - 2..];
+    let channels =
+        u64::from(manifest.output.class_count) + if manifest.output.has_objectness { 5 } else { 4 };
+    let channels_first = shape[0] == channels;
+    let candidates = shape[usize::from(channels_first)];
+    if candidates == 0
+        || candidates > 32768
+        || manifest.output.class_count == 0
+        || manifest.output.class_count > 1024
+        || manifest.postprocess.max_detections == 0
+    {
+        return Err(error("CUDA postprocessing capacity exceeded"));
+    }
+    let dtype = |value: &str| match value.to_ascii_lowercase().as_str() {
+        "float32" | "fp32" => Ok(1),
+        "float16" | "fp16" => Ok(2),
+        _ => Err(error("CUDA input/output must be FP32 or FP16")),
+    };
+    let bgr = match color_format(manifest)? {
+        0 => 0,
+        1 => 1,
+        _ => return Err(error("CUDA preprocessing requires RGB/BGR")),
+    };
+    let scale = manifest.input.scale_factor as f32;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(error("invalid CUDA normalization scale"));
+    }
+    Ok(GpuModelConfig {
+        engine,
+        input_name: manifest.input.name.clone(),
+        output_name: manifest.output.name.clone(),
+        frame: GpuFrameConfig {
+            abi_version: 1,
+            width: *width as u32,
+            height: *height as u32,
+            candidates: candidates as u32,
+            classes: manifest.output.class_count,
+            channels_first: u32::from(channels_first),
+            has_objectness: u32::from(manifest.output.has_objectness),
+            input_dtype: dtype(&manifest.input.dtype)?,
+            output_dtype: dtype(&manifest.output.dtype)?,
+            bgr,
+            top_k: manifest
+                .postprocess
+                .max_detections
+                .min(MAX_DETECTIONS as u32),
+            cuda_graph: 1,
+            scale,
+            confidence_threshold: confidence_threshold as f32,
+            nms_threshold: nms_threshold as f32,
+        },
+    })
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+#[error("{message}")]
+pub struct DeepStreamModelContractError {
+    message: String,
+}
+
+impl DeepStreamModelContractError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeepStreamParserContract {
+    pub function: &'static str,
+    pub cluster_mode: i64,
+}
+
+/// Render nvinfer from one typed adapter contract. The composition root owns
+/// path canonicalization and file I/O; this module owns DeepStream semantics.
+pub fn render_deepstream_nvinfer_config(
+    manifest: &ModelManifest,
+    engine_path: &str,
+    parser_library_path: &str,
+    component_id: i32,
+    confidence_threshold: f64,
+    nms_threshold: f64,
+) -> Result<String, DeepStreamModelContractError> {
+    validate_probability("confidence_threshold", confidence_threshold)?;
+    validate_probability("nms_threshold", nms_threshold)?;
+    let contract = DeepStreamNvinferContract::from_manifest(manifest)?;
+    Ok(contract.render(
+        manifest,
+        engine_path,
+        parser_library_path,
+        component_id,
+        confidence_threshold,
+        nms_threshold,
+    ))
+}
+
+pub fn deepstream_parser_contract(
+    manifest: &ModelManifest,
+) -> Result<DeepStreamParserContract, DeepStreamModelContractError> {
+    let parser = manifest.postprocess.parser.trim().to_ascii_lowercase();
+    let format = manifest.output.format.trim().to_ascii_lowercase();
+    let preset = normalize_parser_preset(&manifest.postprocess.parser_preset)?;
+    match parser.as_str() {
+        "decoded_nms" => {
+            if format != "decoded_boxes6"
+                || manifest.output.shape.last().copied() != Some(6)
+                || manifest.output.shape.iter().product::<u64>() % 6 != 0
+            {
+                return Err(error(
+                    "decoded_nms requires a positive output shape whose last dimension is 6",
+                ));
+            }
+            Ok(DeepStreamParserContract {
+                function: "NvDsInferParseNovaSightDecodedNms",
+                cluster_mode: 4,
+            })
+        }
+        "rockchip_yolov5" => {
+            if format != "rockchip_yolov5_three_scale"
+                || manifest.output.bindings.len() != 3
+                || manifest.output.strides != [8, 16, 32]
+                || manifest.output.anchors.len() != 3
+                || manifest.output.anchors.iter().any(|scale| scale.len() != 6)
+                || matches!(preset, "yolov8" | "yolo11")
+            {
+                return Err(error("invalid Rockchip YOLOv5 parser contract"));
+            }
+            Ok(DeepStreamParserContract {
+                function: "NvDsInferParseNovaSightRockchipYoloV5",
+                cluster_mode: 2,
+            })
+        }
+        "efficientnms" => {
+            if format != "efficientnms_boxes_scores_classes" || manifest.output.bindings.len() != 4
+            {
+                return Err(error("invalid EfficientNMS parser contract"));
+            }
+            Ok(DeepStreamParserContract {
+                function: "NvDsInferParseNovaSightEfficientNms",
+                cluster_mode: 4,
+            })
+        }
+        "yolo" => raw_yolo_parser_contract(manifest, &format, preset),
+        _ => Err(error(format!("unsupported parser {parser}"))),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct DeepStreamNvinferContract {
+    parser: DeepStreamParserContract,
+    network_mode: i64,
+    color_format: i64,
+    output_names: String,
+    max_detections: u32,
+}
+
+impl DeepStreamNvinferContract {
+    fn from_manifest(manifest: &ModelManifest) -> Result<Self, DeepStreamModelContractError> {
+        let output_names = if manifest.output.bindings.is_empty() {
+            manifest.output.name.clone()
+        } else {
+            manifest
+                .output
+                .bindings
+                .iter()
+                .map(|binding| binding.name.as_str())
+                .collect::<Vec<_>>()
+                .join(";")
+        };
+        if output_names.is_empty() || output_names.contains(['\r', '\n']) {
+            return Err(error("output binding names are not safe for nvinfer"));
+        }
+        Ok(Self {
+            parser: deepstream_parser_contract(manifest)?,
+            network_mode: network_mode(manifest)?,
+            color_format: color_format(manifest)?,
+            output_names,
+            max_detections: manifest
+                .postprocess
+                .max_detections
+                .min(MAX_DETECTIONS as u32),
+        })
+    }
+
+    fn render(
+        &self,
+        manifest: &ModelManifest,
+        engine_path: &str,
+        parser_library_path: &str,
+        component_id: i32,
+        confidence_threshold: f64,
+        nms_threshold: f64,
+    ) -> String {
+        format!(
+            "# Generated by NovaSight Rust. Do not hand-edit.\n# novasight-model-fingerprint={}\n[property]\ngpu-id=0\nmodel-engine-file={}\nbatch-size=1\nnetwork-mode={}\nnetwork-type=0\nprocess-mode=1\ngie-unique-id={}\ninterval=0\nnum-detected-classes={}\nnet-scale-factor={:.17}\nmodel-color-format={}\nmaintain-aspect-ratio={}\nsymmetric-padding={}\noutput-tensor-meta=0\noutput-blob-names={}\ncustom-lib-path={}\nparse-bbox-func-name={}\ncluster-mode={}\n\n[class-attrs-all]\npre-cluster-threshold={:.8}\nnms-iou-threshold={:.8}\ntopk={}\n",
+            manifest.model_fingerprint,
+            engine_path,
+            self.network_mode,
+            component_id,
+            manifest.output.class_count,
+            manifest.input.scale_factor,
+            self.color_format,
+            i32::from(manifest.input.maintain_aspect_ratio),
+            i32::from(manifest.input.symmetric_padding),
+            self.output_names,
+            parser_library_path,
+            self.parser.function,
+            self.parser.cluster_mode,
+            confidence_threshold,
+            nms_threshold,
+            self.max_detections,
+        )
+    }
+}
+
+fn raw_yolo_parser_contract(
+    manifest: &ModelManifest,
+    format: &str,
+    preset: &str,
+) -> Result<DeepStreamParserContract, DeepStreamModelContractError> {
+    if format != "yolo_cxcywh_class_scores"
+        || !manifest
+            .output
+            .coordinate_mode
+            .eq_ignore_ascii_case("pixel")
+    {
+        return Err(error("invalid raw YOLO output contract"));
+    }
+    let shape = match manifest.output.shape.as_slice() {
+        [1, left, right] => [*left, *right],
+        [left, right] => [*left, *right],
+        _ => return Err(error("YOLO output must be [C,N], [N,C], or [1,C,N]")),
+    };
+    let preset_objectness = match preset {
+        "yolov5" => Some(true),
+        "yolov8" | "yolo11" => Some(false),
+        _ => None,
+    };
+    if preset_objectness.is_some_and(|value| value != manifest.output.has_objectness) {
+        return Err(error("parser preset conflicts with output objectness"));
+    }
+    let has_objectness = preset_objectness.unwrap_or(manifest.output.has_objectness);
+    let channels = u64::from(manifest.output.class_count) + if has_objectness { 5 } else { 4 };
+    if !shape.contains(&channels) || shape.iter().max().copied().unwrap_or(0) <= channels {
+        return Err(error(
+            "YOLO output shape does not match class/objectness contract",
+        ));
+    }
+    Ok(DeepStreamParserContract {
+        function: "NvDsInferParseNovaSightRaw",
+        cluster_mode: 2,
+    })
+}
+
+fn network_mode(manifest: &ModelManifest) -> Result<i64, DeepStreamModelContractError> {
+    match manifest
+        .runtime
+        .precision
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "fp32" => Ok(0),
+        "int8" => Ok(1),
+        "fp16" => Ok(2),
+        value => Err(error(format!("unsupported precision {value}"))),
+    }
+}
+
+fn color_format(manifest: &ModelManifest) -> Result<i64, DeepStreamModelContractError> {
+    match manifest
+        .input
+        .color_format
+        .trim()
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "RGB" => Ok(0),
+        "BGR" => Ok(1),
+        "GRAY" | "GREY" => Ok(2),
+        value => Err(error(format!("unsupported color format {value}"))),
+    }
+}
+
+fn normalize_parser_preset(value: &str) -> Result<&str, DeepStreamModelContractError> {
+    let normalized = value.trim().to_ascii_lowercase().replace('-', "_");
+    let canonical = match normalized.as_str() {
+        "" | "automatic" => "auto",
+        "yolo_v5" | "yolov5_raw" => "yolov5",
+        "yolo_v8" | "yolov8_raw" => "yolov8",
+        "yolo_11" | "yolo11_raw" => "yolo11",
+        "generic" | "custom" | "novasight" => "novasight_generic",
+        "auto" | "yolov5" | "yolov8" | "yolo11" | "novasight_generic" => normalized.as_str(),
+        _ => return Err(error(format!("unsupported parser preset {value}"))),
+    };
+    Ok(match canonical {
+        "auto" => "auto",
+        "yolov5" => "yolov5",
+        "yolov8" => "yolov8",
+        "yolo11" => "yolo11",
+        _ => "novasight_generic",
+    })
+}
+
+fn validate_probability(field: &str, value: f64) -> Result<(), DeepStreamModelContractError> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(error(format!("{field} must be in [0, 1]")))
+    }
+}
+
+fn error(message: impl Into<String>) -> DeepStreamModelContractError {
+    DeepStreamModelContractError::new(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use novasight_store::model_manifest::{
+        ManifestArtifact, ManifestInput, ManifestOutput, ManifestPostprocess, ManifestRuntime,
+    };
+
+    fn manifest() -> ModelManifest {
+        ModelManifest {
+            schema_version: 1,
+            model_id: "detector".to_owned(),
+            display_name: "Detector".to_owned(),
+            artifact: ManifestArtifact {
+                engine_path: "detector.engine".to_owned(),
+                sha256: "ab".repeat(32),
+                size_bytes: 123,
+            },
+            runtime: ManifestRuntime {
+                backend: "custom_tensorrt".to_owned(),
+                precision: "fp16".to_owned(),
+                batch_size: 1,
+            },
+            input: ManifestInput {
+                name: "images".to_owned(),
+                shape: vec![1, 3, 640, 640],
+                dtype: "float32".to_owned(),
+                layout: "NCHW".to_owned(),
+                color_format: "RGB".to_owned(),
+                scale_factor: 1.0 / 255.0,
+                maintain_aspect_ratio: false,
+                symmetric_padding: false,
+            },
+            output: ManifestOutput {
+                name: "output0".to_owned(),
+                shape: vec![1, 84, 8400],
+                dtype: "float32".to_owned(),
+                layout: "NCHW".to_owned(),
+                format: "yolo_cxcywh_class_scores".to_owned(),
+                class_count: 80,
+                class_names: Vec::new(),
+                has_objectness: false,
+                scores_are_sigmoid: true,
+                coordinate_mode: "pixel".to_owned(),
+                bindings: Vec::new(),
+                strides: Vec::new(),
+                anchors: Vec::new(),
+            },
+            postprocess: ManifestPostprocess {
+                parser: "yolo".to_owned(),
+                parser_preset: "yolov8".to_owned(),
+                confidence_threshold: 0.25,
+                nms_iou_threshold: 0.45,
+                class_aware_nms: true,
+                max_detections: 300,
+            },
+            validated: true,
+            model_fingerprint: "fingerprint".to_owned(),
+        }
+    }
+
+    #[test]
+    fn renders_one_typed_nvinfer_contract_without_runtime_reparse() {
+        let source = render_deepstream_nvinfer_config(
+            &manifest(),
+            "/models/detector.engine",
+            "/lib/libparser.so",
+            1,
+            0.30,
+            0.50,
+        )
+        .unwrap();
+
+        assert!(source.contains("topk=256"));
+        assert!(source.contains("parse-bbox-func-name=NvDsInferParseNovaSightRaw"));
+    }
+
+    #[test]
+    fn rejects_parser_semantic_drift() {
+        let mut manifest = manifest();
+        manifest.output.has_objectness = true;
+        assert!(deepstream_parser_contract(&manifest).is_err());
+    }
+
+    #[test]
+    fn gpu_admission_preserves_contract_and_rejects_cpu_only_modes() {
+        let mut m = manifest();
+        let c = gpu_model_config(&m, "detector.engine".into(), 0.65, 0.45).unwrap();
+        assert_eq!(
+            (c.frame.channels_first, c.frame.candidates, c.frame.classes),
+            (1, 8400, 80)
+        );
+        assert_eq!(c.frame.confidence_threshold, 0.65);
+        m.output.shape = vec![1, 8400, 84];
+        assert_eq!(
+            gpu_model_config(&m, "x".into(), 0.65, 0.45)
+                .unwrap()
+                .frame
+                .channels_first,
+            0
+        );
+        m.input.maintain_aspect_ratio = true;
+        assert!(gpu_model_config(&m, "x".into(), 0.65, 0.45).is_err());
+        m.input.maintain_aspect_ratio = false;
+        m.output.scores_are_sigmoid = false;
+        assert!(gpu_model_config(&m, "x".into(), 0.65, 0.45).is_err());
+    }
+}

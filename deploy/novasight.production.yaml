@@ -1,0 +1,104 @@
+schema_version: 16
+revision: 0
+server:
+  host: 0.0.0.0
+  port: 7351
+  control_socket: run/novasightd.sock
+replay:
+  enabled: false
+  frame_interval_ms: 16
+  output_gate_open: false
+consumers:
+  preview: true
+limits:
+  stream_fps: 30
+pipeline:
+  freshness_threshold_ms: 55.0
+  projection_fov_x_deg: 105.0
+  projection_counts_per_360: 9980.0
+  p_response_scale: 0.20
+  p_response_boost: 0.50
+  p_response_curve_shape: 1.0
+  max_output_x_counts: 127.0
+  max_output_y_counts: 127.0
+  fire_delay_enabled: false
+  fire_delay_ms: 0
+  velocity_history_reset_gap_ms: 80.0
+  prediction_enabled: true
+  prediction_lead_ms: 16.0
+  prediction_cap_px: 10.0
+  prediction_actuation_delay_ms: 4.0
+  target_fov_radius_px: 180.0
+  target_min_confidence: 0.5
+  target_track_max_lost_age_ms: 120.0
+  tracker_max_match_distance: 1.5
+  tracker_position_cost_weight: 0.75
+  tracker_iou_cost_weight: 0.25
+  tracker_scale_cost_weight: 0.15
+  tracker_max_size_ratio: 2.5
+  tracker_max_association_dt_ms: 150.0
+  target_class_priority: "0,1"
+  target_class_filter: all
+  target_selection_class_ratio: 0.35
+  target_switch_min_preference_advantage: 0.08
+  target_switch_min_continuity_score: 0.70
+  target_switch_delay_ms: 50.0
+  target_aim_y_ratio: 0.22
+  target_class_aim_y_ratios: ""
+  candidate_max_aspect_ratio: 6.0
+control:
+  output_enabled: false
+capture:
+  device: /dev/video0
+  backend: deepstream_nvinfer
+  memory: nvmm
+  preference: manual
+  latest_only: true
+  appsink_max_buffers: 1
+  queue_leaky: downstream
+  width: 1920
+  height: 1080
+  fps: 120
+  pixel_format: MJPEG
+  roi_left: 640
+  roi_top: 220
+  roi_width: 640
+  roi_height: 640
+inference:
+  enabled: true
+  backend: deepstream_nvinfer
+  device: cuda
+  require_gpu: true
+  allow_cpu_fallback: false
+  confidence_threshold: 0.25
+  nms_threshold: 0.45
+  inference_input_deadline_ms: 55.0
+  deepstream_parser_library: auto
+  deepstream_io_mode: 2
+  deepstream_batched_push_timeout_us: 0
+  deepstream_component_id: 1
+  deepstream_source_id: 0
+  deepstream_probe_element: primary-infer
+  deepstream_probe_pad: src
+  deepstream_nvinfer_config: data/runtime/deepstream/active-nvinfer.ini
+  model_width: 640
+  model_height: 640
+  deepstream_startup_timeout_ms: 10000
+  deepstream_shutdown_timeout_ms: 5000
+  input_source: source.default
+hardware:
+  auto_connect: false
+  backend: native_udp
+  host: 192.168.2.188
+  port: 8888
+  uuid: "12345678"
+  monitor_port: 5001
+  connect_timeout_ms: 3000
+  send_timeout_ms: 25
+  monitor_timeout_ms: 250
+  trigger_poll_interval_ms: 4
+paths:
+  data_dir: data
+  model_dir: data/models
+  database: data/novasight.db
+  license: data/license.json

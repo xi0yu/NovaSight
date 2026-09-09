@@ -1,0 +1,103 @@
+use novasight_core::controller::AimAlgorithmConfig;
+use novasight_core::controller::recoil::RecoilConfig;
+use novasight_core::tracking::{KalmanConfig, TargetingConfig};
+use novasight_pipeline::{OutputLimitConfig, PipelineConfig, TriggerMode};
+use novasight_store::config::{
+    AppConfig, parse_target_class_aim_y_ratios, parse_target_class_filter,
+    parse_target_class_priority,
+};
+
+/// Compose the epoch-scoped control pipeline from the canonical application
+/// configuration. Both daemon bootstrap and stopped-runtime reload use this
+/// function so a saved setting cannot mean something different after restart.
+pub fn compose_pipeline_config(
+    config: &AppConfig,
+    trigger_poll_interval_ms: Option<u64>,
+) -> Result<PipelineConfig, String> {
+    let adapters = config
+        .require_vision_adapters()
+        .map_err(|error| error.to_string())?;
+    if !adapters.inference.enabled {
+        return Err("inference.enabled must be true for the live runtime".to_owned());
+    }
+    let response = adapters.pipeline.continuous_response();
+    Ok(PipelineConfig {
+        targeting: TargetingConfig {
+            target_fov_radius_px: adapters.pipeline.target_fov_radius_px,
+            min_confidence: adapters.pipeline.target_min_confidence,
+            track_max_lost_age_ms: adapters.pipeline.target_track_max_lost_age_ms,
+            tracker_max_match_distance: adapters.pipeline.tracker_max_match_distance,
+            tracker_position_cost_weight: adapters.pipeline.tracker_position_cost_weight,
+            tracker_iou_cost_weight: adapters.pipeline.tracker_iou_cost_weight,
+            tracker_scale_cost_weight: adapters.pipeline.tracker_scale_cost_weight,
+            tracker_max_size_ratio: adapters.pipeline.tracker_max_size_ratio,
+            tracker_max_association_dt_ms: adapters.pipeline.tracker_max_association_dt_ms,
+            kalman: KalmanConfig {
+                acceleration_noise: adapters.pipeline.tracker_kalman_acceleration_noise,
+                measurement_noise_x: adapters.pipeline.tracker_kalman_measurement_noise_x,
+                measurement_noise_y: adapters.pipeline.tracker_kalman_measurement_noise_y,
+                max_predict_dt_ms: adapters.pipeline.tracker_kalman_max_predict_dt_ms,
+                max_predict_missing_ms: adapters.pipeline.tracker_kalman_max_predict_missing_ms,
+                max_predict_steps: adapters.pipeline.tracker_kalman_max_predict_steps,
+                nis_threshold: adapters.pipeline.tracker_kalman_nis_threshold,
+                nis_hard_reject: adapters.pipeline.tracker_kalman_nis_hard_reject,
+                ..KalmanConfig::default()
+            },
+            class_priority: parse_target_class_priority(&adapters.pipeline.target_class_priority)
+                .map_err(|error| error.to_string())?,
+            allowed_class_ids: parse_target_class_filter(&adapters.pipeline.target_class_filter)
+                .map_err(|error| error.to_string())?,
+            selection_class_ratio: adapters.pipeline.target_selection_class_ratio,
+            switch_min_preference_advantage: adapters
+                .pipeline
+                .target_switch_min_preference_advantage,
+            switch_min_continuity_score: adapters.pipeline.target_switch_min_continuity_score,
+            switch_delay_ms: adapters.pipeline.target_switch_delay_ms,
+            aim_y_ratio: adapters.pipeline.target_aim_y_ratio,
+            class_aim_y_ratios: parse_target_class_aim_y_ratios(
+                &adapters.pipeline.target_class_aim_y_ratios,
+            )
+            .map_err(|error| error.to_string())?,
+            candidate_max_aspect_ratio: adapters.pipeline.candidate_max_aspect_ratio,
+        },
+        control: AimAlgorithmConfig {
+            freshness_threshold_ms: adapters.pipeline.freshness_threshold_ms,
+            projection_fov_x_deg: adapters.pipeline.projection_fov_x_deg,
+            projection_counts_per_360: adapters.pipeline.projection_counts_per_360,
+            response_scale: response.scale,
+            response_boost: response.boost,
+            response_curve_shape: response.curve_shape,
+            velocity_history_reset_gap_ms: adapters.pipeline.velocity_history_reset_gap_ms,
+            prediction_enabled: adapters.pipeline.prediction_enabled,
+            prediction_actuation_delay_ms: adapters.pipeline.prediction_actuation_delay_ms,
+            prediction_lead_ms: adapters.pipeline.prediction_lead_ms,
+            prediction_cap_px: adapters.pipeline.prediction_cap_px,
+            source_width: adapters.capture.width,
+            roi_width: adapters.capture.roi_width,
+            roi_height: adapters.capture.roi_height,
+            observation_width: 0,
+            observation_height: 0,
+        },
+        output_limits: OutputLimitConfig {
+            x_counts: adapters.pipeline.max_output_x_counts,
+            y_counts: adapters.pipeline.max_output_y_counts,
+        },
+        trigger_hold_delay_ms: if adapters.pipeline.fire_delay_enabled {
+            adapters.pipeline.fire_delay_ms
+        } else {
+            0
+        },
+        trigger_poll_interval_ms,
+        trigger_mode: match config.control.trigger_mode {
+            novasight_store::config::TriggerMode::Always => TriggerMode::Always,
+            novasight_store::config::TriggerMode::Hardware => TriggerMode::Hardware,
+        },
+        recoil: RecoilConfig {
+            enabled: config.control.recoil.enabled,
+            require_target: config.control.recoil.require_target,
+            interval_ms: config.control.recoil.interval_ms,
+            y_counts: config.control.recoil.y_counts,
+        },
+        ..PipelineConfig::default()
+    })
+}

@@ -1,0 +1,10 @@
+<svg viewBox="0 0 220 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="2" y="2" width="44" height="44" rx="13" fill="#202A3E"/>
+  <path d="M14 19V13H20" stroke="#8FA3FF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M34 29V35H28" stroke="#8FA3FF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M15 33L21 16L27 32L33 15" stroke="#F4F7FB" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M14 33C20 30 26 25 36 14" stroke="#18A6B8" stroke-width="2" stroke-linecap="round" stroke-dasharray="1 5"/>
+  <circle cx="25" cy="24" r="3" fill="#18A6B8"/>
+  <text x="58" y="27" fill="#F4F7FB" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="650">NovaSight</text>
+  <text x="59" y="40" fill="#94A0B4" font-family="Inter, system-ui, sans-serif" font-size="10" font-weight="500">Realtime Vision Studio</text>
+</svg>

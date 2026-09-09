@@ -1,0 +1,110 @@
+# NovaSight's single runtime configuration. Relative paths resolve from the
+# directory in which novasightd is started.
+schema_version: 16
+revision: 0
+server:
+  # Public TCP belongs to novasight-web. novasightd listens only on control_socket.
+  # Untrusted or routed networks still belong behind a TLS reverse proxy.
+  host: 0.0.0.0
+  port: 7351
+  control_socket: run/novasightd.sock
+replay:
+  enabled: true
+  frame_interval_ms: 16
+  output_gate_open: false
+consumers:
+  # The JPEG branch is built only when explicitly enabled. It remains behind
+  # a closed valve until both the API switch and a stream subscriber are active.
+  preview: true
+limits:
+  stream_fps: 30
+# Every field below is consumed by the current Rust production hot path.
+pipeline:
+  freshness_threshold_ms: 55.0
+  projection_fov_x_deg: 105.0
+  projection_counts_per_360: 9980.0
+  # 连续响应模型：K_base * R(r) * S * atan(e/S)，S 固定为内部常量 256 counts。
+  p_response_scale: 0.20
+  p_response_boost: 0.50
+  p_response_curve_shape: 1.0
+  max_output_x_counts: 127.0
+  max_output_y_counts: 127.0
+  # 按键持续时间未达到门槛时，不进入预测和控制算法。
+  fire_delay_enabled: false
+  fire_delay_ms: 0
+  velocity_history_reset_gap_ms: 80.0
+  prediction_enabled: true
+  prediction_lead_ms: 16.0
+  prediction_cap_px: 10.0
+  target_fov_radius_px: 180.0
+  target_min_confidence: 0.5
+  target_track_max_lost_age_ms: 120.0
+  tracker_max_match_distance: 1.5
+  tracker_position_cost_weight: 0.75
+  tracker_iou_cost_weight: 0.25
+  tracker_scale_cost_weight: 0.15
+  tracker_max_size_ratio: 2.5
+  tracker_max_association_dt_ms: 150.0
+  tracker_kalman_max_predict_dt_ms: 35.0
+  tracker_kalman_max_predict_missing_ms: 80.0
+  tracker_kalman_max_predict_steps: 5
+  target_class_priority: "0,1"
+  target_class_filter: all
+  # 0.35 类别偏好 + 0.65 准星距离；所有类别排名按 1, 0.5, 0.25... 生效。
+  target_selection_class_ratio: 0.35
+  target_switch_min_preference_advantage: 0.08
+  target_switch_min_continuity_score: 0.70
+  target_switch_delay_ms: 50.0
+  target_aim_y_ratio: 0.22
+  target_class_aim_y_ratios: ""
+  candidate_max_aspect_ratio: 6.0
+  # 成功发送后，等待设备运动有机会反映到采集帧；实际门控还会加一帧测量周期。
+  prediction_actuation_delay_ms: 4.0
+control:
+  output_enabled: false
+  # always: 有效目标即可输出；hardware: 仅在设备按钮按下时输出。
+  trigger_mode: hardware
+  recoil:
+    enabled: false
+    # true: 要求当前有效目标或仍在 Tracker 丢失保持期；false: 无目标时也允许压枪量组成当轮 move。
+    require_target: true
+    # 启动控制算法后先等待一个完整间隔；之后在下一张安全新画面中合成一次 +Y，不补发旧间隔。
+    interval_ms: 16
+    y_counts: 1
+capture:
+  device: /dev/video0
+  preference: manual
+  width: 1920
+  height: 1080
+  fps: 120
+  pixel_format: MJPG
+  roi_left: 640
+  roi_top: 220
+  roi_width: 640
+  roi_height: 640
+inference:
+  enabled: true
+  backend: deepstream_nvinfer
+  require_gpu: true
+  allow_cpu_fallback: false
+  inference_input_deadline_ms: 55.0
+  # `auto` selects the parser compiled by Cargo for this exact novasightd build.
+  deepstream_parser_library: auto
+  deepstream_startup_timeout_ms: 10000
+  deepstream_shutdown_timeout_ms: 5000
+hardware:
+  auto_connect: false
+  backend: native_udp
+  host: "192.168.2.188"
+  port: 8888
+  uuid: "12345678"
+  monitor_port: 5001
+  connect_timeout_ms: 3000
+  send_timeout_ms: 25
+  monitor_timeout_ms: 250
+  trigger_poll_interval_ms: 4
+paths:
+  data_dir: data
+  model_dir: data/models
+  database: data/novasight.db
+  license: data/license.json

@@ -1,0 +1,19 @@
+<svg viewBox="0 0 320 190" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="320" height="190" rx="18" fill="#F8F9FB"/>
+  <rect x="28" y="42" width="82" height="88" rx="14" fill="#FFFFFF" stroke="#E2E6EC"/>
+  <rect x="132" y="34" width="78" height="104" rx="18" fill="#EEF1FF" stroke="#CFD7FF"/>
+  <rect x="235" y="42" width="58" height="88" rx="14" fill="#FFFFFF" stroke="#E2E6EC"/>
+  <path d="M110 86h22M210 86h25" stroke="#18A6B8" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="3 7"/>
+  <g stroke="#556FF6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M48 67h42M48 88h28M48 109h35"/>
+    <rect x="151" y="57" width="40" height="58" rx="8"/>
+    <path d="M161 72h20M161 86h20M161 100h12"/>
+    <rect x="250" y="64" width="28" height="28" rx="5"/>
+    <path d="M247 110h34"/>
+  </g>
+  <g fill="#566074" font-family="JetBrains Mono, monospace" font-size="10">
+    <text x="38" y="152">320 x 320</text>
+    <text x="143" y="152">FP16 · TRT</text>
+    <text x="241" y="152">12.4 ms</text>
+  </g>
+</svg>

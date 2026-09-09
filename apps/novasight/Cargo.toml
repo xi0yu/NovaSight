@@ -1,0 +1,19 @@
+[package]
+name = "novasight"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "novasight"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+novasight-config = { path = "../../crates/novasight-config" }
+rand.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio = { workspace = true, features = ["process", "rt", "signal", "time"] }
