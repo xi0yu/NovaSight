@@ -507,7 +507,8 @@ function choiceId(choice: CapabilityChoice): string {
 }
 
 function choiceLabel(choice: CapabilityChoice): string {
-  return `${choice.pixel_format} / ${choice.width}x${choice.height} / ${choice.fps} FPS`;
+  const format = canonicalCaptureFormat(choice.pixel_format) === "MJPG" ? "MJPEG (MJPG)" : choice.pixel_format;
+  return `${format} / ${choice.width}x${choice.height} / ${choice.fps} FPS`;
 }
 
 function choiceMatchesConfig(choice: CapabilityChoice, config: Record<string, unknown>): boolean {
@@ -1519,6 +1520,14 @@ export function StudioConsoleView({
   const desiredConfigRevision = configApplyPresentation.desiredRevision;
   const effectiveConfigRevision = configApplyPresentation.effectiveRevision;
   const kmnetRestartRequired = kmnetStatus?.restart_required === true;
+  const hardwareControlLicensed = license?.valid === true && license.features.includes("hardware_control");
+  const outputEnableBlockedReason = !hardwareControlLicensed
+    ? "当前授权不包含硬件控制，无法开启物理输出；请查看授权状态。"
+    : !runtimeMainlineRunning ? "请先启动主链，再连接 kmNet。"
+      : kmnetRestartRequired ? "kmNet 配置尚未生效，请先完成设备重载。"
+        : !kmnetAutoConnect ? "请先启用 kmNet 并保存设备配置。"
+          : !kmnetExecutorAvailable ? "kmNet 适配器不可用，请检查设备状态。"
+            : kmnetStatus?.runtime_connected !== true ? "请先连接 kmNet，再打开物理输出。" : "";
   const kmnetConfigurationState = kmnetStatus?.configuration_state
     ?? (kmnetRestartRequired ? "restart_required" : kmnetAutoConnect ? "ready" : "uncommissioned");
   const kmnetConfigurationReady = kmnetStatus?.configuration_ready === true
@@ -1943,8 +1952,11 @@ export function StudioConsoleView({
         && (configuredCaptureDevice.trim().length > 0 || (capture?.device ?? "").trim().length > 0),
       captureDevice: configuredCaptureDevice || capture?.device || NO_SAMPLE,
       captureProfile: displayCaptureProfile
-        ? `${displayCaptureProfile.pixel_format.toUpperCase()} ${displayCaptureProfile.width}x${displayCaptureProfile.height}@${displayCaptureProfile.fps}`
+        ? choiceLabel(displayCaptureProfile)
         : NO_SAMPLE,
+      captureProfileApplied: capture?.running === true && capture.device === configuredCaptureDevice
+        && selectedProfile !== null && selectedProfile !== undefined && choiceMatchesConfig(selectedProfile, captureConfig),
+      runtimeCaptureProfile: selectedProfile ? choiceLabel(selectedProfile) : NO_SAMPLE,
       captureSource: displayCaptureProfileSource,
       roiLabel: roiApplyLabel,
       roiApplied: roiSettingsApplied,
@@ -1964,6 +1976,8 @@ export function StudioConsoleView({
       predictionEnabled: controlPredictionEnabled,
       freshnessThresholdLabel: formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms"),
       outputEnabled,
+      outputEnableBlockedReason,
+      hardwareControlLicensed,
       outputRuntimeConnected: kmnetRuntimeConnected,
       kmnetAutoConnect,
       kmnetRuntimeConnected,
@@ -1983,6 +1997,9 @@ export function StudioConsoleView({
       activeArtifactPath,
       activeArtifactStatus,
       capture?.device,
+      capture?.running,
+      captureConfig,
+      selectedProfile,
       configApplyPending,
       configRestartRequired,
       configuredCaptureDevice,
@@ -2005,6 +2022,8 @@ export function StudioConsoleView({
       modelInputHeight,
       modelInputWidth,
       outputEnabled,
+      outputEnableBlockedReason,
+      hardwareControlLicensed,
       postprocessApplyLabel,
       postprocessSettingsApplied,
       roiApplyLabel,
@@ -2595,6 +2614,11 @@ export function StudioConsoleView({
   );
 
   const requestOutputGateChange = useCallback((enabled: boolean) => {
+    if (enabled && outputEnableBlockedReason) {
+      setLocalError(outputEnableBlockedReason);
+      reportError(new Error(outputEnableBlockedReason), { source: "output-gate", title: "无法开启物理输出" });
+      return false;
+    }
     if (!enabled) {
       return updateConfigField(
         "control",
@@ -2621,7 +2645,7 @@ export function StudioConsoleView({
       )
     });
     return false;
-  }, [kmnetHost, kmnetPort, kmnetRuntimeConnected, updateConfigField]);
+  }, [kmnetHost, kmnetPort, kmnetRuntimeConnected, outputEnableBlockedReason, updateConfigField]);
 
   const saveParameterPageDraft = useCallback(async () => {
     if (!parameterPageDirtyRef.current || parameterPageSaving) {
@@ -3642,6 +3666,14 @@ export function StudioConsoleView({
     handleLaunchReadinessAction(action);
   }, [handleLaunchReadinessAction]);
   const handleProductConfigAction = useCallback((action: ProductConfigAction) => {
+    if (action === "output") {
+      void requestOutputGateChange(true);
+      return;
+    }
+    if (action === "license") {
+      navigatePage("license");
+      return;
+    }
     if (action === "capture") {
       navigatePage("capture");
       return;
@@ -3663,7 +3695,7 @@ export function StudioConsoleView({
       return;
     }
     openConfigDialog("algorithm");
-  }, [navigatePage, openConfigDialog]);
+  }, [navigatePage, openConfigDialog, requestOutputGateChange]);
 
   return (
     <section className="console-app">
@@ -4472,14 +4504,8 @@ export function StudioConsoleView({
                 <ModuleSwitch
                   compact
                   label="发送鼠标偏移"
-                  detail={!outputEnabled && kmnetRestartRequired
-                    ? "kmNet 正在重载"
-                    : !outputEnabled && !kmnetAutoConnect
-                      ? "请先启用 kmNet"
-                      : !outputEnabled && !kmnetRuntimeConnected
-                        ? "请先连接 kmNet"
-                        : undefined}
-                  disabled={busy !== null || kmnetRestartRequired || (!outputEnabled && (!kmnetAutoConnect || !kmnetExecutorAvailable || !kmnetRuntimeConnected))}
+                  detail={!outputEnabled ? outputEnableBlockedReason || undefined : undefined}
+                  disabled={busy !== null || (!outputEnabled && outputEnableBlockedReason !== "")}
                   enabled={outputEnabled}
                   optimistic={false}
                   onToggle={requestOutputGateChange}

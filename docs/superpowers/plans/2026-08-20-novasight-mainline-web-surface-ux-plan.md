@@ -1,6 +1,8 @@
 <!-- /autoplan restore point: /Users/zhangxiaoyu/.gstack/projects/xi0yu-NovaSight/develop-alpha-autoplan-restore-20260820-144342.md -->
 # NovaSight 主线功能与 WebUI 用户体验整改计划
 
+> 历史计划说明：文中“临时授权无硬件权限”的约定已于 2026-09-21 按用户明确要求变更；当前 Debug 临时授权包含硬件控制，仍需人工确认开启输出。以仓库 README 和服务端授权状态为准。
+
 状态：IMPLEMENTATION_IN_PROGRESS。用户已于 2026-08-20 批准实施 D1A，并追加“粉白清昼”“黑灰红”两套共享语义令牌主题；host 代码与检查已完成，M3a 保持 opt-in，M3b 默认翻转与生产结论等待当前 SHA 的 Jetson build/production 收据。
 
 日期：2026-08-20

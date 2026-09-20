@@ -20,15 +20,13 @@ Browser -- LAN HTTP/HTTPS --> novasight-web -- HTTP/1 over Unix socket --> novas
 
 ## Authentication and session contract
 
-1. The launcher generates a random 256-bit access code for each start, writes it
-   to owner-only `run/web-access-code`, and passes it only to `novasight-web`.
-2. Printed browser URLs carry the code in `#access=...`. URL fragments are not
-   sent in HTTP requests; Studio reads and clears the fragment immediately.
-   The launcher also prints the same value as `NovaSight Web 接入码` for manual
-   login from a plain Local/Network listener URL. It is distinct from the debug
-   temporary license code.
-3. `POST /api/auth/session` compares a digest of the code in constant time and
-   rate-limits each source IP after five failures in 60 seconds.
+1. The Debug launcher generates one random 256-bit temporary license code for
+   each start and passes it to `novasightd`; it is not written to disk.
+2. Studio accepts either this temporary code or a signed license in the same
+   authorization field. No separate access code is required. Old `#access=...`
+   fragments are cleared and cannot authenticate a session.
+3. `POST /api/auth/session` asks the daemon to validate/activate the submitted
+   license before issuing a Web session, with per-source-IP rate limiting.
 4. A successful login creates an opaque random server-side session. The browser
    receives only `novasight_web_session` with `HttpOnly`, `SameSite=Strict`,
    `Path=/`, one-hour `Max-Age`, and optional `Secure`.
@@ -36,8 +34,8 @@ Browser -- LAN HTTP/HTTPS --> novasight-web -- HTTP/1 over Unix socket --> novas
    CSRF and removes the server-side session. Restarting `novasight-web`
    invalidates all sessions.
 
-The access code is bootstrap identity, not a license and not a daemon secret.
-It never grants hardware features on its own.
+The Web session authenticates the caller; daemon-side license features remain
+authoritative for hardware operations.
 
 ## Authorization and CSRF
 
@@ -80,10 +78,10 @@ rejection, and never stores it in local storage.
 
 ## License activation boundary
 
-Browser access and product licensing are separate gates. The per-start Web
-access code creates an operator session but is never accepted as a license.
+Browser session authentication and product licensing remain separate internal
+responsibilities, but one validated license submission establishes both.
 
-Debug launchers generate a second independent 256-bit value in memory and pass
+Debug launchers generate the temporary 256-bit value in memory and pass
 it only to `novasightd` through `NOVASIGHT_TEMPORARY_LICENSE_CODE` without
 writing it to disk. Studio submits both that ephemeral value and
 formal signed licenses through `POST /api/license/activate`. The repository
@@ -92,9 +90,11 @@ creates process-local authorization without writing a license file. A mismatch
 continues through the normal signed-license verifier. Release builds ignore the
 temporary credential environment and never enable process-local authorization.
 
-Temporary authorization excludes `hardware_control`, expires with the daemon,
-and is regenerated on restart. No fixed temporary code exists in frontend or
-backend source.
+Temporary authorization includes `hardware_control`, expires with the daemon,
+and is regenerated on restart. Granting it does not connect a device or enable
+output by itself; Studio retains explicit output confirmation and backend
+connection/output checks. No fixed temporary code exists in frontend or backend
+source. Signed licenses without that feature remain restricted.
 
 Direct HTTP is suitable only for a controlled LAN. Across routed, shared, or
 untrusted networks, terminate HTTPS at an authenticated reverse proxy, enable
@@ -107,7 +107,7 @@ The UI uses one authentication gate around every protected page:
 | State | Page behavior |
 | --- | --- |
 | checking | show the access station and test the existing HttpOnly session |
-| anonymous | accept the current launch access code; no runtime API is called |
+| anonymous | accept one temporary or signed license; no runtime API is called |
 | authenticated | mount the existing license/workspace pages and show the persistent session bar |
 | session expired / API 401 | unmount protected pages; preserve daemon runtime; ask for authentication again |
 | CSRF rejected | refresh session/CSRF state; tell the operator to retry the mutation |
@@ -120,11 +120,11 @@ hardware output permission; those remain separate daemon-owned gates.
 
 ## Jetson acceptance
 
-The protected Jetson job generates a job-local Web access code and verifies:
+The protected Jetson job uses job-local authorization and verifies:
 
 - `novasightd` becomes ready only on the Unix socket;
 - `novasight-web` serves static/health traffic and rejects anonymous API calls;
-- invalid and valid access-code paths, HttpOnly session creation, and CSRF on
+- invalid and valid license-login paths, HttpOnly session creation, and CSRF on
   mutations;
 - signed license activation and the existing runtime/model/hardware-safe receipt;
 - logout revocation and local-socket-only daemon shutdown;

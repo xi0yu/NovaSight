@@ -1,6 +1,6 @@
 export type ProductConfigState = "live" | "saved" | "restart" | "missing" | "paused" | "applying";
 
-export type ProductConfigAction = "capture" | "models" | "control" | "kmnet" | "advanced";
+export type ProductConfigAction = "capture" | "models" | "control" | "output" | "license" | "kmnet" | "advanced";
 
 export type ProductConfigItemId =
   | "capture"
@@ -43,6 +43,8 @@ export type BuildProductConfigProfileInput = {
   captureConfigured: boolean;
   captureDevice: string;
   captureProfile: string;
+  captureProfileApplied: boolean;
+  runtimeCaptureProfile: string;
   captureSource: string;
   roiLabel: string;
   roiApplied: boolean;
@@ -60,6 +62,8 @@ export type BuildProductConfigProfileInput = {
   predictionEnabled: boolean;
   freshnessThresholdLabel: string;
   outputEnabled: boolean;
+  outputEnableBlockedReason: string;
+  hardwareControlLicensed: boolean;
   outputRuntimeConnected: boolean;
   kmnetAutoConnect: boolean;
   kmnetRuntimeConnected: boolean;
@@ -97,7 +101,7 @@ function buildCaptureItem(input: BuildProductConfigProfileInput): ProductConfigI
       actionLabel: "选择采集"
     };
   }
-  if (input.runtimeRunning && input.roiApplied) {
+  if (input.runtimeRunning && input.captureProfileApplied && input.roiApplied) {
     return {
       id: "capture",
       label: "采集规格",
@@ -112,8 +116,8 @@ function buildCaptureItem(input: BuildProductConfigProfileInput): ProductConfigI
     label: "采集规格",
     state: "saved",
     value: input.captureProfile,
-    detail: "配置已保存，启动主链后会用于采集。",
-    evidence: `${input.captureSource} · ROI ${input.roiLabel}`,
+    detail: input.runtimeRunning ? "已保存规格或 ROI 尚未与当前运行规格一致，请核对后应用。" : "配置已保存，启动主链后会用于采集。",
+    evidence: input.runtimeRunning ? `运行上报：${input.runtimeCaptureProfile}` : `${input.captureSource} · ROI ${input.roiLabel}`,
     action: "capture",
     actionLabel: "调整采集"
   };
@@ -184,10 +188,10 @@ function buildOutputItem(input: BuildProductConfigProfileInput): ProductConfigIt
       label: "物理输出",
       state: "paused",
       value: "已暂停",
-      detail: "算法继续计算，但不会把偏移量交付给设备。",
+      detail: input.outputEnableBlockedReason || "算法继续计算，但不会把偏移量交付给设备。",
       evidence: "output_enabled=false",
-      action: "control",
-      actionLabel: "打开输出"
+      action: !input.hardwareControlLicensed ? "license" : input.outputEnableBlockedReason ? "kmnet" : "output",
+      actionLabel: !input.hardwareControlLicensed ? "查看授权" : input.outputEnableBlockedReason ? "检查设备" : "打开输出"
     };
   }
   if (input.kmnetRestartRequired) {
@@ -337,7 +341,7 @@ function profileDetail(state: ProductConfigState, attentionCount: number): strin
     return "参数调整已由当前进程应用；只有进程级基础项会在下次服务启动时接管。";
   }
   if (state === "paused") {
-    return "采集、模型和控制可以继续验证，物理输出保持人工暂停。";
+    return "物理输出尚未开启；请查看输出项的授权、连接状态及开启入口。";
   }
   if (state === "live") {
     return "采集、模型、控制、设备和配置版本形成了同一条有效链路。";

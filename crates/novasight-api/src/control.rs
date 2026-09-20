@@ -1973,6 +1973,7 @@ mod tests {
         use super::*;
         use novasight_runtime::RuntimeSupervisor;
         use novasight_store::{config::YamlConfigRepository, license::LicensePolicy};
+        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
         use tower::ServiceExt;
 
         let root = std::env::temp_dir().join(format!(
@@ -1985,11 +1986,31 @@ mod tests {
         let config = YamlConfigRepository::load(&path).unwrap();
         let service = ConfigService::new(&path, config);
         let (_supervisor, runtime) = RuntimeSupervisor::spawn_recording();
-        let key = "temporary-license-code-for-runtime-test";
+        let temporary_code = "temporary-license-code-for-runtime-test";
+        // Temporary authorization now includes hardware; retain a real signed,
+        // runtime-only credential to exercise the restricted-license boundary.
+        let private = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private
+            .to_public_key()
+            .to_public_key_pem(LineEnding::LF)
+            .unwrap();
+        let pem = private.to_pkcs8_pem(LineEnding::LF).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let credential = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
+            &serde_json::json!({"iss":"novasight-license", "aud":"novasightd",
+                "sub":"runtime-only-test", "jti":"runtime-only-test", "tier":"test",
+                "features":["runtime", "config_read", "config_write"], "iat":now, "exp":now + 3600}),
+            &jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap(),
+        ).unwrap();
+        let key = credential.as_str();
         let license = FileLicenseRepository::new(
             root.join("license.json"),
-            LicensePolicy::new(None)
-                .with_temporary_access_code(key)
+            LicensePolicy::new(Some(public))
+                .with_temporary_access_code(temporary_code)
                 .unwrap(),
         );
         license.activate(key).unwrap();
@@ -2121,6 +2142,61 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert!(!service.snapshot().await.control.output_enabled);
+
+        // The same activation entry must allow temporary authorization to open
+        // the output gate. This test only uses the recording device above.
+        license.clear().unwrap();
+        license.activate(temporary_code).unwrap();
+        assert!(!runtime.snapshot().pipeline_metrics.device_connected);
+        assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+        runtime.start().await.unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/executors/kmnet/connect")
+                    .extension(TrustedLocalControl)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_success(),
+            "temporary connect: {}",
+            response.status()
+        );
+        for enabled in [true, false] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/config/commands")
+                        .extension(TrustedLocalControl)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({"command":"set_output_gate", "enabled":enabled})
+                                .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                response.status().is_success(),
+                "temporary output: {}",
+                response.status()
+            );
+            assert_eq!(
+                runtime.snapshot().pipeline_metrics.output_gate_open,
+                enabled
+            );
+            assert_eq!(service.snapshot().await.control.output_enabled, enabled);
+        }
+        runtime.stop().await.unwrap();
+        license.activate(key).unwrap();
 
         // A failed safe-output persistence must not allow the start to continue.
         service

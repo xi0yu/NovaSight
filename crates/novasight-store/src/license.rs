@@ -42,14 +42,6 @@ const ALL_FEATURES: [&str; 7] = [
     "config_read",
     "config_write",
 ];
-const DEVELOPMENT_FEATURES: [&str; 6] = [
-    "capture",
-    "runtime",
-    "models",
-    "tensorrt",
-    "config_read",
-    "config_write",
-];
 static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
@@ -749,10 +741,7 @@ fn development_session_status(granted_at: f64) -> LicenseStatus {
         temporary_access_supported: true,
         fingerprint: String::new(),
         tier: TEMPORARY_LICENSE_TIER.to_owned(),
-        features: DEVELOPMENT_FEATURES
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
+        features: ALL_FEATURES.iter().map(ToString::to_string).collect(),
         license_id: "ephemeral-process-session".to_owned(),
         credential_format: EPHEMERAL_CREDENTIAL_FORMAT.to_owned(),
         token_id: String::new(),
@@ -764,7 +753,8 @@ fn development_session_status(granted_at: f64) -> LicenseStatus {
         duration_value: None,
         duration_unit: "process".to_owned(),
         updated_at: Some(granted_at),
-        message: "临时授权仅在本次服务进程内有效；物理硬件输出仍需正式签名许可证。".to_owned(),
+        message: "临时授权包含硬件控制，仅在本次服务进程内有效；物理输出仍需手动确认开启。"
+            .to_owned(),
     }
 }
 
@@ -1181,13 +1171,10 @@ mod authorization_tests {
     }
 
     #[test]
-    fn temporary_development_session_never_grants_hardware_control() {
+    fn temporary_development_session_authorizes_hardware_control() {
         let status = super::development_session_status(1.0);
         assert_eq!(status.authorize_runtime(false), Ok(()));
-        assert_eq!(
-            status.authorize_runtime(true),
-            Err(LicenseDenial::FeatureRequired("hardware_control"))
-        );
+        assert_eq!(status.authorize_runtime(true), Ok(()));
     }
 
     #[test]
@@ -1218,7 +1205,7 @@ mod authorization_tests {
         assert_eq!(status.tier, "temporary");
         assert_eq!(status.credential_format, "ephemeral_code");
         assert!(
-            !status
+            status
                 .features
                 .iter()
                 .any(|feature| feature == "hardware_control")

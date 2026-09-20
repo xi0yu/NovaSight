@@ -136,8 +136,9 @@ the same login form; the gateway delegates validation to the daemon's
 no license file and expires when that daemon process exits; restarting produces
 a different code. Release builds never enable this credential and require the
 configured production public key for signed activation.
-Debug temporary access deliberately excludes `hardware_control`; physical
-output always requires a valid signed license even in a development build.
+Debug temporary access includes `hardware_control` for the current daemon
+process, using the same single authorization code. It does not itself connect
+kmNet or open the output gate; those remain explicit operator actions.
 With a runtime-only license, start/restart closes and persists any stale physical
 output switch before starting recognition. Failure to close it still blocks startup.
 Connecting hardware, diagnostic movement and re-enabling output retain their
