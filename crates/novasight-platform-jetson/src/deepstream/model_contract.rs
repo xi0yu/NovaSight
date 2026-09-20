@@ -12,55 +12,122 @@ pub fn gpu_model_config(
 ) -> Result<GpuModelConfig, DeepStreamModelContractError> {
     validate_probability("confidence_threshold", confidence_threshold)?;
     validate_probability("nms_threshold", nms_threshold)?;
-    deepstream_parser_contract(manifest)?;
-    if !manifest.postprocess.parser.eq_ignore_ascii_case("yolo")
-        || !manifest.output.scores_are_sigmoid
-        || !manifest.postprocess.class_aware_nms
-        || !manifest.output.bindings.is_empty()
-        || manifest.input.maintain_aspect_ratio
-    {
-        return Err(error(
-            "CUDA path currently requires single-output raw YOLO, sigmoid scores, class-aware NMS and direct resize; CPU fallback forbidden",
+    if !manifest.postprocess.parser.eq_ignore_ascii_case("yolo") {
+        return Err(gpu_contract_error(
+            "postprocess.parser",
+            &manifest.postprocess.parser,
+            "yolo (single raw output)",
+        ));
+    }
+    for (field, actual, expected) in [
+        (
+            "output.scores_are_sigmoid",
+            manifest.output.scores_are_sigmoid,
+            true,
+        ),
+        (
+            "postprocess.class_aware_nms",
+            manifest.postprocess.class_aware_nms,
+            true,
+        ),
+        (
+            "input.maintain_aspect_ratio",
+            manifest.input.maintain_aspect_ratio,
+            false,
+        ),
+    ] {
+        if actual != expected {
+            return Err(gpu_contract_error(field, actual, expected));
+        }
+    }
+    if !manifest.output.bindings.is_empty() {
+        return Err(gpu_contract_error(
+            "output.bindings.len",
+            manifest.output.bindings.len(),
+            0,
         ));
     }
     let [1, 3, height, width] = manifest.input.shape.as_slice() else {
-        return Err(error("CUDA input must be batch-one NCHW RGB/BGR"));
+        return Err(gpu_contract_error(
+            "input.shape",
+            format!("{:?}", manifest.input.shape),
+            "[1,3,H,W]",
+        ));
     };
-    if !manifest.input.layout.eq_ignore_ascii_case("NCHW")
-        || *width == 0
-        || *height == 0
-        || *width > 16384
-        || *height > 16384
-        || manifest.runtime.batch_size != 1
-    {
-        return Err(error("unsupported CUDA input layout or dimensions"));
+    if !manifest.input.layout.eq_ignore_ascii_case("NCHW") {
+        return Err(gpu_contract_error(
+            "input.layout",
+            &manifest.input.layout,
+            "NCHW",
+        ));
     }
+    for (field, actual, maximum) in [
+        ("input.width", *width, 16384),
+        ("input.height", *height, 16384),
+        (
+            "runtime.batch_size",
+            u64::from(manifest.runtime.batch_size),
+            1,
+        ),
+        (
+            "output.class_count",
+            u64::from(manifest.output.class_count),
+            1024,
+        ),
+    ] {
+        if actual == 0 || actual > maximum {
+            return Err(gpu_contract_error(field, actual, format!("1..={maximum}")));
+        }
+    }
+    // Reject unsupported parsers before entering their unrelated shape logic.
+    deepstream_parser_contract(manifest).map_err(|cause| {
+        error(format!(
+            "GPU model contract: {cause}; output.shape={:?}, class_count={}, has_objectness={}; CPU fallback forbidden",
+            manifest.output.shape, manifest.output.class_count, manifest.output.has_objectness,
+        ))
+    })?;
     let shape = &manifest.output.shape[manifest.output.shape.len() - 2..];
     let channels =
         u64::from(manifest.output.class_count) + if manifest.output.has_objectness { 5 } else { 4 };
     let channels_first = shape[0] == channels;
     let candidates = shape[usize::from(channels_first)];
-    if candidates == 0
-        || candidates > 32768
-        || manifest.output.class_count == 0
-        || manifest.output.class_count > 1024
-        || manifest.postprocess.max_detections == 0
-    {
-        return Err(error("CUDA postprocessing capacity exceeded"));
+    if candidates == 0 || candidates > 32768 {
+        return Err(gpu_contract_error(
+            "output.candidates",
+            candidates,
+            "1..=32768",
+        ));
     }
-    let dtype = |value: &str| match value.to_ascii_lowercase().as_str() {
+    if manifest.postprocess.max_detections == 0 {
+        return Err(gpu_contract_error(
+            "postprocess.max_detections",
+            0,
+            "positive per-class Top-K (capped at 256)",
+        ));
+    }
+    let dtype = |field: &str, value: &str| match value.to_ascii_lowercase().as_str() {
         "float32" | "fp32" => Ok(1),
         "float16" | "fp16" => Ok(2),
-        _ => Err(error("CUDA input/output must be FP32 or FP16")),
+        _ => Err(gpu_contract_error(field, value, "FP32 or FP16")),
     };
     let bgr = match color_format(manifest)? {
         0 => 0,
         1 => 1,
         _ => return Err(error("CUDA preprocessing requires RGB/BGR")),
     };
+    let input_dtype = dtype("input.dtype", &manifest.input.dtype)?;
     let scale = manifest.input.scale_factor as f32;
-    if !scale.is_finite() || scale <= 0.0 {
-        return Err(error("invalid CUDA normalization scale"));
+    let maximum_pixel = 255.0 * scale;
+    if !scale.is_finite()
+        || scale <= 0.0
+        || !maximum_pixel.is_finite()
+        || (input_dtype == 2 && maximum_pixel > 65504.0)
+    {
+        return Err(gpu_contract_error(
+            "input.scale_factor",
+            manifest.input.scale_factor,
+            "positive scale with every uint8 pixel representable in the input dtype",
+        ));
     }
     Ok(GpuModelConfig {
         engine,
@@ -74,8 +141,8 @@ pub fn gpu_model_config(
             classes: manifest.output.class_count,
             channels_first: u32::from(channels_first),
             has_objectness: u32::from(manifest.output.has_objectness),
-            input_dtype: dtype(&manifest.input.dtype)?,
-            output_dtype: dtype(&manifest.output.dtype)?,
+            input_dtype,
+            output_dtype: dtype("output.dtype", &manifest.output.dtype)?,
             bgr,
             top_k: manifest
                 .postprocess
@@ -87,6 +154,16 @@ pub fn gpu_model_config(
             nms_threshold: nms_threshold as f32,
         },
     })
+}
+
+fn gpu_contract_error(
+    field: &str,
+    actual: impl std::fmt::Display,
+    expected: impl std::fmt::Display,
+) -> DeepStreamModelContractError {
+    error(format!(
+        "GPU model contract: {field}={actual}; expected {expected}; CPU fallback forbidden"
+    ))
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -140,12 +217,19 @@ pub fn deepstream_parser_contract(
     let preset = normalize_parser_preset(&manifest.postprocess.parser_preset)?;
     match parser.as_str() {
         "decoded_nms" => {
+            let elements = manifest.output.shape.iter().try_fold(1_u64, |size, &dim| {
+                if dim == 0 {
+                    None
+                } else {
+                    size.checked_mul(dim)
+                }
+            });
             if format != "decoded_boxes6"
                 || manifest.output.shape.last().copied() != Some(6)
-                || manifest.output.shape.iter().product::<u64>() % 6 != 0
+                || elements.is_none()
             {
                 return Err(error(
-                    "decoded_nms requires a positive output shape whose last dimension is 6",
+                    "decoded_nms requires a positive output shape with no u64 overflow whose last dimension is 6",
                 ));
             }
             Ok(DeepStreamParserContract {
@@ -457,5 +541,55 @@ mod tests {
         m.input.maintain_aspect_ratio = false;
         m.output.scores_are_sigmoid = false;
         assert!(gpu_model_config(&m, "x".into(), 0.65, 0.45).is_err());
+    }
+
+    #[test]
+    fn gpu_normalization_cannot_overflow_the_input_tensor() {
+        let mut m = manifest();
+        for (dtype, safe, overflow) in [
+            ("float16", 1.0, 300.0),
+            ("float32", 1.0 / 255.0, f64::from(f32::MAX)),
+        ] {
+            m.input.dtype = dtype.into();
+            m.input.scale_factor = safe;
+            assert!(gpu_model_config(&m, "x".into(), 0.65, 0.45).is_ok());
+            m.input.scale_factor = overflow;
+            let error = gpu_model_config(&m, "x".into(), 0.65, 0.45).unwrap_err();
+            assert!(error.to_string().contains("input.scale_factor"));
+        }
+    }
+
+    #[test]
+    fn gpu_boundary_errors_identify_the_field_and_keep_existing_limits() {
+        let mut m = manifest();
+        let detail = |m: &ModelManifest| {
+            gpu_model_config(m, "x".into(), 0.65, 0.45)
+                .unwrap_err()
+                .to_string()
+        };
+        m.input.maintain_aspect_ratio = true;
+        assert!(detail(&m).contains("input.maintain_aspect_ratio=true; expected false"));
+        m.input.maintain_aspect_ratio = false;
+        m.output.shape = vec![1, 84, 32769];
+        assert!(detail(&m).contains("output.candidates=32769; expected 1..=32768"));
+        m.output.shape[2] = 32768;
+        let config = gpu_model_config(&m, "x".into(), 0.65, 0.45).unwrap();
+        assert_eq!(config.frame.candidates, 32768);
+        assert_eq!(config.frame.top_k, 256); // Existing per-class clamp, not global Top-K.
+        m.output.dtype = "int8".into();
+        assert!(detail(&m).contains("output.dtype=int8; expected FP32 or FP16"));
+        m.output.dtype = "float32".into();
+        m.output.shape = vec![1, 7, 8400];
+        assert!(detail(&m).contains("output.shape=[1, 7, 8400], class_count=80"));
+        // An unsupported parser must fail before unrelated shape arithmetic can panic.
+        m.postprocess.parser = "decoded_nms".into();
+        m.output.format = "decoded_boxes6".into();
+        m.output.shape = vec![u64::MAX, 6];
+        assert!(detail(&m).contains("postprocess.parser=decoded_nms"));
+        assert!(deepstream_parser_contract(&m).is_err());
+        m.output.shape = vec![1, 0, 6];
+        assert!(deepstream_parser_contract(&m).is_err());
+        m.output.shape = vec![1, 256, 6];
+        assert!(deepstream_parser_contract(&m).is_ok());
     }
 }

@@ -9,8 +9,8 @@ Use the current authority in this order:
 1. `PROJECT_HEALTH_AUDIT.md` for cleanup, over-design, and health decisions.
 2. `docs/ai-programming-team.md` for agent operating rules.
 3. `docs/novasight-ai-purpose-audit-questions.md` for evidence-based audits.
-4. `docs/novasight-deepstream-code-plan.md` for the current DeepStream/NVMM
-   implementation plan.
+4. `docs/gpu-image-pipeline.md` for the current hardware image-to-detection
+   contract. Earlier DeepStream/CPU plans are archived, not implementation authority.
 5. Current production code and verification commands.
 
 Do not treat files under `docs/superpowers/plans/`,

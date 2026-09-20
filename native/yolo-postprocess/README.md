@@ -1,4 +1,8 @@
-# CUDA raw YOLO postprocessing candidate
+# CUDA raw YOLO postprocessing
+
+Current production scope and result-validity checks are defined in the
+[GPU image pipeline contract](../../docs/gpu-image-pipeline.md). The dated
+experiments below are historical evidence, not acceptance for later edits.
 
 This shared compute module is now connected to the production daemon through
 `gpu_frame.cpp` and its Rust session worker. The current admitted path accepts explicit FP32/FP16 raw YOLO

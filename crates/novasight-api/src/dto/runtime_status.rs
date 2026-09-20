@@ -213,6 +213,17 @@ pub(crate) struct StatisticsState {
     pub detection_freshness_threshold_ms: Option<f64>,
     pub inference_latency_ms: Option<f64>,
     pub inference_latency_samples: u64,
+    /// Latest strict-GPU worker total (import -> release, excludes capture and
+    /// hardware media processing), ms.
+    pub gpu_total_latency_ms: Option<f64>,
+    /// High-water marks since session start; used to localize latency spikes.
+    pub gpu_total_max_ms: Option<f64>,
+    pub gpu_import_max_ms: Option<f64>,
+    pub gpu_wait_max_ms: Option<f64>,
+    /// Region A max: capture stamp -> identity probe (decoder/converter chain).
+    pub capture_to_probe_max_ms: Option<f64>,
+    /// SnapshotExchange queueing max: probe publish -> GPU worker start.
+    pub exchange_wait_max_ms: Option<f64>,
     pub telemetry_window_ms: Option<u64>,
     pub metrics_available: bool,
 }
@@ -883,6 +894,19 @@ impl RuntimeStatusState {
                     .map(|config| config.pipeline.freshness_threshold_ms),
                 inference_latency_ms: snapshot.telemetry.inference_latency_ms,
                 inference_latency_samples: metrics.inference_duration_samples,
+                gpu_total_latency_ms: metrics
+                    .latest_gpu_total_ns
+                    .map(|ns| ns as f64 / 1_000_000.0),
+                gpu_total_max_ms: (metrics.max_gpu_total_ns > 0)
+                    .then_some(metrics.max_gpu_total_ns as f64 / 1_000_000.0),
+                gpu_import_max_ms: (metrics.max_gpu_import_ns > 0)
+                    .then_some(metrics.max_gpu_import_ns as f64 / 1_000_000.0),
+                gpu_wait_max_ms: (metrics.max_gpu_wait_ns > 0)
+                    .then_some(metrics.max_gpu_wait_ns as f64 / 1_000_000.0),
+                capture_to_probe_max_ms: (metrics.max_capture_to_probe_ns > 0)
+                    .then_some(metrics.max_capture_to_probe_ns as f64 / 1_000_000.0),
+                exchange_wait_max_ms: (metrics.max_exchange_wait_ns > 0)
+                    .then_some(metrics.max_exchange_wait_ns as f64 / 1_000_000.0),
                 telemetry_window_ms: snapshot.telemetry.sample_window_ms,
                 metrics_available: metrics.input_buffers > 0
                     || metrics.probed_buffers > 0

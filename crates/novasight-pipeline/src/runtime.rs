@@ -710,11 +710,15 @@ impl SharedState {
         self.device_connected.store(false, Ordering::Release);
         self.monitor_error_streak.store(0, Ordering::Release);
         self.clear_control_telemetry();
-        *self
+        // Faults are terminal for this runtime. Preserve the initiating cause
+        // when other workers or shutdown subsequently report secondary errors.
+        let message = self
             .metrics
             .last_fault
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message.clone());
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_or_insert(message)
+            .clone();
         let previous = self.status.swap(STATUS_FAULTED, Ordering::AcqRel);
         if previous != STATUS_FAULTED {
             let _ = self.event_tx.try_send(PipelineEvent::Faulted { message });

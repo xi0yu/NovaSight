@@ -59,6 +59,11 @@ fn perception_failure_retires_pending_control_before_supervisor_cleanup() {
     )
     .unwrap();
     ingress.fail_perception("GPU execution failed");
+    ingress.fail_perception("secondary cleanup failure");
+    assert_eq!(
+        runtime.metrics().last_fault.as_deref(),
+        Some("GPU execution failed")
+    );
     runtime.open_output_gate();
     ingress.set_trigger_active(true);
     let batch = DetectionBatch::new(

@@ -114,6 +114,23 @@ pub struct SessionMetrics {
     pub timestamp_buffer_pts_matches: u64,
     pub timestamp_frame_meta_pts_matches: u64,
     pub timestamp_correlation_misses: u64,
+    // Strict GPU path latency decomposition (all values ns). Latest uses the
+    // +1 sentinel encoding (None when zero), max watermarks are raw with 0 =
+    // no sample, so occasional stalls remain visible between supervisor ticks.
+    pub latest_gpu_total_ns: Option<u64>,
+    pub latest_gpu_import_ns: Option<u64>,
+    pub latest_gpu_launch_ns: Option<u64>,
+    pub latest_gpu_wait_ns: Option<u64>,
+    pub latest_gpu_release_ns: Option<u64>,
+    pub max_gpu_total_ns: u64,
+    pub max_gpu_import_ns: u64,
+    pub max_gpu_wait_ns: u64,
+    // Region A: capture-source stamp -> identity probe (hardware media chain).
+    pub latest_capture_to_probe_ns: Option<u64>,
+    pub max_capture_to_probe_ns: u64,
+    // Probe publish -> worker start (SnapshotExchange queueing).
+    pub latest_exchange_wait_ns: Option<u64>,
+    pub max_exchange_wait_ns: u64,
 }
 
 #[derive(Debug, Default)]
@@ -134,9 +151,71 @@ struct AtomicSessionMetrics {
     timestamp_buffer_pts_matches: AtomicU64,
     timestamp_frame_meta_pts_matches: AtomicU64,
     timestamp_correlation_misses: AtomicU64,
+    latest_gpu_total_ns: AtomicU64,
+    latest_gpu_import_ns: AtomicU64,
+    latest_gpu_launch_ns: AtomicU64,
+    latest_gpu_wait_ns: AtomicU64,
+    latest_gpu_release_ns: AtomicU64,
+    max_gpu_total_ns: AtomicU64,
+    max_gpu_import_ns: AtomicU64,
+    max_gpu_wait_ns: AtomicU64,
+    latest_capture_to_probe_ns: AtomicU64,
+    max_capture_to_probe_ns: AtomicU64,
+    latest_exchange_wait_ns: AtomicU64,
+    max_exchange_wait_ns: AtomicU64,
 }
 
 impl AtomicSessionMetrics {
+    /// Record a latency sample: latest uses +1 sentinel encoding, max keeps
+    /// the raw high-water mark (0 = no sample).
+    fn observe_stage(&self, latest: &AtomicU64, max_watermark: &AtomicU64, value_ns: u64) {
+        latest.store(value_ns.saturating_add(1), Ordering::Relaxed);
+        max_watermark.fetch_max(value_ns, Ordering::Relaxed);
+    }
+
+    fn observe_gpu_timings(&self, timings: &novasight_tensorrt::gpu::GpuTimings) {
+        self.observe_stage(
+            &self.latest_gpu_total_ns,
+            &self.max_gpu_total_ns,
+            timings.total_ns,
+        );
+        self.observe_stage(
+            &self.latest_gpu_import_ns,
+            &self.max_gpu_import_ns,
+            timings.import_ns,
+        );
+        self.latest_gpu_launch_ns
+            .store(timings.launch_ns.saturating_add(1), Ordering::Relaxed);
+        self.observe_stage(
+            &self.latest_gpu_wait_ns,
+            &self.max_gpu_wait_ns,
+            timings.gpu_wait_ns,
+        );
+        self.latest_gpu_release_ns
+            .store(timings.release_ns.saturating_add(1), Ordering::Relaxed);
+    }
+
+    fn observe_media_region(
+        &self,
+        capture_to_probe_ns: Option<u64>,
+        exchange_wait_ns: Option<u64>,
+    ) {
+        if let Some(value) = capture_to_probe_ns {
+            self.observe_stage(
+                &self.latest_capture_to_probe_ns,
+                &self.max_capture_to_probe_ns,
+                value,
+            );
+        }
+        if let Some(value) = exchange_wait_ns {
+            self.observe_stage(
+                &self.latest_exchange_wait_ns,
+                &self.max_exchange_wait_ns,
+                value,
+            );
+        }
+    }
+
     fn snapshot(&self) -> SessionMetrics {
         SessionMetrics {
             input_buffers: self.input_buffers.load(Ordering::Relaxed),
@@ -163,6 +242,39 @@ impl AtomicSessionMetrics {
                 .timestamp_frame_meta_pts_matches
                 .load(Ordering::Relaxed),
             timestamp_correlation_misses: self.timestamp_correlation_misses.load(Ordering::Relaxed),
+            latest_gpu_total_ns: self
+                .latest_gpu_total_ns
+                .load(Ordering::Relaxed)
+                .checked_sub(1),
+            latest_gpu_import_ns: self
+                .latest_gpu_import_ns
+                .load(Ordering::Relaxed)
+                .checked_sub(1),
+            latest_gpu_launch_ns: self
+                .latest_gpu_launch_ns
+                .load(Ordering::Relaxed)
+                .checked_sub(1),
+            latest_gpu_wait_ns: self
+                .latest_gpu_wait_ns
+                .load(Ordering::Relaxed)
+                .checked_sub(1),
+            latest_gpu_release_ns: self
+                .latest_gpu_release_ns
+                .load(Ordering::Relaxed)
+                .checked_sub(1),
+            max_gpu_total_ns: self.max_gpu_total_ns.load(Ordering::Relaxed),
+            max_gpu_import_ns: self.max_gpu_import_ns.load(Ordering::Relaxed),
+            max_gpu_wait_ns: self.max_gpu_wait_ns.load(Ordering::Relaxed),
+            latest_capture_to_probe_ns: self
+                .latest_capture_to_probe_ns
+                .load(Ordering::Relaxed)
+                .checked_sub(1),
+            max_capture_to_probe_ns: self.max_capture_to_probe_ns.load(Ordering::Relaxed),
+            latest_exchange_wait_ns: self
+                .latest_exchange_wait_ns
+                .load(Ordering::Relaxed)
+                .checked_sub(1),
+            max_exchange_wait_ns: self.max_exchange_wait_ns.load(Ordering::Relaxed),
         }
     }
 }
@@ -174,6 +286,10 @@ struct SnapshotSlot {
     monotonic_now: novasight_core::MonotonicNanos,
     inference_duration_ns: Option<u64>,
     observed_at_inference_input: bool,
+    /// Monotonic instant the metadata probe handled this frame (GPU path).
+    probe_observed_at: novasight_core::MonotonicNanos,
+    /// Region A latency: capture-source stamp -> identity probe (GPU path).
+    capture_to_probe_ns: Option<u64>,
     frame: Option<gst::Buffer>,
 }
 
@@ -185,6 +301,8 @@ impl SnapshotSlot {
             monotonic_now: novasight_core::MonotonicNanos(0),
             inference_duration_ns: None,
             observed_at_inference_input: false,
+            probe_observed_at: novasight_core::MonotonicNanos(0),
+            capture_to_probe_ns: None,
             frame: None,
         }
     }
@@ -608,6 +726,18 @@ impl PerceptionSession for DeepStreamSession {
             timestamp_buffer_pts_matches: metrics.timestamp_buffer_pts_matches,
             timestamp_frame_meta_pts_matches: metrics.timestamp_frame_meta_pts_matches,
             timestamp_correlation_misses: metrics.timestamp_correlation_misses,
+            latest_gpu_total_ns: metrics.latest_gpu_total_ns,
+            latest_gpu_import_ns: metrics.latest_gpu_import_ns,
+            latest_gpu_launch_ns: metrics.latest_gpu_launch_ns,
+            latest_gpu_wait_ns: metrics.latest_gpu_wait_ns,
+            latest_gpu_release_ns: metrics.latest_gpu_release_ns,
+            max_gpu_total_ns: metrics.max_gpu_total_ns,
+            max_gpu_import_ns: metrics.max_gpu_import_ns,
+            max_gpu_wait_ns: metrics.max_gpu_wait_ns,
+            latest_capture_to_probe_ns: metrics.latest_capture_to_probe_ns,
+            max_capture_to_probe_ns: metrics.max_capture_to_probe_ns,
+            latest_exchange_wait_ns: metrics.latest_exchange_wait_ns,
+            max_exchange_wait_ns: metrics.max_exchange_wait_ns,
         }
     }
 
@@ -880,6 +1010,8 @@ fn start_pipeline(
                 slot.monotonic_now = novasight_core::MonotonicNanos(captured_at);
                 slot.inference_duration_ns = None;
                 slot.observed_at_inference_input = false;
+                slot.probe_observed_at = inference_output_observed_at;
+                slot.capture_to_probe_ns = inference_output_observed_at.0.checked_sub(captured_at);
                 slot.frame = Some(buffer.to_owned());
                 match probe_exchange.publish(slot) {
                     Ok(true) => {
@@ -1420,8 +1552,13 @@ fn spawn_snapshot_worker(
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_snapshot_worker(&exchange, &state, &context);
             }));
-            if outcome.is_err() {
-                worker_state.fault("DeepStream perception worker panicked");
+            if let Err(payload) = outcome {
+                let cause = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string panic payload; see panic hook output");
+                worker_state.fault(format!("DeepStream perception worker panicked: {cause}"));
             }
         })
         .map_err(SessionError::SpawnPerceptionWorker)
@@ -1471,6 +1608,13 @@ fn run_snapshot_worker(
             };
             let started = context.monotonic_clock.now();
             let age = started.0.checked_sub(stamp.captured_at.0);
+            // Region A (capture -> probe) and exchange queueing (probe publish
+            // -> worker start) are recorded before GPU work so a stall there is
+            // never misattributed to CUDA/TensorRT.
+            let exchange_wait_ns = started.0.checked_sub(slot.probe_observed_at.0);
+            state
+                .metrics
+                .observe_media_region(slot.capture_to_probe_ns, exchange_wait_ns);
             if age.is_none()
                 || context
                     .max_batch_age_ns
@@ -1497,15 +1641,19 @@ fn run_snapshot_worker(
             let result = unsafe { gpu.process(pointer, stamp) };
             slot.inference_duration_ns = context.monotonic_clock.now().0.checked_sub(started.0);
             match result {
-                Ok((batch, truncated)) => {
+                Ok(output) => {
+                    state.metrics.observe_gpu_timings(&output.timings);
                     state
                         .metrics
                         .truncated_detections
-                        .fetch_add(u64::from(truncated), Ordering::Relaxed);
-                    Ok(batch)
+                        .fetch_add(u64::from(output.truncated), Ordering::Relaxed);
+                    Ok(output.batch)
                 }
                 Err(error) => {
-                    state.fault(format!("Strict GPU frame failed: {error}"));
+                    state.fault(format!(
+                        "Strict GPU frame failed [epoch={:?}, generation={generation:?}, captured_at_ns={}]: {error}",
+                        context.epoch, stamp.captured_at.0,
+                    ));
                     recycle_from_worker(exchange, slot);
                     break;
                 }

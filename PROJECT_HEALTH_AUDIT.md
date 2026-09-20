@@ -2,6 +2,10 @@
 
 Last updated: 2026-08-21
 
+Visual-path correction, 2026-09-20: the current image-processing authority is
+[the GPU image pipeline contract](docs/gpu-image-pipeline.md). The older health
+and test snapshot below remains revision-bound, not a new hardware receipt.
+
 This file is the current engineering-health authority for NovaSight. It records
 the maintained product path, known risks, ownership boundaries, and the next
 safe development work. Historical plans under `docs/superpowers/` are context,
@@ -13,10 +17,12 @@ NovaSight is a Jetson-first Rust application with a React Studio management UI.
 The supported production path is:
 
 ```text
-DeepStream capture
+NVIDIA hardware media capture/decode
 -> NVMM ROI crop/resize
--> TensorRT inference
--> DetectionBatch
+-> CUDA RGB/BGR NCHW preprocessing
+-> direct TensorRT device inference
+-> CUDA decode/filter/sort/NMS
+-> validated DetectionBatch (image-pipeline delivery boundary)
 -> target selection/tracking/prediction
 -> continuous angular control
 -> bounded device command
@@ -79,7 +85,8 @@ edits pass the same gates.
   data.
 - Detection freshness, target identity, device commissioning, and output enable
   state gate physical commands.
-- DeepStream metadata crosses into Rust as bounded owned snapshots.
+- The production image path copies only bounded final CUDA detection results
+  into Rust; legacy DeepStream metadata snapshots are isolated comparison seams.
 - TensorRT and preprocess native code are isolated behind versioned C ABI
   contracts.
 - Configuration loading rejects unknown control fields and unsafe path identity

@@ -56,7 +56,7 @@ Evidence to inspect:
 - `crates/novasight-store/*`
 - `crates/novasight-core/*`
 - `crates/novasight-platform-jetson/*`
-- `docs/novasight-deepstream-code-plan.md`
+- `docs/gpu-image-pipeline.md`
 
 ### 2. Code Cartographer
 

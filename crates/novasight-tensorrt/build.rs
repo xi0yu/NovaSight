@@ -15,7 +15,8 @@ fn main() {
         "src/reference.cpp"
     });
     let header = source.join("include/novasight_tensorrt_runtime.h");
-    for path in [&implementation, &header] {
+    let error_header = source.join("include/novasight_tensorrt_error.hpp");
+    for path in [&implementation, &header, &error_header] {
         require_file(path, "NovaSight TensorRT ABI source");
         println!("cargo:rerun-if-changed={}", path.display());
     }

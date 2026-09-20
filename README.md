@@ -4,6 +4,11 @@ NovaSight is a Jetson-first realtime vision application. The maintained product
 path is the Rust backend plus the React Web UI; DeepStream, TensorRT, target
 selection, prediction, control, and kmNet output are owned by the Rust process.
 
+The current image-to-detection path is documented in the
+[GPU image pipeline contract](docs/gpu-image-pipeline.md): NVIDIA hardware media
+processing, direct TensorRT device execution, and CUDA decode/sort/NMS. It ends
+at validated detection results; no CPU image/postprocess fallback is selected.
+
 Current engineering health, active risks, and verification boundaries are kept
 in [PROJECT_HEALTH_AUDIT.md](PROJECT_HEALTH_AUDIT.md). Historical plans under
 `docs/superpowers/` are not current implementation authority.
@@ -66,7 +71,7 @@ cargo run -p novasight-packager -- --profile release
 Both package profiles build the same DeepStream/TensorRT production runtime;
 `debug` only keeps unoptimized Rust binaries for author-side debugging.
 
-Live DeepStream perception is the normal Jetson path. It does not need a
+Live NVIDIA media capture plus direct TensorRT/CUDA perception is the normal Jetson path. It does not need a
 `--live-perception` switch, a preparatory script, or Python. Cargo builds the
 native DeepStream/TensorRT integration required by the daemon.
 
@@ -225,7 +230,7 @@ camera/DeepStream receipt. See
 The milestone commands, evidence identity, rollback boundary, and explicit
 staging ledger are in the [D1A implementation runbook](docs/d1a-implementation-runbook.md).
 
-Pipeline performance work follows the [GPU optimization plan and execution boundaries](docs/pipeline-gpu-optimization-plan.md), including feature preservation, staged measurements, and Jetson operation limits.
+Image-pipeline work follows the [current GPU execution and result-validity contract](docs/gpu-image-pipeline.md). The [dated GPU optimization plan](docs/pipeline-gpu-optimization-plan.md) retains historical measurements and operation limits; its wider downstream work is not part of the current image-to-result scope.
 
 Local runtime databases, models, logs, generated native artifacts, Cargo
 outputs, and Web build output are ignored and must not be committed.

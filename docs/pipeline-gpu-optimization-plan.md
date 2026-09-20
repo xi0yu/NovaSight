@@ -1,5 +1,7 @@
 # NovaSight pipeline 提升计划与执行边界
 
+> 2026-09-20 范围收敛：当前任务仅覆盖图片输入、硬件预处理、推理、GPU decode／NMS 到有效检测结果交付。以 [当前 GPU 图片契约](gpu-image-pipeline.md) 为准；本文保留 9 月的历史测量和更广计划，不能据此继续修改检测结果之后的业务／控制流程。历史性能数字不作为本次修改的验收。
+
 日期：2026-09-08。最新状态：[正式 TensorRT / CUDA 接入收据](gpu-product-integration-20260908.md)。精确帧率传递已修复；当前 raw YOLO 模型已接入正式 daemon 的硬件媒体链、CUDA 前后处理、TensorRT 和原有业务入口。三轮标称 240 FPS 模式的实际检测提交率为 202.011 / 202.000 / 201.977 FPS，基本跟上实际供帧。Nsight 确认没有逐帧 raw 输出回传，GPU 故障注入及正常清理通过。现阶段仍为空检测，GPU 准星 / 全模型覆盖、非空控制、逐帧完整延迟、长时稳定性和 RK3588 对标未验收。没有替换部署程序。
 
 2026-09-09 更正输入判断：GC553G2 当前只有全黑及“无信号源输入”画面，120 / 240 模式连续 360 / 800 帧的哈希均匹配这两种占位画面；约 202 FPS 在无信号状态复现。不能据此宣称正常 HDMI 输入上限约 202 FPS，或 USB 5Gbps 已构成带宽瓶颈。先恢复并核实 RTX 5080 的有效 HDMI 输入，再进行真实场景吞吐/控制验收；不追认未保留画面的历史运行内容。GPU 主线后续工作及硬条件保持，详见接入收据的 9 月 9 日复核。
@@ -108,7 +110,7 @@ P95 必须低于 4.17 ms**。双方端到端延迟使用相同起止点实测；
 | 部署代码 | 远端 `/home/nvidia/NovaSight`，提交 `4ec8f61`；本地 `350a38f`；远端有既存未跟踪文件，必须保留 |
 | 运行状态 | 检查时没有 NovaSight 进程；不能视作后续一直空闲 |
 | 最后生成的模型配置 | YOLOv8，输入 `[1,3,256,256]`，输出 `[1,9,1344]`，5 类；不是全部模型的代表 |
-| 现有后处理 | `NvDsInferParseNovaSightRaw` CPU 解码 + `cluster-mode=2` CPU NMS；相关源码本地/远端哈希一致 |
+| 当时的后处理 | `NvDsInferParseNovaSightRaw` CPU 解码 + `cluster-mode=2` CPU NMS；相关源码本地/远端哈希一致 |
 | 短时推理测试 | 原引擎、Batch 1、预热 1 秒、测量 5 秒、禁用数据传输；GPU 平均 2.030 ms、P95 2.035 ms |
 | GPU 扩展能力 | 安装的 SDK 存在 `disableOutputHostCopy`；`nvdspostprocess` 可加载 |
 
@@ -260,7 +262,7 @@ NVMM 采集和完整 CUDA 后处理。本轮选择直接 TensorRT 为实施路�
 
 - [主线与责任边界](../PROJECT_HEALTH_AUDIT.md)、[模型接入](model-ingress.md)、[准星功能](control/crosshair_control_reference.md)。历史 Python/CPU 主线文档不能覆盖当前 Rust 实现。
 - [管线构造](../crates/novasight-platform-jetson/src/deepstream/pipeline.rs)、[会话和计时](../crates/novasight-platform-jetson/src/deepstream/session.rs)、[模型解析契约](../crates/novasight-platform-jetson/src/deepstream/model_contract.rs)。
-- [当前 CPU parser](../native/deepstream-parser/src/novasight_parser.cpp)、[准星系统](../crates/novasight-pipeline/src/crosshair.rs)、[supervisor](../crates/novasight-runtime/src/supervisor.rs)。
+- [旧 CPU parser／隔离参考](../native/deepstream-parser/src/novasight_parser.cpp)、[准星系统](../crates/novasight-pipeline/src/crosshair.rs)、[supervisor](../crates/novasight-runtime/src/supervisor.rs)。
 - NVIDIA [DeepStream 7.1 nvdspostprocess](https://docs.nvidia.com/metropolis/deepstream/7.1/text/DS_plugin_gst-nvdspostprocess.html)：自定义后处理库、tensor meta、关闭 nvinfer 内部解析的接口及 Alpha 状态。
 - NVIDIA [NvDsInferContextInitParams](https://docs.nvidia.com/metropolis/deepstream/dev-guide/sdk-api/struct__NvDsInferContextInitParams.html)：`disableOutputHostCopy`；本次同时核对了目标机 7.1 安装头文件，后续以目标 SDK 为准。
 - NVIDIA [Jetson 图像加速](https://docs.nvidia.com/jetson/archives/r36.4.3/DeveloperGuide/SD/Multimedia/AcceleratedGstreamer.html)：VIC/CUDA 图像转换路径；文档版本不能替代目标机 R36.5 的实测。

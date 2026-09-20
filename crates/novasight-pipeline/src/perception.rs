@@ -85,6 +85,34 @@ pub struct PerceptionMetrics {
     pub timestamp_buffer_pts_matches: u64,
     pub timestamp_frame_meta_pts_matches: u64,
     pub timestamp_correlation_misses: u64,
+    // Strict GPU path stage decomposition (ns). Latest is None until a frame
+    // has been observed; max fields are high-water marks since session start.
+    #[serde(default)]
+    pub latest_gpu_total_ns: Option<u64>,
+    #[serde(default)]
+    pub latest_gpu_import_ns: Option<u64>,
+    #[serde(default)]
+    pub latest_gpu_launch_ns: Option<u64>,
+    #[serde(default)]
+    pub latest_gpu_wait_ns: Option<u64>,
+    #[serde(default)]
+    pub latest_gpu_release_ns: Option<u64>,
+    #[serde(default)]
+    pub max_gpu_total_ns: u64,
+    #[serde(default)]
+    pub max_gpu_import_ns: u64,
+    #[serde(default)]
+    pub max_gpu_wait_ns: u64,
+    /// Region A: capture-source stamp to metadata probe (hardware media chain).
+    #[serde(default)]
+    pub latest_capture_to_probe_ns: Option<u64>,
+    #[serde(default)]
+    pub max_capture_to_probe_ns: u64,
+    /// SnapshotExchange queueing: probe publish to GPU worker start.
+    #[serde(default)]
+    pub latest_exchange_wait_ns: Option<u64>,
+    #[serde(default)]
+    pub max_exchange_wait_ns: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

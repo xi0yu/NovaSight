@@ -1,4 +1,5 @@
 #include "novasight_tensorrt_runtime.h"
+#include "novasight_tensorrt_error.hpp"
 
 #include <NvInfer.h>
 #include <cuda_runtime_api.h>
@@ -27,9 +28,11 @@ void write_error(char* output, size_t output_size, const char* message) noexcept
 
 class Logger final : public nvinfer1::ILogger {
 public:
+    novasight::TensorRtErrorLog errors;
     void log(Severity severity, const char* message) noexcept override {
-        (void)message;
-        if (severity > Severity::kWARNING) return;
+        if (severity <= Severity::kERROR) errors.record(message);
+        if (severity <= Severity::kWARNING && message)
+            std::fprintf(stderr, "TensorRT[%d]: %s\n", static_cast<int>(severity), message);
     }
 };
 
@@ -225,11 +228,11 @@ std::unique_ptr<novasight_tensorrt_engine> create_engine(
     auto owner = std::make_unique<novasight_tensorrt_engine>();
     const std::vector<char> bytes = read_engine(engine_path);
     owner->runtime.reset(nvinfer1::createInferRuntime(owner->logger));
-    if (!owner->runtime) throw std::runtime_error("createInferRuntime returned null");
+    if (!owner->runtime) throw std::runtime_error(owner->logger.errors.describe("createInferRuntime returned null"));
     owner->engine.reset(owner->runtime->deserializeCudaEngine(bytes.data(), bytes.size()));
-    if (!owner->engine) throw std::runtime_error("deserializeCudaEngine returned null");
+    if (!owner->engine) throw std::runtime_error(owner->logger.errors.describe("deserializeCudaEngine returned null"));
     owner->context.reset(owner->engine->createExecutionContext());
-    if (!owner->context) throw std::runtime_error("createExecutionContext returned null");
+    if (!owner->context) throw std::runtime_error(owner->logger.errors.describe("createExecutionContext returned null"));
 
     const int io_count = owner->engine->getNbIOTensors();
     const char* input_name = nullptr;
@@ -297,12 +300,12 @@ std::unique_ptr<novasight_tensorrt_engine> create_engine(
         }
     }
     if (dynamic && !owner->context->setInputShape(input_name, requested)) {
-        throw std::runtime_error("TensorRT setInputShape rejected requested dimensions");
+        throw std::runtime_error(owner->logger.errors.describe("TensorRT setInputShape rejected requested dimensions"));
     }
     owner->spec.input_dynamic = dynamic ? 1U : 0U;
     owner->spec.selected_profile = 0U;
     if (owner->context->inferShapes(0, nullptr) != 0) {
-        throw std::runtime_error("TensorRT input shapes are not fully specified");
+        throw std::runtime_error(owner->logger.errors.describe("TensorRT input shapes are not fully specified"));
     }
     validate_tensor_storage(*owner->engine, input_name);
     const nvinfer1::Dims resolved_input = owner->context->getTensorShape(input_name);
@@ -332,7 +335,7 @@ std::unique_ptr<novasight_tensorrt_engine> create_engine(
         cuda_check(cudaMalloc(&slot.device, static_cast<size_t>(slot.spec.nbytes)), "cudaMalloc output");
         cuda_check(cudaMallocHost(&slot.host, static_cast<size_t>(slot.spec.nbytes)), "cudaMallocHost output");
         if (!owner->context->setTensorAddress(slot.spec.name, slot.device)) {
-            throw std::runtime_error("TensorRT rejected output tensor address");
+            throw std::runtime_error(owner->logger.errors.describe("TensorRT rejected output tensor address"));
         }
         owner->spec.outputs[owner->outputs.size()] = slot.spec;
         owner->outputs.push_back(std::move(slot));
@@ -351,6 +354,7 @@ void bind_input(
     if (engine->device_pending || engine->device_failed) {
         throw std::runtime_error("TensorRT device frame is outstanding or engine has failed");
     }
+    engine->logger.errors.clear();
     const auto& expected = engine->spec.input;
     if (input->device_ptr == 0 || input->nbytes != expected.nbytes
         || input->rank != expected.rank || input->dtype != expected.dtype) {
@@ -370,7 +374,7 @@ void bind_input(
         engine->warmed_up = false;
         if (!engine->context->setTensorAddress(expected.name,
                 reinterpret_cast<void*>(static_cast<uintptr_t>(input->device_ptr)))) {
-            throw std::runtime_error("TensorRT rejected input tensor address");
+            throw std::runtime_error(engine->logger.errors.describe("TensorRT rejected input tensor address"));
         }
         engine->bound_input = input->device_ptr;
     }
@@ -394,14 +398,15 @@ int execute_engine(
     engine->discard_graph();
     StreamDrainGuard drain{engine->stream, true};
     if (!engine->context->enqueueV3(engine->stream)) {
+        const auto cause = engine->logger.errors.describe("TensorRT enqueueV3 returned false");
         const cudaError_t drain_result = drain.drain();
         if (drain_result != cudaSuccess) {
             throw std::runtime_error(
-                "TensorRT enqueueV3 returned false; "
+                cause + "; "
                 + cuda_failure_detail("stream drain", drain_result)
             );
         }
-        throw std::runtime_error("TensorRT enqueueV3 returned false after stream drain");
+        throw std::runtime_error(cause);
     }
     for (const auto& slot : engine->outputs) {
         const cudaError_t copy_result = cudaMemcpyAsync(
@@ -568,7 +573,7 @@ extern "C" int novasight_tensorrt_enqueue_device(
             cuda_check(status, "TensorRT CUDA graph launch");
         } else if (!engine->context->enqueueV3(engine->stream)) {
             engine->device_failed = true;
-            throw std::runtime_error("TensorRT device enqueueV3 failed; engine invalidated");
+            throw std::runtime_error(engine->logger.errors.describe("TensorRT device enqueueV3 failed; engine invalidated"));
         }
         for (size_t i = 0; i < engine->outputs.size(); ++i) {
             const auto& slot = engine->outputs[i];
@@ -624,13 +629,19 @@ extern "C" int novasight_tensorrt_capture_device_graph(
         if (!engine || engine->device_pending || engine->device_failed || !engine->warmed_up)
             throw std::runtime_error("TensorRT graph requires a completed warm-up frame");
         if (engine->device_graph) return 0;
+        engine->logger.errors.clear();
         attempted = true;
         cuda_check(cudaStreamBeginCapture(engine->stream, cudaStreamCaptureModeThreadLocal), "graph capture begin");
         const bool enqueued = engine->context->enqueueV3(engine->stream);
         // End capture even if TensorRT rejects it, so the stream exits capture mode.
         const auto ended = cudaStreamEndCapture(engine->stream, &graph);
+        if (!enqueued) {
+            auto cause = engine->logger.errors.describe("TensorRT enqueueV3 failed during graph capture");
+            if (ended != cudaSuccess) cause += "; " + cuda_failure_detail("graph capture end", ended);
+            throw std::runtime_error(cause);
+        }
         cuda_check(ended, "graph capture end");
-        if (!enqueued || !graph) throw std::runtime_error("TensorRT graph capture failed");
+        if (!graph) throw std::runtime_error(engine->logger.errors.describe("TensorRT graph capture returned no graph"));
         cuda_check(cudaGraphInstantiate(&engine->device_graph, graph, 0), "graph instantiate");
         cudaGraphDestroy(graph);
         return 0;

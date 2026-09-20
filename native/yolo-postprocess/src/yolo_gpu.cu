@@ -12,7 +12,8 @@ namespace novasight {
 namespace {
 void check(cudaError_t status, const char* operation) {
     if (status != cudaSuccess)
-        throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(status));
+        throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorName(status)
+            + " (" + std::to_string(static_cast<int>(status)) + "): " + cudaGetErrorString(status));
 }
 
 template<class T> void allocate(T*& pointer, std::size_t count) {
