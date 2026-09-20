@@ -666,7 +666,7 @@ fn print_temporary_license_access(access: Option<&TemporaryLicenseAccess>) {
     let Some(access) = access else {
         return;
     };
-    eprintln!("NovaSight 临时授权码：{}", access.code);
+    eprintln!("NovaSight 临时授权码 {}", access.code);
 }
 
 fn ready_address(ready: &ReadyDocument) -> Option<SocketAddr> {
