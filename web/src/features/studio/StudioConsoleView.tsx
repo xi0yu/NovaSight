@@ -50,7 +50,7 @@ import {
   streamUrl,
   updateRuntimeConfig,
 } from "../../api";
-import { reportError, reportInfo, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
+import { pushToastRaw, reportError, reportInfo, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { formatRuntimeErrorMessage, getErrorMessage } from "../shared/format";
 import { LicenseView } from "../license/LicenseView";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
@@ -745,6 +745,7 @@ export function StudioConsoleView({
   const [errorCenterOpen, setErrorCenterOpen] = useState(false);
   const errorNotices = useErrorNotices();
   const clearErrorNotices = useClearErrorNotices();
+  const lastRuntimeFaultRef = useRef("");
   const [modelManagerDialogOpen, setModelManagerDialogOpen] = useState(false);
   const [modelCatalogMessage, setModelCatalogMessage] = useState("");
   const [classConfigDialogOpen, setClassConfigDialogOpen] = useState(false);
@@ -2037,21 +2038,49 @@ export function StudioConsoleView({
         : detectionDataAgeMs <= detectionFreshnessThresholdMs
           ? "新鲜 · 控制可用"
           : "已超过控制阈值";
+  const runtimeFaultDetail = runtimeMainlineStatus.failed
+    ? runtimeMainlineStatus.failureMessage || "运行链已报告故障，但未提供原因。"
+    : "";
+  const runtimeFaultEvidence = runtimeFaultDetail ? JSON.stringify({
+    daemon_instance_id: runtime?.semantic.daemon_instance_id,
+    epoch: runtime?.semantic.epoch,
+    fatal_error: runtime?.fatal_error,
+    pipeline_error: runtime?.pipeline.last_error,
+    inference_error: runtime?.inference.terminal_error
+      ? { reason: runtime.inference.reason, detail: runtime.inference.detail } : null,
+    deepstream_error: runtime?.pipeline.deepstream.terminal_error
+      ? runtime.pipeline.deepstream.last_error : null,
+  }, null, 2) : "";
+  useEffect(() => {
+    // Repeated snapshots are not new failures. Keep the first observation in the
+    // existing session history even after recovery; a new epoch is a new event.
+    if (lastRuntimeFaultRef.current === runtimeFaultEvidence) return;
+    lastRuntimeFaultRef.current = runtimeFaultEvidence;
+    if (runtimeFaultDetail) pushToastRaw({
+      tone: "error", title: "运行故障", source: "runtime", status: null,
+      detail: runtimeFaultDetail, technicalDetail: runtimeFaultEvidence,
+    });
+  }, [runtimeFaultDetail, runtimeFaultEvidence]);
+
   const currentErrorDetails = useMemo(() => {
-    const items: Array<{ key: string; title: string; detail: string; time?: number; count?: number }> = [];
+    const items: Array<{ key: string; title: string; detail: string; technicalDetail?: string; time?: number; count?: number }> = [];
     const noticeStates = new Set(errorNotices.map((notice) => `${notice.source}\u0000${notice.detail}`));
     for (const notice of errorNotices) {
       items.push({
         key: `notice-${notice.id}`,
         title: notice.title,
         detail: formatRuntimeErrorMessage(notice.detail || notice.source),
+        technicalDetail: notice.technicalDetail || `来源: ${notice.source}${notice.status === null ? "" : `\nHTTP: ${notice.status}`}\n${notice.detail ?? ""}`,
         time: notice.createdAt,
         count: notice.count
       });
     }
+    if (runtimeFaultDetail && !errorNotices.some((notice) => notice.technicalDetail === runtimeFaultEvidence)) {
+      items.push({ key: "runtime-fault", title: "运行故障", detail: formatRuntimeErrorMessage(runtimeFaultDetail), technicalDetail: runtimeFaultEvidence });
+    }
     for (const [source, detail] of Object.entries(errors)) {
       if (detail && !noticeStates.has(`${source}\u0000${detail}`)) {
-        items.push({ key: `state-${source}`, title: `${source} 通道异常`, detail: formatRuntimeErrorMessage(detail) });
+        items.push({ key: `state-${source}`, title: `${source} 通道异常`, detail: formatRuntimeErrorMessage(detail), technicalDetail: detail });
       }
     }
     const formattedLocalError = localError ? formatRuntimeErrorMessage(localError) : "";
@@ -2061,15 +2090,15 @@ export function StudioConsoleView({
       formattedLocalError === `${item.title}: ${item.detail}`
     ));
     if (localError && !localErrorAlreadyCovered) {
-      items.push({ key: "local", title: "当前操作未完成", detail: formattedLocalError });
+      items.push({ key: "local", title: "当前操作未完成", detail: formattedLocalError, technicalDetail: localError });
     }
     if (capture?.last_error) {
-      items.push({ key: "capture", title: "采集链路异常", detail: formatRuntimeErrorMessage(capture.last_error) });
+      items.push({ key: "capture", title: "采集链路异常", detail: formatRuntimeErrorMessage(capture.last_error), technicalDetail: capture.last_error });
     }
     return items.filter((item, index, all) => (
-      all.findIndex((candidate) => candidate.title === item.title && candidate.detail === item.detail) === index
+      all.findIndex((candidate) => candidate.title === item.title && candidate.detail === item.detail && candidate.technicalDetail === item.technicalDetail) === index
     ));
-  }, [capture?.last_error, errorNotices, errors, localError]);
+  }, [capture?.last_error, errorNotices, errors, localError, runtimeFaultDetail, runtimeFaultEvidence]);
 
   useEffect(() => {
     if (configuredCaptureDevice) {
@@ -5425,7 +5454,7 @@ export function StudioConsoleView({
               <div>
                 <span>系统诊断</span>
                 <h2 id="error-center-title">异常信息</h2>
-                <p>页面保持安静；网络、服务与操作错误统一收拢在这里。</p>
+                <p>运行、网络与操作故障集中展示；原始详情供定位问题。本页会话内保留最近 20 条记录，刷新后清除。</p>
               </div>
               <button type="button" aria-label="关闭异常信息" onClick={() => setErrorCenterOpen(false)}              >
                 <NovaIcon name="x-circle" size={18} />
@@ -5439,6 +5468,10 @@ export function StudioConsoleView({
                     <strong>{item.title}</strong>
                     {(item.count ?? 1) > 1 ? <small>本会话重复 {item.count} 次</small> : null}
                     <p>{item.detail}</p>
+                    <details>
+                      <summary>原始错误与开发者详情</summary>
+                      <pre>{item.technicalDetail || item.detail}</pre>
+                    </details>
                     {item.time ? <time>{formatDate(new Date(item.time))}</time> : null}
                   </div>
                 </article>
@@ -5460,7 +5493,7 @@ export function StudioConsoleView({
                   title={errorNotices.length === 0 && currentErrorDetails.length > 0 ? "持续异常恢复后会自动消失" : undefined}
                   type="button"
                 >
-                  {errorNotices.length > 0 ? "清空操作记录" : "没有可清空的记录"}
+                  {errorNotices.length > 0 ? "清空历史记录" : "没有可清空的记录"}
                 </button>
                 {errorNotices.length === 0 && currentErrorDetails.length > 0 ? (
                   <small id="error-center-clear-note">当前异常仍由运行状态上报，恢复后会自动消失。</small>

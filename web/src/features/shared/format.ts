@@ -35,6 +35,9 @@ export function getErrorMessage(error: unknown): string {
 }
 
 export function formatRuntimeErrorMessage(message: string): string {
+  if (message.includes("GPU result batch:") && message.includes("outside coordinate space")) {
+    return "GPU 识别结果的检测框超出画面边界，结果未通过校验。请查看原始错误中的坐标、画面尺寸和帧标识。";
+  }
   if (message.includes("no perception adapter is installed for this daemon mode")) {
     return "当前为主机预览模式，未启用 Jetson 感知适配器；可继续查看界面，真机运行请在 Jetson 上启动 NovaSight。";
   }

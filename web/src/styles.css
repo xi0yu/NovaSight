@@ -4909,6 +4909,9 @@ body::after {
 .error-center-item strong { color: var(--text-primary); font-size: 13px; }
 .error-center-item p { margin: 3px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .error-center-item time { display: block; margin-top: 5px; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 10px; }
+.error-center-item details { margin-top: 8px; color: var(--text-secondary); font-size: 12px; }
+.error-center-item summary { cursor: pointer; }
+.error-center-item pre { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font-family: var(--font-mono); line-height: 1.5; }
 .error-center-empty { min-height: 180px; display: grid; place-items: center; align-content: center; gap: 7px; color: var(--status-success-fg); text-align: center; }
 .error-center-empty span { color: var(--text-tertiary); font-size: 12px; }
 .error-center-footer { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border-subtle); }

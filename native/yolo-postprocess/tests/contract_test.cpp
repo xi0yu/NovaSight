@@ -148,11 +148,26 @@ YoloGpuResult verify(const Input& input) {
     Trial trial(input);
     const auto actual = trial.run();
     compare(actual, reference(input, trial.bytes()));
+    for (unsigned i = 0; i < actual.count; ++i) {
+        const auto& box = actual.detections[i];
+        // Rust validates the delivered f32 XYWH coordinates in f64, without tolerance.
+        require(box.left >= 0 && box.top >= 0 && box.width > 0 && box.height > 0
+            && double(box.left) + double(box.width) <= input.cfg.width
+            && double(box.top) + double(box.height) <= input.cfg.height,
+            "GPU result is outside coordinate space after f64 promotion");
+    }
     ++checks;
     return actual;
 }
 
 void contracts() {
+    for (bool first : {false, true}) for (bool obj : {false, true}) for (bool half : {false, true}) {
+        Input border(67, 2, first, obj, half);
+        // Reproduce the reported bottom edge: 90.04590606689453 + 165.9541015625 > 256.
+        border.box(0, 210.9046173095703f, 200.0f, 89.2158203125f, 219.90818786621094f, 0.9f);
+        border.box(1, 200.0f, 210.9046173095703f, 219.90818786621094f, 89.2158203125f, 0.9f, 1);
+        require(verify(border).count == 2, "border results must not be discarded");
+    }
     for (bool first : {false, true}) for (bool obj : {false, true}) for (bool half : {false, true}) {
         Input input(67, 3, first, obj, half);
         input.cfg.confidence_threshold = 0.5f;

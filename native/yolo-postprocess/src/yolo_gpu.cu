@@ -112,7 +112,7 @@ __global__ void select_survivors(const YoloGpuDetection* boxes, const float* sco
 
 __global__ void pack_result(const YoloGpuDetection* boxes, const unsigned* kept,
                            const unsigned* counts, unsigned classes, unsigned top_k,
-                           YoloGpuResult* result) {
+                           unsigned width, unsigned height, YoloGpuResult* result) {
     const unsigned i = threadIdx.x;
     unsigned offset = 0;
     YoloGpuDetection detection{};
@@ -121,6 +121,10 @@ __global__ void pack_result(const YoloGpuDetection* boxes, const unsigned* kept,
             detection = boxes[kept[c * top_k + i - offset]];
         offset += counts[c];
     }
+    // XYWH is delivered as f32 but validated in f64. Round the remaining extent
+    // down so a clipped edge cannot overflow after promotion. Keep NMS unchanged.
+    detection.width = fminf(detection.width, __fsub_rd(float(width), detection.left));
+    detection.height = fminf(detection.height, __fsub_rd(float(height), detection.top));
     result->detections[i] = detection;
     if (i == 0) {
         result->count = min(offset, YoloGpuResult::capacity);
@@ -210,7 +214,7 @@ void YoloGpuPostprocessor::enqueue(const void* input, std::size_t nbytes, cudaSt
             s.sorted_scores, s.order, s.config.nms_threshold, n, s.config.top_k, s.counts, s.kept);
         check(cudaGetLastError(), "YOLO NMS selection launch");
         pack_result<<<1, YoloGpuResult::capacity, 0, stream>>>(s.boxes, s.kept,
-            s.counts, s.config.classes, s.config.top_k, s.device_result);
+            s.counts, s.config.classes, s.config.top_k, s.config.width, s.config.height, s.device_result);
         check(cudaGetLastError(), "YOLO packing launch");
         check(cudaMemcpyAsync(s.host_result, s.device_result, sizeof(YoloGpuResult),
             cudaMemcpyDeviceToHost, stream), "YOLO final results D2H");

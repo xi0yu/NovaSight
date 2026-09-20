@@ -9,6 +9,7 @@ export type Toast = {
   tone: ToastTone;
   title: string;
   detail?: string;
+  technicalDetail?: string;
   source: string;
   status: number | null;
   count: number;
@@ -93,6 +94,7 @@ function buildToast(input: {
   tone: ToastTone;
   title: string;
   detail?: string;
+  technicalDetail?: string;
   source: string;
   status: number | null;
 }): Toast {
@@ -101,6 +103,7 @@ function buildToast(input: {
     tone: input.tone,
     title: input.title,
     detail: input.detail,
+    technicalDetail: input.technicalDetail,
     source: input.source,
     status: input.status,
     count: 1,
@@ -110,12 +113,6 @@ function buildToast(input: {
 }
 
 function pushToast(toast: Toast): void {
-  if (isQuietErrorsEnabled()) {
-    // Quiet mode: surface to console but never to UI. Backend logs own the truth.
-    // eslint-disable-next-line no-console
-    console.warn(`[ns-quiet] ${toast.title}${toast.detail ? " — " + toast.detail : ""}`);
-    return;
-  }
   for (const [signature, createdAt] of lastToastAtBySignature) {
     if (toast.createdAt - createdAt > DUPLICATE_WINDOW_MS) {
       lastToastAtBySignature.delete(signature);
@@ -127,6 +124,7 @@ function pushToast(toast: Toast): void {
       notice.source === toast.source
       && notice.title === toast.title
       && notice.detail === toast.detail
+      && notice.technicalDetail === toast.technicalDetail
       && notice.status === toast.status
     ));
     if (existingIndex >= 0) {
@@ -139,6 +137,8 @@ function pushToast(toast: Toast): void {
     emitErrors();
     return;
   }
+  // Quiet mode suppresses popups, never the diagnostic history above.
+  if (isQuietErrorsEnabled()) return;
   const previousCreatedAt = lastToastAtBySignature.get(signature);
   if (previousCreatedAt !== undefined && toast.createdAt - previousCreatedAt <= DUPLICATE_WINDOW_MS) {
     return;
