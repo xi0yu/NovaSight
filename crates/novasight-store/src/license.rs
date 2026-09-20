@@ -331,12 +331,17 @@ impl FileLicenseRepository {
             updated_at: now,
             verification: credential.verification,
         };
+        // Login is also the activation entry: reject expired/future credentials
+        // before changing persisted or process-local authorization.
+        let mut status = self.status_from_document(document.clone(), now)?;
+        if !status.valid {
+            return Err(LicenseError::InvalidKey(status.message));
+        }
         self.write_document(&document)?;
         *self
             .development_session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        let mut status = self.status_from_document(document, now)?;
         status.temporary_access_supported = self.temporary_access_supported();
         Ok(status)
     }
@@ -646,7 +651,7 @@ impl FileLicenseRepository {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct PersistedLicense {
     schema_version: u32,
     key_hash: String,
@@ -723,7 +728,7 @@ impl LegacyLicense {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Verification {
     RsaPkcs1v15Sha256 {
@@ -1233,5 +1238,46 @@ mod authorization_tests {
                 .with_temporary_access_code(&format!(" {TEMPORARY_CODE}"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn inactive_signed_login_never_replaces_an_active_license() {
+        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+        let private = rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048).unwrap();
+        let public = private
+            .to_public_key()
+            .to_public_key_pem(LineEnding::LF)
+            .unwrap();
+        let pem = private.to_pkcs8_pem(LineEnding::LF).unwrap();
+        let signing = jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
+        let now = super::now_seconds().unwrap() as u64;
+        let root =
+            std::env::temp_dir().join(format!("ns-license-login-{}-{now}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let repository =
+            FileLicenseRepository::new(root.join("license.json"), LicensePolicy::new(Some(public)));
+        let credential = |id: &str, issued: u64, not_before: u64, expires: u64| {
+            jsonwebtoken::encode(
+                &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
+                &serde_json::json!({"iss":"novasight-license", "aud":"novasightd",
+                    "sub":"test-license", "jti":id, "tier":"test", "features":["runtime"],
+                    "iat":issued, "nbf":not_before, "exp":expires}),
+                &signing,
+            )
+            .unwrap()
+        };
+        repository
+            .activate(&credential("active", now - 120, now - 120, now + 7200))
+            .unwrap();
+        let before = std::fs::read(repository.path()).unwrap();
+        for key in [
+            credential("expired", now - 7200, now - 7200, now - 120),
+            credential("future", now, now + 3600, now + 7200),
+        ] {
+            assert!(repository.activate(&key).is_err());
+            assert_eq!(std::fs::read(repository.path()).unwrap(), before);
+            assert!(repository.status().unwrap().valid);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
