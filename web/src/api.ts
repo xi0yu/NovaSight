@@ -426,7 +426,7 @@ export function establishAuthSession(
       headers: { "Content-Type": "application/json" },
       body: encodeJsonBody({ key: requireNonBlank(licenseKey, "key") })
     },
-    { timeoutMs: STATUS_REQUEST_TIMEOUT_MS },
+    { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS },
     decodeAuthSession
   ).then(synchronizeAuthSession);
 }
