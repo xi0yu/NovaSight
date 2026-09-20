@@ -478,30 +478,6 @@ async fn require_license(
         )
             .into_response();
     }
-    if is_runtime_start(method, path)
-        && hardware_output_requested(&state).await
-        && !status
-            .features
-            .iter()
-            .any(|candidate| candidate == "hardware_control")
-    {
-        tracing::warn!(
-            error_code = "LICENSE_FEATURE_REQUIRED",
-            required_feature = "hardware_control",
-            "license authorization rejected"
-        );
-        return (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "code": "LICENSE_FEATURE_REQUIRED",
-                "detail": "license feature hardware_control is required",
-                "message": "license feature hardware_control is required",
-                "required_feature": "hardware_control",
-                "license": status,
-            })),
-        )
-            .into_response();
-    }
     let mut response = next.run(request).await;
     if refresh_session {
         match state.license_session.issue_cookie(&status) {
@@ -515,14 +491,6 @@ async fn require_license(
         }
     }
     response
-}
-
-fn is_runtime_start(method: &Method, path: &str) -> bool {
-    *method == Method::POST
-        && matches!(
-            path,
-            "/api/runtime/start" | "/api/v1/runtime/start" | "/api/v1/runtime/restart"
-        )
 }
 
 fn is_license_open_path(method: &Method, path: &str) -> bool {
@@ -1039,6 +1007,35 @@ async fn ensure_runtime_license(state: &ControlState) -> Result<(), ControlApiEr
     };
     let status =
         run_license_operation(repository.clone(), |repository| repository.status()).await?;
+    status
+        .authorize_feature("runtime")
+        .map_err(control_error_from_license_denial)?;
+    if status.authorize_feature("hardware_control").is_err()
+        && hardware_output_requested(state).await
+    {
+        // All start/restart callers hold lifecycle_lock. Close and persist the
+        // old output preference before starting computation; never grant output
+        // implicitly, and fail closed if the configuration transaction fails.
+        let service = state
+            .config
+            .as_ref()
+            .ok_or(ControlApiError::ConfigUnavailable)?;
+        service
+            .update_output_gate(
+                &state.runtime,
+                ConfigFieldUpdate {
+                    section: "control".to_owned(),
+                    key: "output_enabled".to_owned(),
+                    value: serde_json::Value::Bool(false),
+                    expected_revision: None,
+                },
+            )
+            .await?;
+        tracing::warn!(
+            code = "HARDWARE_OUTPUT_DISABLED_FOR_RUNTIME",
+            "当前授权不含硬件控制，已关闭并保存物理输出开关；允许启动识别主链"
+        );
+    }
     status
         .authorize_runtime(hardware_output_requested(state).await)
         .map_err(control_error_from_license_denial)
@@ -1967,6 +1964,146 @@ impl IntoResponse for ControlApiError {
 mod tests {
     use super::runtime_snapshot_confirms_safe;
     use novasight_runtime::{PipelineState, RuntimeSnapshot};
+
+    #[tokio::test]
+    async fn runtime_only_start_closes_stale_output_and_keeps_hardware_gated() {
+        use super::*;
+        use novasight_runtime::RuntimeSupervisor;
+        use novasight_store::{config::YamlConfigRepository, license::LicensePolicy};
+        use tower::ServiceExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "ns-license-start-{}",
+            generate_daemon_instance_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("config.yaml");
+        std::fs::write(&path, "revision: 0\ncontrol:\n  output_enabled: true\nhardware:\n  auto_connect: true\n  backend: native_udp\n  host: 127.0.0.1\n  port: 8888\n  uuid: A1B2C3D4\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n").unwrap();
+        let config = YamlConfigRepository::load(&path).unwrap();
+        let service = ConfigService::new(&path, config);
+        let (_supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+        let key = "temporary-license-code-for-runtime-test";
+        let license = FileLicenseRepository::new(
+            root.join("license.json"),
+            LicensePolicy::new(None)
+                .with_temporary_access_code(key)
+                .unwrap(),
+        );
+        license.activate(key).unwrap();
+        let app = build_control_router_with_control_plane(
+            runtime.clone(),
+            Some(service.clone()),
+            Some(license),
+            None,
+            true,
+            None,
+        );
+        for endpoint in [
+            "/api/runtime/start",
+            "/api/v1/runtime/start",
+            "/api/v1/runtime/restart",
+        ] {
+            service
+                .update_output_gate(
+                    &runtime,
+                    ConfigFieldUpdate {
+                        section: "control".into(),
+                        key: "output_enabled".into(),
+                        value: serde_json::Value::Bool(true),
+                        expected_revision: None,
+                    },
+                )
+                .await
+                .unwrap();
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(endpoint)
+                        .extension(TrustedLocalControl)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                response.status().is_success(),
+                "{endpoint}: {}",
+                response.status()
+            );
+            assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+            assert!(!service.snapshot().await.control.output_enabled);
+            assert!(
+                !YamlConfigRepository::load(&path)
+                    .unwrap()
+                    .control
+                    .output_enabled
+            );
+            runtime.stop().await.unwrap();
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/executors/kmnet/connect")
+                    .extension(TrustedLocalControl)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/config")
+                    .extension(TrustedLocalControl)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"section":"control","key":"output_enabled","value":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!service.snapshot().await.control.output_enabled);
+
+        // A failed safe-output persistence must not allow the start to continue.
+        service
+            .update_output_gate(
+                &runtime,
+                ConfigFieldUpdate {
+                    section: "control".into(),
+                    key: "output_enabled".into(),
+                    value: serde_json::Value::Bool(true),
+                    expected_revision: None,
+                },
+            )
+            .await
+            .unwrap();
+        std::fs::rename(&path, root.join("config.saved.yaml")).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/runtime/start")
+                    .extension(TrustedLocalControl)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(!response.status().is_success());
+        assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
+        runtime.shutdown_daemon().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn safe_snapshot_requires_stopped_disconnected_and_output_blocked() {

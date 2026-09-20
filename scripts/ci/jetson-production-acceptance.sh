@@ -11,7 +11,6 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 package_root="$repo_root/out/package/NovaSight"
 license_public_key="$repo_root/testdata/license-public.pem"
 license_key="$repo_root/testdata/license-signed.key"
-access_code="${NOVASIGHT_WEB_ACCESS_CODE:-}"
 
 receipt_dir="${NOVASIGHT_ACCEPTANCE_RECEIPT_DIR:-$repo_root/out/jetson-acceptance/$mode}"
 acceptance_result="failed"
@@ -113,10 +112,6 @@ for command_name in cargo cmake curl jq pnpm rustc sha256sum; do
     exit 1
   fi
 done
-if [[ ${#access_code} -lt 32 ]]; then
-  echo "JETSON_ACCEPTANCE_FAILED: NOVASIGHT_WEB_ACCESS_CODE must contain at least 32 bytes" >&2
-  exit 1
-fi
 if [[ ! -f "$license_public_key" || ! -f "$license_key" ]]; then
   echo "JETSON_ACCEPTANCE_FAILED: tracked license acceptance fixtures are missing" >&2
   exit 1
@@ -184,13 +179,11 @@ daemon_log="$acceptance_tmp/novasightd.log"
 web_log="$acceptance_tmp/novasight-web.log"
 response_body="$acceptance_tmp/response.json"
 auth_body="$acceptance_tmp/auth.json"
-activation_body="$acceptance_tmp/license.json"
 daemon_pid=""
 web_pid=""
 csrf_token=""
 
-jq -n --arg access_code "$access_code" '{access_code: $access_code}' >"$auth_body"
-jq -Rn --rawfile key "$license_key" '{key: ($key | sub("[\\r\\n]+$"; ""))}' >"$activation_body"
+jq -Rn --rawfile key "$license_key" '{key: ($key | sub("[\\r\\n]+$"; ""))}' >"$auth_body"
 
 start_stack() {
   : >"$daemon_log"
@@ -219,8 +212,7 @@ start_stack() {
   fi
   (
     cd "$package_root"
-    NOVASIGHT_WEB_ACCESS_CODE="$access_code" \
-      bin/novasight-web >"$web_log" 2>&1
+    bin/novasight-web >"$web_log" 2>&1
   ) &
   web_pid=$!
   for _ in $(seq 1 300); do
@@ -268,10 +260,10 @@ pair_and_activate() {
 
   status_code="$(curl -sS -o "$response_body" -w '%{http_code}' \
     -H 'Content-Type: application/json' \
-    --data '{"access_code":"invalid-invalid-invalid-invalid"}' \
+    --data '{"key":"invalid"}' \
     http://127.0.0.1:7351/api/auth/session)"
-  if [[ "$status_code" != "401" ]] || ! jq -e '.code == "ACCESS_CODE_REJECTED"' "$response_body" >/dev/null; then
-    echo "JETSON_ACCEPTANCE_FAILED: invalid Web access code was not rejected" >&2
+  if [[ "$status_code" != "400" ]] || ! jq -e '.code == "LICENSE_KEY_INVALID"' "$response_body" >/dev/null; then
+    echo "JETSON_ACCEPTANCE_FAILED: invalid license was not rejected" >&2
     exit 1
   fi
 
@@ -301,11 +293,8 @@ pair_and_activate() {
     exit 1
   fi
 
-  curl -fsS -b "$cookie_jar" -c "$cookie_jar" \
-    -H 'Content-Type: application/json' \
-    -H "X-NovaSight-CSRF: $csrf_token" \
-    --data-binary "@$activation_body" \
-    http://127.0.0.1:7351/api/license/activate \
+  curl -fsS -b "$cookie_jar" \
+    http://127.0.0.1:7351/api/license \
     | jq -e '.valid == true and (.features | index("runtime") != null)' >/dev/null
 }
 
@@ -352,7 +341,7 @@ if [[ "$mode" == "production" ]]; then
   )
   (
     cd "$package_root"
-    NOVASIGHT_WEB_ACCESS_CODE="$access_code" bin/novasight-web --check
+    bin/novasight-web --check
   )
 
   rm -f "$cookie_jar"

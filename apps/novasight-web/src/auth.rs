@@ -21,17 +21,12 @@ const OPERATOR_PERMISSIONS: [&str; 6] = [
     "license:manage",
     "hardware:operate",
 ];
-const MIN_ACCESS_CODE_BYTES: usize = 32;
-const MAX_ACCESS_CODE_BYTES: usize = 1024;
 const MAX_SESSIONS: usize = 64;
-const LOGIN_WINDOW_SECONDS: u64 = 60;
-const LOGIN_FAILURE_LIMIT: u32 = 5;
 const LICENSE_ACTIVATION_WINDOW_SECONDS: u64 = 60;
 const LICENSE_ACTIVATION_LIMIT: u32 = 6;
 
 #[derive(Clone)]
 pub struct AuthService {
-    access_digest: Arc<[u8; 32]>,
     secure_cookie: bool,
     allowed_hosts: Arc<[String]>,
     state: Arc<Mutex<AuthState>>,
@@ -40,7 +35,6 @@ pub struct AuthService {
 #[derive(Default)]
 struct AuthState {
     sessions: HashMap<[u8; 32], SessionRecord>,
-    login_attempts: HashMap<IpAddr, LoginAttempt>,
     license_activation_attempts: HashMap<IpAddr, RequestWindow>,
 }
 
@@ -48,13 +42,6 @@ struct SessionRecord {
     csrf_token: String,
     expires_at: u64,
     revocation: watch::Sender<bool>,
-}
-
-#[derive(Clone, Copy)]
-struct LoginAttempt {
-    window_started_at: u64,
-    failures: u32,
-    blocked_until: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -87,10 +74,6 @@ pub struct AuthenticatedSession {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
-    #[error("access code is invalid")]
-    Rejected,
-    #[error("too many failed access attempts; retry later")]
-    RateLimited,
     #[error("too many license activation attempts; retry later")]
     LicenseActivationRateLimited,
     #[error("authentication is required")]
@@ -110,26 +93,12 @@ pub enum AuthError {
 }
 
 impl AuthService {
-    pub fn new(access_code: &str, secure_cookie: bool) -> Result<Self, String> {
-        if access_code != access_code.trim() {
-            return Err("web access code must not have edge whitespace".to_owned());
-        }
-        if access_code.len() < MIN_ACCESS_CODE_BYTES {
-            return Err(format!(
-                "web access code must contain at least {MIN_ACCESS_CODE_BYTES} bytes"
-            ));
-        }
-        if access_code.len() > MAX_ACCESS_CODE_BYTES {
-            return Err(format!(
-                "web access code must not exceed {MAX_ACCESS_CODE_BYTES} bytes"
-            ));
-        }
-        Ok(Self {
-            access_digest: Arc::new(Sha256::digest(access_code.as_bytes()).into()),
+    pub fn new(secure_cookie: bool) -> Self {
+        Self {
             secure_cookie,
             allowed_hosts: Arc::from([]),
             state: Arc::new(Mutex::new(AuthState::default())),
-        })
+        }
     }
 
     pub fn with_allowed_hosts(mut self, hosts: &[String]) -> Result<Self, String> {
@@ -190,25 +159,11 @@ impl AuthService {
         Ok(())
     }
 
-    pub fn login(&self, access_code: &str, peer: IpAddr) -> Result<IssuedSession, AuthError> {
+    /// Called only after the daemon has validated the submitted license.
+    pub fn issue_session(&self) -> Result<IssuedSession, AuthError> {
         let now = unix_seconds()?;
         let mut state = self.state.lock().expect("auth state mutex poisoned");
         prune(&mut state, now);
-        if state
-            .login_attempts
-            .get(&peer)
-            .is_some_and(|attempt| attempt.blocked_until > now)
-        {
-            return Err(AuthError::RateLimited);
-        }
-        let candidate: [u8; 32] = Sha256::digest(access_code.as_bytes()).into();
-        if access_code.len() > MAX_ACCESS_CODE_BYTES
-            || !constant_time_equal(self.access_digest.as_ref(), &candidate)
-        {
-            record_failure(&mut state, peer, now);
-            return Err(AuthError::Rejected);
-        }
-        state.login_attempts.remove(&peer);
         while state.sessions.len() >= MAX_SESSIONS {
             let Some(oldest) = state
                 .sessions
@@ -433,32 +388,9 @@ fn prune(state: &mut AuthState, now: u64) {
         }
         active
     });
-    state.login_attempts.retain(|_, attempt| {
-        attempt.blocked_until > now
-            || now.saturating_sub(attempt.window_started_at) < LOGIN_WINDOW_SECONDS
-    });
     state.license_activation_attempts.retain(|_, window| {
         now.saturating_sub(window.window_started_at) < LICENSE_ACTIVATION_WINDOW_SECONDS
     });
-}
-
-fn record_failure(state: &mut AuthState, peer: IpAddr, now: u64) {
-    let attempt = state.login_attempts.entry(peer).or_insert(LoginAttempt {
-        window_started_at: now,
-        failures: 0,
-        blocked_until: 0,
-    });
-    if now.saturating_sub(attempt.window_started_at) >= LOGIN_WINDOW_SECONDS {
-        *attempt = LoginAttempt {
-            window_started_at: now,
-            failures: 0,
-            blocked_until: 0,
-        };
-    }
-    attempt.failures += 1;
-    if attempt.failures >= LOGIN_FAILURE_LIMIT {
-        attempt.blocked_until = now + LOGIN_WINDOW_SECONDS;
-    }
 }
 
 fn random_token() -> String {
@@ -521,14 +453,10 @@ mod tests {
 
     use super::{AuthError, AuthService, CSRF_HEADER};
 
-    const ACCESS_CODE: &str = "8f0ed8de1c54cb8c34a4369c02fd0c6883b2f3e2b7b3321c4b4cb08c1e0d7f50";
-
     #[test]
     fn session_requires_its_csrf_token_for_mutations() {
-        let auth = AuthService::new(ACCESS_CODE, false).unwrap();
-        let issued = auth
-            .login(ACCESS_CODE, IpAddr::V4(Ipv4Addr::LOCALHOST))
-            .unwrap();
+        let auth = AuthService::new(false);
+        let issued = auth.issue_session().unwrap();
         let cookie = issued.cookie.to_str().unwrap().split(';').next().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
@@ -546,10 +474,8 @@ mod tests {
 
     #[test]
     fn local_daemon_shutdown_is_never_web_authorized() {
-        let auth = AuthService::new(ACCESS_CODE, false).unwrap();
-        let issued = auth
-            .login(ACCESS_CODE, IpAddr::V4(Ipv4Addr::LOCALHOST))
-            .unwrap();
+        let auth = AuthService::new(false);
+        let issued = auth.issue_session().unwrap();
         let cookie = issued.cookie.to_str().unwrap().split(';').next().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
@@ -565,10 +491,8 @@ mod tests {
 
     #[test]
     fn unknown_daemon_routes_are_denied_until_policy_names_them() {
-        let auth = AuthService::new(ACCESS_CODE, false).unwrap();
-        let issued = auth
-            .login(ACCESS_CODE, IpAddr::V4(Ipv4Addr::LOCALHOST))
-            .unwrap();
+        let auth = AuthService::new(false);
+        let issued = auth.issue_session().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(
             header::COOKIE,
@@ -583,7 +507,7 @@ mod tests {
 
     #[test]
     fn dns_hosts_require_an_exact_allowlist_and_matching_origin() {
-        let auth = AuthService::new(ACCESS_CODE, false).unwrap();
+        let auth = AuthService::new(false);
         let mut headers = HeaderMap::new();
         headers.insert(
             header::HOST,
@@ -613,24 +537,8 @@ mod tests {
     }
 
     #[test]
-    fn repeated_login_failures_are_rate_limited_per_peer() {
-        let auth = AuthService::new(ACCESS_CODE, false).unwrap();
-        let peer = IpAddr::V4(Ipv4Addr::new(192, 168, 10, 42));
-        for _ in 0..5 {
-            assert!(matches!(
-                auth.login("wrong", peer),
-                Err(AuthError::Rejected)
-            ));
-        }
-        assert!(matches!(
-            auth.login(ACCESS_CODE, peer),
-            Err(AuthError::RateLimited)
-        ));
-    }
-
-    #[test]
     fn license_activation_attempts_are_rate_limited_per_peer() {
-        let auth = AuthService::new(ACCESS_CODE, false).unwrap();
+        let auth = AuthService::new(false);
         let peer = IpAddr::V4(Ipv4Addr::new(192, 168, 10, 42));
         for _ in 0..6 {
             auth.authorize_license_activation(peer).unwrap();

@@ -98,10 +98,10 @@ address, the separate Web access code, and the local and detected IPv4 network
 listener addresses.
 Portable packages listen on the
 fixed `0.0.0.0:7351` address so a browser on another machine in the same LAN can
-open the printed authenticated LAN URL. On every launcher start, NovaSight creates a
-256-bit caller access code in the owner-only `run/web-access-code` file.
-The printed URL carries it only in the URL fragment; Studio removes the fragment
-immediately and exchanges the code for a Web/API-process-local opaque HttpOnly session.
+open the printed LAN URL and enter one license code. `POST /api/auth/session`
+validates that code through the daemon and issues a Web/API-process-local opaque
+HttpOnly session only after successful activation. There is no separate Web access code
+or credential in the URL. Refreshing the page reuses the valid browser session.
 Anonymous TCP callers can reach only the static authentication screen and `/healthz`;
 API and WebSocket traffic are rejected until the browser is authenticated. The
 launcher also tries to open a desktop browser when one is available. It stays in
@@ -119,9 +119,8 @@ cd out/package/NovaSight
 The launcher starts `bin/novasightd` with no startup arguments as the Unix-socket
 single source of truth, then starts `bin/novasight-web` as the only TCP/static/API
 boundary. Direct daemon startup remains a local diagnostic path and never opens
-a LAN port. Diagnostic `novasight-web` startup and `novasight-web --check` must
-provide a high-entropy `NOVASIGHT_WEB_ACCESS_CODE`; the normal launcher owns that
-provisioning automatically. Set `NOVASIGHT_WEB_SECURE_COOKIE=true` only when
+a LAN port. `novasight-web` startup and `novasight-web --check` do not require a
+separate access credential. Set `NOVASIGHT_WEB_SECURE_COOKIE=true` only when
 HTTPS terminates in front of the Web/API server. LAN IP literals and `localhost`
 are accepted Web hosts by default; an intentional DNS/reverse-proxy name must
 be listed exactly in comma-separated `NOVASIGHT_WEB_ALLOWED_HOSTS`. Origin and
@@ -129,15 +128,19 @@ Host must agree. The server-side session authenticates the caller,
 but direct HTTP still belongs to a trusted LAN; untrusted or routed networks
 must use an authenticated TLS reverse proxy.
 
-Debug launchers generate a separate random 256-bit temporary license code for
+Debug launchers generate a random 256-bit temporary license code for
 each daemon start and pass it directly to that `novasightd` process without
 writing it to disk. Temporary codes and signed licenses are submitted to
-the same `POST /api/license/activate` endpoint. A matching temporary code writes
+the same login form; the gateway delegates validation to the daemon's
+`POST /api/license/activate` endpoint. A matching temporary code writes
 no license file and expires when that daemon process exits; restarting produces
 a different code. Release builds never enable this credential and require the
 configured production public key for signed activation.
 Debug temporary access deliberately excludes `hardware_control`; physical
 output always requires a valid signed license even in a development build.
+With a runtime-only license, start/restart closes and persists any stale physical
+output switch before starting recognition. Failure to close it still blocks startup.
+Explicit hardware commands and re-enabling output retain their server-side checks.
 
 ## Developer Source Run
 

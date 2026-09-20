@@ -3,7 +3,6 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
-  useRef,
   useState
 } from "react";
 
@@ -27,22 +26,6 @@ type AuthGateProps = {
 type GatewayState = "checking" | "reachable" | "unreachable";
 type DaemonState = "checking" | "reachable" | "unreachable";
 
-function accessCodeFromFragment(): string {
-  const fragment = window.location.hash.startsWith("#")
-    ? window.location.hash.slice(1)
-    : window.location.hash;
-  return new URLSearchParams(fragment).get("access")?.trim() ?? "";
-}
-
-function clearAccessFragment(): void {
-  if (!window.location.hash) return;
-  window.history.replaceState(
-    window.history.state,
-    document.title,
-    `${window.location.pathname}${window.location.search}`
-  );
-}
-
 function sessionExpired(session: AuthSession): boolean {
   return session.expires_at !== null && session.expires_at * 1000 <= Date.now();
 }
@@ -55,7 +38,6 @@ export function AuthGate({ children }: AuthGateProps) {
   const [showAccessCode, setShowAccessCode] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [issue, setIssue] = useState("");
-  const startupAccessCodeRef = useRef(accessCodeFromFragment());
 
   const verifyDaemon = useCallback(async () => {
     setDaemonState("checking");
@@ -93,33 +75,22 @@ export function AuthGate({ children }: AuthGateProps) {
 
   useEffect(() => {
     const controller = new AbortController();
-    const fragmentCode = startupAccessCodeRef.current;
-    clearAccessFragment();
-    const request = fragmentCode
-      ? establishAuthSession(fragmentCode, controller.signal)
-      : getAuthSession(controller.signal);
-    void request
+    // Drop obsolete launcher credentials from old bookmarks, without using or storing them.
+    if (new URLSearchParams(window.location.hash.slice(1)).has("access")) {
+      window.history.replaceState(window.history.state, document.title,
+        `${window.location.pathname}${window.location.search}`);
+    }
+    void getAuthSession(controller.signal)
       .then((next) => {
-        startupAccessCodeRef.current = "";
         setGatewayState("reachable");
-        applySession(
-          next,
-          fragmentCode
-            ? "自动验证未建立会话，请检查本次启动的接入码。"
-            : ""
-        );
+        applySession(next);
       })
       .catch((error: unknown) => {
         if (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError") {
           return;
         }
-        startupAccessCodeRef.current = "";
         setGatewayState(error instanceof ApiError ? "reachable" : "unreachable");
-        setIssue(
-          fragmentCode
-            ? `自动验证失败：${getErrorMessage(error)}`
-            : `无法检查 Web 会话：${getErrorMessage(error)}`
-        );
+        setIssue(`无法连接授权服务：${getErrorMessage(error)}`);
       });
     return () => controller.abort();
   }, [applySession]);
@@ -128,7 +99,7 @@ export function AuthGate({ children }: AuthGateProps) {
     const requireAuthentication = () => {
       setSession(null);
       setDaemonState("checking");
-      setIssue("Web 会话已失效。运行态没有被修改，请重新验证当前浏览器。");
+      setIssue("会话已失效，请重新输入授权码。运行状态未改变。");
     };
     const refreshCsrf = () => {
       void refreshSession("会话安全令牌已轮换，请重试刚才的操作。");
@@ -146,7 +117,7 @@ export function AuthGate({ children }: AuthGateProps) {
     const remaining = Math.max(0, session.expires_at * 1000 - Date.now());
     const timer = window.setTimeout(() => {
       setSession(null);
-      setIssue("operator 会话已到期。运行态保持不变，请重新验证后继续操作。");
+      setIssue("会话已到期，请重新输入授权码。运行状态未改变。");
     }, remaining);
     return () => window.clearTimeout(timer);
   }, [session]);
@@ -161,7 +132,7 @@ export function AuthGate({ children }: AuthGateProps) {
     event.preventDefault();
     const code = accessCode.trim();
     if (!code) {
-      setIssue("请输入启动器本次生成的 Web 接入码。");
+      setIssue("请输入授权码。");
       return;
     }
     setSubmitting(true);
@@ -176,8 +147,8 @@ export function AuthGate({ children }: AuthGateProps) {
         setGatewayState(error instanceof ApiError ? "reachable" : "unreachable");
         const code = getApiErrorCode(error);
         setIssue(
-          code === "AUTH_RATE_LIMITED"
-            ? "验证失败次数过多。请等待 60 秒后使用本次启动的新接入码重试。"
+          code === "LICENSE_ACTIVATION_RATE_LIMITED"
+            ? "验证次数过多，请等待 60 秒后重试。"
             : `验证失败：${getErrorMessage(error)}`
         );
       })
@@ -215,12 +186,12 @@ export function AuthGate({ children }: AuthGateProps) {
           </span>
           <div>
             <span className="auth-eyebrow">NovaSight Studio</span>
-            <h1 id="auth-title">验证后继续</h1>
+            <h1 id="auth-title">授权后进入</h1>
           </div>
         </header>
-        <p className="auth-intro">输入启动器显示的“NovaSight Web 接入码”。</p>
+        <p className="auth-intro">只需输入一次授权码，即可进入工作台。</p>
         <form onSubmit={submit}>
-          <label htmlFor="web-access-code">接入码</label>
+          <label htmlFor="web-access-code">授权码</label>
           <div className="auth-input-wrap">
             <input
               id="web-access-code"
@@ -235,13 +206,13 @@ export function AuthGate({ children }: AuthGateProps) {
             />
             <button
               type="button"
-              aria-label={showAccessCode ? "隐藏接入码" : "显示接入码"}
+              aria-label={showAccessCode ? "隐藏授权码" : "显示授权码"}
               onClick={() => setShowAccessCode((current) => !current)}
             >
               <NovaIcon name={showAccessCode ? "hide" : "show"} size={17} />
             </button>
           </div>
-          <small id="auth-code-help">不要输入临时授权码；它用于登录后的产品授权。</small>
+          <small id="auth-code-help">支持正式授权码或本次启动的临时授权码；不另设接入码。</small>
           <Button variant="primary" type="submit" loading={submitting} leadingIcon="shield-check">
             进入控制台
           </Button>
@@ -257,7 +228,7 @@ export function AuthGate({ children }: AuthGateProps) {
             <i aria-hidden="true" />
             {gatewayState === "reachable" ? "服务已连接" : gatewayState === "unreachable" ? "服务不可达" : "正在检查连接"}
           </span>
-          <span>验证不会改变设备运行状态</span>
+          <span>授权不会自动启动主链或开启物理输出</span>
         </footer>
       </section>
     </main>

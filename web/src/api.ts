@@ -415,7 +415,7 @@ export function getAuthSession(signal?: AbortSignal): Promise<AuthSession> {
 }
 
 export function establishAuthSession(
-  accessCode: string,
+  licenseKey: string,
   signal?: AbortSignal
 ): Promise<AuthSession> {
   return requestJson<AuthSession>(
@@ -424,7 +424,7 @@ export function establishAuthSession(
       method: "POST",
       signal,
       headers: { "Content-Type": "application/json" },
-      body: encodeJsonBody({ access_code: requireNonBlank(accessCode, "access_code") })
+      body: encodeJsonBody({ key: requireNonBlank(licenseKey, "key") })
     },
     { timeoutMs: STATUS_REQUEST_TIMEOUT_MS },
     decodeAuthSession

@@ -78,9 +78,7 @@ The launcher owns startup orchestration:
 - starts `bin/novasightd` as a Unix-socket-only service;
 - waits for daemon IPC readiness, then starts `bin/novasight-web` as the only
   TCP/static/API boundary;
-- creates a 256-bit per-start Web access code, stores it in owner-only
-  `run/web-access-code`, prints the Chinese authenticated LAN address, the Web
-  access code for manual login, and the local and detected IPv4 network listener
+- prints the plain LAN address and the local and detected IPv4 network listener
   addresses, then tries to open a local desktop browser when one is available;
 - stays in the foreground so `Ctrl+C` stops both package-local services.
 
@@ -91,21 +89,23 @@ NovaSight-owned runtime files stay inside the package:
 - service logs: `logs/novasightd.log` and `logs/novasight-web.log`;
 - socket and service readiness markers: `run/`.
 
-The access credential is never sent as an HTTP URL path or query. It is placed
-after `#` in the printed URL, consumed by Studio, immediately removed from the
-address bar, and exchanged for an opaque HttpOnly, SameSite=Strict server-side
-session owned by `novasight-web`. Restarting the Web/API server invalidates every
-browser session. Do not share `run/web-access-code` beyond intended operators. Direct HTTP is
+Enter the license code once on the login screen. The gateway validates it through
+the daemon, activates it, and issues an opaque HttpOnly, SameSite=Strict server-side
+session. No separate access code or credential-bearing URL is generated. A valid
+session is reused on refresh; logout, expiry, or a Web/API restart requires login again.
+Only intended operators should possess the license code. Direct HTTP is
 for a trusted LAN; use an authenticated TLS reverse proxy across untrusted or
 routed networks. IP literals and `localhost` are accepted by default; list
 intentional DNS names exactly in `NOVASIGHT_WEB_ALLOWED_HOSTS`. The Web/API server
 rejects unapproved Host values and Origin/Host mismatches.
 
-Source/debug launchers also create an independent per-start temporary license
+Source/debug launchers create a per-start temporary license
 code in memory and pass it directly to the current debug daemon process without
 writing it to disk. It is entered in the same authorization form as a formal
 signed license and never grants physical hardware output. Release packages do
 not create or accept this temporary credential.
+Runtime-only authorization automatically closes and persists a stale physical output
+switch on start/restart, allowing recognition without granting hardware-control rights.
 
 Removing the `NovaSight/` directory removes NovaSight-owned state. The normal
 portable path does not install systemd units, does not require root, and does
@@ -194,12 +194,12 @@ curl -fsS http://127.0.0.1:7351/ >/dev/null
 `/healthz` and static UI delivery intentionally remain public so operators can
 distinguish reachability from authorization. Anonymous `/api/*` and `/ws/*`
 requests return `AUTHENTICATION_REQUIRED`. API smoke tests must first POST the
-current access code to `/api/auth/session` with a cookie jar, then attach the
+license as `{"key":"..."}` to `/api/auth/session` with a cookie jar, then attach the
 returned `csrf_token` as `X-NovaSight-CSRF` on unsafe methods; production CI
 does this in `scripts/ci/jetson-production-acceptance.sh`.
 
 For remote Studio access, open the printed
-`NovaSight Studio Web UI (LAN, authenticated): http://<target-lan-ip>:7351/#access=…` URL from a
+`NovaSight Studio 局域网访问地址：http://<target-lan-ip>:7351/` URL from a
 browser on the same LAN. `0.0.0.0` is the bind address; remote browsers use the
 target machine's LAN IP.
 

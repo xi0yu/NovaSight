@@ -202,9 +202,6 @@ jobs:
       - name: Show Jetson toolchain
         run: rustc --version && cargo --version && uname -a
 
-      - name: Generate job-local Web access identity
-        run: echo "NOVASIGHT_WEB_ACCESS_CODE=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
-
       - name: Build and verify fail-closed package startup
         run: scripts/ci/jetson-production-acceptance.sh build
 
@@ -235,9 +232,6 @@ jobs:
 
       - name: Show Jetson production identity
         run: rustc --version && cargo --version && uname -a && command -v tegrastats
-
-      - name: Generate job-local Web access identity
-        run: echo "NOVASIGHT_WEB_ACCESS_CODE=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
 
       - name: Produce hardware production receipt
         run: scripts/ci/jetson-production-acceptance.sh production

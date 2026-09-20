@@ -96,25 +96,27 @@ async function mockStudioApi(
   });
 }
 
-test("manual access code establishes an authenticated Studio session", async ({ page }) => {
+test("one license code establishes an authenticated and activated Studio session", async ({ page }) => {
   await mockStudioApi(page, unauthenticatedSession);
   await page.goto("/");
 
   await expect(page.locator("#auth-code-help")).toHaveText(
-    "不要输入临时授权码；它用于登录后的产品授权。",
+    "支持正式授权码或本次启动的临时授权码；不另设接入码。",
   );
-  await page.locator("#web-access-code").fill("one-time-access-code");
+  await page.getByLabel("授权码", { exact: true }).fill("one-license-code");
+  const login = page.waitForRequest((request) => request.url().endsWith("/api/auth/session") && request.method() === "POST");
   await page.getByRole("button", { name: "进入控制台" }).click();
+  expect((await login).postDataJSON()).toEqual({ key: "one-license-code" });
 
   await expect(page.getByRole("navigation", { name: "NovaSight Studio 导航" })).toBeVisible();
-  await expect(page.locator("body")).not.toContainText("one-time-access-code");
+  await expect(page.locator("body")).not.toContainText("one-license-code");
 });
 
-test("startup access link survives StrictMode cleanup and establishes a session", async ({ page }) => {
+test("obsolete access links are cleared and cannot bypass license login", async ({ page }) => {
   await mockStudioApi(page, unauthenticatedSession);
   await page.goto("/#access=one-time-access-code");
 
-  await expect(page.getByRole("navigation", { name: "NovaSight Studio 导航" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "授权后进入" })).toBeVisible();
   expect(new URL(page.url()).hash).toBe("");
   await expect(page.locator("body")).not.toContainText("one-time-access-code");
 });

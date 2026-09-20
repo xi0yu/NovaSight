@@ -19,17 +19,17 @@ test.beforeEach(async ({ page }) => {
     await route.fulfill({
       status: 429,
       contentType: "application/json",
-      body: JSON.stringify({ code: "AUTH_RATE_LIMITED", message: "rate limited", detail: "rate limited" }),
+      body: JSON.stringify({ code: "LICENSE_ACTIVATION_RATE_LIMITED", message: "rate limited", detail: "rate limited" }),
     });
   });
 });
 
 test("anonymous LAN browser only sees the compact authentication entry", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "验证后继续" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "授权后进入" })).toBeVisible();
   await expect(page.locator("#web-access-code")).toHaveAttribute("type", "password");
   await expect(page.getByRole("navigation", { name: "NovaSight Studio 导航" })).toHaveCount(0);
-  await expect(page.getByText("验证不会改变设备运行状态")).toBeVisible();
+  await expect(page.getByText("授权不会自动启动主链或开启物理输出")).toBeVisible();
 });
 
 test("rate-limited authentication gives one bounded recovery message", async ({ page }) => {
@@ -45,6 +45,6 @@ for (const theme of ["rose-white", "graphite-red", "frontier-industrial"] as con
     await page.addInitScript((selectedTheme) => localStorage.setItem("novasight.theme", selectedTheme), theme);
     await page.goto("/");
     await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-    await expect(page.getByRole("heading", { name: "验证后继续" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "授权后进入" })).toBeVisible();
   });
 }

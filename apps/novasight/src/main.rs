@@ -30,9 +30,7 @@ const RUN_DIR: &str = "run";
 const CONTROL_SOCKET: &str = "run/novasightd.sock";
 const WEB_READY_FILE: &str = "run/ready.json";
 const DAEMON_READY_FILE: &str = "run/novasightd-ready.json";
-const WEB_ACCESS_FILE: &str = "run/web-access-code";
 const TEMPORARY_LICENSE_ACCESS_FILE: &str = "run/temporary-license-code";
-const WEB_ACCESS_CODE_ENV: &str = "NOVASIGHT_WEB_ACCESS_CODE";
 const TEMPORARY_LICENSE_CODE_ENV: &str = "NOVASIGHT_TEMPORARY_LICENSE_CODE";
 const PROCESS_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const PROCESS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -75,11 +73,6 @@ struct DaemonReadyDocument {
 }
 
 #[derive(Clone, Debug)]
-struct WebAccess {
-    code: String,
-}
-
-#[derive(Clone, Debug)]
 struct TemporaryLicenseAccess {
     code: String,
 }
@@ -115,14 +108,13 @@ async fn run() -> Result<()> {
 
     remove_stale_ready_files(&layout)?;
     ensure_portable_config(&layout)?;
-    let access = create_web_access(&layout)?;
     let temporary_license = create_temporary_license_access(&layout)?;
     let mut daemon = spawn_daemon(&layout, temporary_license.as_ref())?;
     if let Err(error) = wait_for_daemon_ready(&layout, &mut daemon, PROCESS_READY_TIMEOUT).await {
         let _ = stop_child("novasightd", &mut daemon).await;
         return Err(error);
     }
-    let mut web = match spawn_web(&layout, &access, false) {
+    let mut web = match spawn_web(&layout, false) {
         Ok(web) => web,
         Err(error) => {
             let _ = stop_owned_daemon(&layout, &mut daemon).await;
@@ -138,7 +130,7 @@ async fn run() -> Result<()> {
                 return Err(error);
             }
         };
-    open_studio(&ready, &access);
+    open_studio(&ready);
     print_temporary_license_access(temporary_license.as_ref());
     lifecycle::supervise(&layout, daemon, web, None).await
 }
@@ -409,7 +401,7 @@ fn spawn_daemon(
     }
 }
 
-fn spawn_web(layout: &PortableLayout, access: &WebAccess, frontend_dev: bool) -> Result<Child> {
+fn spawn_web(layout: &PortableLayout, frontend_dev: bool) -> Result<Child> {
     let mut args = vec![
         OsString::from("--config"),
         layout.config.as_os_str().to_owned(),
@@ -417,13 +409,7 @@ fn spawn_web(layout: &PortableLayout, access: &WebAccess, frontend_dev: bool) ->
     if frontend_dev {
         args.push(OsString::from("--frontend-dev"));
     }
-    spawn_logged_process(
-        &layout.web,
-        &layout.root,
-        &layout.web_log,
-        &args,
-        &[(WEB_ACCESS_CODE_ENV, access.code.as_str())],
-    )
+    spawn_logged_process(&layout.web, &layout.root, &layout.web_log, &args, &[])
 }
 
 async fn wait_for_daemon_ready(
@@ -598,15 +584,12 @@ fn health_check(address: &str) -> bool {
     buffer[..read].starts_with(b"HTTP/1.1 200") || buffer[..read].starts_with(b"HTTP/1.0 200")
 }
 
-fn open_studio(ready: &ReadyDocument, access: &WebAccess) {
-    print_studio_urls(ready, access);
-    let url = access_url(
-        &ready_address(ready)
-            .map(connectable_local_address)
-            .map(http_url)
-            .unwrap_or_else(|| ready.url.clone()),
-        access,
-    );
+fn open_studio(ready: &ReadyDocument) {
+    print_studio_urls(ready);
+    let url = ready_address(ready)
+        .map(connectable_local_address)
+        .map(http_url)
+        .unwrap_or_else(|| ready.url.clone());
     if let Err(error) = open_browser(&url) {
         eprintln!(
             "NOVASIGHT_BROWSER_OPEN_SKIPPED: {error:#}; open the authenticated Studio URL above manually"
@@ -614,29 +597,19 @@ fn open_studio(ready: &ReadyDocument, access: &WebAccess) {
     }
 }
 
-fn print_studio_urls(ready: &ReadyDocument, access: &WebAccess) {
+fn print_studio_urls(ready: &ReadyDocument) {
     let lan_ips = detect_lan_ips();
-    for message in studio_ready_messages(ready, access, &lan_ips) {
+    for message in studio_ready_messages(ready, &lan_ips) {
         println!("{message}");
     }
 }
 
-fn studio_ready_messages(
-    ready: &ReadyDocument,
-    access: &WebAccess,
-    lan_ips: &[IpAddr],
-) -> Vec<String> {
+fn studio_ready_messages(ready: &ReadyDocument, lan_ips: &[IpAddr]) -> Vec<String> {
     let Some(address) = ready_address(ready) else {
-        return vec![format!(
-            "NovaSight Studio 授权访问地址：{}",
-            access_url(&ready.url, access)
-        )];
+        return vec![format!("NovaSight Studio 访问地址：{}", ready.url)];
     };
     if !address.ip().is_unspecified() {
-        return vec![format!(
-            "NovaSight Studio 授权访问地址：{}",
-            access_url(&ready.url, access)
-        )];
+        return vec![format!("NovaSight Studio 访问地址：{}", ready.url)];
     }
     let mut unique_lan_ips = Vec::new();
     for ip in lan_ips.iter().copied().filter_map(candidate_lan_ip) {
@@ -650,11 +623,7 @@ fn studio_ready_messages(
         .first()
         .map(|ip| http_url(SocketAddr::new(*ip, address.port())))
         .unwrap_or_else(|| format!("http://<本机局域网IP>:{}/", address.port()));
-    let mut messages = vec![format!(
-        "NovaSight Studio 局域网授权访问地址：{}",
-        access_url(&lan_url, access)
-    )];
-    messages.push(format!("NovaSight Web 接入码：{}", access.code));
+    let mut messages = vec![format!("NovaSight Studio 局域网访问地址：{}", lan_url)];
     messages.push(format!(
         "  ➜  Local:   http://localhost:{}/",
         address.port()
@@ -666,23 +635,6 @@ fn studio_ready_messages(
         )
     }));
     messages
-}
-
-fn access_url(url: &str, access: &WebAccess) -> String {
-    format!("{url}#access={}", access.code)
-}
-
-fn create_web_access(layout: &PortableLayout) -> Result<WebAccess> {
-    let access = WebAccess {
-        code: random_access_code(),
-    };
-    persist_web_access(layout, &access)?;
-    Ok(access)
-}
-
-fn persist_web_access(layout: &PortableLayout, access: &WebAccess) -> Result<()> {
-    let path = layout.root.join(WEB_ACCESS_FILE);
-    persist_private_code(&path, &access.code, "Web access")
 }
 
 fn create_temporary_license_access(
@@ -708,29 +660,6 @@ fn random_access_code() -> String {
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn persist_private_code(path: &Path, code: &str, label: &str) -> Result<()> {
-    if let Ok(metadata) = fs::symlink_metadata(path)
-        && !metadata.file_type().is_file()
-    {
-        bail!("{label} path is not a regular file: {}", path.display());
-    }
-    let mut options = OpenOptions::new();
-    options.create(true).truncate(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("open private {label} file {}", path.display()))?;
-    file.write_all(code.as_bytes())?;
-    file.sync_all()?;
-    #[cfg(unix)]
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
 }
 
 fn print_temporary_license_access(access: Option<&TemporaryLicenseAccess>) {
@@ -915,8 +844,8 @@ mod tests {
 
     use super::{
         CONFIG_PATH, DEVELOPMENT_CONFIG_PATH, LayoutMode, PortableLayout, ReadyDocument,
-        TEMPORARY_LICENSE_ACCESS_FILE, WebAccess, create_temporary_license_access,
-        ensure_portable_config, parse_ifconfig_lan_ips, random_access_code, studio_ready_messages,
+        TEMPORARY_LICENSE_ACCESS_FILE, create_temporary_license_access, ensure_portable_config,
+        parse_ifconfig_lan_ips, random_access_code, studio_ready_messages,
     };
     use novasight_config::YamlConfigRepository;
     use serde_yaml::Value;
@@ -991,18 +920,13 @@ mod tests {
     }
 
     #[test]
-    fn unspecified_listener_reports_authenticated_local_and_all_network_urls() {
+    fn unspecified_listener_reports_plain_local_and_all_network_urls() {
         let ready = ReadyDocument {
             address: "0.0.0.0:7351".to_owned(),
             url: "http://0.0.0.0:7351/".to_owned(),
         };
-        let access = WebAccess {
-            code: "one-time-access".to_owned(),
-        };
-
         let messages = studio_ready_messages(
             &ready,
-            &access,
             &[
                 IpAddr::V4(Ipv4Addr::new(100, 106, 210, 36)),
                 IpAddr::V4(Ipv4Addr::new(192, 168, 31, 248)),
@@ -1013,8 +937,7 @@ mod tests {
         assert_eq!(
             messages,
             vec![
-                "NovaSight Studio 局域网授权访问地址：http://192.168.31.248:7351/#access=one-time-access".to_owned(),
-                "NovaSight Web 接入码：one-time-access".to_owned(),
+                "NovaSight Studio 局域网访问地址：http://192.168.31.248:7351/".to_owned(),
                 "  ➜  Local:   http://localhost:7351/".to_owned(),
                 "  ➜  Network: http://192.168.31.248:7351/".to_owned(),
                 "  ➜  Network: http://100.106.210.36:7351/".to_owned(),
@@ -1022,10 +945,9 @@ mod tests {
         );
 
         assert_eq!(
-            studio_ready_messages(&ready, &access, &[]),
+            studio_ready_messages(&ready, &[]),
             vec![
-                "NovaSight Studio 局域网授权访问地址：http://<本机局域网IP>:7351/#access=one-time-access".to_owned(),
-                "NovaSight Web 接入码：one-time-access".to_owned(),
+                "NovaSight Studio 局域网访问地址：http://<本机局域网IP>:7351/".to_owned(),
                 "  ➜  Local:   http://localhost:7351/".to_owned(),
             ]
         );

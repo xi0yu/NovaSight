@@ -69,9 +69,8 @@ cargo build \
   -p novasightd -p novasight-web -p novasightctl \
   --no-default-features --locked
 
-access_code="$(openssl rand -hex 32)"
 temporary_license_code="$(openssl rand -hex 32)"
-jq -n --arg access_code "$access_code" '{access_code: $access_code}' >"$auth_body"
+jq -n --arg key "$temporary_license_code" '{key: $key}' >"$auth_body"
 jq -n --arg key "$temporary_license_code" '{key: $key}' >"$activation_body"
 
 (
@@ -97,7 +96,6 @@ fi
 
 (
   cd "$runtime_root"
-  NOVASIGHT_WEB_ACCESS_CODE="$access_code" \
   NOVASIGHT_WEB_ROOT="$repo_root/web" \
     "$repo_root/out/cargo/debug/novasight-web" --config "$config_path" \
     >"$web_log" 2>&1
@@ -131,11 +129,11 @@ fi
 stage="invalid-login"
 status_code="$(curl -sS -o "$response_body" -w '%{http_code}' \
   -H 'Content-Type: application/json' \
-  --data '{"access_code":"invalid-access-code"}' \
+  --data '{"key":"invalid"}' \
   "http://127.0.0.1:$port/api/auth/session")"
-if [[ "$status_code" != "401" ]] \
-  || ! jq -e '.code == "ACCESS_CODE_REJECTED"' "$response_body" >/dev/null; then
-  echo "HOST_COMPOSITION_FAILED: invalid Web access code was not rejected" >&2
+if [[ "$status_code" != "400" ]] \
+  || ! jq -e '.code == "LICENSE_KEY_INVALID"' "$response_body" >/dev/null; then
+  echo "HOST_COMPOSITION_FAILED: invalid license was not rejected" >&2
   exit 1
 fi
 
@@ -168,13 +166,9 @@ if [[ "$status_code" != "403" ]] \
   exit 1
 fi
 
-stage="temporary-license-activation"
+stage="login-already-activated-license"
 curl -fsS -b "$cookie_jar" \
-  --trace-ascii "$activation_trace" \
-  -H 'Content-Type: application/json' \
-  -H "x-novasight-csrf: $csrf_token" \
-  --data-binary "@$activation_body" \
-  "http://127.0.0.1:$port/api/license/activate" >"$response_body"
+  "http://127.0.0.1:$port/api/license" >"$response_body"
 jq -e '
     .valid == true
     and .tier == "temporary"

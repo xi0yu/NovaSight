@@ -27,7 +27,6 @@ use tracing_subscriber::EnvFilter;
 const DEFAULT_CONFIG_PATH: &str = "data/novasight.yaml";
 const DEFAULT_WEB_ROOT: &str = "web";
 const DEFAULT_READY_FILE: &str = "run/ready.json";
-const ACCESS_CODE_ENV: &str = "NOVASIGHT_WEB_ACCESS_CODE";
 const SECURE_COOKIE_ENV: &str = "NOVASIGHT_WEB_SECURE_COOKIE";
 const ALLOWED_HOSTS_ENV: &str = "NOVASIGHT_WEB_ALLOWED_HOSTS";
 const WEB_ROOT_ENV: &str = "NOVASIGHT_WEB_ROOT";
@@ -57,7 +56,7 @@ struct AppState {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LoginRequest {
-    access_code: String,
+    key: String,
 }
 
 #[derive(Serialize)]
@@ -108,10 +107,6 @@ async fn run(args: Args) -> Result<(), WebServerError> {
             path: config_path.to_owned(),
             detail: source.to_string(),
         })?;
-    let access_code = std::env::var(ACCESS_CODE_ENV)
-        .ok()
-        .filter(|value| !value.is_empty())
-        .ok_or(WebServerError::AccessCodeMissing)?;
     let secure_cookie = boolean_environment(SECURE_COOKIE_ENV)?;
     let allowed_hosts = std::env::var(ALLOWED_HOSTS_ENV)
         .unwrap_or_default()
@@ -119,8 +114,7 @@ async fn run(args: Args) -> Result<(), WebServerError> {
         .filter(|host| !host.trim().is_empty())
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let auth = AuthService::new(&access_code, secure_cookie)
-        .map_err(WebServerError::AccessCodeInvalid)?
+    let auth = AuthService::new(secure_cookie)
         .with_allowed_hosts(&allowed_hosts)
         .map_err(WebServerError::AllowedHostsInvalid)?;
     let web_root = if args.frontend_dev {
@@ -150,7 +144,7 @@ async fn run(args: Args) -> Result<(), WebServerError> {
 
     if args.check {
         println!(
-            "PASS service=novasight-web authentication=access_code session=server_side authorization=operator csrf=required daemon_transport=unix static_assets={} bind={}:{}",
+            "PASS service=novasight-web authentication=license session=server_side authorization=operator csrf=required daemon_transport=unix static_assets={} bind={}:{}",
             if state.web_root.is_some() {
                 "ready"
             } else {
@@ -229,7 +223,93 @@ async fn login(
     if let Err(error) = state.auth.validate_request_site(&headers) {
         return auth_error_response(error);
     }
-    match state.auth.login(&request.access_code, peer.ip()) {
+    if let Err(error) = state.auth.authorize_license_activation(peer.ip()) {
+        return auth_error_response(error);
+    }
+    let key = request.key.trim();
+    if key.is_empty() || key.len() > 64 * 1024 {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "LICENSE_KEY_INVALID",
+            "请输入有效授权码",
+        );
+    }
+    let activation = Request::builder()
+        .method(Method::POST)
+        .uri("/api/license/activate")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::json!({"key": key}).to_string()))
+        .expect("static license activation request");
+    // Only this fixed IPC endpoint is reachable before authentication. Never
+    // mint a browser session from the machine's existing license status alone.
+    let validation = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let response = state
+            .daemon
+            .forward(activation, None)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    %error, stage = "license_login_ipc", "license verification failed"
+                );
+            })?;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 128 * 1024)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    %error, stage = "license_login_response", "license response failed"
+                );
+            })?;
+        Ok::<_, ()>((status, bytes))
+    })
+    .await;
+    let (status, bytes) = match validation {
+        Ok(Ok(result)) => result,
+        Ok(Err(())) => {
+            return api_error(
+                StatusCode::BAD_GATEWAY,
+                "DAEMON_UNAVAILABLE",
+                "授权服务暂不可用，请稍后重试",
+            );
+        }
+        Err(error) => {
+            tracing::warn!(%error, stage = "license_login_timeout", "license verification timed out");
+            return api_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "LICENSE_VERIFICATION_TIMEOUT",
+                "授权验证超时，请稍后重试",
+            );
+        }
+    };
+    if !status.is_success() {
+        return no_store(
+            (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response(),
+        );
+    }
+    #[derive(Deserialize)]
+    struct Validation {
+        configured: bool,
+        valid: bool,
+    }
+    let validation = match serde_json::from_slice::<Validation>(&bytes) {
+        Ok(validation) => validation,
+        Err(error) => {
+            tracing::warn!(%error, stage = "license_login_decode", "invalid license response");
+            return api_error(
+                StatusCode::BAD_GATEWAY,
+                "LICENSE_RESPONSE_INVALID",
+                "授权服务响应异常，请检查服务日志",
+            );
+        }
+    };
+    if !validation.configured || !validation.valid {
+        return api_error(
+            StatusCode::UNAUTHORIZED,
+            "LICENSE_REQUIRED",
+            "授权码已过期或无效，请使用有效授权码",
+        );
+    }
+    match state.auth.issue_session() {
         Ok(issued) => {
             let mut response = Json(issued.status).into_response();
             response
@@ -406,22 +486,6 @@ fn web_asset_response(content_type: &'static str, bytes: Vec<u8>) -> Response {
 
 fn auth_error_response(error: AuthError) -> Response {
     match error {
-        AuthError::Rejected => api_error(
-            StatusCode::UNAUTHORIZED,
-            "ACCESS_CODE_REJECTED",
-            "接入码无效",
-        ),
-        AuthError::RateLimited => {
-            let mut response = api_error(
-                StatusCode::TOO_MANY_REQUESTS,
-                "AUTH_RATE_LIMITED",
-                "失败次数过多，请稍后再试",
-            );
-            response
-                .headers_mut()
-                .insert(header::RETRY_AFTER, HeaderValue::from_static("60"));
-            response
-        }
         AuthError::LicenseActivationRateLimited => {
             let mut response = api_error(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -552,10 +616,6 @@ impl Drop for ReadyFileGuard {
 enum WebServerError {
     #[error("failed to load config {}: {detail}", path.display())]
     ConfigLoad { path: PathBuf, detail: String },
-    #[error("{ACCESS_CODE_ENV} is required")]
-    AccessCodeMissing,
-    #[error("configured Web access code is invalid: {0}")]
-    AccessCodeInvalid(String),
     #[error("configured Web allowed hosts are invalid: {0}")]
     AllowedHostsInvalid(String),
     #[error("{name} must be one of 1, true, yes, 0, false, or no; got {value:?}")]
@@ -587,8 +647,6 @@ impl WebServerError {
     const fn code(&self) -> &'static str {
         match self {
             Self::ConfigLoad { .. } => "WEB_CONFIG_LOAD_FAILED",
-            Self::AccessCodeMissing => "WEB_ACCESS_CODE_MISSING",
-            Self::AccessCodeInvalid(_) => "WEB_ACCESS_CODE_INVALID",
             Self::AllowedHostsInvalid(_) => "WEB_ALLOWED_HOSTS_INVALID",
             Self::BooleanEnvironmentInvalid { .. } => "WEB_BOOLEAN_ENV_INVALID",
             Self::WebRootInvalid(_) => "WEB_ROOT_INVALID",
@@ -622,12 +680,67 @@ mod tests {
 
     use super::{AppState, AuthService, DaemonProxy, auth::CSRF_HEADER, router};
 
-    const ACCESS_CODE: &str = "8f0ed8de1c54cb8c34a4369c02fd0c6883b2f3e2b7b3321c4b4cb08c1e0d7f50";
+    #[tokio::test]
+    async fn one_license_submission_validates_before_issuing_a_browser_session() {
+        let socket = std::env::temp_dir().join(format!("ns-login-{}.sock", std::process::id()));
+        let listener = UnixListener::bind(&socket).unwrap();
+        let upstream = Router::new().route(
+            "/api/license/activate",
+            axum::routing::post(
+                |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    axum::Json(serde_json::json!({
+                        "configured": true,
+                        "valid": body["key"] == "valid-license",
+                    }))
+                },
+            ),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let app = router(AppState {
+            auth: AuthService::new(false),
+            daemon: DaemonProxy::new(&socket),
+            web_root: None,
+        });
+        for (key, expected) in [
+            ("expired-license", StatusCode::UNAUTHORIZED),
+            ("valid-license", StatusCode::OK),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/auth/session")
+                        .header(header::HOST, "127.0.0.1:7351")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))))
+                        .body(Body::from(serde_json::json!({"key": key}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            assert_eq!(
+                response.headers().contains_key(header::SET_COOKIE),
+                expected == StatusCode::OK
+            );
+            if expected == StatusCode::OK {
+                let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+                assert!(cookie.contains("; HttpOnly; SameSite=Strict; Path=/"));
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(body["authenticated"], true);
+                assert!(body["csrf_token"].as_str().unwrap().len() >= 32);
+            }
+        }
+        task.abort();
+        let _ = std::fs::remove_file(socket);
+    }
 
     #[tokio::test]
-    async fn login_issues_server_session_and_csrf_contract() {
+    async fn unavailable_verifier_never_issues_a_session() {
         let app = router(AppState {
-            auth: AuthService::new(ACCESS_CODE, false).unwrap(),
+            auth: AuthService::new(false),
             daemon: DaemonProxy::new("/tmp/novasight-web-test-missing.sock"),
             web_root: None,
         });
@@ -641,65 +754,24 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(192, 168, 10, 21)),
                 50000,
             )))
-            .body(Body::from(format!(r#"{{"access_code":"{ACCESS_CODE}"}}"#)))
+            .body(Body::from(r#"{"key":"candidate-license"}"#))
             .unwrap();
         let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let cookie = response
-            .headers()
-            .get(header::SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert!(cookie.starts_with("novasight_web_session="));
-        assert!(cookie.contains("; HttpOnly"));
-        assert!(cookie.contains("; SameSite=Strict"));
-        assert!(cookie.contains("; Path=/"));
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body["authenticated"], true);
-        assert_eq!(body["role"], "operator");
-        assert_eq!(body["permissions"].as_array().map(Vec::len), Some(6));
-        assert!(
-            body["csrf_token"]
-                .as_str()
-                .is_some_and(|value| value.len() >= 32)
-        );
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(!response.headers().contains_key(header::SET_COOKIE));
     }
 
     #[tokio::test]
     async fn authenticated_mutation_crosses_the_csrf_gate() {
+        let auth = AuthService::new(false);
+        let issued = auth.issue_session().unwrap();
+        let cookie = issued.cookie.to_str().unwrap().split(';').next().unwrap();
+        let csrf = issued.status.csrf_token.as_deref().unwrap();
         let app = router(AppState {
-            auth: AuthService::new(ACCESS_CODE, false).unwrap(),
+            auth,
             daemon: DaemonProxy::new("/tmp/novasight-web-test-missing.sock"),
             web_root: None,
         });
-        let login = Request::builder()
-            .method("POST")
-            .uri("/api/auth/session")
-            .header(header::HOST, "192.168.10.20:7351")
-            .header(header::CONTENT_TYPE, "application/json")
-            .extension(ConnectInfo(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::new(192, 168, 10, 21)),
-                50000,
-            )))
-            .body(Body::from(format!(r#"{{"access_code":"{ACCESS_CODE}"}}"#)))
-            .unwrap();
-        let response = app.clone().oneshot(login).await.unwrap();
-        let cookie = response
-            .headers()
-            .get(header::SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_owned();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let csrf = body["csrf_token"].as_str().unwrap();
-
         let mutation = Request::builder()
             .method("POST")
             .uri("/api/license/activate")
@@ -740,37 +812,22 @@ mod tests {
             axum::serve(upstream_listener, upstream).await.unwrap();
         });
 
-        let app = router(AppState {
-            auth: AuthService::new(ACCESS_CODE, false).unwrap(),
-            daemon: DaemonProxy::new(&socket),
-            web_root: None,
-        });
-        let login = Request::builder()
-            .method("POST")
-            .uri("/api/auth/session")
-            .header(header::HOST, "127.0.0.1:7351")
-            .header(header::CONTENT_TYPE, "application/json")
-            .extension(ConnectInfo(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::LOCALHOST),
-                50000,
-            )))
-            .body(Body::from(format!(r#"{{"access_code":"{ACCESS_CODE}"}}"#)))
-            .unwrap();
-        let response = app.clone().oneshot(login).await.unwrap();
-        let cookie = response
-            .headers()
-            .get(header::SET_COOKIE)
-            .unwrap()
+        let auth = AuthService::new(false);
+        let issued = auth.issue_session().unwrap();
+        let cookie = issued
+            .cookie
             .to_str()
             .unwrap()
             .split(';')
             .next()
             .unwrap()
             .to_owned();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let csrf = body["csrf_token"].as_str().unwrap().to_owned();
-
+        let csrf = issued.status.csrf_token.unwrap();
+        let app = router(AppState {
+            auth,
+            daemon: DaemonProxy::new(&socket),
+            web_root: None,
+        });
         let web_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let web_address = web_listener.local_addr().unwrap();
         let web_app = app.clone();

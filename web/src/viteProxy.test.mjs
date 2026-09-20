@@ -114,6 +114,6 @@ function sendLogin(port) {
       },
     );
     request.once("error", reject);
-    request.end('{"access_code":"test"}');
+    request.end('{"key":"test-license"}');
   });
 }

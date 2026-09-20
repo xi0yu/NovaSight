@@ -10,7 +10,7 @@ use tokio::process::Child;
 use tokio::time;
 
 use super::{
-    LayoutMode, PortableLayout, ReadyDocument, create_temporary_license_access, create_web_access,
+    LayoutMode, PortableLayout, ReadyDocument, create_temporary_license_access,
     ensure_portable_config, health_check, http_url, lifecycle, log_tail, print_studio_urls,
     print_temporary_license_access, read_daemon_ready_file, read_ready_file, spawn_daemon,
     spawn_logged_process, spawn_web, stop_child, stop_owned_daemon,
@@ -33,11 +33,10 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     validate_artifacts(layout)?;
     let _ = fs::remove_file(&layout.web_ready_file);
     let _ = fs::remove_file(&layout.daemon_ready_file);
-    let access = create_web_access(layout)?;
     let temporary_license = create_temporary_license_access(layout)?;
 
     let mut daemon = spawn_daemon(layout, temporary_license.as_ref())?;
-    let mut web = match spawn_web(layout, &access, true) {
+    let mut web = match spawn_web(layout, true) {
         Ok(web) => web,
         Err(error) => {
             let _ = stop_owned_daemon(layout, &mut daemon).await;
@@ -68,7 +67,7 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
         let _ = stop_owned_daemon(layout, &mut daemon).await;
         return Err(error);
     }
-    print_studio_urls(&studio_ready, &access);
+    print_studio_urls(&studio_ready);
     print_temporary_license_access(temporary_license.as_ref());
     lifecycle::supervise(layout, daemon, web, Some(vite)).await
 }
