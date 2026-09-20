@@ -460,16 +460,23 @@ mod tests {
         let cookie = issued.cookie.to_str().unwrap().split(';').next().unwrap();
         let mut headers = HeaderMap::new();
         headers.insert(header::COOKIE, HeaderValue::from_str(cookie).unwrap());
-        assert!(matches!(
-            auth.authorize_proxy(&Method::POST, "/api/runtime/start", &headers),
-            Err(AuthError::CsrfRejected)
-        ));
+        for path in ["/api/runtime/start", "/api/executors/kmnet/disconnect"] {
+            assert!(matches!(
+                auth.authorize_proxy(&Method::POST, path, &HeaderMap::new()),
+                Err(AuthError::Required)
+            ));
+            assert!(matches!(
+                auth.authorize_proxy(&Method::POST, path, &headers),
+                Err(AuthError::CsrfRejected)
+            ));
+        }
         headers.insert(
             CSRF_HEADER,
             HeaderValue::from_str(issued.status.csrf_token.as_deref().unwrap()).unwrap(),
         );
-        auth.authorize_proxy(&Method::POST, "/api/runtime/start", &headers)
-            .unwrap();
+        for path in ["/api/runtime/start", "/api/executors/kmnet/disconnect"] {
+            auth.authorize_proxy(&Method::POST, path, &headers).unwrap();
+        }
     }
 
     #[test]

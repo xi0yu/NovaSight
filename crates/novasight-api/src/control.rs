@@ -508,6 +508,9 @@ fn is_license_open_path(method: &Method, path: &str) -> bool {
                     | "/api/v1/runtime/stop"
                     | "/api/v1/runtime/emergency-stop"
                     | "/api/v1/daemon/shutdown"
+                    // Risk-reducing action: never require a product license
+                    // to disconnect. The Web boundary still enforces auth/CSRF.
+                    | "/api/executors/kmnet/disconnect"
             ))
         || !path.starts_with("/api/")
 }
@@ -1993,7 +1996,7 @@ mod tests {
         let app = build_control_router_with_control_plane(
             runtime.clone(),
             Some(service.clone()),
-            Some(license),
+            Some(license.clone()),
             None,
             true,
             None,
@@ -2042,19 +2045,65 @@ mod tests {
             );
             runtime.stop().await.unwrap();
         }
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/executors/kmnet/connect")
-                    .extension(TrustedLocalControl)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        // A previously connected device must remain stoppable without the
+        // hardware feature, and even after the product license is cleared.
+        // This supervisor owns a recording device, never a physical kmNet.
+        for valid_license in [true, false] {
+            runtime.start().await.unwrap();
+            let connected = runtime.connect_device().await.unwrap();
+            assert!(connected.pipeline_metrics.device_connected);
+            if !valid_license {
+                license.clear().unwrap();
+            }
+            for _ in 0..2 {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/api/executors/kmnet/disconnect")
+                            .extension(TrustedLocalControl)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                assert!(
+                    status.is_success(),
+                    "disconnect: {status}: {}",
+                    String::from_utf8_lossy(&body)
+                );
+                let snapshot = runtime.snapshot();
+                assert!(!snapshot.pipeline_metrics.device_connected);
+                assert!(!snapshot.pipeline_metrics.output_gate_open);
+                assert_eq!(snapshot.pipeline.state, connected.pipeline.state);
+            }
+            license.activate(key).unwrap();
+            runtime.stop().await.unwrap();
+        }
+        for endpoint in [
+            "/api/executors/kmnet/connect",
+            "/api/executors/kmnet/diagnostic-move",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(endpoint)
+                        .extension(TrustedLocalControl)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"dx":1,"dy":1}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
         let response = app
             .clone()
             .oneshot(

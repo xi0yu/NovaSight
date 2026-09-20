@@ -140,7 +140,10 @@ Debug temporary access deliberately excludes `hardware_control`; physical
 output always requires a valid signed license even in a development build.
 With a runtime-only license, start/restart closes and persists any stale physical
 output switch before starting recognition. Failure to close it still blocks startup.
-Explicit hardware commands and re-enabling output retain their server-side checks.
+Connecting hardware, diagnostic movement and re-enabling output retain their
+server-side feature checks. Safety actions (stop, emergency stop and kmNet
+disconnect) do not require a product license, including after it expires or is
+cleared. Web session, operator authorization and CSRF checks still apply.
 
 ## Developer Source Run
 
