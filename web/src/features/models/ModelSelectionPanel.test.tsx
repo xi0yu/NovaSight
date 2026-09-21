@@ -49,6 +49,17 @@ describe("ModelSelectionPanel", () => {
     expect(onSwitch).not.toHaveBeenCalled();
   });
 
+  it("finds files by path and keeps the switch action beside the selection", async () => {
+    render(<ModelSelectionPanel {...panelProps()} />);
+    await userEvent.type(screen.getByRole("searchbox", { name: "查找模型文件" }), "other.engine");
+    expect(screen.getByRole("button", { name: /other.engine，路径 other.engine/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /stable.engine，路径 stable.engine/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "验证并切换到所选模型" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+    expect(screen.getByRole("button", { name: /stable.engine，路径 stable.engine/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
+  });
+
   it("includes a typed tag when saving and protects an unsaved metadata draft", async () => {
     const onSaveMetadata = vi.fn();
     render(<ModelSelectionPanel {...panelProps({ onSaveMetadata })} />);
@@ -108,7 +119,6 @@ describe("ModelSelectionPanel", () => {
     expect(screen.queryByRole("region", { name: "模型筛选" })).not.toBeInTheDocument();
     expect(screen.getByText(/将 \.engine 文件放入设备的 models 目录/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "刷新模型" })).toBeEnabled();
-    expect(screen.getByRole("list", { name: "切换模型的三个步骤" })).toHaveTextContent("确认结果");
     expect(screen.queryByText("所选 Engine 文件")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "验证并切换到所选模型" })).not.toBeInTheDocument();
   });

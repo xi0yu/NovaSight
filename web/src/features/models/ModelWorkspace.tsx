@@ -16,8 +16,8 @@ export function ModelWorkspace({
         </span>
         <div>
           <span className="class-config-eyebrow">模型管理</span>
-          <h2 id="model-workspace-title">选择要使用的模型</h2>
-          <p>先从设备目录选取文件，确认后由服务验证并切换；浏览文件不会改变当前推理。</p>
+          <h2 id="model-workspace-title">找到模型，确认后切换</h2>
+          <p>从设备目录查找 .engine，核对右侧文件后再验证切换。</p>
         </div>
         <div className="model-manager-active-pill">
           <i aria-hidden="true" />

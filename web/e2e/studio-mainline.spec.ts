@@ -222,6 +222,33 @@ test("algorithm parameters explain the two-stage save flow", async ({ page }) =>
   await expect(dialog).toContainText("返回参数页后点击“保存修改”才会写入设备");
 });
 
+test("model search keeps selection and verification together", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.route("**/api/models/catalog?*", async (route) => route.fulfill({ json: {
+    root: { type: "directory", name: "models", relative_path: "", children: [
+      { type: "model", name: "stable.engine", relative_path: "stable.engine", kind: "engine", size_bytes: 1_048_576, scan_status: "ready", scan_reason: "", recommendation: "recommended", tags: ["稳定"] },
+      { type: "model", name: "other.engine", relative_path: "other.engine", kind: "engine", size_bytes: 1_048_576, scan_status: "ready", scan_reason: "", recommendation: "unrated", tags: [] },
+    ] },
+    directory_count: 1, model_count: 2, discovered_files: 0, updated_files: 0, cache_hits: 2, force: false,
+  } }));
+  await page.goto("/?page=models");
+  await page.getByRole("button", { name: /stable.engine，路径 stable.engine/ }).click();
+  await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
+  await page.getByRole("searchbox", { name: "查找模型文件" }).fill("other.engine");
+  await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeDisabled();
+  await page.getByRole("button", { name: "清除筛选" }).click();
+  await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
+});
+
+test("parameter sections navigate without changing physical output", async ({ page }) => {
+  await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "hardware", output_enabled: false }, pipeline: {} });
+  await page.goto("/?page=params");
+  const outputShortcut = page.getByRole("navigation", { name: "参数分区" }).getByRole("button", { name: /物理输出/ });
+  await outputShortcut.click();
+  await expect(page.getByRole("heading", { name: "物理输出", exact: true })).toBeInViewport();
+  expect(page.url()).not.toContain("#parameter-stage-output");
+});
+
 test("discarding parameter edits asks first, including on narrow screens", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "always" }, pipeline: {} });
   await page.goto("/?page=params");
@@ -423,17 +450,13 @@ test("configuration pages explain the next action without horizontal overflow", 
   await mockStudioApi(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   for (const [route, text] of [
-    ["models", "切换模型的三个步骤"],
+    ["models", "找到模型，确认后切换"],
     ["license", "需要更换授权？"],
-    ["params", "按控制链顺序设置"],
+    ["params", "先调好控制，再决定是否输出"],
   ] as const) {
     await page.goto(`/?page=${route}`);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-    if (route === "models") {
-      await expect(page.getByRole("list", { name: text })).toBeVisible();
-    } else {
-      await expect(page.getByText(text, { exact: route === "params" })).toBeVisible();
-    }
+    await expect(page.getByText(text, { exact: route !== "license" })).toBeVisible();
     expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(
       await page.evaluate(() => document.documentElement.clientWidth),
     );

@@ -100,6 +100,7 @@ export function ModelSelectionPanel({
     initialFilters.recommendation
   );
   const [tagFilters, setTagFilters] = useState<Set<string>>(() => new Set(initialFilters.tags));
+  const [searchTerm, setSearchTerm] = useState("");
   const [draftRecommendation, setDraftRecommendation] = useState<ModelRecommendation>("unrated");
   const [draftTags, setDraftTags] = useState<string[]>([]);
   const [newTag, setNewTag] = useState("");
@@ -110,12 +111,14 @@ export function ModelSelectionPanel({
   );
   const availableTagSet = useMemo(() => new Set(availableTags), [availableTags]);
   const activeTagFilters = useMemo(() => Array.from(tagFilters), [tagFilters]);
+  const normalizedSearch = searchTerm.trim().toLocaleLowerCase();
   const filteredModels = useMemo(
     () => models.filter((model) =>
       (recommendationFilter === "all" || model.recommendation === recommendationFilter) &&
-      activeTagFilters.every((tag) => model.tags.includes(tag))
+      activeTagFilters.every((tag) => model.tags.includes(tag)) &&
+      (normalizedSearch === "" || `${model.name} ${model.relative_path}`.toLocaleLowerCase().includes(normalizedSearch))
     ),
-    [activeTagFilters, models, recommendationFilter]
+    [activeTagFilters, models, normalizedSearch, recommendationFilter]
   );
 
   useEffect(() => {
@@ -185,16 +188,16 @@ export function ModelSelectionPanel({
     setDraftTags((current) => [...current, tag]);
     setNewTag("");
   };
+  const clearFilters = () => {
+    setSearchTerm("");
+    setRecommendationFilter("all");
+    setTagFilters(new Set());
+  };
   return (
     <div className="model-selection-panel">
-      <ol className="model-start-steps" aria-label="切换模型的三个步骤">
-        <li><b>1. 选择文件</b><span>从设备目录选取 .engine，当前模型不会立即变化。</span></li>
-        <li><b>2. 验证切换</b><span>点击下方按钮后，服务才检查输入输出并应用模型。</span></li>
-        <li><b>3. 确认结果</b><span>查看切换进度和上方“当前”模型；失败时会显示原因。</span></li>
-      </ol>
       <header className="model-selection-toolbar">
         <div>
-          <strong>模型目录</strong>
+          <strong>设备中的模型</strong>
           <span>{directoryCount} 个物理文件夹 · 当前显示 {filteredModels.length}/{modelCount} 个模型</span>
         </div>
         <button
@@ -211,6 +214,16 @@ export function ModelSelectionPanel({
       {catalogMessage ? <div className="model-switch-note good">{catalogMessage}</div> : null}
 
       {models.length > 0 ? <section className="model-vault-filters" aria-label="模型筛选">
+        <label className="model-vault-search">
+          <NovaIcon name="search" size={17} />
+          <input
+            aria-label="查找模型文件"
+            onChange={(event) => setSearchTerm(event.target.value)}
+            placeholder="按文件名或路径查找模型"
+            type="search"
+            value={searchTerm}
+          />
+        </label>
         <div className="model-vault-recommendation-filter" role="group" aria-label="推荐状态筛选">
           {([
             ["all", "全部"],
@@ -244,8 +257,8 @@ export function ModelSelectionPanel({
               {tag}
             </button>
           )) : <small>保存标签后可在这里筛选</small>}
-          {tagFilters.size > 0 ? (
-            <button type="button" className="clear" onClick={() => setTagFilters(new Set())}>清除</button>
+          {tagFilters.size > 0 || recommendationFilter !== "all" || searchTerm ? (
+            <button type="button" className="clear" onClick={clearFilters}>清除筛选</button>
           ) : null}
         </div>
       </section> : null}
@@ -265,7 +278,7 @@ export function ModelSelectionPanel({
           ) : (
             <div className="model-catalog-placeholder">
               {models.length > 0
-                ? "没有符合当前推荐状态与标签的模型。"
+                ? <><p>没有符合查找条件的模型。</p><button className="console-button" onClick={clearFilters} type="button">清除筛选</button></>
                 : "暂无可选模型。将 .engine 文件放入设备的 models 目录后点击“刷新模型”；.onnx 文件不能直接切换到当前主链。"}
             </div>
           )}
@@ -298,6 +311,21 @@ export function ModelSelectionPanel({
                   ? "这是当前使用的模型；再次验证不会重复切换。"
                   : "所选文件尚未生效；点击下方“验证并切换”后才会影响运行。"}
           </p>
+          <div className="model-selection-action">
+            <span>选择文件不会改变正在运行的模型</span>
+            <button
+              className="console-button primary"
+              disabled={busy !== null || !canSwitch || selectionHiddenByFilter || metadataDirty || pendingTagIsNew}
+              onClick={onSwitch}
+              type="button"
+            >
+              <NovaIcon name="model-switch" size={16} />
+              {switchLabel}
+            </button>
+            {selectedModel?.kind === "engine" ? <small>
+              {canSwitch ? "需要停止主链时会先请你确认；切换失败会保留原因。" : "当前文件暂不可切换；请检查文件类型和模型状态。"}
+            </small> : null}
+          </div>
           <details className="model-selection-advanced">
             <summary>查看文件详情与解析设置</summary>
             <dl className="model-selection-facts">
@@ -444,25 +472,6 @@ export function ModelSelectionPanel({
       </div>
 
       {switchMessage ? <div className="model-switch-note good">{switchMessage}</div> : null}
-
-      {models.length > 0 ? (
-        <button
-          className="console-button primary console-full-button"
-          disabled={busy !== null || !canSwitch || selectionHiddenByFilter || metadataDirty || pendingTagIsNew}
-          onClick={onSwitch}
-          type="button"
-        >
-          <NovaIcon name="model-switch" size={16} />
-          {switchLabel}
-        </button>
-      ) : null}
-
-      {selectedModel?.kind === "engine" ? (
-        <p className="console-field-hint">
-          {canSwitch ? "切换时会展示进度；若主链正在运行，系统会先请你确认短暂停止与重启。" : "当前文件暂不可切换；请检查文件类型和模型状态。"}
-        </p>
-      ) : null}
-
     </div>
   );
 }

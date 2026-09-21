@@ -3814,6 +3814,13 @@ export function StudioConsoleView({
     openConfigDialog("algorithm");
   }, [navigatePage, openConfigDialog, requestOutputGateChange]);
 
+  const jumpToParameterStage = (id: string) => {
+    document.getElementById(id)?.scrollIntoView({
+      block: "start",
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"
+    });
+  };
+
   return (
     <section className="console-app">
       <header className="console-top">
@@ -4457,9 +4464,9 @@ export function StudioConsoleView({
           <>
             <div className="parameter-page-intro" role="note">
               <div>
-                <span className="class-config-eyebrow">初次使用</span>
-                <h2>按控制链顺序设置</h2>
-                <p>先确认触发与算法，再按需调整补偿和限幅。普通参数先保存在本页；物理输出是独立开关，开启前会再次请你确认。</p>
+                <span className="class-config-eyebrow">控制设置</span>
+                <h2>先调好控制，再决定是否输出</h2>
+                <p>按下面三组设置即可。保存参数只更新配置，不会替你打开物理输出。</p>
               </div>
               <span className={outputEnabled ? "parameter-output-state enabled" : "parameter-output-state"}>
                 {outputEnabled ? "物理输出已开启" : "物理输出保持暂停"}
@@ -4513,7 +4520,18 @@ export function StudioConsoleView({
               </div>
             </div>
             {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
-            <ol className="control-chain-settings" aria-label="鼠标控制参数链">
+            <nav className="parameter-quick-nav" aria-label="参数分区">
+              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-trigger")}><span>01</span>触发与算法</button>
+              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-safety")}><span>02</span>补偿与限幅</button>
+              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-output")}><span>03</span>物理输出</button>
+            </nav>
+            <div className="parameter-stage-list">
+            <section className="parameter-stage" id="parameter-stage-trigger" aria-labelledby="parameter-stage-trigger-title">
+              <header className="parameter-stage-heading">
+                <span>开始</span>
+                <div><h3 id="parameter-stage-trigger-title">触发与算法</h3><p>决定何时开始计算，以及如何把目标偏移换成控制量。</p></div>
+              </header>
+            <ol className="control-chain-settings" aria-label="触发与算法设置">
               <li className="console-card control-chain-setting">
                 <span className="control-chain-step" aria-hidden="true">01</span>
                 <div className="control-chain-setting-title">
@@ -4595,6 +4613,14 @@ export function StudioConsoleView({
                 </div>
               </li>
 
+            </ol>
+            </section>
+            <section className="parameter-stage" id="parameter-stage-safety" aria-labelledby="parameter-stage-safety-title">
+              <header className="parameter-stage-heading">
+                <span>调整</span>
+                <div><h3 id="parameter-stage-safety-title">补偿与限幅</h3><p>补偿按需启用；限幅负责约束每次发送的最大偏移。</p></div>
+              </header>
+            <ol className="control-chain-settings" aria-label="补偿与限幅设置">
               <li className="console-card control-chain-setting">
                 <span className="control-chain-step" aria-hidden="true">04</span>
                 <div className="control-chain-setting-title">
@@ -4657,6 +4683,14 @@ export function StudioConsoleView({
                 </div>
               </li>
 
+            </ol>
+            </section>
+            <section className="parameter-stage parameter-stage-output" id="parameter-stage-output" aria-labelledby="parameter-stage-output-title">
+              <header className="parameter-stage-heading">
+                <span>确认</span>
+                <div><h3 id="parameter-stage-output-title">物理输出</h3><p>这是独立的设备发送开关；保存上面的参数不会改变它。</p></div>
+              </header>
+            <ol className="control-chain-settings" aria-label="物理输出设置">
               <li className={outputEnabled ? "console-card control-chain-setting output-enabled" : "console-card control-chain-setting output-paused"}>
                 <span className="control-chain-step" aria-hidden="true">06</span>
                 <div className="control-chain-setting-title">
@@ -4674,6 +4708,8 @@ export function StudioConsoleView({
                 />
               </li>
             </ol>
+            </section>
+            </div>
             <details className="studio-diagnostic-details parameter-support-details">
               <summary>
                 <span>
