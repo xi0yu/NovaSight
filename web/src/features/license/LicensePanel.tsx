@@ -94,24 +94,53 @@ export function LicensePanel({
       {message ? <div className="inline-note">{message}</div> : null}
       <div className={license?.valid ? "license-hero valid" : "license-hero"}>
         <div>
-          <span>NovaSight 授权</span>
-          <strong>{license?.valid ? formatTier(license.tier) : "等待授权"}</strong>
-          <p>{license?.valid ? "授权状态有效，当前设备可以进入完整工作台。" : "临时授权码与正式许可证使用同一验证入口。"}</p>
+          <span>使用权限</span>
+          <strong>{license?.valid ? formatTier(license.tier) : "尚未授权"}</strong>
+          <p>{license?.valid
+            ? license.credential_format === "ephemeral_code"
+              ? "临时授权仅在本次服务运行期间有效；重启后需要输入新授权码。"
+              : `授权已生效${license.expires_at ? `，到期时间 ${formatEpoch(license.expires_at)}` : ""}。`
+            : "输入一个授权码即可开始使用；临时码与正式许可证共用下方入口。"}</p>
         </div>
         <StatusIndicator tone={license?.valid ? "good" : "idle"}>
           {license?.valid ? "授权有效" : "尚未授权"}
         </StatusIndicator>
       </div>
-      <div className={license?.valid ? "license-status-card valid" : "license-status-card"}>
-        <div className="license-status-copy">
-          <span>授权状态</span>
-          <strong>{licenseStatusTitle}</strong>
-          <p>
-            授权凭证由 NovaSight 服务保存和校验；界面只展示追踪片段，不回显完整凭证。
-          </p>
+      <p className="license-help-copy">{license?.valid
+        ? "需要更换授权？在下方输入新授权码并验证。退出授权会先停止设备输出，且需要再次确认。"
+        : "授权码由本机服务验证；页面不会保存或回显完整凭证。"}</p>
+      <LicenseActivationForm
+        active={license?.valid === true}
+        temporarySupported={temporarySupported}
+        onLicenseChange={onLicenseChange}
+      />
+      {backendMessage ? (
+        <div className="license-provenance-note">
+          <strong>授权说明</strong>
+          <span>{backendMessage}</span>
+        </div>
+      ) : null}
+      <details className="license-detail-disclosure">
+        <summary>查看授权范围与有效期</summary>
+        <p>{licenseStatusTitle}。以下信息用于核对当前授权；技术追踪码仅在排查问题时需要。</p>
+        <div className={features.length > 0 ? "license-features" : "license-features empty"}>
+          {features.length > 0
+            ? features.map((feature) => <span key={feature}>{formatFeature(feature)}</span>)
+            : <span>等待授权功能范围</span>}
+        </div>
+        <div className="field-grid">
+          <Field label="授权类型" value={license?.tier ? formatTier(license.tier) : "未授权"} />
+          <Field label="凭证格式" value={formatCredentialFormat(license?.credential_format)} />
+          <Field label="当前状态" value={license?.valid ? "可用" : "等待申请"} />
+          <Field label="当前时间" value={currentTime} />
+          <Field label="激活时间" value={formatEpoch(license?.activated_at)} />
+          <Field label="到期时间" value={license?.credential_format === "ephemeral_code" ? "进程退出即失效" : formatEpoch(license?.expires_at)} />
+          <Field label="期限" value={license?.credential_format === "ephemeral_code"
+            ? "当前服务进程"
+            : formatDuration(license?.duration_value, license?.duration_unit)} />
         </div>
         <details className="compact-settings-details">
-          <summary>授权诊断信息 · 签发与凭证追踪 · 7 项</summary>
+          <summary>开发者诊断 · 凭证追踪码</summary>
           <dl className="license-status-trace">
             <div>
               <dt>状态追踪码</dt>
@@ -143,56 +172,23 @@ export function LicensePanel({
             </div>
           </dl>
         </details>
-      </div>
-      {backendMessage ? (
-        <div className="license-provenance-note">
-          <strong>授权说明</strong>
-          <span>{backendMessage}</span>
-        </div>
-      ) : null}
-      <div className="field-grid">
-        <Field label="授权类型" value={license?.tier ? formatTier(license.tier) : "未授权"} />
-        <Field label="凭证格式" value={formatCredentialFormat(license?.credential_format)} />
-        <Field label="授权编号" value={license?.license_id || "无"} />
-        <Field label="当前状态" value={license?.valid ? "可用" : "等待申请"} />
-        <Field label="当前时间" value={currentTime} />
-        <Field label="激活时间" value={formatEpoch(license?.activated_at)} />
-        <Field
-          label="到期时间"
-          value={license?.credential_format === "ephemeral_code" ? "进程退出即失效" : formatEpoch(license?.expires_at)}
-        />
-        <Field
-          label="期限"
-          value={license?.credential_format === "ephemeral_code"
-            ? "当前服务进程"
-            : formatDuration(license?.duration_value, license?.duration_unit)}
-        />
-      </div>
-      <LicenseActivationForm
-        temporarySupported={temporarySupported}
-        onLicenseChange={onLicenseChange}
-      />
+      </details>
       {license?.configured ? (
         <button className="button compact-button" disabled={clearing} type="button" onClick={clearLicense}>
           {clearing ? "正在停止设备并退出…" : clearArmed ? "确认：先紧急停止设备，再退出授权" : "退出当前授权"}
         </button>
       ) : null}
-      <div className={features.length > 0 ? "license-features" : "license-features empty"}>
-        {features.length > 0
-          ? features.map((feature) => (
-              <span key={feature}>{formatFeature(feature)}</span>
-            ))
-          : <span>等待授权功能范围</span>}
-      </div>
     </div>
   );
 }
 
 export function LicenseActivationForm({
+  active = false,
   temporarySupported,
   onLicenseChange,
   gate = false
 }: {
+  active?: boolean;
   temporarySupported: boolean;
   onLicenseChange: (license: LicenseStatus) => void;
   gate?: boolean;
@@ -243,7 +239,7 @@ export function LicenseActivationForm({
   return (
     <div className={gate ? "license-activation-form is-gate" : "license-activation-form"}>
       <div className="license-activation-copy">
-        <strong>{gate ? "输入授权码" : "激活授权"}</strong>
+        <strong>{gate ? "输入授权码" : active ? "更换授权" : "激活授权"}</strong>
         <span>{temporarySupported
           ? "可使用本次启动生成的临时授权码，或正式签名许可证。两者经过同一服务端验证流程。"
           : "请输入正式签名许可证。授权码只发送给本机服务验证，不会在页面中保存或回显。"}</span>
@@ -263,7 +259,7 @@ export function LicenseActivationForm({
           />
         </label>
         <Button variant="primary" type="submit" loading={activating} leadingIcon="shield-check">
-          验证并继续
+          {active ? "验证并更换" : "验证并继续"}
         </Button>
       </form>
       {failure ? <InlineError message={failure.message} title={failure.title} /> : null}

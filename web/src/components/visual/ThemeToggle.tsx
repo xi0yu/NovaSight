@@ -75,8 +75,7 @@ export function ThemeToggle() {
       </button>
       {pickerOpen ? <div className="theme-menu" id="novasight-theme-menu" role="group" aria-label="网站主题">
         <div className="theme-menu-heading">
-          <span>THEME ARCHIVE</span>
-          <strong>选择视觉主题</strong>
+          <strong>界面外观</strong>
         </div>
         {THEME_OPTIONS.map((option) => {
           const selected = option.id === theme;

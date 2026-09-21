@@ -302,6 +302,7 @@ test("theme chooser exposes visible controls that a user can actually click", as
   expect.soft(await trigger.evaluate((element) => element.tagName)).toBe("BUTTON");
   expect.soft(await trigger.innerText()).toContain("主题");
   await trigger.click();
+  await expect(page.locator(".theme-option")).toHaveCount(3);
 
   const graphiteRed = page.getByRole("button", { name: /黑灰红/ });
   await expect(graphiteRed).toBeVisible();
@@ -416,4 +417,25 @@ test("authenticated operator can manage and safely exit the current license", as
   await expect(page.getByRole("heading", { level: 1, name: "NovaSight" })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "授权码" })).toBeVisible();
   await expect(navigation).toHaveCount(0);
+});
+
+test("configuration pages explain the next action without horizontal overflow", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  for (const [route, text] of [
+    ["models", "切换模型的三个步骤"],
+    ["license", "需要更换授权？"],
+    ["params", "按控制链顺序设置"],
+  ] as const) {
+    await page.goto(`/?page=${route}`);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    if (route === "models") {
+      await expect(page.getByRole("list", { name: text })).toBeVisible();
+    } else {
+      await expect(page.getByText(text, { exact: route === "params" })).toBeVisible();
+    }
+    expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(
+      await page.evaluate(() => document.documentElement.clientWidth),
+    );
+  }
 });

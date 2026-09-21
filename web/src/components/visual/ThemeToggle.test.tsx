@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -17,6 +17,7 @@ describe("ThemeToggle", () => {
 
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(screen.getByRole("group", { name: "网站主题" })).getAllByRole("button")).toHaveLength(3);
 
     await user.keyboard("{Escape}");
     expect(toggle).toHaveAttribute("aria-expanded", "false");

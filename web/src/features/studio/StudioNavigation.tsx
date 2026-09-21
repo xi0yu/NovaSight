@@ -103,7 +103,7 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
   models: {
     group: "配置管理",
     title: "模型管理",
-    description: "浏览设备上的模型产物，经后端验证后切换，并以 active artifact 对账结果。"
+    description: "浏览设备上的模型，验证后切换；再核对页面上的当前模型和运行状态。"
   },
   license: {
     group: "配置管理",

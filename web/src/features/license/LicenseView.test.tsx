@@ -67,6 +67,11 @@ describe("LicenseView", () => {
     render(<LicenseTransitionHarness />);
 
     expect(screen.getByRole("heading", { name: "当前授权" })).toBeInTheDocument();
+    expect(screen.getByText(/需要更换授权/)).toBeInTheDocument();
+    expect(screen.getByText("查看授权范围与有效期")).toBeInTheDocument();
+    expect(screen.getByText("开发者诊断 · 凭证追踪码")).not.toBeVisible();
+    await user.click(screen.getByText("查看授权范围与有效期"));
+    expect(screen.getByText("开发者诊断 · 凭证追踪码")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "退出当前授权" }));
     expect(clearLicenseKeyMock).not.toHaveBeenCalled();
     expect(screen.getByText(/再次点击将先紧急停止当前设备/)).toBeInTheDocument();

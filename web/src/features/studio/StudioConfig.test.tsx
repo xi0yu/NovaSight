@@ -39,6 +39,8 @@ it("opens the existing physical-output confirmation instead of navigating to the
     ? Promise.resolve(new Response(JSON.stringify({ code: "TEST_OUTPUT_REJECTED", message: "output rejected by daemon" }), { status: 409, headers: { "content-type": "application/json", "x-request-id": "0123456789abcdef0123456789abcdef" } }))
     : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  expect(screen.getByRole("heading", { name: "按控制链顺序设置" })).toBeVisible();
+  expect(screen.getByText(/物理输出是独立开关/)).toBeVisible();
   await openProfile();
   await userEvent.click(screen.getByRole("button", { name: "打开输出" }));
   expect(screen.getByRole("alertdialog", { name: "允许发送鼠标偏移？" })).toBeVisible();

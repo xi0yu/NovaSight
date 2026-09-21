@@ -4463,13 +4463,23 @@ export function StudioConsoleView({
           <section className="console-page">
           {activePage === "params" ? (
           <>
+            <div className="parameter-page-intro" role="note">
+              <div>
+                <span className="class-config-eyebrow">初次使用</span>
+                <h2>按控制链顺序设置</h2>
+                <p>先确认触发与算法，再按需调整补偿和限幅。普通参数先保存在本页；物理输出是独立开关，开启前会再次请你确认。</p>
+              </div>
+              <span className={outputEnabled ? "parameter-output-state enabled" : "parameter-output-state"}>
+                {outputEnabled ? "物理输出已开启" : "物理输出保持暂停"}
+              </span>
+            </div>
             <div className={parameterPageDirty ? "parameter-save-bar dirty" : "parameter-save-bar"}>
               <span className="parameter-save-bar-icon" aria-hidden="true">
                 <NovaIcon name={parameterPageDirty ? "save" : "check-circle"} size={18} />
               </span>
               <div aria-live="polite" role="status">
-                <b>{parameterPageDirty ? "修改尚未保存" : "参数已同步"}</b>
-                {parameterPageDirty ? <small>保存后立即生效</small> : null}
+                <b>{parameterPageDirty ? "修改尚未保存" : "没有待保存的参数"}</b>
+                <small>{parameterPageDirty ? "保存后请在“配置生效状态”核对；不会自动开启物理输出" : "修改普通参数后点击“保存修改”；输出开关单独确认"}</small>
               </div>
               <div className="parameter-save-bar-actions">
                 <button className="console-button" onClick={exportConfig} type="button">
@@ -4538,6 +4548,7 @@ export function StudioConsoleView({
                     直接触发
                   </button>
                 </div>
+                {triggerMode === "always" ? <p className="control-chain-trigger-warning">直接触发会持续计算控制量；若物理输出已开启，设备可能立即执行。请确认适用场景。</p> : null}
               </li>
 
               <li className="console-card control-chain-setting">
@@ -4658,7 +4669,7 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true">06</span>
                 <div className="control-chain-setting-title">
                   <b>输出</b>
-                  <small>物理设备的最终发送门；关闭时仍保留算法计算。</small>
+                  <small>物理设备的最终发送门。保存参数不会自动打开；关闭时算法仍可计算。</small>
                 </div>
                 <ModuleSwitch
                   compact

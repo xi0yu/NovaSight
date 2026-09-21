@@ -1563,6 +1563,57 @@
   backdrop-filter: blur(18px);
 }
 
+.parameter-page-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 15px 18px;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--bg-surface);
+}
+
+.parameter-page-intro h2 {
+  margin: 3px 0 4px;
+  color: var(--text-primary);
+  font-size: 16px;
+}
+
+.parameter-page-intro p {
+  max-width: 700px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.parameter-output-state {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border: 1px solid var(--status-warning-border);
+  border-radius: 8px;
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.parameter-output-state.enabled {
+  border-color: var(--status-success-border);
+  background: var(--status-success-bg);
+  color: var(--status-success-fg);
+}
+
+.control-chain-trigger-warning {
+  grid-column: 2 / -1;
+  margin: -2px 0 0;
+  color: var(--status-warning-fg);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .parameter-save-bar.dirty {
   border-color: var(--status-warning-border);
   background: color-mix(in srgb, var(--status-warning-bg) 68%, var(--bg-surface));
@@ -1794,7 +1845,7 @@
 }
 
 .console-main[data-page="params"] .console-page-heading p {
-  display: none;
+  display: block;
 }
 
 .console-main[data-page="params"] .console-process {
@@ -1819,6 +1870,8 @@
 }
 
 @media (max-width: 760px) {
+  .parameter-page-intro { align-items: flex-start; flex-direction: column; }
+  .control-chain-trigger-warning { grid-column: 2; }
   .parameter-stepper-control {
     grid-template-columns: 44px minmax(0, 1fr) 44px;
   }

@@ -176,6 +176,11 @@ export function ModelSelectionPanel({
   };
   return (
     <div className="model-selection-panel">
+      <ol className="model-start-steps" aria-label="切换模型的三个步骤">
+        <li><b>1. 选择文件</b><span>从设备目录选取 .engine，当前模型不会立即变化。</span></li>
+        <li><b>2. 验证切换</b><span>点击下方按钮后，服务才检查输入输出并应用模型。</span></li>
+        <li><b>3. 确认结果</b><span>查看切换进度和上方“当前”模型；失败时会显示原因。</span></li>
+      </ol>
       <header className="model-selection-toolbar">
         <div>
           <strong>模型目录</strong>
@@ -249,7 +254,7 @@ export function ModelSelectionPanel({
             <div className="model-catalog-placeholder">
               {models.length > 0
                 ? "没有符合当前推荐状态与标签的模型。"
-                : "暂无模型。将 .onnx 或 .engine 文件放入设备的 models 目录后，点击“刷新模型”。"}
+                : "暂无可选模型。将 .engine 文件放入设备的 models 目录后点击“刷新模型”；.onnx 文件不能直接切换到当前主链。"}
             </div>
           )}
         </div>
@@ -260,7 +265,7 @@ export function ModelSelectionPanel({
               <NovaIcon name="engine" size={20} />
             </span>
             <div>
-              <span>所选 Engine 文件</span>
+              <span>准备切换到</span>
               <strong title={selectedModel?.name ?? selectedArtifact?.path ?? ""}>
                 {selectedModel?.name ?? selectedArtifact?.path ?? "尚未选择模型"}
               </strong>
@@ -270,135 +275,150 @@ export function ModelSelectionPanel({
             </StatusIndicator>
           </div>
 
-          <dl className="model-selection-facts">
-            <div className="wide">
-              <dt>当前使用路径</dt>
-              <dd title={activeArtifactPath}>{activeArtifactPath || "未加载产物"}</dd>
-            </div>
-            <div className="wide">
-              <dt>所选文件路径</dt>
-              <dd title={selectedModel?.relative_path ?? selectedArtifact?.path ?? ""}>
-                {selectedModel?.relative_path ?? selectedArtifact?.path ?? "-"}
-              </dd>
-            </div>
-            <div>
-              <dt>文件类型</dt>
-              <dd>{(selectedModel?.kind ?? selectedArtifact?.kind ?? "-").toUpperCase()}</dd>
-            </div>
-            <div>
-              <dt>文件大小</dt>
-              <dd>{formatModelSize(selectedModel?.size_bytes ?? selectedArtifact?.size_bytes)}</dd>
-            </div>
-            <div>
-              <dt>模型版本</dt>
-              <dd>{selectedVersion?.version === "default" ? "自动发现版本" : selectedVersion?.version ?? "-"}</dd>
-            </div>
-            <div>
-              <dt>输入尺寸</dt>
-              <dd>{previewInputShape}</dd>
-            </div>
-            <div>
-              <dt>运行方式</dt>
-              <dd>{previewBackend}</dd>
-            </div>
-            <div>
-              <dt>切换准备</dt>
-              <dd>{selectedArtifact ? modelStatusLabel(selectedArtifact.status) : selectedModel?.kind === "engine" ? "后缀已接受，切换时验证" : "不可加载"}</dd>
-            </div>
-            <div className="wide model-parser-preset">
-              <dt>解析格式</dt>
-              <dd>
-                <select
-                  aria-label="模型解析格式"
-                  disabled={busy !== null}
-                  onChange={(event) => onParserPresetChange(event.target.value as ParserPresetId)}
-                  value={parserPreset}
-                >
-                  <option value="auto">自动识别（推荐）</option>
-                  <option value="yolov5">YOLO v5 解析格式</option>
-                  <option value="yolov8">YOLO v8 解析格式</option>
-                  <option value="yolo11">YOLO v11 解析格式</option>
-                  <option value="novasight_generic">NovaSight 通用解析器（内置）</option>
-                </select>
-                <small>目录浏览不加载 Engine；确认切换后才验证真实输入输出。</small>
-              </dd>
-            </div>
-          </dl>
-
-          <section className="model-metadata-editor" aria-labelledby="model-metadata-title">
-            <div className="model-metadata-heading">
+          <p className="model-selection-next-step">
+            {selectedModel === null
+              ? "请先从左侧目录选择一个 Engine 文件。"
+              : selectedModel.kind !== "engine"
+                ? "这个文件不能直接用于当前主链；请选择 .engine 文件。"
+                : selectedIsActive
+                  ? "这是当前使用的模型；再次验证不会重复切换。"
+                  : "所选文件尚未生效；点击下方“验证并切换”后才会影响运行。"}
+          </p>
+          <details className="model-selection-advanced">
+            <summary>查看文件详情与解析设置</summary>
+            <dl className="model-selection-facts">
+              <div className="wide">
+                <dt>当前使用路径</dt>
+                <dd title={activeArtifactPath}>{activeArtifactPath || "未加载产物"}</dd>
+              </div>
+              <div className="wide">
+                <dt>所选文件路径</dt>
+                <dd title={selectedModel?.relative_path ?? selectedArtifact?.path ?? ""}>
+                  {selectedModel?.relative_path ?? selectedArtifact?.path ?? "-"}
+                </dd>
+              </div>
               <div>
-                <strong id="model-metadata-title">整理与标签</strong>
-                <small>仅更新模型目录元数据，不加载 Engine，也不会影响正在运行的推理。</small>
+                <dt>文件类型</dt>
+                <dd>{(selectedModel?.kind ?? selectedArtifact?.kind ?? "-").toUpperCase()}</dd>
               </div>
-              {metadataDirty ? <span>待保存</span> : null}
-            </div>
-            <div className="model-recommendation-control" role="group" aria-label="模型推荐状态">
-              {RECOMMENDATION_OPTIONS.map((option) => (
-                <button type="button"
-                  aria-pressed={draftRecommendation === option.value}
-                  className={draftRecommendation === option.value ? "active" : ""}
-                  disabled={busy !== null || selectedModel === null}
-                  key={option.value}
-                  onClick={() => setDraftRecommendation(option.value)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-            <div className="model-tag-editor">
-              <div className="model-tag-list">
-                {draftTags.map((tag) => (
-                  <button type="button"
-                    aria-label={`移除标签 ${tag}`}
+              <div>
+                <dt>文件大小</dt>
+                <dd>{formatModelSize(selectedModel?.size_bytes ?? selectedArtifact?.size_bytes)}</dd>
+              </div>
+              <div>
+                <dt>模型版本</dt>
+                <dd>{selectedVersion?.version === "default" ? "自动发现版本" : selectedVersion?.version ?? "-"}</dd>
+              </div>
+              <div>
+                <dt>输入尺寸</dt>
+                <dd>{previewInputShape}</dd>
+              </div>
+              <div>
+                <dt>运行方式</dt>
+                <dd>{previewBackend}</dd>
+              </div>
+              <div>
+                <dt>切换准备</dt>
+                <dd>{selectedArtifact ? modelStatusLabel(selectedArtifact.status) : selectedModel?.kind === "engine" ? "后缀已接受，切换时验证" : "不可加载"}</dd>
+              </div>
+              <div className="wide model-parser-preset">
+                <dt>解析格式</dt>
+                <dd>
+                  <select
+                    aria-label="模型解析格式"
                     disabled={busy !== null}
-                    key={tag}
-                    onClick={() => setDraftTags((current) => current.filter((item) => item !== tag))}
+                    onChange={(event) => onParserPresetChange(event.target.value as ParserPresetId)}
+                    value={parserPreset}
                   >
-                    {tag}<span aria-hidden="true">×</span>
+                    <option value="auto">自动识别（推荐）</option>
+                    <option value="yolov5">YOLO v5 解析格式</option>
+                    <option value="yolov8">YOLO v8 解析格式</option>
+                    <option value="yolo11">YOLO v11 解析格式</option>
+                    <option value="novasight_generic">NovaSight 通用解析器（内置）</option>
+                  </select>
+                  <small>目录浏览不加载 Engine；确认切换后才验证真实输入输出。</small>
+                </dd>
+              </div>
+            </dl>
+          </details>
+
+          <details className="model-selection-advanced">
+            <summary>整理模型标签与推荐状态</summary>
+            <section className="model-metadata-editor" aria-labelledby="model-metadata-title">
+              <div className="model-metadata-heading">
+                <div>
+                  <strong id="model-metadata-title">整理与标签</strong>
+                  <small>仅更新模型目录元数据，不加载 Engine，也不会影响正在运行的推理。</small>
+                </div>
+                {metadataDirty ? <span>待保存</span> : null}
+              </div>
+              <div className="model-recommendation-control" role="group" aria-label="模型推荐状态">
+                {RECOMMENDATION_OPTIONS.map((option) => (
+                  <button type="button"
+                    aria-pressed={draftRecommendation === option.value}
+                    className={draftRecommendation === option.value ? "active" : ""}
+                    disabled={busy !== null || selectedModel === null}
+                    key={option.value}
+                    onClick={() => setDraftRecommendation(option.value)}
+                  >
+                    {option.label}
                   </button>
                 ))}
-                {draftTags.length === 0 ? <small>尚未添加标签</small> : null}
               </div>
-              <div className="model-tag-input-row">
-                <input
-                  aria-label="新增模型标签"
-                  disabled={busy !== null || selectedModel === null}
-                  maxLength={32}
-                  onChange={(event) => setNewTag(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      addTag(newTag);
-                    }
-                  }}
-                  placeholder="输入自定义标签"
-                  value={newTag}
-                />
-                <button type="button"
-                  className="console-button secondary"
-                  disabled={busy !== null || selectedModel === null || newTag.trim() === ""}
-                  onClick={() => addTag(newTag)}
-                >
-                  添加
-                </button>
-              </div>
-              <div className="model-tag-suggestions" aria-label="常用标签">
-                {SUGGESTED_MODEL_TAGS.filter((tag) => !draftTags.includes(tag)).map((tag) => (
-                  <button type="button" disabled={busy !== null || selectedModel === null} key={tag} onClick={() => addTag(tag)}>
-                    + {tag}
+              <div className="model-tag-editor">
+                <div className="model-tag-list">
+                  {draftTags.map((tag) => (
+                    <button type="button"
+                      aria-label={`移除标签 ${tag}`}
+                      disabled={busy !== null}
+                      key={tag}
+                      onClick={() => setDraftTags((current) => current.filter((item) => item !== tag))}
+                    >
+                      {tag}<span aria-hidden="true">×</span>
+                    </button>
+                  ))}
+                  {draftTags.length === 0 ? <small>尚未添加标签</small> : null}
+                </div>
+                <div className="model-tag-input-row">
+                  <input
+                    aria-label="新增模型标签"
+                    disabled={busy !== null || selectedModel === null}
+                    maxLength={32}
+                    onChange={(event) => setNewTag(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addTag(newTag);
+                      }
+                    }}
+                    placeholder="输入自定义标签"
+                    value={newTag}
+                  />
+                  <button type="button"
+                    className="console-button secondary"
+                    disabled={busy !== null || selectedModel === null || newTag.trim() === ""}
+                    onClick={() => addTag(newTag)}
+                  >
+                    添加
                   </button>
-                ))}
+                </div>
+                <div className="model-tag-suggestions" aria-label="常用标签">
+                  {SUGGESTED_MODEL_TAGS.filter((tag) => !draftTags.includes(tag)).map((tag) => (
+                    <button type="button" disabled={busy !== null || selectedModel === null} key={tag} onClick={() => addTag(tag)}>
+                      + {tag}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-            <button type="button"
-              className="console-button secondary model-metadata-save"
-              disabled={busy !== null || !metadataDirty || selectedModel?.kind !== "engine"}
-              onClick={() => onSaveMetadata(draftRecommendation, draftTags)}
-            >
-              {busy === "model.metadata" ? "保存中..." : "保存整理结果"}
-            </button>
-          </section>
+              <button type="button"
+                className="console-button secondary model-metadata-save"
+                disabled={busy !== null || !metadataDirty || selectedModel?.kind !== "engine"}
+                onClick={() => onSaveMetadata(draftRecommendation, draftTags)}
+              >
+                {busy === "model.metadata" ? "保存中..." : "保存整理结果"}
+              </button>
+            </section>
+          </details>
         </aside> : null}
       </div>
 
@@ -418,7 +438,7 @@ export function ModelSelectionPanel({
 
       {selectedModel?.kind === "engine" ? (
         <p className="console-field-hint">
-          点击后会打开切换进度：验证 Engine 输入输出、准备运行配置，再应用到当前运行状态。
+          {canSwitch ? "切换时会展示进度；若主链正在运行，系统会先请你确认短暂停止与重启。" : "当前文件暂不可切换；请检查文件类型和模型状态。"}
         </p>
       ) : null}
 
