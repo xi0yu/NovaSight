@@ -26,6 +26,7 @@ def main():
         workspace = Path(temporary)
         (workspace / "data/models").mkdir(parents=True)
         (workspace / "run").mkdir()
+        (workspace / "run").chmod(0o700)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
