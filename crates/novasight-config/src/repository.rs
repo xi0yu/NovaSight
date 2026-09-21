@@ -1238,7 +1238,34 @@ fn replace_document(
     migrate_output_limits(&mut replacement);
     migrate_prediction_actuation_delay(&mut replacement);
     migrate_recoil_fire_delay(&mut replacement);
+    let class_maps: Vec<_> = [
+        &["inference", "detection_class_profiles"][..],
+        &["inference", "detection_class_priorities"],
+        &["inference", "detection_class_filters"],
+        &["control", "aim", "class_roles"],
+    ]
+    .into_iter()
+    .filter_map(|path| {
+        path.iter()
+            .try_fold(&replacement, |node, key| node.get(*key))
+            .map(|value| (path, value.clone()))
+    })
+    .collect();
     merge_value(&mut document, replacement);
+    for (class_path, value) in class_maps {
+        let parent = class_path[..class_path.len() - 1]
+            .iter()
+            .try_fold(&mut document, |node, key| node.get_mut(*key))
+            .and_then(Value::as_mapping_mut)
+            .ok_or_else(|| ConfigError::InvalidReplacementDocument {
+                path: path.to_owned(),
+                reason: "class profile map parent must be a mapping",
+            })?;
+        parent.insert(
+            Value::String(class_path[class_path.len() - 1].to_owned()),
+            value,
+        );
+    }
     let root =
         document
             .as_mapping_mut()

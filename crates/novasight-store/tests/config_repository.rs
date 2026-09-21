@@ -143,3 +143,32 @@ pipeline:
     assert!(persisted["pipeline"]["velocity_change_base_px_ms"].is_null());
     assert!(persisted["pipeline"]["velocity_change_relative"].is_null());
 }
+
+#[test]
+fn class_profile_maps_are_replaced_when_a_profile_is_deleted() {
+    let directory = TempDirectory::new();
+    let path = directory.join("replace-class-profiles.yaml");
+    YamlConfigRepository::initialize_default(&path).unwrap();
+    let repository = YamlConfigRepository::new(&path);
+    let old_profiles: Value =
+        serde_yaml::from_str("{default: [enemy], obsolete: [enemy]}").unwrap();
+    repository
+        .save_field("inference", "detection_class_profiles", old_profiles, 0)
+        .unwrap();
+    let old_roles: Value =
+        serde_yaml::from_str("{class_roles: {default: {'0': head}, obsolete: {'0': body}}}")
+            .unwrap();
+    repository
+        .save_field("control", "aim", old_roles, 1)
+        .unwrap();
+    let replacement: Value = serde_yaml::from_str(
+        "revision: 2\ninference:\n  detection_class_profiles:\n    default: [enemy]\ncontrol:\n  aim:\n    class_roles:\n      default: {'0': head}\n",
+    )
+    .unwrap();
+
+    repository.replace_document(replacement, 2).unwrap();
+
+    let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert!(persisted["inference"]["detection_class_profiles"]["obsolete"].is_null());
+    assert!(persisted["control"]["aim"]["class_roles"]["obsolete"].is_null());
+}

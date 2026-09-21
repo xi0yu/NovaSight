@@ -125,7 +125,7 @@ const CONTROL_ALGORITHM_LABEL = "连续 Atan 控制";
 const CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX = "配置 schema 与 Studio 参数不一致";
 type KmnetTestMessageTone = "success" | "warning";
 type ParameterPageFieldChange = {
-  section: "control" | "pipeline";
+  section: "control" | "inference" | "pipeline";
   key: string;
   value: RuntimeConfigValue;
 };
@@ -584,19 +584,19 @@ function parameterPageFieldChanges(
   baseline: RuntimeConfig,
   draft: RuntimeConfig
 ): ParameterPageFieldChange[] {
-  const allowedSections = new Set(["control", "pipeline"]);
+  const allowedSections = new Set(["control", "inference", "pipeline"]);
   const ignoredSections = new Set(["revision", "version", "roi_size"]);
   const unsupportedSections = Array.from(new Set([...Object.keys(baseline), ...Object.keys(draft)]))
     .filter((section) => !ignoredSections.has(section))
     .filter((section) => !allowedSections.has(section))
     .filter((section) => !runtimeConfigValuesEqual(baseline[section], draft[section]));
   if (unsupportedSections.length > 0) {
-    throw new Error(`参数页包含不支持热更新的配置区：${unsupportedSections.join("、")}`);
+    throw new Error(`参数页包含不支持保存的配置区：${unsupportedSections.join("、")}`);
   }
 
   const baselineControl = asRecord(baseline.control);
   const draftControl = asRecord(draft.control);
-  const supportedControlKeys = new Set(["trigger_mode", "recoil"]);
+  const supportedControlKeys = new Set(["trigger_mode", "recoil", "aim"]);
   const unsupportedControlKeys = Array.from(new Set([
     ...Object.keys(baselineControl),
     ...Object.keys(draftControl)
@@ -604,7 +604,7 @@ function parameterPageFieldChanges(
     .filter((key) => !supportedControlKeys.has(key))
     .filter((key) => !runtimeConfigValuesEqual(baselineControl[key], draftControl[key]));
   if (unsupportedControlKeys.length > 0) {
-    throw new Error(`参数页包含不支持热更新的控制字段：${unsupportedControlKeys.join("、")}`);
+    throw new Error(`参数页包含不支持保存的控制字段：${unsupportedControlKeys.join("、")}`);
   }
 
   const triggerChange = runtimeConfigValuesEqual(
@@ -624,6 +624,27 @@ function parameterPageFieldChanges(
         key: "recoil",
         value: draftControl.recoil as RuntimeConfigValue
       };
+  const aimChange = runtimeConfigValuesEqual(baselineControl.aim, draftControl.aim)
+    ? null
+    : {
+        section: "control" as const,
+        key: "aim",
+        value: draftControl.aim as RuntimeConfigValue
+      };
+
+  const baselineInference = asRecord(baseline.inference);
+  const draftInference = asRecord(draft.inference);
+  const inferenceChanges = Array.from(new Set([
+    ...Object.keys(baselineInference),
+    ...Object.keys(draftInference)
+  ]))
+    .sort()
+    .filter((key) => !runtimeConfigValuesEqual(baselineInference[key], draftInference[key]))
+    .map((key) => ({
+      section: "inference" as const,
+      key,
+      value: draftInference[key] as RuntimeConfigValue
+    }));
 
   const baselinePipeline = asRecord(baseline.pipeline);
   const draftPipeline = asRecord(draft.pipeline);
@@ -646,6 +667,8 @@ function parameterPageFieldChanges(
   if (triggerChange?.value === "hardware") {
     changes.push(triggerChange);
   }
+  if (aimChange) changes.push(aimChange);
+  changes.push(...inferenceChanges);
   changes.push(...pipelineChanges);
   if (recoilChange) {
     changes.push(recoilChange);
@@ -2728,18 +2751,47 @@ export function StudioConsoleView({
         return;
       }
       let restartRequired = false;
+      const documentChanges = changes.filter((change) =>
+        change.section === "inference"
+        || (change.section === "control" && change.key === "aim")
+        || change.section === "pipeline"
+      );
+      const needsDocumentReload = changes.some((change) =>
+        change.section === "inference" || (change.section === "control" && change.key === "aim")
+      );
+      let documentReloaded = false;
       let expectedRevision = readNumber(baseline.revision, 0);
       const executeSave = async () => {
         for (const change of changes) {
+          if (needsDocumentReload && documentChanges.includes(change)) {
+            if (documentReloaded) continue;
+            const current = lastApplied ?? baseline;
+            const payload = preserveOutputGate(
+              applyParameterPageFieldChanges(current, documentChanges),
+              current
+            );
+            payload.revision = expectedRevision;
+            const result = await updateRuntimeConfig(payload);
+            if (result.apply_mode !== "epoch_reload" || !result.applied) {
+              throw new Error(`类别与推理配置未在当前进程生效，后端返回 ${result.apply_mode}`);
+            }
+            lastApplied = normalizeRuntimeConfig(result.config);
+            expectedRevision = readNumber(lastApplied.revision, expectedRevision);
+            appliedChangeCount += documentChanges.length;
+            remainingChangeCount = Math.max(0, changes.length - appliedChangeCount);
+            restartRequired ||= result.restart_required;
+            documentReloaded = true;
+            continue;
+          }
           const result = await persistRuntimeConfigField(
             change.section,
             change.key,
             change.value,
             expectedRevision
           );
-          if (result.apply_mode !== "hot_update") {
+          if (result.apply_mode !== "hot_update" || !result.applied) {
             throw new Error(
-              `${change.section}.${change.key} 未按热更新契约应用，后端返回 ${result.apply_mode}`
+              `${change.section}.${change.key} 未按热更新契约生效，后端返回 ${result.apply_mode}`
             );
           }
           lastApplied = normalizeRuntimeConfig(result.config);
@@ -2759,10 +2811,12 @@ export function StudioConsoleView({
       parameterPageBaselineRef.current = null;
       setParameterPageDirtyState(false);
       reportSuccess(
-        "参数已保存并生效",
+        restartRequired ? "参数已保存，部分配置待重启" : "参数已保存并生效",
         restartRequired
-          ? "本页参数已热更新；其他进程级配置仍等待服务启动接管。"
-          : "修改已写入配置文件并同步到当前进程；没有重建运行 epoch。",
+          ? "本页运行参数已应用；其他进程级配置仍等待服务启动接管。"
+          : needsDocumentReload
+            ? "类别与推理配置已写入，并在当前进程重新加载；物理输出开关未改变。"
+            : "修改已写入配置文件并同步到当前进程；没有重建运行 epoch。",
         "parameter-page"
       );
     } catch (error) {
@@ -2775,22 +2829,28 @@ export function StudioConsoleView({
       } catch {
         // Keep the newest successful response when the recovery read also fails.
       }
-      if (canonical && changes.length > 0) {
+      if (canonical) {
         finalizeRuntimeConfigWrite(canonical);
-        const retryDraft = applyParameterPageFieldChanges(canonical, changes);
+        const retryDraft = changes.length > 0
+          ? applyParameterPageFieldChanges(canonical, changes)
+          : { ...draft };
         retryDraft.revision = canonical.revision;
         parameterPageBaselineRef.current = canonical;
         configDraftRef.current = retryDraft;
         setConfigDraft(retryDraft);
-        remainingChangeCount = parameterPageFieldChanges(canonical, retryDraft).length;
-        setParameterPageDirtyState(remainingChangeCount > 0);
+        remainingChangeCount = changes.length > 0
+          ? parameterPageFieldChanges(canonical, retryDraft).length
+          : 0;
+        setParameterPageDirtyState(!runtimeConfigsEqual(canonical, retryDraft));
       }
       const message = getErrorMessage(error);
-      const progress = remainingChangeCount === 0
-        ? "后端当前配置已重新同步，没有剩余未保存修改。"
-        : appliedChangeCount > 0
-          ? `已保存并热更新 ${appliedChangeCount} 项，剩余 ${remainingChangeCount} 项仍保留为草稿。`
-          : `本次没有参数被写入，${remainingChangeCount} 项修改仍保留为草稿。`;
+      const progress = changes.length === 0
+        ? "本次没有参数被写入，修改仍保留为草稿。"
+        : remainingChangeCount === 0
+          ? "后端已保存这些值，但当前进程未确认生效；请查看运行状态。"
+          : appliedChangeCount > 0
+            ? `已保存并应用 ${appliedChangeCount} 项，剩余 ${remainingChangeCount} 项仍保留为草稿。`
+            : `本次没有参数被写入，${remainingChangeCount} 项修改仍保留为草稿。`;
       const failureMessage = `${progress} ${message}`;
       setLocalError(`参数保存未全部完成：${failureMessage}`);
       setDialogSaveError(failureMessage);

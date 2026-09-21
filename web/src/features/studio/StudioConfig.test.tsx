@@ -281,3 +281,87 @@ it("confirms class-profile deletion each time instead of retaining an armed dele
   await userEvent.click(screen.getByRole("button", { name: "删除类别配置 default" }));
   expect(screen.getByRole("alertdialog", { name: "删除类别配置“default”？" })).toBeVisible();
 });
+
+it("saves a class aim-point edit without reporting unsupported control.aim", async () => {
+  const configured = { ...props.runtimeConfig,
+    inference: { detection_class_profile: "default", detection_class_profiles: { default: ["enemy"] } },
+    control: { ...props.runtimeConfig.control, aim: { class_roles: { default: {} } } },
+  };
+  let current = structuredClone(configured) as Record<string, unknown>;
+  const writes: Array<Record<string, unknown>> = [];
+  vi.stubGlobal("fetch", vi.fn((url, init) => {
+    if (!String(url).endsWith("/api/config")) return new Promise(() => {});
+    if ((init?.method ?? "GET") === "GET") {
+      return Promise.resolve(new Response(JSON.stringify(current), { status: 200, headers: { "content-type": "application/json" } }));
+    }
+    const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    writes.push(payload);
+    if (typeof payload.section === "string" && typeof payload.key === "string") {
+      current = { ...current, [payload.section]: { ...(current[payload.section] as Record<string, unknown>), [payload.key]: payload.value }, revision: Number(current.revision) + 1 };
+    } else {
+      current = { ...payload, revision: Number(current.revision) + 1 };
+    }
+    return Promise.resolve(new Response(JSON.stringify({ config: current, apply_mode: payload.section ? "hot_update" : "epoch_reload", restart_required: false, applied: true, rolled_back: false, message: "ok" }), { status: 200, headers: { "content-type": "application/json" } }));
+  }));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByText("目标与识别设置"));
+  await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
+  await userEvent.click(within(screen.getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
+  await userEvent.click(screen.getByRole("button", { name: "加入草稿并关闭" }));
+  await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled());
+  expect(writes).toHaveLength(1);
+  expect(writes[0]).toMatchObject({ control: { output_enabled: false, aim: { class_roles: { default: { "0": "head" } } } } });
+});
+
+it("saves a new class profile as one runtime configuration update", async () => {
+  const configured = { ...props.runtimeConfig,
+    inference: { detection_class_profile: "default", detection_class_profiles: { default: ["enemy"] } },
+    control: { ...props.runtimeConfig.control, aim: { class_roles: { default: {} } } },
+  };
+  let submitted: Record<string, unknown> | null = null;
+  vi.stubGlobal("fetch", vi.fn((url, init) => {
+    if (!String(url).endsWith("/api/config")) return new Promise(() => {});
+    if ((init?.method ?? "GET") === "GET") {
+      return Promise.resolve(new Response(JSON.stringify(configured), { status: 200, headers: { "content-type": "application/json" } }));
+    }
+    submitted = JSON.parse(String(init?.body));
+    return Promise.resolve(new Response(JSON.stringify({ config: { ...submitted, revision: 26 }, apply_mode: "epoch_reload", restart_required: false, applied: true, rolled_back: false, message: "ok" }), { status: 200, headers: { "content-type": "application/json" } }));
+  }));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByText("目标与识别设置"));
+  await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
+  await userEvent.type(screen.getByRole("textbox", { name: "新建配置" }), "arena");
+  await userEvent.click(screen.getByRole("button", { name: "复制当前" }));
+  await userEvent.click(screen.getByRole("button", { name: "加入草稿并关闭" }));
+  await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled());
+  expect(submitted).toMatchObject({
+    revision: 25,
+    inference: { detection_class_profile: "arena", detection_class_profiles: { default: ["enemy"], arena: ["enemy"] } },
+    control: { output_enabled: false, aim: { class_roles: expect.any(Object) } },
+  });
+  expect(vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/api/config") && init?.method === "POST")).toHaveLength(1);
+});
+
+it("retains a rejected class edit and does not claim the draft is empty", async () => {
+  const configured = { ...props.runtimeConfig,
+    inference: { detection_class_profile: "default", detection_class_profiles: { default: ["enemy"] } },
+    control: { ...props.runtimeConfig.control, aim: { class_roles: { default: {} } } },
+  };
+  vi.stubGlobal("fetch", vi.fn((url, init) => {
+    if (!String(url).endsWith("/api/config")) return new Promise(() => {});
+    return Promise.resolve((init?.method ?? "GET") === "GET"
+      ? new Response(JSON.stringify(configured), { status: 200, headers: { "content-type": "application/json" } })
+      : new Response(JSON.stringify({ code: "CLASS_CONFIG_REJECTED", message: "invalid class role" }), { status: 422, headers: { "content-type": "application/json" } }));
+  }));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByText("目标与识别设置"));
+  await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
+  await userEvent.click(within(screen.getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
+  await userEvent.click(screen.getByRole("button", { name: "加入草稿并关闭" }));
+  await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  await waitFor(() => expect(screen.getByText(/invalid class role/)).toBeVisible());
+  expect(screen.getByRole("button", { name: "保存修改" })).toBeEnabled();
+  expect(screen.queryByText(/没有剩余未保存修改/)).not.toBeInTheDocument();
+});
