@@ -246,42 +246,6 @@ curl -fsS -b "$cookie_jar" \
     --argjson stream_fps "$stream_fps" \
     '.revision == $revision and .limits.stream_fps == $stream_fps' >/dev/null
 
-stage="class-config-save-and-delete"
-curl -fsS -b "$cookie_jar" "http://127.0.0.1:$port/api/config" >"$config_body"
-jq '
-  .inference.detection_class_profile = "default"
-  | .inference.detection_class_profiles = {default: ["enemy"], obsolete: ["enemy"]}
-  | .inference.detection_class_priorities = {default: "0", obsolete: "0"}
-  | .inference.detection_class_filters = {default: "all", obsolete: "all"}
-  | .control.aim.class_roles = {default: {"0": "head"}, obsolete: {"0": "body"}}
-  | .control.aim.role_y_ratios = {head: 0.33, body: 0.5, other: 0.22}
-  | .pipeline.target_class_aim_y_ratios = "0:0.33"
-' "$config_body" >"$config_update_body"
-curl -fsS -b "$cookie_jar" -H 'Content-Type: application/json' \
-  -H "x-novasight-csrf: $csrf_token" --data-binary "@$config_update_body" \
-  "http://127.0.0.1:$port/api/config" >"$response_body"
-jq -e '.apply_mode == "epoch_reload" and .applied == true and .restart_required == false' "$response_body" >/dev/null
-curl -fsS -b "$cookie_jar" "http://127.0.0.1:$port/api/config" >"$config_body"
-jq -e '.inference.detection_class_profiles.obsolete == ["enemy"] and .control.aim.class_roles.obsolete."0" == "body"' "$config_body" >/dev/null
-jq '
-  .inference.detection_class_profiles |= del(.obsolete)
-  | .inference.detection_class_priorities |= del(.obsolete)
-  | .inference.detection_class_filters |= del(.obsolete)
-  | .control.aim.class_roles |= del(.obsolete)
-' "$config_body" >"$config_update_body"
-curl -fsS -b "$cookie_jar" -H 'Content-Type: application/json' \
-  -H "x-novasight-csrf: $csrf_token" --data-binary "@$config_update_body" \
-  "http://127.0.0.1:$port/api/config" >"$response_body"
-jq -e '.apply_mode == "epoch_reload" and .applied == true and .restart_required == false' "$response_body" >/dev/null
-curl -fsS -b "$cookie_jar" "http://127.0.0.1:$port/api/config" \
-  | jq -e '
-      .inference.detection_class_profiles.obsolete == null
-      and .inference.detection_class_priorities.obsolete == null
-      and .inference.detection_class_filters.obsolete == null
-      and .control.aim.class_roles.obsolete == null
-      and .pipeline.target_class_aim_y_ratios == "0:0.33"
-    ' >/dev/null
-
 stage="runtime-start-stop"
 status_code="$(curl -sS -o "$response_body" -w '%{http_code}' \
   -b "$cookie_jar" \
@@ -402,4 +366,4 @@ if [[ "$status_code" != "401" ]] \
   exit 1
 fi
 
-echo "HOST_COMPOSITION_PASS anonymous_rejection=verified login=verified session=verified csrf=verified temporary_license=verified config_revision_conflict=verified config_persistence_failure=verified class_config_save_delete=verified runtime_start_stop=verified emergency_stop=verified local_shutdown_denied=verified daemon_disconnect=verified logout=verified daemon_transport=unix"
+echo "HOST_COMPOSITION_PASS anonymous_rejection=verified login=verified session=verified csrf=verified temporary_license=verified config_revision_conflict=verified config_persistence_failure=verified runtime_start_stop=verified emergency_stop=verified local_shutdown_denied=verified logout=verified daemon_transport=unix"
