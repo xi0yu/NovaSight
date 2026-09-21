@@ -91,7 +91,7 @@ export function LicensePanel({
   return (
     <div className="license-panel">
       <InlineError message={failure?.message} title={failure?.title} />
-      {message ? <div className="inline-note">{message}</div> : null}
+      {message ? <div className="inline-note" role="status">{message}</div> : null}
       <div className={license?.valid ? "license-hero valid" : "license-hero"}>
         <div>
           <span>使用权限</span>
@@ -255,7 +255,11 @@ export function LicenseActivationForm({
             autoFocus={gate}
             spellCheck={false}
             disabled={activating}
-            onChange={(event) => setCredential(event.target.value)}
+            onChange={(event) => {
+              setCredential(event.target.value);
+              setFailure(null);
+              setMessage(undefined);
+            }}
           />
         </label>
         <Button variant="primary" type="submit" loading={activating} leadingIcon="shield-check">

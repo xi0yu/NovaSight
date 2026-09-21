@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthGate } from "./AuthGate";
 
 const api = vi.hoisted(() => ({
-  getAuthSession: vi.fn(), establishAuthSession: vi.fn(), getHealth: vi.fn(),
+  getAuthSession: vi.fn(), establishAuthSession: vi.fn(), getHealth: vi.fn(), logoutAuthSession: vi.fn(),
 }));
 vi.mock("../../api", async (original) => ({
   ...await original<typeof import("../../api")>(), ...api,
@@ -39,5 +39,23 @@ describe("single authorization entry", () => {
     render(<AuthGate><div>识别工作台</div></AuthGate>);
     await waitFor(() => expect(screen.getByText("识别工作台")).toBeInTheDocument());
     expect(api.establishAuthSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps the workspace open when logout fails instead of claiming the session ended", async () => {
+    api.getAuthSession.mockResolvedValue(activeSession);
+    api.logoutAuthSession.mockRejectedValue(new Error("device refused logout"));
+    render(<AuthGate><div>识别工作台</div></AuthGate>);
+    await userEvent.click(await screen.findByRole("button", { name: "退出会话" }));
+    await waitFor(() => expect(api.logoutAuthSession).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("识别工作台")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "授权后进入" })).not.toBeInTheDocument();
+  });
+
+  it("clears an old input error once a new authorization code is entered", async () => {
+    render(<AuthGate><div>识别工作台</div></AuthGate>);
+    await userEvent.click(await screen.findByRole("button", { name: "进入控制台" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("请输入授权码");
+    await userEvent.type(screen.getByLabelText("授权码"), "replacement");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

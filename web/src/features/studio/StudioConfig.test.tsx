@@ -188,3 +188,95 @@ it("shows capture selection rejection beside the save control", async () => {
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(true);
   expect(await screen.findByRole("alert")).toHaveTextContent("device rejected 240 FPS");
 });
+
+it("requires an explicit capture choice when the saved format is absent from detected capabilities", async () => {
+  history.replaceState(null, "", "/?page=capture");
+  const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
+  vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/capabilities")
+    ? Promise.resolve(new Response(JSON.stringify({ available: true, device: "/dev/video0", capabilities: [{ pixel_format: "NV12", width: 1280, height: 720, fps_list: [120] }], reason: "" }), { status: 200, headers: { "content-type": "application/json" } }))
+    : new Promise(() => {})));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "检测设备能力" }));
+  const format = await screen.findByRole("combobox", { name: "采集格式" });
+  expect(format).toHaveValue("");
+  expect(screen.getByRole("button", { name: "保存采集配置" })).toBeDisabled();
+  await userEvent.selectOptions(format, "NV12:1280x720@120");
+  await waitFor(() => expect(screen.getByRole("button", { name: "保存采集配置" })).toBeEnabled());
+});
+
+it("does not silently save an auto-high-fps capture profile with no chosen format", () => {
+  history.replaceState(null, "", "/?page=capture");
+  const stopped = { ...runtime, running: false, capture: { ...runtime.capture, running: false, profile: null }, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
+  const unconfigured = { ...props.runtimeConfig, capture: { device: "/dev/video0" } };
+  render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} runtimeConfig={unconfigured} /></SafetyOperationProvider>);
+  expect(screen.getByRole("combobox", { name: "采集格式" })).toHaveValue("");
+  expect(screen.getByRole("button", { name: "保存采集配置" })).toBeDisabled();
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(false);
+});
+
+it("does not reuse a previous device format when the operator changes capture device", async () => {
+  history.replaceState(null, "", "/?page=capture");
+  const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
+  render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
+  const device = screen.getByRole("textbox", { name: "视频设备" });
+  await userEvent.clear(device);
+  await userEvent.type(device, "/dev/video1");
+  await userEvent.tab();
+  expect(screen.getByRole("button", { name: "保存采集配置" })).toBeDisabled();
+});
+
+it("keeps failed capability detection visible beside capture controls", async () => {
+  history.replaceState(null, "", "/?page=capture");
+  const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
+  vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/capabilities")
+    ? Promise.reject(new Error("camera unplugged")) : new Promise(() => {})));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "检测设备能力" }));
+  expect(await screen.findByText(/设备能力检测失败：camera unplugged/)).toBeVisible();
+});
+
+it("does not let a pending parameter draft get overwritten by config import", async () => {
+  render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "按键触发" }));
+  expect(screen.getByRole("button", { name: "导入" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "导出已保存" })).toBeEnabled();
+  expect(screen.getByText(/导出不包含草稿/)).toBeVisible();
+});
+
+it("keeps physical output off when an imported file requests it on", async () => {
+  const imported = { ...props.runtimeConfig, control: { ...props.runtimeConfig.control, output_enabled: true }, pipeline: { ...props.runtimeConfig.pipeline, target_lost_grace_ms: 99 } };
+  let submitted: Record<string, unknown> | null = null;
+  vi.stubGlobal("fetch", vi.fn((url, init) => {
+    if (String(url).endsWith("/api/config") && (init?.method ?? "GET") === "GET") {
+      return Promise.resolve(new Response(JSON.stringify(props.runtimeConfig), { status: 200, headers: { "content-type": "application/json" } }));
+    }
+    if (String(url).endsWith("/api/config") && init?.method === "POST") {
+      submitted = JSON.parse(String(init.body));
+      return Promise.resolve(new Response(JSON.stringify({ code: "TEST_REJECTED", message: "probe complete" }), { status: 409, headers: { "content-type": "application/json" } }));
+    }
+    return new Promise(() => {});
+  }));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  const file = new File([JSON.stringify(imported)], "dangerous.json", { type: "application/json" });
+  fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
+  const confirmation = await screen.findByRole("alertdialog", { name: "应用 dangerous.json？" });
+  expect(confirmation).toHaveTextContent("物理输出开关不会随导入文件改变");
+  await userEvent.click(within(confirmation).getByRole("button", { name: "确认导入配置" }));
+  await waitFor(() => expect(submitted).not.toBeNull());
+  expect((submitted as unknown as { control: { output_enabled: boolean } }).control.output_enabled).toBe(false);
+});
+
+it("confirms class-profile deletion each time instead of retaining an armed delete", async () => {
+  const configured = { ...props.runtimeConfig, inference: {
+    detection_class_profile: "default",
+    detection_class_profiles: { default: ["enemy"], secondary: ["enemy"] },
+  } };
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByText("目标与识别设置"));
+  await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
+  await userEvent.click(screen.getByRole("button", { name: "删除类别配置 default" }));
+  expect(screen.getByRole("alertdialog", { name: "删除类别配置“default”？" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  await userEvent.click(screen.getByRole("button", { name: "删除类别配置 default" }));
+  expect(screen.getByRole("alertdialog", { name: "删除类别配置“default”？" })).toBeVisible();
+});

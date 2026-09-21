@@ -537,6 +537,16 @@ function normalizeRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
   return next;
 }
 
+function preserveOutputGate(candidate: RuntimeConfig, current: RuntimeConfig): RuntimeConfig {
+  const next = normalizeRuntimeConfig(candidate);
+  const control = { ...asRecord(next.control) };
+  const outputEnabled = asRecord(current.control).output_enabled;
+  if (outputEnabled === undefined) delete control.output_enabled;
+  else control.output_enabled = outputEnabled;
+  next.control = control as RuntimeConfig[string];
+  return next;
+}
+
 function runtimeConfigValuesEqual(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) {
     return true;
@@ -755,7 +765,6 @@ export function StudioConsoleView({
   const [confirmationError, setConfirmationError] = useState<string | null>(null);
   const [newClassProfileName, setNewClassProfileName] = useState("");
   const [renamedClassProfileName, setRenamedClassProfileName] = useState("");
-  const [classProfileDeleteArmed, setClassProfileDeleteArmed] = useState(false);
   const [crosshairMessage, setCrosshairMessage] = useState("");
   const [crosshairPreviewKey, setCrosshairPreviewKey] = useState(0);
   const [previewActiveOverride, setPreviewActiveOverride] = useState<boolean | null>(null);
@@ -1290,10 +1299,6 @@ export function StudioConsoleView({
   const runtimePostprocess = runtimeInference?.postprocess;
   const kmnetStatus = runtime?.executor.executors.kmnet;
   const selectedProfile = capture?.profile;
-  const runningPixelFormat = selectedProfile?.pixel_format ?? "";
-  const runningWidth = selectedProfile?.width ?? 0;
-  const runningHeight = selectedProfile?.height ?? 0;
-  const runningFps = selectedProfile?.fps ?? 0;
   const configuredCaptureProfile =
     configuredCapturePixelFormat && configuredCaptureWidth > 0 && configuredCaptureHeight > 0 && configuredCaptureFps > 0
       ? {
@@ -1344,9 +1349,7 @@ export function StudioConsoleView({
   }, [configuredChoiceId, detectedChoices, runningChoiceId]);
   const selectedChoice =
     choices.find((choice) => choiceId(choice) === selectedChoiceId) ??
-    choices.find((choice) => choiceId(choice) === configuredChoiceId) ??
-    choices.find((choice) => choiceId(choice) === runningChoiceId) ??
-    choices[0];
+    (device === configuredCaptureDevice ? choices.find((choice) => choiceId(choice) === configuredChoiceId) : undefined);
   const roiSize = rustControlPlane
     ? configuredRoiWidth > 0 && configuredRoiHeight > 0
       ? Math.min(configuredRoiWidth, configuredRoiHeight)
@@ -1415,7 +1418,6 @@ export function StudioConsoleView({
   );
   useEffect(() => {
     setRenamedClassProfileName(activeDetectionProfile);
-    setClassProfileDeleteArmed(false);
   }, [activeDetectionProfile]);
   const { aimConfig, rawAimRoleRatios, recoilConfig } = useMemo(() => {
     const aim = nestedRecord(controlConfig, "aim");
@@ -2189,14 +2191,10 @@ export function StudioConsoleView({
   }, [configuredCaptureDevice, runtime?.capture?.device]);
 
   useEffect(() => {
-    if (!selectedChoiceId && configuredChoiceId) {
+    if (!selectedChoiceId && configuredChoiceId && device === configuredCaptureDevice) {
       setSelectedChoiceId(configuredChoiceId);
-      return;
     }
-    if (!selectedChoiceId && runningChoiceId) {
-      setSelectedChoiceId(runningChoiceId);
-    }
-  }, [configuredChoiceId, runningChoiceId, selectedChoiceId]);
+  }, [configuredCaptureDevice, configuredChoiceId, device, selectedChoiceId]);
 
   const applyModelCatalogResult = useCallback((result: ModelCatalogResponse) => {
     setModelCatalog(result.root);
@@ -2397,6 +2395,8 @@ export function StudioConsoleView({
   const refreshCapabilities = useCallback(async () => {
     setBusy("caps");
     setLocalError(null);
+    setCaptureActionError(null);
+    setCaps(null);
     try {
       const result = await getCaptureCapabilities(device);
       setCaps(result);
@@ -2406,24 +2406,20 @@ export function StudioConsoleView({
         reportError(new Error(reason), { source: "capture-caps", title: "采集设备不可用" });
       }
       const grouped = groupCapabilities(result.capabilities);
-      const configured = grouped.find((choice: CapabilityChoice) => choiceMatchesConfig(choice, {
+      const configured = device === configuredCaptureDevice ? grouped.find((choice: CapabilityChoice) => choiceMatchesConfig(choice, {
         pixel_format: configuredCapturePixelFormat,
         width: configuredCaptureWidth,
         height: configuredCaptureHeight,
         fps: configuredCaptureFps
-      }));
-      const running = grouped.find((choice: CapabilityChoice) => runningPixelFormat && (
-        choice.pixel_format.toUpperCase() === runningPixelFormat.toUpperCase() &&
-        choice.width === runningWidth &&
-        choice.height === runningHeight &&
-        choice.fps === runningFps
-      ));
-      const next = configured ?? running ?? grouped[0];
-      if (next) {
-        setSelectedChoiceId(choiceId(next));
-      }
+      })) : undefined;
+      setSelectedChoiceId((current) => grouped.some((choice) => choiceId(choice) === current)
+        ? current
+        : configured ? choiceId(configured) : "");
     } catch (err) {
-      setLocalError(getErrorMessage(err));
+      const message = `设备能力检测失败：${getErrorMessage(err)}`;
+      setLocalError(message);
+      setCaptureActionError(message);
+      reportError(err, { source: "capture-caps", title: "设备能力检测失败", popup: false });
     } finally {
       setBusy(null);
     }
@@ -2432,44 +2428,28 @@ export function StudioConsoleView({
     configuredCaptureHeight,
     configuredCapturePixelFormat,
     configuredCaptureWidth,
-    device,
-    runningFps,
-    runningHeight,
-    runningPixelFormat,
-    runningWidth
+    configuredCaptureDevice,
+    device
   ]);
 
-  const buildCapturePayload = useCallback((): CaptureSelectPayload => {
-    const choice = selectedChoice;
-    return choice
-      ? {
-          device,
-          preference: "manual",
-          pixel_format: choice.pixel_format,
-          width: choice.width,
-          height: choice.height,
-          fps: choice.fps
-        }
-      : selectedProfile
-        ? {
-            device,
-            preference: "manual",
-            pixel_format: selectedProfile.pixel_format,
-            width: selectedProfile.width,
-            height: selectedProfile.height,
-            fps: selectedProfile.fps
-          }
-        : {
-            device,
-            preference: "auto_high_fps"
-          };
-  }, [device, selectedChoice, selectedProfile]);
+  const buildCapturePayload = useCallback((choice: CapabilityChoice): CaptureSelectPayload => ({
+    device,
+    preference: "manual",
+    pixel_format: choice.pixel_format,
+    width: choice.width,
+    height: choice.height,
+    fps: choice.fps
+  }), [device]);
 
   const applyCapture = useCallback(async () => {
+    if (!selectedChoice || !device.trim()) {
+      setCaptureActionError("请先填写视频设备并明确选择采集格式，再保存配置。");
+      return;
+    }
     setBusy("capture");
     setLocalError(null);
     setCaptureActionError(null);
-    const payload = buildCapturePayload();
+    const payload = buildCapturePayload(selectedChoice);
     let operationFailed = false;
     try {
       await selectCaptureProfile(payload);
@@ -2492,7 +2472,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [buildCapturePayload, onRefresh]);
+  }, [buildCapturePayload, device, onRefresh, selectedChoice]);
 
   const {
     emergencyStop: emergencyStopMainline,
@@ -3458,6 +3438,17 @@ export function StudioConsoleView({
     persistClassProfiles
   ]);
 
+  const requestDeleteClassProfile = useCallback(() => {
+    setConfirmationRequest({
+      eyebrow: "类别配置",
+      title: `删除类别配置“${activeDetectionProfile}”？`,
+      description: "此配置及其类别瞄点设置会从参数草稿移除；返回参数页保存后才会写入设备。",
+      confirmLabel: "确认删除配置",
+      danger: true,
+      onConfirm: deleteClassProfile
+    });
+  }, [activeDetectionProfile, deleteClassProfile]);
+
   const setKmNetConnection = useCallback(async (connect: boolean) => {
     setBusy(connect ? "kmnet.connect" : "kmnet.disconnect");
     setLocalError(null);
@@ -3582,7 +3573,7 @@ export function StudioConsoleView({
     baseline: RuntimeConfig,
     canonicalChanged = false
   ): void => {
-    const changedSections = changedRuntimeConfigSections(baseline, imported);
+    const changedSections = changedRuntimeConfigSections(baseline, preserveOutputGate(imported, baseline));
     setConfirmationRequest({
       eyebrow: canonicalChanged ? "配置已在后台更新" : "导入运行配置",
       title: canonicalChanged ? "请按最新配置重新确认" : `应用 ${fileName}？`,
@@ -3591,7 +3582,8 @@ export function StudioConsoleView({
         : "导入会在确认时重新读取当前配置版本，再以该事务基线替换整份运行配置。",
       details: [
         `将修改：${changedSections.join("、") || "没有差异"}`,
-        "运行参数会立即应用；监听地址或存储根目录等进程级配置会单独提示。"
+        "运行参数会立即应用；监听地址或存储根目录等进程级配置会单独提示。",
+        "物理输出开关不会随导入文件改变，仍需在参数页单独确认。"
       ],
       confirmLabel: canonicalChanged ? "按最新配置导入" : "确认导入配置",
       danger: true,
@@ -3603,14 +3595,14 @@ export function StudioConsoleView({
             const canonical = normalizeRuntimeConfig(await getRuntimeConfig());
             if (!runtimeConfigValuesEqual(canonical.revision, baseline.revision)) {
               finalizeRuntimeConfigWrite(canonical);
-              if (changedRuntimeConfigSections(canonical, imported).length === 0) {
+              if (changedRuntimeConfigSections(canonical, preserveOutputGate(imported, canonical)).length === 0) {
                 reportSuccess("无需导入配置", "当前配置已经与导入文件一致。", "config-import");
                 return true;
               }
               requestConfigImportConfirmation(fileName, imported, canonical, true);
               return false;
             }
-            const payload = normalizeRuntimeConfig(imported);
+            const payload = preserveOutputGate(imported, canonical);
             payload.revision = canonical.revision;
             const result = await updateRuntimeConfig(payload);
             const applied = normalizeRuntimeConfig(result.config);
@@ -3629,7 +3621,7 @@ export function StudioConsoleView({
             if (getApiErrorCode(error) === "CONFIG_REVISION_CONFLICT") {
               const canonical = normalizeRuntimeConfig(await getRuntimeConfig());
               finalizeRuntimeConfigWrite(canonical);
-              if (changedRuntimeConfigSections(canonical, imported).length === 0) {
+              if (changedRuntimeConfigSections(canonical, preserveOutputGate(imported, canonical)).length === 0) {
                 reportSuccess("无需导入配置", "当前配置已经与导入文件一致。", "config-import");
                 return true;
               }
@@ -3670,7 +3662,7 @@ export function StudioConsoleView({
       if (!current) {
         throw new Error("尚未读取当前配置，不能安全导入。");
       }
-      const payload = normalizeRuntimeConfig(decoded as RuntimeConfig);
+      const payload = preserveOutputGate(decoded as RuntimeConfig, current);
       const changedSections = changedRuntimeConfigSections(current, payload);
       if (changedSections.length === 0) {
         setLocalError("导入文件与当前配置一致，没有需要应用的修改。");
@@ -4029,10 +4021,10 @@ export function StudioConsoleView({
                     value={selectedChoice ? choiceId(selectedChoice) : ""}
                     applyMode="launch"
                     options={choices.length > 0
-                      ? choices.map((choice) => ({
+                      ? [{ value: "", label: "请选择采集格式", disabled: true }, ...choices.map((choice) => ({
                           value: choiceId(choice),
                           label: choiceLabel(choice)
-                        }))
+                        }))]
                       : [{ value: "", label: "请先检测设备能力", disabled: true }]}
                     onCommit={(value) => {
                       setSelectedChoiceId(value);
@@ -4045,7 +4037,7 @@ export function StudioConsoleView({
                   </button>
                   <button
                     className="console-button primary"
-                    disabled={busy !== null || runtimeLifecycleActive || runtimeControlUnavailable}
+                    disabled={busy !== null || runtimeLifecycleActive || runtimeControlUnavailable || !selectedChoice || !device.trim() || caps?.available === false}
                     onClick={() => void applyCapture()}
                     type="button"
                   >
@@ -4479,14 +4471,14 @@ export function StudioConsoleView({
               </span>
               <div aria-live="polite" role="status">
                 <b>{parameterPageDirty ? "修改尚未保存" : "没有待保存的参数"}</b>
-                <small>{parameterPageDirty ? "保存后请在“配置生效状态”核对；不会自动开启物理输出" : "修改普通参数后点击“保存修改”；输出开关单独确认"}</small>
+                <small>{parameterPageDirty ? "导入前先保存或放弃草稿；导出不包含草稿，保存后请核对生效状态" : "修改普通参数后点击“保存修改”；输出开关单独确认"}</small>
               </div>
               <div className="parameter-save-bar-actions">
-                <button className="console-button" onClick={exportConfig} type="button">
+                <button className="console-button" onClick={exportConfig} type="button" title="仅导出已保存配置，不包含本页草稿">
                   <NovaIcon name="export" size={15} />
-                  导出
+                  导出已保存
                 </button>
-                <button className="console-button" onClick={() => fileInputRef.current?.click()} type="button">
+                <button className="console-button" disabled={parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0} onClick={() => fileInputRef.current?.click()} title={parameterPageDirty ? "请先保存或放弃当前参数草稿，再导入配置" : ""} type="button">
                   <NovaIcon name="import" size={15} />
                   导入
                 </button>
@@ -5483,16 +5475,10 @@ export function StudioConsoleView({
                     aria-label={`删除类别配置 ${activeDetectionProfile}`}
                     className="console-button danger"
                     disabled={busy !== null || detectionProfileNames.length <= 1}
-                    onClick={() => {
-                      if (classProfileDeleteArmed) {
-                        void deleteClassProfile();
-                      } else {
-                        setClassProfileDeleteArmed(true);
-                      }
-                    }}
+                    onClick={requestDeleteClassProfile}
                   >
                     <NovaIcon name="delete" size={15} />
-                    {classProfileDeleteArmed ? "确认删除" : "删除"}
+                    删除
                   </button>
                 </div>
 

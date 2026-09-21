@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 
 import { formatNumberDraft, resolveNumberDraft } from "./numberDraft";
+import { reportError } from "../../lib/toast";
+
+function runControlCommit(action: () => Promise<void> | void): Promise<void> {
+  try {
+    return Promise.resolve(action()).catch((error: unknown) => {
+      reportError(error, { source: "parameter-input", title: "参数修改失败" });
+    });
+  } catch (error) {
+    reportError(error, { source: "parameter-input", title: "参数修改失败" });
+    return Promise.resolve();
+  }
+}
 
 export type ParameterApplyMode = "live" | "reload" | "save" | "launch" | "restart";
 export type ParameterRiskLevel = "normal" | "advanced" | "calibration";
@@ -150,7 +162,7 @@ function SliderNumberControl({
     setDraftText(nextText);
     if (next !== Number(value.toFixed(digits))) {
       committingRef.current = true;
-      void Promise.resolve(onCommit(next)).finally(() => {
+      void runControlCommit(() => onCommit(next)).finally(() => {
         committingRef.current = false;
         // Re-align draft to the latest external value to avoid races where
         // the server pushed a different number while we were committing.
@@ -340,7 +352,7 @@ function StepperNumberControl({
     setDraftText(nextText);
     if (next !== Number(value.toFixed(digits))) {
       committingRef.current = true;
-      void Promise.resolve(onCommit(next)).finally(() => {
+      void runControlCommit(() => onCommit(next)).finally(() => {
         committingRef.current = false;
         // Re-align with the latest external value to avoid races where
         // the server pushed a different number while we were committing.
@@ -369,7 +381,7 @@ function StepperNumberControl({
   return (
     <div className="parameter-stepper-control" data-control-id={controlId}>
       <button
-        aria-label="减少数值"
+        aria-label={`减少${ariaLabel ?? "数值"}`}
         className="parameter-stepper-button"
         disabled={disabled || value <= min}
         type="button"
@@ -406,7 +418,7 @@ function StepperNumberControl({
         }}
       />
       <button type="button"
-        aria-label="增加数值"
+        aria-label={`增加${ariaLabel ?? "数值"}`}
         className="parameter-stepper-button"
         disabled={disabled || value >= max}
         onClick={() => stepBy(1)}
@@ -576,7 +588,7 @@ export function ParameterPresetControl({
             disabled={option.disabled}
             key={option.id}
             type="button"
-            onClick={() => void option.onSelect()}
+            onClick={() => void runControlCommit(option.onSelect)}
           >
             <b>{option.label}</b>
             <small>{option.detail}</small>
@@ -640,7 +652,7 @@ export function TextControl({
   const commit = useCallback(() => {
     const next = draft.trim();
     if (next !== value) {
-      void onCommit(next);
+      void runControlCommit(() => onCommit(next));
     }
     // Re-align with latest external value (mirrors StepperNumberControl).
     setDraft(lastExternalValueRef.current);
@@ -680,7 +692,7 @@ export function TextControl({
           event.preventDefault();
           event.currentTarget.blur();
           if (onEnter) {
-            void onEnter();
+            void runControlCommit(onEnter);
           }
         }}
       />
@@ -723,7 +735,7 @@ export function SelectControl({
         disabled={disabled}
         id={controlId}
         value={value}
-        onChange={(event) => void onCommit(event.target.value)}
+        onChange={(event) => void runControlCommit(() => onCommit(event.target.value))}
       >
         {options.map((option) => (
           <option disabled={option.disabled} key={option.value} value={option.value}>
@@ -775,7 +787,7 @@ export function InlineNumberControl({
   }, [digits, isEditing, value]);
   const commit = useCallback(() => {
     const parsed = Number(draft);
-    if (!Number.isFinite(parsed)) {
+    if (draft.trim() === "" || !Number.isFinite(parsed)) {
       setDraft(formatNumberDraft(lastExternalValueRef.current, digits));
       emitEditing(false);
       return;
@@ -783,7 +795,7 @@ export function InlineNumberControl({
     const next = digits === 0 ? Math.round(parsed) : Number(parsed.toFixed(digits));
     setDraft(formatNumberDraft(next, digits));
     if (next !== value) {
-      void onCommit(next);
+      void runControlCommit(() => onCommit(next));
     }
     setDraft(formatNumberDraft(lastExternalValueRef.current, digits));
     emitEditing(false);
@@ -851,7 +863,7 @@ export function InlineTextControl({
   const commit = useCallback(() => {
     const next = draft.trim();
     if (next !== value) {
-      void onCommit(next);
+      void runControlCommit(() => onCommit(next));
     }
     setDraft(lastExternalValueRef.current);
     emitEditing(false);

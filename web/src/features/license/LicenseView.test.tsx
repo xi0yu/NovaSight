@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { LicenseStatus } from "../../api";
 import { LicenseView } from "./LicenseView";
+import { LicensePanel } from "./LicensePanel";
 
 const { clearLicenseKeyMock } = vi.hoisted(() => ({
   clearLicenseKeyMock: vi.fn(),
@@ -61,6 +62,13 @@ function LicenseTransitionHarness() {
 }
 
 describe("LicenseView", () => {
+  it("removes a stale authorization error while the operator corrects the code", async () => {
+    render(<LicensePanel license={activeLicense} onLicenseChange={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "验证并更换" }));
+    expect(screen.getByText("授权码不能为空。")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("授权码"), "replacement");
+    expect(screen.queryByText("授权码不能为空。")).not.toBeInTheDocument();
+  });
   it("requires confirmation before clearing and returns to the license gate", async () => {
     clearLicenseKeyMock.mockResolvedValueOnce(clearedLicense);
     const user = userEvent.setup();
@@ -74,7 +82,7 @@ describe("LicenseView", () => {
     expect(screen.getByText("开发者诊断 · 凭证追踪码")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "退出当前授权" }));
     expect(clearLicenseKeyMock).not.toHaveBeenCalled();
-    expect(screen.getByText(/再次点击将先紧急停止当前设备/)).toBeInTheDocument();
+    expect(screen.getByText(/再次点击将先紧急停止当前设备/)).toHaveAttribute("role", "status");
 
     await user.click(screen.getByRole("button", { name: "确认：先紧急停止设备，再退出授权" }));
 

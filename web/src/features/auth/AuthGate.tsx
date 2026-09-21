@@ -17,6 +17,7 @@ import {
 } from "../../api";
 import { Button } from "../../components/ui";
 import { NovaIcon } from "../../components/visual";
+import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 
 type AuthGateProps = {
@@ -158,20 +159,22 @@ export function AuthGate({ children }: AuthGateProps) {
   const logout = () => {
     setSubmitting(true);
     void logoutAuthSession()
-      .catch((error: unknown) => {
-        setIssue(`退出会话失败：${getErrorMessage(error)}`);
-      })
-      .finally(() => {
+      .then(() => {
         setSession(null);
         setDaemonState("checking");
-        setSubmitting(false);
-      });
+        setIssue("");
+      })
+      .catch((error: unknown) => {
+        setIssue(`退出会话失败：${getErrorMessage(error)}`);
+        reportError(error, { source: "auth-logout", title: "退出会话失败" });
+      })
+      .finally(() => setSubmitting(false));
   };
 
   if (session?.authenticated) {
     return (
       <div className="authenticated-workspace">
-        <SessionBar session={session} daemonState={daemonState} loggingOut={submitting} onLogout={logout} />
+        <SessionBar session={session} daemonState={daemonState} issue={issue} loggingOut={submitting} onLogout={logout} />
         {children}
       </div>
     );
@@ -200,7 +203,10 @@ export function AuthGate({ children }: AuthGateProps) {
               autoFocus
               spellCheck={false}
               value={accessCode}
-              onChange={(event) => setAccessCode(event.target.value)}
+              onChange={(event) => {
+                setAccessCode(event.target.value);
+                setIssue("");
+              }}
               disabled={submitting}
               aria-describedby="auth-code-help"
             />
@@ -238,11 +244,13 @@ export function AuthGate({ children }: AuthGateProps) {
 function SessionBar({
   session,
   daemonState,
+  issue,
   loggingOut,
   onLogout
 }: {
   session: AuthSession;
   daemonState: DaemonState;
+  issue: string;
   loggingOut: boolean;
   onLogout: () => void;
 }) {
@@ -266,6 +274,7 @@ function SessionBar({
       <Button variant="ghost" size="compact" onClick={onLogout} loading={loggingOut} leadingIcon="lock">
         退出会话
       </Button>
+      {issue ? <span className="auth-session-issue" role="alert">{issue}</span> : null}
     </div>
   );
 }

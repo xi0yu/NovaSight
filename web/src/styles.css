@@ -315,9 +315,18 @@ body {
 .auth-session-route .is-error { color: var(--status-error-fg); }
 .auth-session-route .is-checking { color: var(--status-warning-fg); }
 .auth-session-bar > .ui-button { justify-self: end; }
+.auth-session-issue {
+  grid-column: 1 / -1;
+  padding-bottom: var(--space-2);
+  color: var(--status-error-fg);
+  font-size: 12px;
+}
 
 .authenticated-workspace > .console-app {
   height: calc(100vh - 44px);
+}
+.authenticated-workspace:has(.auth-session-issue) > .console-app {
+  height: calc(100vh - 72px);
 }
 
 @media (max-width: 820px) {

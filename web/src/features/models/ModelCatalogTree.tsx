@@ -37,11 +37,13 @@ type ShelfModelMap = Record<ModelRecommendation, ModelCatalogModel[]>;
 
 export const ModelCatalogTree = memo(function ModelCatalogTree({
   models,
+  selectionLocked = false,
   selectedPath,
   activeArtifactId,
   onSelectModel
 }: {
   models: ModelCatalogModel[];
+  selectionLocked?: boolean;
   selectedPath: string | undefined;
   activeArtifactId: number | null;
   onSelectModel: (model: ModelCatalogModel) => void;
@@ -93,6 +95,7 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
               {visibleModels.map((model) => (
                 <ModelCatalogRow
                   activeArtifactId={activeArtifactId}
+                  disabled={selectionLocked}
                   key={model.relative_path}
                   model={model}
                   onSelectModel={onSelectModel}
@@ -102,6 +105,7 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
               {visibleModels.length < modelsForShelf.length ? (
                 <button type="button"
                   className="console-button secondary model-vault-load-more"
+                  aria-label={`${shelf.label}再显示 ${Math.min(INITIAL_SHELF_ROWS, modelsForShelf.length - visibleModels.length)} 个`}
                   onClick={() => setVisibleRows((current) => ({
                     ...current,
                     [shelf.recommendation]: current[shelf.recommendation] + INITIAL_SHELF_ROWS
@@ -120,11 +124,13 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
 
 function ModelCatalogRow({
   model,
+  disabled,
   selectedPath,
   activeArtifactId,
   onSelectModel
 }: {
   model: ModelCatalogModel;
+  disabled: boolean;
   selectedPath: string | undefined;
   activeArtifactId: number | null;
   onSelectModel: (model: ModelCatalogModel) => void;
@@ -139,8 +145,9 @@ function ModelCatalogRow({
       : "待整理";
   return (
     <button type="button"
-      aria-label={`${model.name}，${recommendationLabel}，${formatModelSize(model.size_bytes)}，${modelStatusLabel(status)}`}
+      aria-label={`${model.name}，路径 ${model.relative_path}，${active ? "当前使用，" : ""}${recommendationLabel}，${formatModelSize(model.size_bytes)}，${modelStatusLabel(status)}`}
       aria-pressed={selected}
+      disabled={disabled}
       className={`model-catalog-row model ${selected ? "selected" : ""}`}
       data-active={active ? "true" : undefined}
       onClick={() => onSelectModel(model)}

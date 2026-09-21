@@ -119,6 +119,7 @@ export function ModelSelectionPanel({
   );
 
   useEffect(() => {
+    if (!root || loading) return;
     setTagFilters((current) => {
       if (current.size === 0) {
         return current;
@@ -126,7 +127,7 @@ export function ModelSelectionPanel({
       const next = new Set(Array.from(current).filter((tag) => availableTagSet.has(tag)));
       return next.size === current.size ? current : next;
     });
-  }, [availableTagSet]);
+  }, [availableTagSet, loading, root]);
 
   useEffect(() => {
     try {
@@ -143,7 +144,7 @@ export function ModelSelectionPanel({
     setDraftRecommendation(selectedModel?.recommendation ?? "unrated");
     setDraftTags(selectedModel?.tags ?? []);
     setNewTag("");
-  }, [selectedModel?.recommendation, selectedModel?.relative_path, selectedModel?.tags]);
+  }, [selectedModel?.relative_path]);
 
   const selectedStatus = selectedModel
     ? selectedModel.artifact_status ?? selectedModel.scan_status
@@ -168,6 +169,16 @@ export function ModelSelectionPanel({
     draftTags.length !== selectedModel.tags.length ||
     draftTags.some((tag, index) => tag !== selectedModel.tags[index])
   );
+  const pendingTag = newTag.trim();
+  const pendingTagIsNew = pendingTag !== "" && !draftTags.some((tag) => tag.toLocaleLowerCase() === pendingTag.toLocaleLowerCase());
+  const metadataEditable = selectedModel?.kind === "engine" && busy === null;
+  const selectionHiddenByFilter = selectedModel !== null && !filteredModels.some((model) => model.relative_path === selectedModel.relative_path);
+  const saveMetadata = () => {
+    const tags = pendingTagIsNew ? [...draftTags, pendingTag] : draftTags;
+    setDraftTags(tags);
+    setNewTag("");
+    onSaveMetadata(draftRecommendation, tags);
+  };
   const addTag = (value: string) => {
     const tag = value.trim();
     if (!tag || draftTags.some((item) => item.toLocaleLowerCase() === tag.toLocaleLowerCase())) return;
@@ -188,7 +199,7 @@ export function ModelSelectionPanel({
         </div>
         <button
           className="console-button secondary"
-          disabled={busy !== null}
+          disabled={busy !== null || metadataDirty || pendingTagIsNew}
           onClick={onRefresh}
           type="button"
         >
@@ -246,6 +257,7 @@ export function ModelSelectionPanel({
           ) : filteredModels.length > 0 ? (
             <ModelCatalogTree
               models={filteredModels}
+              selectionLocked={metadataDirty || pendingTagIsNew}
               selectedPath={selectedPath}
               activeArtifactId={activeArtifactId}
               onSelectModel={onSelectModel}
@@ -276,7 +288,9 @@ export function ModelSelectionPanel({
           </div>
 
           <p className="model-selection-next-step">
-            {selectedModel === null
+            {selectionHiddenByFilter
+              ? "当前筛选隐藏了已选模型；清除筛选或重新选择后才能切换。"
+              : selectedModel === null
               ? "请先从左侧目录选择一个 Engine 文件。"
               : selectedModel.kind !== "engine"
                 ? "这个文件不能直接用于当前主链；请选择 .engine 文件。"
@@ -357,7 +371,7 @@ export function ModelSelectionPanel({
                   <button type="button"
                     aria-pressed={draftRecommendation === option.value}
                     className={draftRecommendation === option.value ? "active" : ""}
-                    disabled={busy !== null || selectedModel === null}
+                    disabled={!metadataEditable}
                     key={option.value}
                     onClick={() => setDraftRecommendation(option.value)}
                   >
@@ -370,7 +384,7 @@ export function ModelSelectionPanel({
                   {draftTags.map((tag) => (
                     <button type="button"
                       aria-label={`移除标签 ${tag}`}
-                      disabled={busy !== null}
+                      disabled={!metadataEditable}
                       key={tag}
                       onClick={() => setDraftTags((current) => current.filter((item) => item !== tag))}
                     >
@@ -382,7 +396,7 @@ export function ModelSelectionPanel({
                 <div className="model-tag-input-row">
                   <input
                     aria-label="新增模型标签"
-                    disabled={busy !== null || selectedModel === null}
+                    disabled={!metadataEditable}
                     maxLength={32}
                     onChange={(event) => setNewTag(event.target.value)}
                     onKeyDown={(event) => {
@@ -396,27 +410,34 @@ export function ModelSelectionPanel({
                   />
                   <button type="button"
                     className="console-button secondary"
-                    disabled={busy !== null || selectedModel === null || newTag.trim() === ""}
+                    disabled={!metadataEditable || !pendingTagIsNew}
                     onClick={() => addTag(newTag)}
                   >
                     添加
                   </button>
                 </div>
                 <div className="model-tag-suggestions" aria-label="常用标签">
-                  {SUGGESTED_MODEL_TAGS.filter((tag) => !draftTags.includes(tag)).map((tag) => (
-                    <button type="button" disabled={busy !== null || selectedModel === null} key={tag} onClick={() => addTag(tag)}>
+                  {SUGGESTED_MODEL_TAGS.filter((tag) => !draftTags.some((item) => item.toLocaleLowerCase() === tag.toLocaleLowerCase())).map((tag) => (
+                    <button type="button" disabled={!metadataEditable} key={tag} onClick={() => addTag(tag)}>
                       + {tag}
                     </button>
                   ))}
                 </div>
               </div>
-              <button type="button"
-                className="console-button secondary model-metadata-save"
-                disabled={busy !== null || !metadataDirty || selectedModel?.kind !== "engine"}
-                onClick={() => onSaveMetadata(draftRecommendation, draftTags)}
-              >
-                {busy === "model.metadata" ? "保存中..." : "保存整理结果"}
-              </button>
+              <div className="console-action-row">
+                {(metadataDirty || pendingTagIsNew) ? <button type="button" className="console-button" disabled={busy !== null} onClick={() => {
+                  setDraftRecommendation(selectedModel?.recommendation ?? "unrated");
+                  setDraftTags(selectedModel?.tags ?? []);
+                  setNewTag("");
+                }}>放弃整理修改</button> : null}
+                <button type="button"
+                  className="console-button secondary model-metadata-save"
+                  disabled={!metadataEditable || selectionHiddenByFilter || (!metadataDirty && !pendingTagIsNew)}
+                  onClick={saveMetadata}
+                >
+                  {busy === "model.metadata" ? "保存中..." : "保存整理结果"}
+                </button>
+              </div>
             </section>
           </details>
         </aside> : null}
@@ -427,7 +448,7 @@ export function ModelSelectionPanel({
       {models.length > 0 ? (
         <button
           className="console-button primary console-full-button"
-          disabled={busy !== null || !canSwitch}
+          disabled={busy !== null || !canSwitch || selectionHiddenByFilter || metadataDirty || pendingTagIsNew}
           onClick={onSwitch}
           type="button"
         >
