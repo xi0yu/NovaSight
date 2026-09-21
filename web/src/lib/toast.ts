@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 
+import { ApiError } from "../api";
 import { type ErrorSeverity, isQuietErrorsEnabled, normalizeError } from "./api-error";
 
 export type ToastTone = ErrorSeverity | "success";
@@ -112,7 +113,7 @@ function buildToast(input: {
   };
 }
 
-function pushToast(toast: Toast): void {
+function pushToast(toast: Toast, popup = true): void {
   for (const [signature, createdAt] of lastToastAtBySignature) {
     if (toast.createdAt - createdAt > DUPLICATE_WINDOW_MS) {
       lastToastAtBySignature.delete(signature);
@@ -135,10 +136,9 @@ function pushToast(toast: Toast): void {
       errorNotices = [...errorNotices, toast].slice(-20);
     }
     emitErrors();
-    return;
   }
   // Quiet mode suppresses popups, never the diagnostic history above.
-  if (isQuietErrorsEnabled()) return;
+  if (!popup || isQuietErrorsEnabled()) return;
   const previousCreatedAt = lastToastAtBySignature.get(signature);
   if (previousCreatedAt !== undefined && toast.createdAt - previousCreatedAt <= DUPLICATE_WINDOW_MS) {
     return;
@@ -153,8 +153,8 @@ function pushToast(toast: Toast): void {
   }
 }
 
-export function pushToastRaw(toast: Omit<Toast, "id" | "count" | "firstSeenAt" | "createdAt">): void {
-  pushToast(buildToast(toast));
+export function pushToastRaw(toast: Omit<Toast, "id" | "count" | "firstSeenAt" | "createdAt">, popup = true): void {
+  pushToast(buildToast(toast), popup);
 }
 
 export function reportError(
@@ -165,6 +165,7 @@ export function reportError(
     fallback?: string;
     publicDetail?: string;
     exposeStatus?: boolean;
+    popup?: boolean;
   }
 ): void {
   const normalized = normalizeError(error, {
@@ -178,9 +179,17 @@ export function reportError(
       tone: normalized.severity,
       title: options.title ?? errorTitleForSource(options.source),
       detail: options.publicDetail ?? normalized.message,
+      technicalDetail: error instanceof ApiError
+        ? JSON.stringify(
+          { source: options.source, http_status: error.status, response: error.detail },
+          (key, value: unknown) => /password|secret|token|license_key|uuid/i.test(key) ? "[redacted]" : value,
+          2
+        )
+        : undefined,
       source: normalized.source,
       status: options.exposeStatus === false ? null : normalized.status
-    })
+    }),
+    options.popup ?? true
   );
 }
 

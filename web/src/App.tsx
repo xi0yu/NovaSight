@@ -369,7 +369,8 @@ function StudioApp() {
         source: "license",
         title: issue.title,
         publicDetail: `${issue.description} ${issue.recovery}`,
-        exposeStatus: false
+        exposeStatus: false,
+        popup: false
       });
       return null;
     } finally {
@@ -425,7 +426,7 @@ function StudioApp() {
           ...current,
           errors: { ...current.errors, projects: getErrorMessage(error) }
         }));
-        reportError(error, { source: "projects", title: "模型项目读取失败" });
+        reportError(error, { source: "projects", title: "模型项目读取失败", popup: false });
         throw error;
       })
       .finally(() => {
@@ -459,7 +460,7 @@ function StudioApp() {
             errors: { ...current.errors, health: getErrorMessage(error) },
             health: null
           }));
-          reportError(error, { source: "health", title: "后端健康检查失败" });
+          reportError(error, { source: "health", title: "后端健康检查失败", popup: false });
         });
       const runtimeRequest = getRuntimeState()
         .then((runtime) => {
@@ -472,7 +473,7 @@ function StudioApp() {
             ...current,
             errors: { ...current.errors, runtime: getErrorMessage(error) }
           }));
-          reportError(error, { source: "runtime", title: "运行态失败" });
+          reportError(error, { source: "runtime", title: "运行态失败", popup: false });
         });
       const configRequest = getRuntimeConfig()
         .then((config) => {
@@ -485,7 +486,7 @@ function StudioApp() {
             ...current,
             errors: { ...current.errors, config: getErrorMessage(error) }
           }));
-          reportError(error, { source: "config", title: "配置读取失败" });
+          reportError(error, { source: "config", title: "配置读取失败", popup: false });
         });
       const projectsRequest = projectsLoadedRef.current
         ? loadProjects(true).catch(() => undefined)

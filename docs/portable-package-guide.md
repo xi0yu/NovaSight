@@ -9,6 +9,7 @@ NovaSight/
 ├── NovaSight
 ├── bin/
 │   ├── novasightd
+│   ├── novasight-web
 │   └── novasightctl
 ├── web/
 ├── data/
@@ -41,7 +42,7 @@ diagnosis.
 
 The packager does all required assembly work:
 
-- builds `novasight`, `novasightd`, and `novasightctl`;
+- builds `novasight`, `novasightd`, `novasight-web`, and `novasightctl`;
 - builds the Web UI into `out/web`;
 - creates `out/package/NovaSight`;
 - copies binaries into `NovaSight` and `bin/`;
@@ -102,8 +103,10 @@ rejects unapproved Host values and Origin/Host mismatches.
 Source/debug launchers create a per-start temporary license
 code in memory and pass it directly to the current debug daemon process without
 writing it to disk. It is entered in the same authorization form as a formal
-signed license and never grants physical hardware output. Release packages do
-not create or accept this temporary credential.
+signed license. For the current daemon process it includes `hardware_control`,
+but does not connect kmNet or open the output gate by itself; both remain
+explicit operator actions. Release packages do not create or accept this
+temporary credential.
 Runtime-only authorization automatically closes and persists a stale physical output
 switch on start/restart, allowing recognition without granting hardware-control rights.
 
@@ -148,7 +151,7 @@ The Web/API and Vite processes resolve their endpoint roles from
 keeps the authenticated Web/API at `127.0.0.1:5174`; the daemon remains on its
 Unix socket. It does not reuse or mutate
 `data/novasight.yaml`, install packages, or build Web assets. The
-launcher prints the authenticated LAN URL, the separate Web access code, and
+launcher prints the authenticated LAN URL, one temporary license code, and
 the local and detected IPv4 network listener addresses; `Ctrl+C` stops all three
 child processes. The launcher selects this development layout from its own
 artifact path; users do not pass a startup mode.

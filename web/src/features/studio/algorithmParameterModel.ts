@@ -166,8 +166,21 @@ export function validateStudioConfigSchema(schema: ConfigSchemaResponse): Studio
       issues.push({ path, reason: "Studio targeting parameter is not exposed by backend schema" });
       continue;
     }
+    const expectedType = key === "target_class_priority" || key === "target_class_filter" || key === "target_class_aim_y_ratios"
+      ? "string" : "number";
+    if (expectedType === "string" ? field.type !== "string" : !NUMERIC_SCHEMA_TYPES.has(field.type)) {
+      issues.push({ path, reason: `expected ${expectedType} schema field, got ${field.type}` });
+    }
     if (field.apply_mode !== "hot_update") {
       issues.push({ path, reason: "targeting field must be hot-applied by the backend" });
+    }
+  }
+  const exposedPipelineFields = schema.sections.flatMap((section) => section.fields)
+    .filter((field) => field.path.startsWith("pipeline."));
+  const studioPipelinePaths = new Set([...CONTROL_PIPELINE_FIELDS, ...TARGETING_PIPELINE_FIELDS].map(pipelinePath));
+  for (const field of exposedPipelineFields) {
+    if (!studioPipelinePaths.has(field.path)) {
+      issues.push({ path: field.path, reason: "backend pipeline parameter has no Studio control contract" });
     }
   }
   return issues;

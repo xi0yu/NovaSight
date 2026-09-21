@@ -69,8 +69,9 @@ import {
   ActionConfirmationDialog,
   type ActionConfirmationRequest
 } from "./ActionConfirmationDialog";
-import { AimTargetRange, type AimRole, type AimRoleRatios } from "./AimTargetRange";
-import { activateClassPolicy, serializeClassAimRatios } from "./targetClassPolicy";
+import { AimTargetRange } from "./AimTargetRange";
+import { activateClassPolicy, serializeClassAimRatios } from "../targeting/targetClassPolicy";
+import type { AimRole, AimRoleRatios } from "../targeting/types";
 import { ControlTracePanel } from "./ControlTracePanel";
 import { LaunchReadinessPanel } from "./LaunchReadinessPanel";
 import { ProductConfigProfilePanel } from "./ProductConfigProfilePanel";
@@ -736,6 +737,7 @@ export function StudioConsoleView({
   const [kmnetTestMessageTone, setKmnetTestMessageTone] = useState<KmnetTestMessageTone>("warning");
   const [busy, setBusy] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [captureActionError, setCaptureActionError] = useState<string | null>(null);
   const [errorCenterOpen, setErrorCenterOpen] = useState(false);
   const errorNotices = useErrorNotices();
   const clearErrorNotices = useClearErrorNotices();
@@ -912,7 +914,9 @@ export function StudioConsoleView({
         .slice(0, 3)
         .map((issue) => `${issue.path}: ${issue.reason}`)
         .join("；");
-      setLocalError(`${CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX}：${summary}`);
+      const message = `${CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX}：${summary}`;
+      setLocalError(message);
+      reportError(new Error(message), { source: "config-schema", title: "参数契约不一致", popup: false });
       return;
     }
     setLocalError((current) =>
@@ -931,7 +935,7 @@ export function StudioConsoleView({
       })
       .catch((error) => {
         if (!cancelled) {
-          reportError(error, { source: "config-schema", title: "配置 schema 读取失败" });
+          reportError(error, { source: "config-schema", title: "配置 schema 读取失败", popup: false });
         }
       });
     return () => {
@@ -1271,6 +1275,15 @@ export function StudioConsoleView({
           fps: configuredCaptureFps
         }
       : null;
+  const captureProfileMatches = capture?.running === true
+    && capture.device === configuredCaptureDevice
+    && selectedProfile != null
+    && choiceMatchesConfig(selectedProfile, captureConfig);
+  const captureProfileState = capture?.running !== true
+    ? "pending"
+    : configuredCaptureProfile == null || selectedProfile == null
+      ? "unknown"
+      : captureProfileMatches ? "matched" : "mismatch";
   const configuredChoiceId = configuredCaptureProfile
     ? `${configuredCaptureProfile.pixel_format}:${configuredCaptureProfile.width}x${configuredCaptureProfile.height}@${configuredCaptureProfile.fps}`
     : "";
@@ -1973,8 +1986,7 @@ export function StudioConsoleView({
       captureProfile: displayCaptureProfile
         ? choiceLabel(displayCaptureProfile)
         : NO_SAMPLE,
-      captureProfileApplied: capture?.running === true && capture.device === configuredCaptureDevice
-        && selectedProfile !== null && selectedProfile !== undefined && choiceMatchesConfig(selectedProfile, captureConfig),
+      captureProfileApplied: captureProfileMatches,
       runtimeCaptureProfile: selectedProfile ? choiceLabel(selectedProfile) : NO_SAMPLE,
       captureSource: displayCaptureProfileSource,
       roiLabel: roiApplyLabel,
@@ -2018,6 +2030,7 @@ export function StudioConsoleView({
       capture?.device,
       capture?.running,
       captureConfig,
+      captureProfileMatches,
       selectedProfile,
       configApplyPending,
       configRestartRequired,
@@ -2426,20 +2439,25 @@ export function StudioConsoleView({
   const applyCapture = useCallback(async () => {
     setBusy("capture");
     setLocalError(null);
+    setCaptureActionError(null);
     const payload = buildCapturePayload();
     let operationFailed = false;
     try {
       await selectCaptureProfile(payload);
     } catch (err) {
       operationFailed = true;
-      setLocalError(`切换失败，已保留上一组可用配置：${getErrorMessage(err)}`);
+      const message = `切换失败，已保留上一组可用配置：${getErrorMessage(err)}`;
+      setLocalError(message);
+      setCaptureActionError(message);
       reportError(err, { source: 'studio', title: '操作失败' });
     }
     try {
       await onRefresh();
     } catch (err) {
       if (!operationFailed) {
-        setLocalError(`采集配置处理完成，但最新状态刷新失败：${getErrorMessage(err)}`);
+        const message = `采集配置处理完成，但最新状态刷新失败：${getErrorMessage(err)}`;
+        setLocalError(message);
+        setCaptureActionError(message);
       }
       reportError(err, { source: "capture-refresh", title: "采集状态刷新失败" });
     } finally {
@@ -3910,14 +3928,34 @@ export function StudioConsoleView({
 
         {activePage === "capture" ? (
           <section className="console-page">
-          {runtime !== null ? (
-            <div className="console-metrics">
-              <Metric title="采集状态" value={captureStatusText} small={capture?.device || configuredCaptureDevice || "等待设备"} />
-              <Metric title="推理输入 FPS" value={formatOptionalNumber(nvinferInputFps)} small="有效输入" />
-              <Metric title="配置输入 FPS" value={formatOptionalNumber(configuredCaptureFps, 0)} small="配置值 · 非实时测量" />
-              <Metric title="ROI 应用" value={roiApplyLabel} small={runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : "等待运行 ROI"} />
+          <section className="console-card capture-profile-check" data-state={captureProfileState} aria-labelledby="capture-profile-check-title">
+            <div className="capture-profile-check-header">
+              <div>
+                <span className="class-config-eyebrow">采集核对</span>
+                <h2 id="capture-profile-check-title">保存配置与运行状态</h2>
+              </div>
+              <span className="capture-profile-check-state" role="status">
+                <NovaIcon name={captureProfileState === "matched" ? "check-circle" : captureProfileState === "mismatch" ? "triangle-alert" : "clock"} size={16} />
+                {captureProfileState === "matched" ? "运行规格一致" : captureProfileState === "mismatch" ? "保存与运行不一致" : captureProfileState === "unknown" ? "运行规格未确认" : "等待运行验证"}
+              </span>
             </div>
-          ) : null}
+            <div className="capture-profile-check-grid">
+              <div>
+                <span>已保存配置</span>
+                <strong>{configuredCaptureProfile ? choiceLabel(configuredCaptureProfile) : "尚未保存采集规格"}</strong>
+                <small>{configuredCaptureDevice || "未设置设备"}</small>
+              </div>
+              <div>
+                <span>运行态上报</span>
+                <strong>{capture?.running === true && selectedProfile ? choiceLabel(selectedProfile) : capture?.running === true ? "未上报运行规格" : "主链未运行"}</strong>
+                <small>{capture?.running === true ? capture.device || "未上报设备" : "启动主链后核对"}</small>
+              </div>
+            </div>
+            <p className="capture-profile-check-footnote">
+              {`采集 ${captureStatusText} · 推理有效输入 ${formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")} · ROI ${roiApplyLabel}`}
+              <span>有效输入 FPS 不是采集卡原始帧率。</span>
+            </p>
+          </section>
           <div className="console-grid2 capture-config-grid compact-content-grid">
               <div className="console-card">
                 <SectionTitle title="采集设备" />
@@ -3930,6 +3968,7 @@ export function StudioConsoleView({
                     setDevice(value);
                     setCaps(null);
                     setSelectedChoiceId("");
+                    setCaptureActionError(null);
                   }}
                 />
                 <div className="capture-format-control">
@@ -3944,7 +3983,10 @@ export function StudioConsoleView({
                           label: choiceLabel(choice)
                         }))
                       : [{ value: "", label: "请先检测设备能力", disabled: true }]}
-                    onCommit={setSelectedChoiceId}
+                    onCommit={(value) => {
+                      setSelectedChoiceId(value);
+                      setCaptureActionError(null);
+                    }}
                   />
                   <button className="console-button secondary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
                     <NovaIcon name="refresh" size={15} />
@@ -3964,6 +4006,7 @@ export function StudioConsoleView({
                     ? `已读取 ${choices.length} 组设备格式；更换采集卡或设备路径后请重新检测。`
                     : "当前使用已保存的采集格式，不会在打开页面时自动探测设备。"}
                 </p>
+                {captureActionError ? <p className="operation-inline-error" role="alert">{captureActionError}</p> : null}
                 <ParameterPresetControl
                   label="推理画面预览"
                   detail="远程预览最高帧率；远程观看时还可以在画面上选择省流档。"
@@ -4049,14 +4092,6 @@ export function StudioConsoleView({
 
         {activePage === "infer" ? (
           <section className="console-page">
-          {runtime !== null ? (
-            <div className="console-metrics">
-              <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="模型实际完成" />
-              <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果有效产出" />
-              <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
-              <Metric title="最近检测" value={formatOptionalInteger(detectionCount)} small="最近遥测 · 最多 5Hz" />
-            </div>
-          ) : null}
           <div className="console-card model-selection-card">
             <SectionTitle title="模型设置" />
             <CurrentModelSummary
@@ -4068,6 +4103,14 @@ export function StudioConsoleView({
               onOpenManager={openModelManager}
             />
           </div>
+          {runtime !== null ? (
+            <div className="console-metrics">
+              <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="模型实际完成" />
+              <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果有效产出" />
+              <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
+              <Metric title="最近检测" value={formatOptionalInteger(detectionCount)} small="最近遥测 · 最多 5Hz" />
+            </div>
+          ) : null}
           <div className="console-grid2 inference-config-grid">
             <div className="console-card">
               <SectionTitle title="推理参数" />
@@ -4232,6 +4275,12 @@ export function StudioConsoleView({
           ) : (
           <>
           <ControlTracePanel trace={controlTrace!} />
+          <div className="control-config-shortcut">
+            <span>需要调整目标选择、跟踪或物理输出？</span>
+            <button className="console-button" onClick={() => navigatePage("params")} type="button">
+              前往控制参数
+            </button>
+          </div>
           <details className="studio-diagnostic-details">
             <summary>
               <span>
@@ -4409,6 +4458,7 @@ export function StudioConsoleView({
                 </button>
               </div>
             </div>
+            {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
             <ol className="control-chain-settings" aria-label="鼠标控制参数链">
               <li className="console-card control-chain-setting">
                 <span className="control-chain-step" aria-hidden="true">01</span>

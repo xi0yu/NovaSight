@@ -1,4 +1,4 @@
-import type { AimRole, AimRoleRatios } from "./AimTargetRange";
+import type { AimRole, AimRoleRatios } from "./types";
 
 export function serializeClassAimRatios(
   roles: Record<string, AimRole>,

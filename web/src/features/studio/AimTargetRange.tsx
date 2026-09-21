@@ -1,10 +1,8 @@
 import { memo, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
 import mannequinTarget from "../../assets/aim-target/mannequin-target-v2.webp";
+import type { AimRole, AimRoleRatios } from "../targeting/types";
 import { ParameterNumberControl } from "./StudioControls";
-
-export type AimRole = "head" | "body" | "other";
-export type AimRoleRatios = Record<AimRole, number>;
 
 const ROLE_META: Record<AimRole, { label: string; caption: string; zoneTop: number; zoneHeight: number }> = {
   // The mannequin is a semantic calibration surface, not one shared 0-100% ruler.

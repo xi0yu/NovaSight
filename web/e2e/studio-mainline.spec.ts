@@ -131,6 +131,22 @@ test("Studio navigation moves keyboard focus to the new page heading", async ({ 
   await expect(page.getByRole("heading", { level: 1, name: "运行总览" })).toBeFocused();
 });
 
+test("capture page keeps saved and running specifications visible without horizontal overflow", async ({ page }) => {
+  await mockStudioApi(page, authenticatedSession, {
+    revision: 25,
+    capture: { device: "/dev/video0", pixel_format: "MJPG", width: 1920, height: 1080, fps: 240 },
+  });
+  await page.goto("/?page=capture");
+
+  const check = page.locator(".capture-profile-check");
+  await expect(check).toContainText("等待运行验证");
+  await expect(check.getByText("MJPEG (MJPG) / 1920x1080 / 240 FPS", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "保存采集配置" })).toBeVisible();
+  expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(
+    await page.evaluate(() => document.documentElement.clientWidth),
+  );
+});
+
 test("Studio navigation restores each page scroll position", async ({ page }) => {
   await mockStudioApi(page);
   await page.goto("/?page=params");

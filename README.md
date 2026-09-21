@@ -10,7 +10,8 @@ processing, direct TensorRT device execution, and CUDA decode/sort/NMS. It ends
 at validated detection results; no CPU image/postprocess fallback is selected.
 
 Current engineering health, active risks, and verification boundaries are kept
-in [PROJECT_HEALTH_AUDIT.md](PROJECT_HEALTH_AUDIT.md). Historical plans under
+in [PROJECT_HEALTH_AUDIT.md](PROJECT_HEALTH_AUDIT.md), including the current
+frontend, GPU-result, algorithm, and output-delivery module map. Historical plans under
 `docs/superpowers/` are not current implementation authority.
 
 ## Repository layout
@@ -21,7 +22,8 @@ NovaSight/
 ├── apps/
 │   ├── novasight/             # Portable user launcher
 │   ├── novasight-packager/    # Author tool that builds portable packages
-│   ├── novasightd/            # Backend daemon and HTTP/WebSocket API
+│   ├── novasight-web/         # Authenticated LAN Web/API gateway
+│   ├── novasightd/            # Backend daemon and Unix-socket control interface
 │   └── novasightctl/          # Local command-line client
 ├── crates/                    # Rust domain and platform modules
 ├── native/                    # Narrow C/C++ seams for NVIDIA SDKs
@@ -84,6 +86,7 @@ out/package/NovaSight/
 ├── NovaSight
 ├── bin/
 │   ├── novasightd
+│   ├── novasight-web
 │   └── novasightctl
 ├── web/
 ├── data/
@@ -94,8 +97,8 @@ out/package/NovaSight/
 Users start `NovaSight`. The launcher creates package-local `data`, `logs`,
 and `run` directories, starts `bin/novasightd`, waits for daemon IPC readiness,
 then starts `bin/novasight-web` and prints the Chinese Studio LAN authenticated
-address, the separate Web access code, and the local and detected IPv4 network
-listener addresses.
+address and the local and detected IPv4 network listener addresses. Debug
+launchers also print one temporary license code for the same login form.
 Portable packages listen on the
 fixed `0.0.0.0:7351` address so a browser on another machine in the same LAN can
 open the printed LAN URL and enter one license code. `POST /api/auth/session`

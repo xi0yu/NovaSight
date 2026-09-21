@@ -1,6 +1,6 @@
 # NovaSight Project Health Ledger
 
-Last updated: 2026-08-21
+Last reviewed: 2026-09-21
 
 Visual-path correction, 2026-09-20: the current image-processing authority is
 [the GPU image pipeline contract](docs/gpu-image-pipeline.md). The older health
@@ -38,7 +38,7 @@ The normal deliverable is the portable directory produced by
 `novasight-packager`. Direct daemon startup, Vite development, reference native
 libraries, and host-side tests are diagnostic/development paths.
 
-## Current Workspace Snapshot
+## Recorded Workspace Baseline
 
 The hosted reference available when this review began was `cab7b53`, verified
 by quality workflow run `32351850209` on 2026-08-20. The candidate evaluated in
@@ -59,7 +59,43 @@ baseline:
 | Hosted automation | macOS Rust, Studio, browser, and dependency-audit gates are active; Linux ARM64 portable gate is configured | Jetson hardware jobs remain separately gated; Actions history supplies per-SHA results |
 
 This snapshot is revision-bound evidence, not a promise that later unverified
-edits pass the same gates.
+edits pass the same gates. At the start of the 2026-09-21 maintenance review,
+the local `develop-alpha` checkout was at `57b1923`. The target-decision
+replacement in that commit has its own test notes under
+`docs/superpowers/plans/2026-09-21-target-decision-policy-replacement.md`;
+neither the August baseline nor this document proves that the commit was pushed,
+deployed, or exercised with live camera and physical output. Verify each claim
+against the exact commit and environment before promoting it to a release
+receipt.
+
+Local checks during this 2026-09-21 maintenance review: the
+`novasight-core` `tracking_contract` test target passed 37/37, the
+`novasight-pipeline` detection-to-output test target passed 13/13, and the Web
+unit/contract run passed 63/63 with TypeScript typecheck passing. These checks
+exercised the local source at `57b1923` plus the uncommitted frontend module
+move; they do not replace full workspace, hosted CI, Jetson, or physical-device
+receipts.
+
+## Maintenance and Authorization Boundaries
+
+- Investigation and architecture review are read-only. A recommendation or a
+  plan is not permission to rename modules, delete compatibility code, commit,
+  push, deploy, or operate hardware.
+- A request to implement a feature permits the scoped local edits and relevant
+  non-actuating checks. Commit, push, SSH synchronization, release deployment,
+  and physical movement are separate actions; do not infer them from a general
+  request to "maintain" or "clean up" the project.
+- Document assumptions that change target choice, authorization, capture
+  format, or physical output before treating defaults as accepted product
+  policy. The six target-selection weights in `57b1923` are implementation
+  defaults, not an empirically established optimum or a user-approved game
+  fairness criterion.
+- Preserve compatibility and fail-closed safety code unless a caller audit,
+  migration path, and relevant tests show it is safe to remove. File length,
+  number of crates, and a small module are investigation signals, not deletion
+  evidence.
+- Report local source checks, hosted CI, Jetson execution, and physical-device
+  behavior as distinct receipts. An unrun check is `UNKNOWN`, never a pass.
 
 ## Maintained Ownership Boundaries
 
@@ -75,6 +111,50 @@ edits pass the same gates.
 | `novasight-deepstream-bridge` | Narrow owned metadata copy across the C ABI | Never retain vendor-owned metadata pointers |
 | `apps/novasightd` | Production composition root | Linux + default DeepStream is the real product composition |
 | `web` | Studio management and diagnostics | Never enter the real-time control loop |
+
+## Product Module Areas and Seams
+
+```mermaid
+flowchart LR
+    UI[Studio frontend] --> GATE[Web gateway / HTTP]
+    GATE --> RUNTIME[RuntimeSupervisor]
+    CAPTURE[Capture / GPU preprocessing] --> YOLO[YOLO inference]
+    YOLO --> RESULT[GPU decode / NMS / result validation]
+    RESULT -->|DetectionBatch| TARGET[Target decision]
+    TARGET -->|TargetedObservation| CONTROL[Prediction / control algorithm]
+    CONTROL -->|OutputPlan| DELIVERY[Output delivery]
+    DELIVERY -->|DeviceCommand| DEVICE[kmNet adapter]
+    RUNTIME -. lifecycle/config .-> CAPTURE
+    RUNTIME -. lifecycle/config .-> TARGET
+    RUNTIME -. lifecycle/config .-> DELIVERY
+```
+
+The arrows are typed handoffs, not permission for every area to import every
+other area's implementation. `novasight-pipeline` owns the worker handoffs and
+their epoch, freshness, generation, and output-gate checks; splitting those
+workers into extra public crates would expose more state without weakening a
+real dependency.
+
+| Area | Current implementation and interface | Must not own |
+| --- | --- | --- |
+| Frontend | `web/src/contracts/` decodes transport data; `web/src/features/` owns presentation and operator actions. Internal class policy lives under `features/targeting/`. | GPU tensors, frame loops, device safety decisions |
+| Capture and YOLO inference | `novasight-platform-jetson`, `novasight-tensorrt`, and `native/` own frame preparation and model execution. | Target ranking, class-role interpretation, movement demand |
+| Detection-result production | TensorRT/CUDA decode and NMS plus `novasight-tensorrt/src/gpu.rs` validate a bounded final result and publish `novasight-core::DetectionBatch` through `PipelineIngress`. | CPU tensor reinterpretation, internal target policy, physical output |
+| Target and control algorithms | `novasight-core::tracking`, `prediction`, and `controller` consume validated detections and produce a target choice and `AimResult`. `raw class_id` remains detector fact; internal preferences are separate policy. | TensorRT, HTTP, database, kmNet transport |
+| Algorithm-output receiver | The private `TargetedObservation` and `OutputPlan` handoffs and device worker in `novasight-pipeline` combine recoil, limits, current gates, and freshness before `PointerDevice::send`. | YOLO parsing, target-class scoring, frontend state |
+| Runtime authority | `novasight-runtime::RuntimeSupervisor` composes the above areas and owns lifecycle/configuration transactions. | A second selection algorithm or a second physical-output authority |
+
+Keep the existing `DetectionBatch`, `TargetSelection`, `AimResult`, and
+`DeviceCommand` interfaces. Introduce a new adapter only when a real second
+implementation or test seam requires it; do not create a generic message bus
+or duplicate the runtime's configuration model merely to make the diagram
+look disconnected.
+
+Remaining locality work is explicit, not silently treated as complete:
+`web/src/features/studio/algorithmParameterModel.ts` still groups both target
+and control settings for one Studio screen, and the Jetson adapter still uses
+the model manifest from `novasight-store`. Change either only with its callers
+and tests in scope; neither justifies a new crate by itself.
 
 ## Current Safeguards
 

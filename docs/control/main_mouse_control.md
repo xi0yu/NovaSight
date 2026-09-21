@@ -107,7 +107,7 @@ range. It does not merge pending counts or split one command into a trajectory.
 ## Production Configuration
 
 ```yaml
-schema_version: 16
+schema_version: 17
 pipeline:
   p_response_scale: 0.20
   p_response_boost: 0.50
@@ -121,7 +121,7 @@ pipeline:
   prediction_cap_px: 10.0
 ```
 
-The Rust root schema is version 16 and uses `pipeline.prediction_enabled: true`.
+The Rust root schema is version 17 and uses `pipeline.prediction_enabled: true`.
 Retired response fields are rejected rather than silently mapped into the new
 control model.
 

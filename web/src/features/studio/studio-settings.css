@@ -6,10 +6,137 @@
   gap: var(--space-2);
 }
 
+.capture-profile-check {
+  margin-bottom: var(--space-3);
+  padding: var(--space-4);
+}
+
+.capture-profile-check-header,
+.capture-profile-check-footnote,
+.control-config-shortcut {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.capture-profile-check-header h2 {
+  margin: 4px 0 0;
+  color: var(--text-primary);
+  font-size: 18px;
+  line-height: 1.3;
+}
+
+.capture-profile-check-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.capture-profile-check[data-state="matched"] .capture-profile-check-state {
+  border-color: var(--status-success-border);
+  background: var(--status-success-bg);
+  color: var(--status-success-fg);
+}
+
+.capture-profile-check[data-state="mismatch"] .capture-profile-check-state {
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+}
+
+.capture-profile-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.capture-profile-check-grid > div {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-3);
+  background: var(--bg-subtle);
+}
+
+.capture-profile-check-grid span,
+.capture-profile-check-grid small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.capture-profile-check-grid strong {
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.capture-profile-check-footnote {
+  flex-wrap: wrap;
+  margin: var(--space-3) 0 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.capture-profile-check-footnote span {
+  color: var(--text-tertiary);
+}
+
+.control-config-shortcut {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-3);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .capture-profile-check-header,
+  .control-config-shortcut {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .capture-profile-check-state {
+    align-self: flex-start;
+  }
+
+  .capture-profile-check-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .capture-format-control .console-button {
   min-height: 36px;
   margin: 0;
   white-space: nowrap;
+}
+
+.operation-inline-error {
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--status-error-border);
+  border-radius: var(--radius-2);
+  background: var(--status-error-bg);
+  color: var(--status-error-fg);
+  font-size: var(--text-body);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .parameter-control-field {

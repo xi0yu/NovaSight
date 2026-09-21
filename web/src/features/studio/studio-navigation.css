@@ -162,13 +162,13 @@
 }
 
 .studio-runtime-bar {
-  min-height: 52px;
+  min-height: 64px;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-4);
   background: var(--bg-surface);
@@ -198,14 +198,14 @@
 
 .studio-runtime-copy strong {
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 760;
 }
 
 .studio-runtime-copy small {
   overflow: hidden;
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;

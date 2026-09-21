@@ -71,3 +71,42 @@ it("treats MJPEG and MJPG as the same format and shows the exact selected tuple"
   expect(card).toHaveTextContent("已生效");
   expect(card).toHaveTextContent("MJPEG (MJPG) / 1920x1080 / 240 FPS");
 });
+
+it("compares saved and running capture tuples on the capture page", () => {
+  history.replaceState(null, "", "/?page=capture");
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={{ ...props.runtimeConfig, capture: { ...props.runtimeConfig.capture, pixel_format: "MJPEG", fps: 120 } }} /></SafetyOperationProvider>);
+  const check = screen.getByRole("heading", { name: "保存配置与运行状态" }).closest("section")!;
+  expect(check).toHaveTextContent("保存与运行不一致");
+  expect(check).toHaveTextContent("MJPEG (MJPG) / 1920x1080 / 120 FPS");
+  expect(check).toHaveTextContent("MJPEG (MJPG) / 1920x1080 / 240 FPS");
+  expect(check).toHaveTextContent("有效输入 FPS 不是采集卡原始帧率");
+});
+
+it("does not claim capture is applied before runtime verification", () => {
+  history.replaceState(null, "", "/?page=capture");
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={{ ...runtime, running: false, capture: { ...runtime.capture, running: false } }} /></SafetyOperationProvider>);
+  const check = screen.getByRole("heading", { name: "保存配置与运行状态" }).closest("section")!;
+  expect(check).toHaveTextContent("等待运行验证");
+  expect(check).toHaveTextContent("主链未运行");
+  expect(check).not.toHaveTextContent("运行规格一致");
+});
+
+it("opens control parameters from the live control chain", async () => {
+  history.replaceState(null, "", "/?page=control");
+  render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "前往控制参数" }));
+  expect(screen.getByRole("heading", { level: 1, name: "参数设置" })).toBeVisible();
+});
+
+it("shows capture selection rejection beside the save control", async () => {
+  history.replaceState(null, "", "/?page=capture");
+  vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/select")
+    ? Promise.resolve(new Response(JSON.stringify({ code: "CAPTURE_PROFILE_UNSUPPORTED", message: "device rejected 240 FPS" }), { status: 422, headers: { "content-type": "application/json" } }))
+    : new Promise(() => {})));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={{ ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } }} /></SafetyOperationProvider>);
+  const save = screen.getByRole("button", { name: "保存采集配置" });
+  expect(save).toBeEnabled();
+  await userEvent.click(save);
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(true);
+  expect(await screen.findByRole("alert")).toHaveTextContent("device rejected 240 FPS");
+});

@@ -88,7 +88,7 @@ export function reportWebSocketFailure(reason: unknown, path: string): boolean {
     detail: normalized.message,
     source,
     status: normalized.status
-  });
+  }, false);
   return true;
 }
 
