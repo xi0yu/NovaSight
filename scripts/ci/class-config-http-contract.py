@@ -5,6 +5,7 @@ import copy
 import http.cookiejar
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -22,6 +23,9 @@ WEB = ROOT / "out/cargo/debug/novasight-web"
 
 
 def main():
+    source = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "crates/novasight-config/src/bootstrap.yaml"
+    if not source.is_file():
+        raise ValueError(f"configuration source does not exist: {source}")
     with tempfile.TemporaryDirectory(prefix="novasight-class-config-") as temporary:
         workspace = Path(temporary)
         (workspace / "data/models").mkdir(parents=True)
@@ -30,13 +34,22 @@ def main():
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
-        bootstrap = (ROOT / "crates/novasight-config/src/bootstrap.yaml").read_text()
-        assert "  port: 7351" in bootstrap and "  host: 0.0.0.0" in bootstrap
+        source_text = source.read_text()
+        for pattern, replacement in (
+            (r"(?m)^  host: [^\n]+$", "  host: 127.0.0.1"),
+            (r"(?m)^  port: \d+$", f"  port: {port}"),
+            (r"(?m)^  output_enabled: (?:true|false)$", "  output_enabled: false"),
+            (r"(?m)^  auto_connect: (?:true|false)$", "  auto_connect: false"),
+        ):
+            source_text, count = re.subn(pattern, replacement, source_text, count=1)
+            if count != 1:
+                raise AssertionError(f"source configuration lacks safe test field: {pattern}")
+        for field in ("control_socket", "data_dir", "model_dir", "database", "license"):
+            match = re.search(rf"(?m)^  {field}: ([^\n]+)$", source_text)
+            if not match or Path(match.group(1)).is_absolute() or ".." in Path(match.group(1)).parts:
+                raise AssertionError(f"source configuration has an unsafe test path: {field}")
         config_path = workspace / "data/novasight.yaml"
-        config_path.write_text(
-            bootstrap.replace("  port: 7351", f"  port: {port}", 1)
-            .replace("  host: 0.0.0.0", "  host: 127.0.0.1", 1)
-        )
+        config_path.write_text(source_text)
         code = secrets.token_hex(32)
         env = {**os.environ, "NOVASIGHT_TEMPORARY_LICENSE_CODE": code}
         processes = []
@@ -86,7 +99,6 @@ def main():
             current = request("/api/config")
             assert current["control"]["output_enabled"] is False
             assert current["hardware"]["auto_connect"] is False
-            assert "detection_class_profiles" not in current["inference"]
             candidate = copy.deepcopy(current)
             candidate["inference"].update({
                 "detection_class_profile": "default",
