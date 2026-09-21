@@ -118,7 +118,12 @@ def main():
             assert "obsolete" not in final["control"]["aim"]["class_roles"]
             assert final["pipeline"]["target_class_aim_y_ratios"] == "0:0.33"
             assert final["control"]["output_enabled"] is False
-            print("CLASS_CONFIG_HTTP_PASS login=real save=epoch_reload readback=verified delete=verified output=off")
+            runtime = request("/api/runtime/state")
+            assert runtime["config"]["version"] == final["revision"], runtime["config"]
+            assert runtime["config"]["effective_version"] == final["revision"], runtime["config"]
+            assert runtime["config"]["restart_required"] is False, runtime["config"]
+            assert runtime["vision"]["control"]["will_emit"] is not True
+            print("CLASS_CONFIG_HTTP_PASS login=real save=epoch_reload readback=verified delete=verified effective=verified output=off")
         finally:
             for process in reversed(processes):
                 if process.poll() is None:
