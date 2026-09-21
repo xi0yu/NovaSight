@@ -39,13 +39,15 @@ def main():
         code = secrets.token_hex(32)
         env = {**os.environ, "NOVASIGHT_TEMPORARY_LICENSE_CODE": code}
         processes = []
+        log_files = []
         try:
-            for command, process_env in (
-                ([str(DAEMON), "--config", str(config_path)], env),
-                ([str(WEB), "--config", str(config_path)], {**os.environ, "NOVASIGHT_WEB_ROOT": str(ROOT / "out/web")}),
+            for name, command, process_env in (
+                ("daemon", [str(DAEMON), "--config", str(config_path)], env),
+                ("web", [str(WEB), "--config", str(config_path)], {**os.environ, "NOVASIGHT_WEB_ROOT": str(ROOT / "out/web")}),
             ):
+                log_files.append((name, (workspace / f"{name}.log").open("w")))
                 processes.append(subprocess.Popen(command, cwd=workspace, env=process_env,
-                                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                                                  stdout=log_files[-1][1], stderr=subprocess.STDOUT))
             base = f"http://127.0.0.1:{port}"
             opener = urllib.request.build_opener(
                 urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
@@ -65,7 +67,12 @@ def main():
 
             for _ in range(100):
                 if any(process.poll() is not None for process in processes):
-                    raise AssertionError("isolated daemon or Web API exited before readiness")
+                    failures = [
+                        f"{name} exit={process.returncode}: {(workspace / f'{name}.log').read_text()[-1000:]}"
+                        for (name, _), process in zip(log_files, processes)
+                        if process.poll() is not None
+                    ]
+                    raise AssertionError("isolated service exited before readiness: " + " | ".join(failures))
                 try:
                     request("/healthz")
                     break
@@ -121,6 +128,8 @@ def main():
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
+            for _, log_file in log_files:
+                log_file.close()
 
 
 if __name__ == "__main__":
