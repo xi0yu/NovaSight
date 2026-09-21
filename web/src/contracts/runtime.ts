@@ -275,6 +275,8 @@ export interface RuntimeVisionTargetState {
 export interface RuntimeTargetPipelineCounts {
   raw_candidates: number;
   eligible_candidates: number;
+  admitted_to_tracking?: number;
+  dropped_by_budget?: number;
   selected_targets: number;
 }
 
@@ -756,6 +758,9 @@ function assertVision(value: unknown, path: string): void {
   const counts = expectRecord(targetPipeline.counts, `${path}.target_pipeline.counts`);
   ["raw_candidates", "eligible_candidates", "selected_targets"].forEach((key) =>
     expectUnsignedInteger(counts[key], `${path}.target_pipeline.counts.${key}`));
+  for (const key of ["admitted_to_tracking", "dropped_by_budget"]) {
+    if (counts[key] !== undefined) expectUnsignedInteger(counts[key], `${path}.target_pipeline.counts.${key}`);
+  }
   const outputTrace = expectRecord(record.output_trace, `${path}.output_trace`);
   expectString(outputTrace.code, `${path}.output_trace.code`);
   expectLiteral(outputTrace.state, `${path}.output_trace.state`, OUTPUT_TRACE_STATES);

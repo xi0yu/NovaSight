@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::units::{
-    CaptureCoordinate, CapturePixels, ControlCoordinate, DisplayCoordinate, ModelCoordinate,
-    ModelPixels, RoiCoordinate, RoiPixels, Scale,
+    CapturePixels, ControlCoordinate, ModelPixels, RoiCoordinate, RoiPixels, Scale,
 };
 
 /// Pixel point in any space. Values are `f64`; rounding is the caller's job.
@@ -215,24 +214,5 @@ pub fn standard_transform(
         ControlCoordinate::new(0.0)?,
         Scale::new(1.0)?,
         Scale::new(1.0)?,
-    )
-}
-
-// Silence unused warnings when the geometry module is consumed but the
-// re-exports are not all reached in a given build.
-#[allow(dead_code)]
-fn _type_re_exports() -> (
-    ModelCoordinate,
-    RoiCoordinate,
-    CaptureCoordinate,
-    ControlCoordinate,
-    DisplayCoordinate,
-) {
-    (
-        ModelCoordinate::new(0.0).unwrap(),
-        RoiCoordinate::new(0.0).unwrap(),
-        CaptureCoordinate::new(0.0).unwrap(),
-        ControlCoordinate::new(0.0).unwrap(),
-        DisplayCoordinate::new(0.0).unwrap(),
     )
 }

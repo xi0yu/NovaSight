@@ -36,9 +36,10 @@ pub use error::AppError;
 pub use output::{
     DeviceCommand, DeviceReceipt, RecordingPointerDevice, UncommissionedPointerDevice,
 };
+#[cfg(feature = "replay-tools")]
+pub use perception::ReplayPerceptionSource;
 pub use perception::{
-    Detection, DetectionBatch, FrameStamp, Generation, MAX_DETECTIONS, MonotonicNanos,
-    ReplayPerceptionSource, RuntimeEpoch,
+    Detection, DetectionBatch, FrameStamp, Generation, MAX_DETECTIONS, MonotonicNanos, RuntimeEpoch,
 };
 pub use ports::{Clock, PerceptionSource, PointerButtons, PointerDevice, PointerDeviceMode};
 #[cfg(feature = "replay-tools")]

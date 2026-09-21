@@ -999,6 +999,54 @@ fn filtered_classes_age_out_the_previous_track() {
 }
 
 #[test]
+fn crowded_frame_can_choose_a_late_better_class_without_input_order_bias() {
+    let mut candidates = (0..16)
+        .map(|index| {
+            Detection::new(index + 1, 0, 150.0, 280.0, 40.0, 80.0, 0.9).expect("distractor")
+        })
+        .collect::<Vec<_>>();
+    candidates.push(Detection::new(17, 1, 300.0, 280.0, 40.0, 80.0, 0.9).expect("better"));
+
+    for frame in [candidates.clone(), {
+        let mut reversed = candidates.clone();
+        reversed.reverse();
+        reversed
+    }] {
+        let mut core = TargetingCore::new(TargetingConfig::default());
+        core.select_at(&frame, OBSERVATION_CENTER, 1_000_000_000);
+        let selection = core.select_at(&frame, OBSERVATION_CENTER, 1_010_000_000);
+        assert_eq!(selection.target_object_id, Some(17));
+        assert_eq!(selection.inside_fov, 17);
+        assert_eq!(selection.admitted_to_tracking, 16);
+        assert_eq!(selection.dropped_by_budget, 1);
+    }
+}
+
+#[test]
+fn crowded_frame_keeps_the_existing_lock_in_the_association_budget() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
+    let incumbent = Detection::new(100, 2, 300.0, 280.0, 40.0, 80.0, 0.9).expect("incumbent");
+    let locked = core.select_at(
+        std::slice::from_ref(&incumbent),
+        OBSERVATION_CENTER,
+        1_000_000_000,
+    );
+    let locked_id = locked.target_track_id.expect("initial lock");
+    let mut crowded = (0..16)
+        .map(|index| {
+            Detection::new(index + 1, 0, 280.0, 280.0, 40.0, 80.0, 0.9).expect("distractor")
+        })
+        .collect::<Vec<_>>();
+    crowded.push(incumbent);
+
+    let selection = core.select_at(&crowded, OBSERVATION_CENTER, 1_010_000_000);
+    assert_eq!(selection.inside_fov, 17);
+    assert_eq!(selection.dropped_by_budget, 1);
+    assert_eq!(selection.target_object_id, Some(100));
+    assert_eq!(selection.target_track_id, Some(locked_id));
+}
+
+#[test]
 fn lost_track_cannot_produce_a_target_object_id() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");

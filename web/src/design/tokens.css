@@ -201,6 +201,7 @@
   --theme-art-opacity: 0.23;
   --theme-glow: rgba(232, 59, 87, 0.18);
   --theme-choice-swatch-momo: linear-gradient(135deg, #fff8fb 12%, #ffc4d8 48%, #e73572 76%, #5f1534);
+  --theme-choice-swatch-studio: linear-gradient(135deg, #f5f8fc 12%, #b8c9dd 48%, #425fc2 78%, #202f48);
   --theme-choice-swatch-elysia: linear-gradient(135deg, #fffafb 16%, #f4a9c0 58%, #a3264b);
   --theme-choice-swatch-rem: linear-gradient(135deg, #ffffff 12%, #83bcea 58%, #244e83);
   --theme-choice-swatch-lusha: linear-gradient(135deg, #fff8e6 12%, #be8336 55%, #4b2c1c);
@@ -209,6 +210,7 @@
   --theme-choice-swatch-graphite-red: linear-gradient(135deg, #050607 8%, #35383d 48%, #c92038 80%, #780f1f);
   --theme-choice-swatch-frontier-industrial: linear-gradient(135deg, #e6e5e2 8%, #e6e5e2 38%, #16171a 39% 67%, #eef200 68% 82%, #141414 83%);
   --theme-choice-art-momo: var(--theme-choice-swatch-momo);
+  --theme-choice-art-studio: var(--theme-choice-swatch-studio);
   --theme-choice-art-elysia: url("../assets/themes/elysia-sakura-portrait.webp");
   --theme-choice-art-rem: url("../assets/themes/rem-azure-portrait.webp");
   --theme-choice-art-lusha: url("../assets/themes/lusha-gilded-portrait.webp");
@@ -269,6 +271,47 @@
   --theme-art-position: center bottom;
   --theme-art-opacity: 0.23;
   --theme-glow: rgba(232, 59, 87, 0.18);
+}
+
+[data-theme="studio"] {
+  color-scheme: light;
+  --bg-app: #f2f5f9;
+  --bg-surface: #ffffff;
+  --bg-subtle: #f7f9fc;
+  --bg-elevated: #ffffff;
+  --bg-sidebar: #f2f5f9;
+  --bg-hover: #eaf0f8;
+  --bg-active: #e0e9f7;
+  --text-primary: #1b2737;
+  --text-secondary: #46586e;
+  --text-tertiary: #65768b;
+  --text-muted: #65768b;
+  --text-link: #3457bc;
+  --brand-primary: #425fc2;
+  --brand-primary-hover: #344fa9;
+  --brand-primary-active: #283e89;
+  --brand-soft: #edf1ff;
+  --brand-border: #cdd8fa;
+  --border-default: #dce3ec;
+  --border-subtle: rgba(27, 39, 55, 0.09);
+  --border-strong: #bcc9d9;
+  --border-focus: #425fc2;
+  --divider: #e5ebf2;
+  --input-bg: #f7f9fc;
+  --input-border: #cbd6e4;
+  --selection-strong-bg: #202f48;
+  --selection-strong-fg: #ffffff;
+  --selection-strong-muted: #d1dceb;
+  --signal-target: #c83f55;
+  --signal-compute: #31835b;
+  --signal-info: #187bad;
+  --signal-attention: #a76a17;
+  --signal-ink: #202f48;
+  --theme-keyart: none;
+  --theme-portrait: none;
+  --theme-scene: none;
+  --theme-art-opacity: 0;
+  --theme-glow: rgba(66, 95, 194, 0.07);
 }
 
 [data-theme="momo"] {

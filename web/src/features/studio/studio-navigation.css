@@ -30,6 +30,13 @@
   border-color: var(--border-default);
 }
 
+.console-brand-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .console-sidebar::after {
   opacity: calc(var(--theme-art-opacity) * 0.32);
 }
@@ -375,6 +382,10 @@
     border-right: 0;
     font-size: 14px;
     white-space: nowrap;
+  }
+
+  .console-brand-name > span {
+    display: none;
   }
 
   .console-logo {

@@ -2,7 +2,8 @@ use std::marker::PhantomData;
 
 use novasight_core::{
     AppError, ControlDecision, Detection, DetectionBatch, FrameStamp, NearestCenterTargeting,
-    ProportionalReplayControl, RecordingPointerDevice, RuntimeEpoch,
+    PerceptionSource, ProportionalReplayControl, RecordingPointerDevice, ReplayPerceptionSource,
+    RuntimeEpoch,
 };
 
 #[tokio::test]
@@ -14,6 +15,8 @@ async fn replay_batch_becomes_recorded_device_receipt() {
         vec![Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.9).unwrap()],
     )
     .unwrap();
+    let mut source = ReplayPerceptionSource::new([batch]);
+    let batch = source.next_batch().await.unwrap().unwrap();
     let target = NearestCenterTargeting.select(&batch).expect("target");
     assert!((target.confidence - 0.9).abs() < f32::EPSILON);
     let decision = ProportionalReplayControl::new(1.0)

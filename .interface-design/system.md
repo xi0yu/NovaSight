@@ -27,6 +27,7 @@ The interface should feel quiet, dense, precise, and production-grade. It should
 - Radius: keep operational panels at 8-12px. Small controls use smaller radii; do not introduce large soft cards inside dense tools.
 - Typography: weight and color carry hierarchy more than size. Values use tabular mono only when they are metrics, IDs, counts, dimensions, or timings.
 - Color: dominant cool white / glacier gray surfaces, blue-violet for primary actions, cyan-blue for realtime signals, semantic colors only for actual status.
+- Default theme: 专业工作台 uses glacier-gray canvas and deep-blue controls without character artwork. A user's saved theme remains their choice; do not silently overwrite it.
 
 ## Component Patterns
 
@@ -36,6 +37,8 @@ The interface should feel quiet, dense, precise, and production-grade. It should
 - Output gate: primary user-facing safety control. Keep it visible in the parameter page and avoid duplicating it as a separate summary metric.
 - Prediction switch: user-facing algorithm switch. Keep it visible before advanced algorithm parameters.
 - Configuration pages: the configuration profile, output gate, prediction switch, class configuration, and algorithm entry points are the page body; do not add a duplicate metric strip above them.
+- Narrow-screen navigation: keep the active page visible within the horizontal navigation strip without moving document scroll or taking focus from the page heading.
+- Missing runtime snapshot: state that the conclusion is unconfirmed, keep output locked, and provide a direct route to error details instead of an indefinite loading claim.
 
 ## Checks Before Shipping
 

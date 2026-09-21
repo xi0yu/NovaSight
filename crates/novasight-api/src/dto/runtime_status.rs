@@ -381,6 +381,8 @@ pub(crate) struct TargetPipelineState {
 pub(crate) struct TargetPipelineCounts {
     pub raw_candidates: usize,
     pub eligible_candidates: usize,
+    pub admitted_to_tracking: usize,
+    pub dropped_by_budget: usize,
     pub selected_targets: usize,
 }
 
@@ -1299,6 +1301,8 @@ fn target_pipeline_state(selection: &TargetSelection, has_sample: bool) -> Targe
         counts: TargetPipelineCounts {
             raw_candidates: selection.candidates,
             eligible_candidates: selection.inside_fov,
+            admitted_to_tracking: selection.admitted_to_tracking,
+            dropped_by_budget: selection.dropped_by_budget,
             selected_targets: usize::from(selection.target_track_id.is_some()),
         },
     }
@@ -1712,11 +1716,13 @@ mod tests {
             target_box_width: Some(60.0),
             target_box_height: Some(120.0),
             lock_reason: Some(LockReason::FallbackClass),
-            candidates: 3,
+            candidates: 18,
             inside_fov: 1,
+            admitted_to_tracking: 16,
+            dropped_by_budget: 1,
             rejected_class_ids: vec![4],
             rejected_by_class: 1,
-            rejected_by_fov: 1,
+            rejected_by_fov: 16,
             ..TargetSelection::default()
         };
 
@@ -1744,6 +1750,8 @@ mod tests {
         assert_eq!(target["observed_aim_y"], 240.0);
         assert_eq!(target_pipeline["code"], "TARGET_SELECTED");
         assert_eq!(target_pipeline["counts"]["eligible_candidates"], 1);
+        assert_eq!(target_pipeline["counts"]["admitted_to_tracking"], 16);
+        assert_eq!(target_pipeline["counts"]["dropped_by_budget"], 1);
         assert_eq!(value["vision"]["output_trace"]["code"], "ready");
         assert_eq!(
             value["vision"]["output_trace"]["next_action"],

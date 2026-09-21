@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+
 import { NovaIcon, type NovaIconName } from "../../components/visual";
 
 import "./studio-navigation.css";
@@ -132,6 +134,18 @@ export function StudioNavigation({
   activePage: ConsolePage;
   onNavigate: (page: ConsolePage) => void;
 }) {
+  const activeItemRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function" || !window.matchMedia("(max-width: 1024px)").matches) return;
+    const item = activeItemRef.current;
+    const scroller = item?.closest(".console-sidebar");
+    if (!item || !(scroller instanceof HTMLElement)) return;
+    const itemRect = item.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    scroller.scrollLeft += itemRect.left - scrollerRect.left - (scrollerRect.width - itemRect.width) / 2;
+  }, [activePage]);
+
   return (
     <nav className="console-navigation" aria-label="NovaSight Studio 导航">
       {navigationGroups.map((group) => (
@@ -147,6 +161,7 @@ export function StudioNavigation({
                   onClick={() => onNavigate(item.id)}
                   aria-label={item.label}
                   aria-current={active ? "page" : undefined}
+                  ref={active ? activeItemRef : undefined}
                   title={item.detail}
                 >
                   <span className="console-nav-icon" aria-hidden="true">

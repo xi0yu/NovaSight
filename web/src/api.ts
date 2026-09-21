@@ -96,12 +96,14 @@ export type HealthResponse = {
 export class ApiError extends Error {
   readonly status: number;
   readonly detail: unknown;
+  readonly requestId: string | null;
 
-  constructor(message: string, status: number, detail: unknown) {
+  constructor(message: string, status: number, detail: unknown, requestId: string | null = null) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.detail = detail;
+    this.requestId = requestId;
   }
 }
 
@@ -284,6 +286,10 @@ async function requestJson<T>(
 ): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
+  const requestId = globalThis.crypto?.getRandomValues
+    ? Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")
+    : null;
+  if (requestId) headers.set("X-Request-ID", requestId);
   const method = (init?.method ?? "GET").toUpperCase();
   if (!(["GET", "HEAD", "OPTIONS"].includes(method)) && csrfToken) {
     headers.set("X-NovaSight-CSRF", csrfToken);
@@ -324,12 +330,16 @@ async function requestJson<T>(
         throw new ApiError(
           `请求超时：${path} 在 ${Math.round(timeoutMs / 1000)} 秒内未响应`,
           408,
-          { path, timeout_ms: timeoutMs }
+          { path, timeout_ms: timeoutMs },
+          requestId
         );
       }
       throw error;
     }
 
+    // A response from an older daemon may not log our client-generated ID.
+    // Show a confirmed ID only when the daemon echoes it back.
+    const responseRequestId = response.headers.get("x-request-id");
     const contentType = response.headers.get("content-type") ?? "";
     let responseText = "";
     try {
@@ -339,13 +349,14 @@ async function requestJson<T>(
         throw new ApiError(
           `请求超时：${path} 在 ${Math.round(timeoutMs / 1000)} 秒内未完成响应`,
           408,
-          { path, timeout_ms: timeoutMs }
+          { path, timeout_ms: timeoutMs },
+          responseRequestId
         );
       }
       if (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError") {
         throw error;
       }
-      throw new ApiError(`响应读取失败：${path}`, 502, { path });
+      throw new ApiError(`响应读取失败：${path}`, 502, { path }, responseRequestId);
     }
 
     if (response.ok && response.status === 204) {
@@ -358,14 +369,14 @@ async function requestJson<T>(
         body = JSON.parse(responseText) as unknown;
       } catch {
         if (response.ok) {
-          throw new ApiError(`响应 JSON 无法解析：${path}`, 502, { path });
+          throw new ApiError(`响应 JSON 无法解析：${path}`, 502, { path }, responseRequestId);
         }
       }
     } else if (response.ok) {
       throw new ApiError(`响应数据不是 JSON：${path}`, 502, {
         path,
         content_type: contentType || null
-      });
+      }, responseRequestId);
     }
 
     if (!response.ok) {
@@ -393,7 +404,7 @@ async function requestJson<T>(
       if (response.status === 403 && objectBody?.code === "CSRF_REJECTED") {
         window.dispatchEvent(new CustomEvent("novasight:csrf-rejected"));
       }
-      throw new ApiError(detail || "请求失败", response.status, body);
+      throw new ApiError(detail || "请求失败", response.status, body, responseRequestId);
     }
 
     return decode(body);

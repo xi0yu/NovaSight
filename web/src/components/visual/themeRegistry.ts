@@ -1,4 +1,5 @@
 export type ThemeMode =
+  | "studio"
   | "momo"
   | "elysia"
   | "rem"
@@ -16,9 +17,10 @@ export type ThemeOption = {
 };
 
 export const THEME_STORAGE_KEY = "novasight.theme";
-export const DEFAULT_THEME: ThemeMode = "momo";
+export const DEFAULT_THEME: ThemeMode = "studio";
 
 export const THEME_OPTIONS: ThemeOption[] = [
+  { id: "studio", label: "专业工作台", character: "NovaSight · 标准界面", palette: "冰川灰 · 深海蓝 · 信号青" },
   { id: "momo", label: "桃粉工作台", character: "Momo · 成年向导", palette: "桃粉 · 莓红 · 奶白" },
   { id: "elysia", label: "樱晶庭院", character: "Sakura · 视觉档案", palette: "樱花白 · 粉金" },
   { id: "rem", label: "苍雪校准", character: "Azure · 稳定档案", palette: "冰蓝 · 瓷白" },

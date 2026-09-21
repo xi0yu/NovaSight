@@ -41,6 +41,7 @@ export function ToastHost() {
             </div>
             <p className="toast-card-title">{toast.title}</p>
             {toast.detail ? <p className="toast-card-detail">{toast.detail}</p> : null}
+            {toast.requestId ? <small className="toast-card-request-id">排查编号 {toast.requestId}</small> : null}
           </article>
         ))}
       </output>

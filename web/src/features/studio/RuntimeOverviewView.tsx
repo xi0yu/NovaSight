@@ -16,6 +16,7 @@ type RuntimeOverviewViewProps = {
   launchPending: boolean;
   runtimeStopping: boolean;
   runtimeControlUnavailable: boolean;
+  onOpenErrors?: () => void;
   onToggle: () => void;
   onEmergencyStop: () => void;
 };
@@ -52,17 +53,24 @@ export function RuntimeOverviewView({
   launchPending,
   runtimeStopping,
   runtimeControlUnavailable,
+  onOpenErrors,
   onToggle,
   onEmergencyStop,
 }: RuntimeOverviewViewProps) {
   if (!runtime || !projection) {
     return (
       <section className="runtime-overview-empty" role="status">
-        <NovaIcon name="daemon" size={22} />
+        <span className="runtime-overview-empty-icon" aria-hidden="true"><NovaIcon name="daemon" size={22} /></span>
         <div>
-          <strong>正在读取 novasightd 权威状态</strong>
-          <p>在完整运行快照到达前，Studio 不会推断感知或硬件输出状态。</p>
+          <small>当前运行结论</small>
+          <strong>{runtimeControlUnavailable ? "无法确认运行状态" : "正在读取运行状态"}</strong>
+          <p>{runtimeControlUnavailable
+            ? "请检查服务连接，并在右上角“异常信息”查看原因。收到完整状态前，硬件输出保持锁定。"
+            : "等待服务返回完整状态；此时不会推断感知或硬件输出。"}</p>
         </div>
+        {runtimeControlUnavailable && onOpenErrors ? (
+          <button className="console-button primary" onClick={onOpenErrors} type="button">查看异常信息</button>
+        ) : null}
       </section>
     );
   }

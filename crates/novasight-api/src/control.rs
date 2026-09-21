@@ -9,7 +9,7 @@ use axum::{
         Query, State, WebSocketUpgrade,
         ws::{CloseFrame, Message, WebSocket},
     },
-    http::{HeaderMap, Method, Request, StatusCode, header::SET_COOKIE},
+    http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header::SET_COOKIE},
     middleware,
     middleware::Next,
     response::{IntoResponse, Response},
@@ -200,30 +200,57 @@ pub fn build_control_router_with_platform_queries(
     };
     router
         .layer(super::app::studio_cors_layer())
-        .layer(middleware::from_fn(log_http_request))
+        .layer(middleware::from_fn_with_state(state, log_http_request))
 }
 
-async fn log_http_request(request: Request<Body>, next: Next) -> Response {
-    let request_id = NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+async fn log_http_request(
+    State(state): State<ControlState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            format!(
+                "{}-{:016x}",
+                state.daemon_instance_id,
+                NEXT_HTTP_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+            )
+        });
+    let entry_point = if request.extensions().get::<TrustedLocalControl>().is_some() {
+        "local_socket"
+    } else {
+        "http"
+    };
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let span = tracing::info_span!(
         "http_request",
         service = "novasightd",
         version = env!("CARGO_PKG_VERSION"),
-        request_id,
+        request_id = %request_id,
+        entry_point,
         method = %method,
         path = %path,
     );
     async move {
         let started = Instant::now();
-        let response = next.run(request).await;
+        let mut response = next.run(request).await;
         let status = response.status();
         let latency_ms = started.elapsed().as_millis() as u64;
         tracing::info!(
+            event = "http_request_completed",
             http_status = status.as_u16(),
             latency_ms,
             "api request completed"
+        );
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_str(&request_id).expect("request ID is validated ASCII"),
         );
         response
     }
@@ -1967,6 +1994,64 @@ impl IntoResponse for ControlApiError {
 mod tests {
     use super::runtime_snapshot_confirms_safe;
     use novasight_runtime::{PipelineState, RuntimeSnapshot};
+
+    #[tokio::test]
+    async fn request_id_is_shared_by_success_and_rejection_and_exposed_to_studio() {
+        use super::*;
+        use novasight_runtime::RuntimeSupervisor;
+        use tower::ServiceExt;
+
+        let (_supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+        let app = build_control_router(runtime.clone());
+        let request_id = "0123456789abcdef0123456789abcdef";
+        let success = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .header("origin", "http://localhost:7351")
+                    .header("x-request-id", request_id)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(success.status().is_success());
+        assert_eq!(success.headers()["x-request-id"], request_id);
+        assert_eq!(
+            success.headers()["access-control-expose-headers"],
+            "x-request-id"
+        );
+
+        let failure = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/config")
+                    .header("x-request-id", request_id)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(!failure.status().is_success());
+        assert_eq!(failure.headers()["x-request-id"], request_id);
+
+        let rejected_id = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .header("x-request-id", "untrusted-value")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let generated = rejected_id.headers()["x-request-id"].to_str().unwrap();
+        assert_eq!(generated.len(), 49);
+        assert!(!generated.contains("untrusted-value"));
+        runtime.shutdown_daemon().await.unwrap();
+    }
 
     #[tokio::test]
     async fn runtime_only_start_closes_stale_output_and_keeps_hardware_gated() {

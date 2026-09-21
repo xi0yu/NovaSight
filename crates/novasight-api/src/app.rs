@@ -1,4 +1,4 @@
-use axum::http::HeaderValue;
+use axum::http::{HeaderName, HeaderValue};
 use tower_http::cors::{AllowHeaders, AllowMethods, AllowOrigin, CorsLayer};
 
 pub(crate) fn studio_cors_layer() -> CorsLayer {
@@ -9,6 +9,7 @@ pub(crate) fn studio_cors_layer() -> CorsLayer {
         .allow_credentials(true)
         .allow_methods(AllowMethods::mirror_request())
         .allow_headers(AllowHeaders::mirror_request())
+        .expose_headers([HeaderName::from_static("x-request-id")])
 }
 
 fn is_allowed_studio_origin(origin: &HeaderValue) -> bool {

@@ -5,6 +5,7 @@ import { DEFAULT_THEME, THEME_OPTIONS, isThemeMode, resolveStoredTheme } from ".
 describe("theme registry", () => {
   it("includes the approved product and industrial palettes", () => {
     expect(THEME_OPTIONS.map((option) => option.id)).toEqual(expect.arrayContaining([
+      "studio",
       "rose-white",
       "graphite-red",
       "frontier-industrial",
@@ -12,6 +13,9 @@ describe("theme registry", () => {
   });
 
   it("accepts product themes from local storage", () => {
+    expect(isThemeMode("studio")).toBe(true);
+    expect(resolveStoredTheme("studio")).toBe("studio");
+    expect(resolveStoredTheme("momo")).toBe("momo");
     expect(isThemeMode("rose-white")).toBe(true);
     expect(isThemeMode("graphite-red")).toBe(true);
     expect(isThemeMode("frontier-industrial")).toBe(true);
@@ -21,6 +25,7 @@ describe("theme registry", () => {
   });
 
   it("keeps legacy light and dark preferences compatible", () => {
+    expect(DEFAULT_THEME).toBe("studio");
     expect(resolveStoredTheme("light")).toBe("elysia");
     expect(resolveStoredTheme("dark")).toBe("tayama");
     expect(resolveStoredTheme("unknown")).toBe(DEFAULT_THEME);

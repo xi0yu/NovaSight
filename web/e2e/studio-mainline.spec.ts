@@ -131,6 +131,14 @@ test("Studio navigation moves keyboard focus to the new page heading", async ({ 
   await expect(page.getByRole("heading", { level: 1, name: "运行总览" })).toBeFocused();
 });
 
+test("unavailable runtime leads to the error details", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.goto("/?page=overview");
+
+  await page.getByRole("button", { name: "查看异常信息" }).click();
+  await expect(page.getByRole("dialog", { name: "异常信息" })).toBeVisible();
+});
+
 test("capture page keeps saved and running specifications visible without horizontal overflow", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, {
     revision: 25,
@@ -142,6 +150,9 @@ test("capture page keeps saved and running specifications visible without horizo
   await expect(check).toContainText("等待运行验证");
   await expect(check.getByText("MJPEG (MJPG) / 1920x1080 / 240 FPS", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "保存采集配置" })).toBeVisible();
+  if ((page.viewportSize()?.width ?? 0) >= 1200) {
+    await expect(page.getByRole("heading", { name: "采集设备" })).toBeInViewport();
+  }
   expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(
     await page.evaluate(() => document.documentElement.clientWidth),
   );
@@ -211,6 +222,18 @@ test("algorithm parameters explain the two-stage save flow", async ({ page }) =>
   await expect(dialog).toContainText("返回参数页后点击“保存修改”才会写入设备");
 });
 
+test("discarding parameter edits asks first, including on narrow screens", async ({ page }) => {
+  await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "always" }, pipeline: {} });
+  await page.goto("/?page=params");
+  await page.getByRole("button", { name: "按键触发" }).click();
+  await page.getByRole("button", { name: "放弃修改" }).click();
+  const confirmation = page.getByRole("alertdialog", { name: "放弃未保存的修改？" });
+  await expect(confirmation).toBeVisible();
+  expect((await confirmation.boundingBox())?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(page.viewportSize()?.width ?? 0);
+  await confirmation.getByRole("button", { name: "取消" }).click();
+  await expect(page.getByRole("button", { name: "放弃修改" })).toBeVisible();
+});
+
 test("narrow Studio keeps Chinese navigation and save action reachable", async ({ page }) => {
   await page.setViewportSize({ width: 620, height: 812 });
   await mockStudioApi(page);
@@ -218,6 +241,7 @@ test("narrow Studio keeps Chinese navigation and save action reachable", async (
 
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
   await expect(navigation.getByText("参数设置", { exact: true })).toBeVisible();
+  await expect(navigation.getByRole("button", { name: "参数设置" })).toBeInViewport();
 
   const shellHeader = page.locator(".console-top");
   expect((await shellHeader.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(76);
@@ -237,6 +261,7 @@ test("narrow Studio keeps Chinese navigation and save action reachable", async (
     expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
 });
+
 
 test("1024px Studio switches layout before Windows scrollbars cause overflow", async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 768 });
@@ -298,6 +323,41 @@ test("theme chooser exposes visible controls that a user can actually click", as
   await page.mouse.click(12, (viewport?.height ?? 720) - 12);
   await expect(trigger).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByRole("group", { name: "网站主题" })).toHaveCount(0);
+});
+
+test("Studio action feedback respects reduced motion, transparency and higher contrast", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.goto("/?page=overview");
+
+  const action = page.locator(".console-button:visible:not(:disabled)").first();
+  await action.scrollIntoViewIfNeeded();
+  await action.hover();
+  await page.mouse.down();
+  await expect(action).toHaveCSS("transform", "matrix(0.98, 0, 0, 0.98, 0, 0)");
+  await page.mouse.move(0, 0);
+  await page.mouse.up();
+
+  const session = await page.context().newCDPSession(page);
+  await session.send("Emulation.setEmulatedMedia", {
+    features: [
+      { name: "prefers-reduced-motion", value: "reduce" },
+      { name: "prefers-reduced-transparency", value: "reduce" },
+      { name: "prefers-contrast", value: "more" },
+    ],
+  });
+  expect(await page.evaluate(() => matchMedia("(prefers-reduced-transparency: reduce)").matches)).toBe(true);
+  await action.hover();
+  await page.mouse.down();
+  await expect(action).toHaveCSS("transform", "none");
+  await expect(action).toHaveCSS("box-shadow", /inset/);
+  await page.mouse.up();
+
+  await expect(page.locator(".console-app")).toHaveCSS("backdrop-filter", "none");
+  await expect(page.locator(".console-app")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  expect(await page.locator("html").evaluate((element) => {
+    const style = getComputedStyle(element);
+    return style.getPropertyValue("--border-default").trim() === style.getPropertyValue("--border-strong").trim();
+  })).toBe(true);
 });
 
 test("760px Studio recovery actions keep touch-safe targets", async ({ page }) => {

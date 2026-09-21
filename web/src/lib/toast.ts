@@ -11,6 +11,7 @@ export type Toast = {
   title: string;
   detail?: string;
   technicalDetail?: string;
+  requestId?: string | null;
   source: string;
   status: number | null;
   count: number;
@@ -74,9 +75,9 @@ export function useErrorNotices(): Toast[] {
   );
 }
 
-export function useClearErrorNotices(): () => void {
-  return useCallback(() => {
-    errorNotices = [];
+export function useClearErrorNotices(): (ids?: readonly number[]) => void {
+  return useCallback((ids?: readonly number[]) => {
+    errorNotices = ids ? errorNotices.filter((notice) => !ids.includes(notice.id)) : [];
     emitErrors();
   }, []);
 }
@@ -96,6 +97,7 @@ function buildToast(input: {
   title: string;
   detail?: string;
   technicalDetail?: string;
+  requestId?: string | null;
   source: string;
   status: number | null;
 }): Toast {
@@ -105,6 +107,7 @@ function buildToast(input: {
     title: input.title,
     detail: input.detail,
     technicalDetail: input.technicalDetail,
+    requestId: input.requestId,
     source: input.source,
     status: input.status,
     count: 1,
@@ -130,7 +133,7 @@ function pushToast(toast: Toast, popup = true): void {
     ));
     if (existingIndex >= 0) {
       errorNotices = errorNotices.map((notice, index) => index === existingIndex
-        ? { ...notice, count: notice.count + 1, createdAt: toast.createdAt }
+        ? { ...notice, count: notice.count + 1, createdAt: toast.createdAt, requestId: toast.requestId }
         : notice);
     } else {
       errorNotices = [...errorNotices, toast].slice(-20);
@@ -172,8 +175,15 @@ export function reportError(
     source: options.source,
     fallback: options.fallback
   });
+  // Never write the raw API response (which may contain credentials) to the browser console.
   // eslint-disable-next-line no-console
-  console.error(`[${options.source}]`, error);
+  console.error({
+    event: "frontend_request_failed",
+    source: options.source,
+    http_status: error instanceof ApiError ? error.status : null,
+    request_id: error instanceof ApiError ? error.requestId : null,
+    error_name: error instanceof Error ? error.name : "UnknownError"
+  });
   pushToast(
     buildToast({
       tone: normalized.severity,
@@ -182,10 +192,11 @@ export function reportError(
       technicalDetail: error instanceof ApiError
         ? JSON.stringify(
           { source: options.source, http_status: error.status, response: error.detail },
-          (key, value: unknown) => /password|secret|token|license_key|uuid/i.test(key) ? "[redacted]" : value,
+          (key, value: unknown) => /password|secret|token|license_key|authorization|credential|api.?key|uuid/i.test(key) ? "[redacted]" : value,
           2
         )
         : undefined,
+      requestId: error instanceof ApiError ? error.requestId : null,
       source: normalized.source,
       status: options.exposeStatus === false ? null : normalized.status
     }),

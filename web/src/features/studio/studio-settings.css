@@ -7,6 +7,10 @@
 }
 
 .capture-profile-check {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.6fr) minmax(0, 1.6fr);
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
   margin-bottom: var(--space-3);
   padding: var(--space-4);
 }
@@ -40,6 +44,11 @@
   white-space: nowrap;
 }
 
+.capture-profile-check-header {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
 .capture-profile-check[data-state="matched"] .capture-profile-check-state {
   border-color: var(--status-success-border);
   background: var(--status-success-bg);
@@ -56,7 +65,7 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
-  margin-top: var(--space-4);
+  margin-top: 0;
 }
 
 .capture-profile-check-grid > div {
@@ -84,8 +93,11 @@
 }
 
 .capture-profile-check-footnote {
+  grid-column: 1 / -1;
   flex-wrap: wrap;
-  margin: var(--space-3) 0 0;
+  margin: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
   color: var(--text-secondary);
   font-size: 11px;
   line-height: 1.45;
@@ -103,6 +115,17 @@
   background: var(--bg-surface);
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .capture-profile-check {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .capture-profile-check-header {
+    align-items: center;
+    flex-direction: row;
+  }
 }
 
 @media (max-width: 640px) {
@@ -158,7 +181,7 @@
   min-width: 0;
   margin: 0;
   color: var(--control-field-muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 750;
   line-height: 1.45;
 }
@@ -182,7 +205,7 @@
   background: var(--control-chip-bg);
   color: var(--text-tertiary);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 750;
   line-height: 1;
   white-space: nowrap;
@@ -204,7 +227,7 @@
 .parameter-control-detail {
   margin: -2px 0 0;
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -3513,5 +3536,34 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-4);
     background: var(--bg-surface);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .parameter-save-bar,
+  .class-editor-head {
+    background: var(--bg-surface);
+    backdrop-filter: none;
+  }
+
+  .parameter-save-bar.dirty {
+    background: var(--status-warning-bg);
+  }
+
+  .advanced-settings-dialog-layer,
+  .target-weight-dialog-layer,
+  .class-config-dialog-layer {
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  .parameter-save-bar,
+  .class-editor-head {
+    background: var(--bg-surface);
+  }
+
+  .parameter-save-bar.dirty {
+    background: var(--status-warning-bg);
   }
 }

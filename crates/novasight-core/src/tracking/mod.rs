@@ -31,7 +31,7 @@ mod selection;
 use association::associate;
 pub use kalman::KalmanConfig;
 use kalman::KalmanState;
-use selection::{detection_aspect_ratio, euclidean, target_score};
+use selection::{candidate_score, detection_aspect_ratio, euclidean, target_score};
 
 /// Timestamp-free replay fallback for expiring a non-matched track.
 pub const DEFAULT_TRACK_MAX_AGE: u64 = 5;
@@ -127,6 +127,8 @@ pub struct TargetSelection {
     pub lock_reason: Option<LockReason>,
     pub candidates: usize,
     pub inside_fov: usize,
+    pub admitted_to_tracking: usize,
+    pub dropped_by_budget: usize,
     pub rejected_class_ids: Vec<u32>,
     pub rejected_by_confidence: usize,
     pub rejected_by_class: usize,
@@ -154,6 +156,8 @@ impl TargetSelection {
             lock_reason: None,
             candidates: 0,
             inside_fov: 0,
+            admitted_to_tracking: 0,
+            dropped_by_budget: 0,
             rejected_class_ids: Vec::new(),
             rejected_by_confidence: 0,
             rejected_by_class: 0,
@@ -331,7 +335,7 @@ impl TargetingCore {
         let mut rejected_by_aspect_ratio = 0;
         let mut rejected_by_fov = 0;
         let mut inside_fov = 0;
-        let mut trackable = Vec::with_capacity(detections.len().min(MAX_ACTIVE_TRACKS));
+        let mut eligible = Vec::with_capacity(detections.len());
         for detection in detections {
             if detection.confidence() < self.config.min_confidence {
                 rejected_by_confidence += 1;
@@ -357,23 +361,20 @@ impl TargetingCore {
             if !selectable {
                 rejected_by_fov += 1;
             }
-            if selectable && inside_fov < MAX_ACTIVE_TRACKS {
-                if trackable.len() == MAX_ACTIVE_TRACKS {
-                    trackable.pop();
-                }
-                trackable.insert(inside_fov, detection.clone());
+            if selectable {
                 inside_fov += 1;
-            } else if !selectable && trackable.len() < MAX_ACTIVE_TRACKS {
-                trackable.push(detection.clone());
             }
+            eligible.push(detection.clone());
         }
         let rejected_class_ids = rejected_class_ids.into_iter().collect::<Vec<_>>();
-        if trackable.is_empty() {
+        if eligible.is_empty() {
             self.pending_switch = None;
             self.miss_locked_target(captured_at_ns);
             return TargetSelection {
                 candidates,
                 inside_fov: 0,
+                admitted_to_tracking: 0,
+                dropped_by_budget: 0,
                 target_object_id: None,
                 target_track_id: None,
                 target_class_id: None,
@@ -410,6 +411,73 @@ impl TargetingCore {
                 track.center_y = track.box_y + track.height * 0.5;
             }
         }
+
+        let eligible_count = eligible.len();
+        let trackable = if eligible_count <= MAX_ACTIVE_TRACKS {
+            eligible
+        } else {
+            let locked_object_id = self.locked.as_ref().and_then(|locked| {
+                let track = self.tracks.iter().find(|track| track.id == locked.id)?;
+                associate(
+                    std::slice::from_ref(track),
+                    &eligible,
+                    &self.config,
+                    captured_at_ns,
+                )
+                .ok()?
+                .into_iter()
+                .next()
+                .map(|association| association.object_id)
+            });
+            let mut ranked = eligible
+                .iter()
+                .enumerate()
+                .map(|(index, detection)| {
+                    let aim = detection_aim(detection, &self.config);
+                    let in_fov =
+                        euclidean(aim.0, aim.1, observation_center.0, observation_center.1)
+                            <= self.config.target_fov_radius_px;
+                    (
+                        index,
+                        in_fov,
+                        candidate_score(detection, aim, observation_center, &self.config),
+                    )
+                })
+                .collect::<Vec<_>>();
+            ranked.sort_by(|left, right| {
+                right
+                    .1
+                    .cmp(&left.1)
+                    .then_with(|| right.2.total_cmp(&left.2))
+                    .then_with(|| {
+                        eligible[left.0]
+                            .object_id()
+                            .cmp(&eligible[right.0].object_id())
+                    })
+            });
+            let mut chosen = ranked
+                .into_iter()
+                .take(MAX_ACTIVE_TRACKS)
+                .map(|entry| entry.0)
+                .collect::<Vec<_>>();
+            // ponytail: reserve only the current lock; reserve more tracks if crowded-scene replay shows churn.
+            if let Some(object_id) = locked_object_id
+                && let Some(index) = eligible
+                    .iter()
+                    .position(|detection| detection.object_id() == object_id)
+                && !chosen.contains(&index)
+            {
+                chosen.pop();
+                chosen.push(index);
+            }
+            chosen.sort_unstable();
+            chosen
+                .into_iter()
+                .map(|index| eligible[index].clone())
+                .collect::<Vec<_>>()
+        };
+        let admitted_to_tracking = trackable.len();
+        let dropped_by_budget = eligible_count.saturating_sub(admitted_to_tracking);
 
         let associations =
             associate(&self.tracks, &trackable, &self.config, captured_at_ns).unwrap_or_default();
@@ -573,6 +641,8 @@ impl TargetingCore {
             return TargetSelection {
                 candidates,
                 inside_fov,
+                admitted_to_tracking,
+                dropped_by_budget,
                 rejected_class_ids,
                 rejected_by_confidence,
                 rejected_by_class,
@@ -642,6 +712,8 @@ impl TargetingCore {
             return TargetSelection {
                 candidates,
                 inside_fov,
+                admitted_to_tracking,
+                dropped_by_budget,
                 rejected_class_ids,
                 rejected_by_confidence,
                 rejected_by_class,
@@ -669,6 +741,8 @@ impl TargetingCore {
         TargetSelection {
             candidates,
             inside_fov,
+            admitted_to_tracking,
+            dropped_by_budget,
             target_object_id: Some(track.object_id),
             target_track_id: Some(track.id),
             target_class_id: Some(track.class_id),

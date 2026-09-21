@@ -42,6 +42,25 @@ const controlProps = {
 };
 
 describe("RuntimeOverviewView", () => {
+  it("opens actionable errors when the authoritative runtime is unavailable", async () => {
+    const onOpenErrors = vi.fn();
+    render(
+      <RuntimeOverviewView
+        runtime={null}
+        projection={null}
+        readiness={{ state: "action", title: "不可用", detail: "检查连接" }}
+        lastUpdated={null}
+        onAction={() => undefined}
+        {...controlProps}
+        runtimeControlUnavailable
+        onOpenErrors={onOpenErrors}
+      />
+    );
+    expect(screen.getByText("无法确认运行状态")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "查看异常信息" }));
+    expect(onOpenErrors).toHaveBeenCalledOnce();
+  });
+
   it("shows one conclusion, three independent axes and no delivery claim", () => {
     render(
       <RuntimeOverviewView

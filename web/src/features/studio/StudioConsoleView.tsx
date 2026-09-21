@@ -877,6 +877,17 @@ export function StudioConsoleView({
     setDialogSaveError(null);
   }, [setParameterPageDirtyState]);
 
+  const requestDiscardParameterPageDraft = useCallback(() => {
+    setConfirmationRequest({
+      eyebrow: "参数草稿",
+      title: "放弃未保存的修改？",
+      description: "当前页面的未保存参数会被丢弃，恢复为最新已保存配置。此操作不能撤销。",
+      confirmLabel: "确认放弃修改",
+      danger: true,
+      onConfirm: discardParameterPageDraft
+    });
+  }, [discardParameterPageDraft]);
+
   const focusAlgorithmSettingsSection = useCallback((section: AlgorithmSettingsSection) => {
     setAlgorithmSettingsSection(section);
     window.requestAnimationFrame(() => {
@@ -1011,14 +1022,18 @@ export function StudioConsoleView({
       return;
     }
 
-    // The explicit "加入草稿并关闭" button keeps the dialog edits; closing via Esc/backdrop
-    // is the explicit "放弃" path. Surface a non-blocking info toast so the
-    // user can immediately reopen if they change their mind.
-    configDraftRef.current = baseline;
-    setConfigDraft(baseline);
-    finishConfigDialog(dialog);
-    reportInfo("已放弃修改", "本弹窗内的草稿已丢弃，可重新打开继续编辑。", "config-dialog");
-    return;
+    setConfirmationRequest({
+      eyebrow: "未保存的弹窗修改",
+      title: "关闭并放弃本次修改？",
+      description: "本弹窗内的修改还没有加入参数草稿。确认后会丢弃这些修改；参数页已有的草稿不受影响。",
+      confirmLabel: "放弃弹窗修改",
+      danger: true,
+      onConfirm: () => {
+        configDraftRef.current = baseline;
+        setConfigDraft(baseline);
+        finishConfigDialog(dialog);
+      }
+    });
   }, [finishConfigDialog]);
 
   const confirmPendingAction = useCallback(async () => {
@@ -1051,6 +1066,19 @@ export function StudioConsoleView({
   useEffect(() => {
     setConfirmationError(null);
   }, [confirmationRequest]);
+
+  const requestClearErrorHistory = useCallback(() => {
+    const ids = errorNotices.map((notice) => notice.id);
+    if (ids.length === 0) return;
+    setConfirmationRequest({
+      eyebrow: "异常信息",
+      title: "清空历史错误记录？",
+      description: `将清除当前看到的 ${ids.length} 条历史记录，清除后无法恢复；仍在发生的运行故障会继续显示。`,
+      confirmLabel: "确认清空历史",
+      danger: true,
+      onConfirm: () => clearErrorNotices(ids)
+    });
+  }, [clearErrorNotices, errorNotices]);
 
   const stageConfigDialogDraft = useCallback((next: RuntimeConfig) => {
     configDraftRef.current = next;
@@ -2114,14 +2142,15 @@ export function StudioConsoleView({
   }, [runtimeFaultDetail, runtimeFaultEvidence]);
 
   const currentErrorDetails = useMemo(() => {
-    const items: Array<{ key: string; title: string; detail: string; technicalDetail?: string; time?: number; count?: number }> = [];
+    const items: Array<{ key: string; title: string; detail: string; technicalDetail?: string; requestId?: string | null; time?: number; count?: number }> = [];
     const noticeStates = new Set(errorNotices.map((notice) => `${notice.source}\u0000${notice.detail}`));
     for (const notice of errorNotices) {
       items.push({
         key: `notice-${notice.id}`,
         title: notice.title,
         detail: formatRuntimeErrorMessage(notice.detail || notice.source),
-        technicalDetail: notice.technicalDetail || `来源: ${notice.source}${notice.status === null ? "" : `\nHTTP: ${notice.status}`}\n${notice.detail ?? ""}`,
+        technicalDetail: `${notice.requestId ? `排查编号: ${notice.requestId}\n` : ""}${notice.technicalDetail || `来源: ${notice.source}${notice.status === null ? "" : `\nHTTP: ${notice.status}`}\n${notice.detail ?? ""}`}`,
+        requestId: notice.requestId,
         time: notice.createdAt,
         count: notice.count
       });
@@ -2449,7 +2478,7 @@ export function StudioConsoleView({
       const message = `切换失败，已保留上一组可用配置：${getErrorMessage(err)}`;
       setLocalError(message);
       setCaptureActionError(message);
-      reportError(err, { source: 'studio', title: '操作失败' });
+      reportError(err, { source: "capture-select", title: "采集规格保存失败", popup: false });
     }
     try {
       await onRefresh();
@@ -2459,7 +2488,7 @@ export function StudioConsoleView({
         setLocalError(message);
         setCaptureActionError(message);
       }
-      reportError(err, { source: "capture-refresh", title: "采集状态刷新失败" });
+      reportError(err, { source: "capture-refresh", title: "采集状态刷新失败", popup: false });
     } finally {
       setBusy(null);
     }
@@ -2628,7 +2657,7 @@ export function StudioConsoleView({
         setLocalError(`配置同步失败：${message}`);
         setDialogSaveError(message);
 
-        reportError(err, { source: 'studio', title: '操作失败' });
+        reportError(err, { source: "config-write", title: "配置保存失败" });
         if (optimistic && writeSeq === configWriteSeqRef.current) {
           // Revert the visible draft to the canonical (pre-edit) state so the
           // user doesn't see the whole form blank. If a newer optimistic
@@ -3073,11 +3102,16 @@ export function StudioConsoleView({
   }, [onRefresh]);
 
   const requestClearCrosshair = useCallback(() => {
-    // No confirmation dialog: clearing the template is reversible by pressing
-    // F8 to re-learn, which is the same path the user would take after a
-    // confirm anyway. The success toast surfaces the F8 hint.
-    void performClearCrosshair();
-  }, [performClearCrosshair]);
+    setConfirmationRequest({
+      eyebrow: "视觉准星基准",
+      title: "清除已学习的准星模板？",
+      description: "当前模板会被删除，控制基准回退到几何中心。重新学习需要新的有效画面，不能直接撤销。",
+      details: [`当前模板：${crosshairTemplateId}`],
+      confirmLabel: "确认清除模板",
+      danger: true,
+      onConfirm: performClearCrosshair
+    });
+  }, [crosshairTemplateId, performClearCrosshair]);
 
   useEffect(() => {
     const onCrosshairShortcut = (event: KeyboardEvent) => {
@@ -3502,14 +3536,30 @@ export function StudioConsoleView({
       );
       await onRefresh();
     } catch (err) {
-      setLocalError(`kmNet 单步移动失败：${getErrorMessage(err)}`);
-
-      reportError(err, { source: 'studio', title: '操作失败' });
+      const message = `单步移动未完成：${getErrorMessage(err)}`;
+      setLocalError(message);
+      setKmnetTestMessageTone("warning");
+      setKmnetTestMessage(message);
+      reportError(err, { source: "kmnet-diagnostic", title: "kmNet 单步移动失败", popup: false });
       await onRefresh();
     } finally {
       setBusy(null);
     }
   }, [kmnetTestDx, kmnetTestDy, onRefresh]);
+
+  const requestDiagnosticMoveHardware = useCallback((dx: number, dy: number) => {
+    const roundedDx = Math.round(dx);
+    const roundedDy = Math.round(dy);
+    setConfirmationRequest({
+      eyebrow: "kmNet 单步测试",
+      title: "发送一次物理位移？",
+      description: `将向 ${kmnetHost || "未填写"}:${kmnetPort || "未填写"} 发送一次 dx=${roundedDx}、dy=${roundedDy} 的位移命令。`,
+      details: ["只发送这一条命令；服务端仍会核对主链已停止、输出已允许，并在测试后断开设备。"],
+      confirmLabel: "确认发送一次",
+      danger: true,
+      onConfirm: () => diagnosticMoveHardware(roundedDx, roundedDy)
+    });
+  }, [diagnosticMoveHardware, kmnetHost, kmnetPort]);
 
   const exportConfig = () => {
     if (!runtimeConfig) {
@@ -3630,7 +3680,7 @@ export function StudioConsoleView({
     } catch (err) {
       setLocalError(`导入失败：${getErrorMessage(err)}`);
 
-      reportError(err, { source: 'studio', title: '操作失败' });
+      reportError(err, { source: "config-import", title: "配置导入失败" });
     }
   };
 
@@ -3670,7 +3720,7 @@ export function StudioConsoleView({
     } catch (err) {
       setLocalError(`模型列表刷新失败：${getErrorMessage(err)}`);
 
-      reportError(err, { source: 'studio', title: '操作失败' });
+      reportError(err, { source: "model-catalog", title: "模型列表刷新失败" });
     } finally {
       setBusy(null);
     }
@@ -3779,7 +3829,7 @@ export function StudioConsoleView({
           <div className="console-logo">
             <NovaIcon name="prediction-line" size={24} strokeWidth={1.9} />
           </div>
-          NovaSight Studio
+          <span className="console-brand-name">NovaSight<span> Studio</span></span>
         </div>
         <div className="console-toolbar">
           <div className="console-group">
@@ -3864,6 +3914,7 @@ export function StudioConsoleView({
             launchPending={mainlineLaunchPending}
             runtimeStopping={runtimeStopping}
             runtimeControlUnavailable={runtimeControlUnavailable}
+            onOpenErrors={() => setErrorCenterOpen(true)}
             onToggle={() => void toggleCapture()}
             onEmergencyStop={() => void emergencyStopMainline()}
           />
@@ -3918,7 +3969,7 @@ export function StudioConsoleView({
           </div>
         ) : null}
 
-        {activePage === "capture" ? (
+        {activePage === "capture" && runtime !== null ? (
           <LaunchReadinessPanel
             busy={busy !== null || runtimeStopping || runtimeControlUnavailable}
             onAction={handleLaunchReadinessAction}
@@ -3998,7 +4049,7 @@ export function StudioConsoleView({
                     onClick={() => void applyCapture()}
                     type="button"
                   >
-                    保存采集配置
+                    {busy === "capture" ? "正在保存并核对..." : "保存采集配置"}
                   </button>
                 </div>
                 <p className="console-section-note">
@@ -4300,6 +4351,7 @@ export function StudioConsoleView({
                   <span>状态信息</span><b>{targetPipelineMessage || NO_SAMPLE}</b>
                   <span>检测数量</span><b>{formatOptionalInteger(detectionCount)}</b>
                   <span>原始 / 合格 / 已选择</span><b>{`${formatOptionalInteger(rawCandidateCount)} / ${formatOptionalInteger(eligibleCandidateCount)} / ${formatOptionalInteger(selectedTargetCount)}`}</b>
+                  <span>进入跟踪 / 预算舍弃</span><b>{`${formatOptionalInteger(targetPipeline?.counts.admitted_to_tracking)} / ${formatOptionalInteger(targetPipeline?.counts.dropped_by_budget)}`}</b>
                   <span>过滤原因</span><b>{targetPipelineRejections || NO_SAMPLE}</b>
                   <span>生效类别过滤</span><b>{effectiveClassFilter === "all" ? "全部类别" : effectiveClassFilter === "none" ? "未选择任何类别" : `cls ${effectiveClassFilter}`}</b>
                   <span>被类别过滤的 cls</span><b>{rejectedBasicClassIds.length > 0 ? rejectedBasicClassIds.join(", ") : NO_SAMPLE}</b>
@@ -4441,7 +4493,7 @@ export function StudioConsoleView({
                   <button
                     className="console-button"
                     disabled={parameterPageSaving || pendingConfigWriteCount > 0}
-                    onClick={discardParameterPageDraft}
+                    onClick={requestDiscardParameterPageDraft}
                     type="button"
                   >
                     放弃修改
@@ -4962,7 +5014,7 @@ export function StudioConsoleView({
               <div className="kmnet-test-panel">
                 <div className="kmnet-test-section">
                   <h3>发送一次受控移动</h3>
-                  <p>每次点击只发送一条命令；服务端会再次验证主链已停止、输出门已打开，并在完成后断开设备。</p>
+                  <p>选择位移并确认后才发送一条命令；服务端会再次验证主链已停止、输出门已打开，并在完成后断开设备。</p>
                 </div>
                 <div className="kmnet-test-inputs">
                   <label>
@@ -4985,11 +5037,11 @@ export function StudioConsoleView({
                   </label>
                 </div>
                 <div className="kmnet-pad">
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, -10)}>↑</button>
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(-10, 0)}>←</button>
-                  <button type="button" onClick={() => void diagnosticMoveHardware(kmnetTestDx, kmnetTestDy)} disabled={kmnetDiagnosticDisabled}>发送</button>
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(10, 0)}>→</button>
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => void diagnosticMoveHardware(0, 10)}>↓</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => requestDiagnosticMoveHardware(0, -10)}>↑</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => requestDiagnosticMoveHardware(-10, 0)}>←</button>
+                  <button type="button" onClick={() => requestDiagnosticMoveHardware(kmnetTestDx, kmnetTestDy)} disabled={kmnetDiagnosticDisabled}>发送</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => requestDiagnosticMoveHardware(10, 0)}>→</button>
+                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => requestDiagnosticMoveHardware(0, 10)}>↓</button>
                 </div>
                 <div className="kmnet-test-result">
                   <span>最近测试移动</span>
@@ -5609,6 +5661,7 @@ export function StudioConsoleView({
                     <strong>{item.title}</strong>
                     {(item.count ?? 1) > 1 ? <small>本会话重复 {item.count} 次</small> : null}
                     <p>{item.detail}</p>
+                    {item.requestId ? <small className="error-center-request-id">排查编号 {item.requestId}</small> : null}
                     <details>
                       <summary>原始错误与开发者详情</summary>
                       <pre>{item.technicalDetail || item.detail}</pre>
@@ -5630,7 +5683,7 @@ export function StudioConsoleView({
                   aria-describedby={errorNotices.length === 0 && currentErrorDetails.length > 0 ? "error-center-clear-note" : undefined}
                   className="console-button"
                   disabled={errorNotices.length === 0}
-                  onClick={clearErrorNotices}
+                  onClick={requestClearErrorHistory}
                   title={errorNotices.length === 0 && currentErrorDetails.length > 0 ? "持续异常恢复后会自动消失" : undefined}
                   type="button"
                 >

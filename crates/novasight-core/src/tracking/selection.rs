@@ -14,13 +14,70 @@ pub(super) fn target_score(
     observation_center: (f64, f64),
     config: &TargetingConfig,
 ) -> f64 {
-    let class_score = classification::preference_score(track.class_id, &config.class_priority);
-    let distance = euclidean(
-        track.observed_aim_x,
-        track.observed_aim_y,
-        observation_center.0,
-        observation_center.1,
-    );
+    let aim = (track.observed_aim_x, track.observed_aim_y);
+    let distance = euclidean(aim.0, aim.1, observation_center.0, observation_center.1);
+    let radius = config.target_fov_radius_px.max(1e-6);
+    let motion_score = if track.kalman.prediction_valid() {
+        let (velocity_x, velocity_y) = track.kalman.velocity();
+        let horizon_seconds = config.selection_motion_horizon_ms.max(0.0) / 1_000.0;
+        let projected_distance = euclidean(
+            aim.0 + velocity_x * horizon_seconds,
+            aim.1 + velocity_y * horizon_seconds,
+            observation_center.0,
+            observation_center.1,
+        );
+        (0.5 + (distance - projected_distance) / (2.0 * radius)).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    score(
+        track.class_id,
+        track.confidence,
+        track.width,
+        track.height,
+        aim,
+        track.identity_confidence,
+        motion_score,
+        observation_center,
+        config,
+    )
+}
+
+/// Ranking before association uses the same merit terms as a fresh track.
+/// Temporal continuity and motion are neutral until a track exists.
+pub(super) fn candidate_score(
+    detection: &Detection,
+    aim: (f64, f64),
+    observation_center: (f64, f64),
+    config: &TargetingConfig,
+) -> f64 {
+    score(
+        detection.class_id(),
+        detection.confidence(),
+        f64::from(detection.width()),
+        f64::from(detection.height()),
+        aim,
+        1.0,
+        0.5,
+        observation_center,
+        config,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn score(
+    class_id: u32,
+    confidence: f32,
+    width: f64,
+    height: f64,
+    aim: (f64, f64),
+    continuity: f64,
+    motion: f64,
+    observation_center: (f64, f64),
+    config: &TargetingConfig,
+) -> f64 {
+    let class_score = classification::preference_score(class_id, &config.class_priority);
+    let distance = euclidean(aim.0, aim.1, observation_center.0, observation_center.1);
     let radius = config.target_fov_radius_px.max(1e-6);
     let distance_score = 1.0 - (distance / radius).clamp(0.0, 1.0);
     let weights = config.selection_weights;
@@ -39,26 +96,13 @@ pub(super) fn target_score(
     if !total_weight.is_finite() || total_weight <= 0.0 {
         return 0.0;
     }
-    let size_score = ((track.width * track.height).max(0.0).sqrt() / radius).clamp(0.0, 1.0);
-    let motion_score = if track.kalman.prediction_valid() {
-        let (velocity_x, velocity_y) = track.kalman.velocity();
-        let horizon_seconds = config.selection_motion_horizon_ms.max(0.0) / 1_000.0;
-        let projected_distance = euclidean(
-            track.observed_aim_x + velocity_x * horizon_seconds,
-            track.observed_aim_y + velocity_y * horizon_seconds,
-            observation_center.0,
-            observation_center.1,
-        );
-        (0.5 + (distance - projected_distance) / (2.0 * radius)).clamp(0.0, 1.0)
-    } else {
-        0.5
-    };
+    let size_score = ((width * height).max(0.0).sqrt() / radius).clamp(0.0, 1.0);
     (distance_weight * distance_score
         + class_weight * class_score
-        + confidence_weight * f64::from(track.confidence).clamp(0.0, 1.0)
+        + confidence_weight * f64::from(confidence).clamp(0.0, 1.0)
         + size_weight * size_score
-        + continuity_weight * track.identity_confidence.clamp(0.0, 1.0)
-        + motion_weight * motion_score)
+        + continuity_weight * continuity.clamp(0.0, 1.0)
+        + motion_weight * motion.clamp(0.0, 1.0))
         / total_weight
 }
 

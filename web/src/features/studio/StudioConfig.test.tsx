@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { LicenseStatus, RuntimeState } from "../../api";
@@ -36,7 +36,7 @@ async function openProfile() {
 
 it("opens the existing physical-output confirmation instead of navigating to the same page", async () => {
   vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/config/commands")
-    ? Promise.resolve(new Response(JSON.stringify({ code: "TEST_OUTPUT_REJECTED", message: "output rejected by daemon" }), { status: 409, headers: { "content-type": "application/json" } }))
+    ? Promise.resolve(new Response(JSON.stringify({ code: "TEST_OUTPUT_REJECTED", message: "output rejected by daemon" }), { status: 409, headers: { "content-type": "application/json", "x-request-id": "0123456789abcdef0123456789abcdef" } }))
     : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
   await openProfile();
@@ -47,6 +47,10 @@ it("opens the existing physical-output confirmation instead of navigating to the
   await waitFor(() => expect(screen.getByRole("alertdialog")).toHaveTextContent("output rejected by daemon"));
   const command = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes("/config/commands"))!;
   expect(JSON.parse(String(command[1]?.body))).toMatchObject({ command: "set_output_gate", enabled: true });
+  expect(new Headers(command[1]?.headers).get("x-request-id")).toMatch(/^[0-9a-f]{32}$/);
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  await userEvent.click(screen.getByRole("button", { name: /异常信息/ }));
+  expect(screen.getByRole("dialog", { name: "异常信息" })).toHaveTextContent("排查编号 0123456789abcdef0123456789abcdef");
 });
 
 it("explains missing hardware authorization instead of offering a no-op output action", async () => {
@@ -96,6 +100,78 @@ it("opens control parameters from the live control chain", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByRole("button", { name: "前往控制参数" }));
   expect(screen.getByRole("heading", { level: 1, name: "参数设置" })).toBeVisible();
+});
+
+it("asks before discarding unsaved parameter edits", async () => {
+  render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: /目标速度预测/ }));
+  await userEvent.click(screen.getByRole("button", { name: "放弃修改" }));
+  expect(screen.getByRole("alertdialog", { name: "放弃未保存的修改？" })).toBeVisible();
+  expect(screen.getByText("修改尚未保存")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(screen.getByRole("button", { name: "放弃修改" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "放弃修改" }));
+  await userEvent.click(screen.getByRole("button", { name: "确认放弃修改" }));
+  expect(screen.queryByRole("button", { name: "放弃修改" })).not.toBeInTheDocument();
+});
+
+it("keeps unsaved dialog edits when the user cancels closing it", async () => {
+  render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "权重" }));
+  const value = screen.getByRole("slider", { name: "距离权重 滑块" });
+  fireEvent.change(value, { target: { value: "0.7" } });
+  fireEvent.blur(value);
+  await waitFor(() => expect(screen.getByRole("button", { name: "关闭权重调整" })).toHaveAttribute("title", "关闭并放弃本弹窗修改"));
+  await userEvent.click(screen.getByRole("button", { name: "关闭权重调整" }));
+  expect(screen.getByRole("alertdialog", { name: "关闭并放弃本次修改？" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(screen.getByRole("dialog", { name: "选择权重" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "关闭权重调整" }));
+  await userEvent.click(screen.getByRole("button", { name: "放弃弹窗修改" }));
+  expect(screen.queryByRole("dialog", { name: "选择权重" })).not.toBeInTheDocument();
+});
+
+it("stages a typed selection weight before closing the dialog", async () => {
+  render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "权重" }));
+  const value = screen.getByRole("textbox", { name: "距离权重 数值" });
+  fireEvent.change(value, { target: { value: "0.7" } });
+  expect(value).toHaveValue("0.7");
+  fireEvent.blur(value);
+  await waitFor(() => expect(screen.getByRole("button", { name: "关闭权重调整" })).toHaveAttribute("title", "关闭并放弃本弹窗修改"));
+});
+
+it("asks before deleting the learned crosshair template", async () => {
+  const withTemplate = { ...runtime, vision: { ...runtime.vision, crosshair: { template: { id: "template-1" } } } } as RuntimeState;
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={withTemplate} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "清除模板" }));
+  expect(screen.getByRole("alertdialog", { name: "清除已学习的准星模板？" })).toHaveTextContent("template-1");
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("crosshair"))).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+});
+
+it("asks before sending a physical kmNet diagnostic move", async () => {
+  history.replaceState(null, "", "/?page=control-test");
+  const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState;
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={stopped} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "发送" }));
+  expect(screen.getByRole("alertdialog", { name: "发送一次物理位移？" })).toHaveTextContent("dx=");
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("diagnostic"))).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  await userEvent.click(screen.getByRole("button", { name: "发送" }));
+  await userEvent.click(screen.getByRole("button", { name: "确认发送一次" }));
+  await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("diagnostic-move"))).toHaveLength(1));
+  const request = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes("diagnostic-move"))!;
+  expect(JSON.parse(String(request[1]?.body))).toMatchObject({ repeat: 1, move_kind: "raw" });
+});
+
+it("shows tracking-budget losses in control diagnostics", async () => {
+  history.replaceState(null, "", "/?page=control");
+  const counts = { ...runtime.vision.target_pipeline.counts, admitted_to_tracking: 16, dropped_by_budget: 1 };
+  const withCounts = { ...runtime, vision: { ...runtime.vision, target_pipeline: { ...runtime.vision.target_pipeline, counts } } };
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={withCounts} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByText("控制排查信息"));
+  expect(screen.getByText("进入跟踪 / 预算舍弃").nextElementSibling).toHaveTextContent("16 / 1");
 });
 
 it("shows capture selection rejection beside the save control", async () => {

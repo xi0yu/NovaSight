@@ -132,9 +132,11 @@
 .runtime-overview-evidence dt { color: var(--text-tertiary); font-size: 11px; }
 .runtime-overview-evidence dd { min-width: 0; margin: 0; overflow: hidden; color: var(--text-primary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
-.runtime-overview-empty { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-5); color: var(--brand-primary); }
-.runtime-overview-empty strong { color: var(--text-primary); }
-.runtime-overview-empty p { margin: 5px 0 0; color: var(--text-secondary); line-height: 1.5; }
+.runtime-overview-empty { min-height: 184px; display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: var(--space-4); padding: var(--space-6); }
+.runtime-overview-empty-icon { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--brand-border); border-radius: var(--radius-4); background: var(--brand-soft); color: var(--brand-primary); }
+.runtime-overview-empty small { display: block; margin-bottom: 5px; color: var(--text-tertiary); font-size: 11px; font-weight: 700; }
+.runtime-overview-empty strong { display: block; color: var(--text-primary); font-size: 20px; line-height: 1.3; }
+.runtime-overview-empty p { max-width: 680px; margin: 7px 0 0; color: var(--text-secondary); line-height: 1.5; }
 
 @media (max-width: 960px) {
   .runtime-overview-axes,
@@ -142,6 +144,8 @@
 }
 
 @media (max-width: 640px) {
+  .runtime-overview-empty { grid-template-columns: 44px minmax(0, 1fr); padding: var(--space-4); }
+  .runtime-overview-empty .console-button { grid-column: 1 / -1; }
   .runtime-overview-conclusion small,
   .runtime-overview-chain small,
   .runtime-overview-evidence small,

@@ -81,8 +81,9 @@ pub(super) fn associate(
     Ok(out)
 }
 
-/// Deterministic rectangular minimum-cost assignment in O(n^3). The caller
-/// caps both dimensions at the parent module's active-track bound.
+/// Deterministic rectangular minimum-cost assignment in O(n^3). Normal matching
+/// is capped at the active-track bound; the incumbent probe has one track and
+/// at most MAX_TRACK_CANDIDATES detections.
 fn linear_sum_assignment(costs: &[Vec<f64>]) -> Vec<(usize, usize)> {
     if costs.is_empty() || costs[0].is_empty() {
         return Vec::new();

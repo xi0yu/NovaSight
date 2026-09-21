@@ -81,7 +81,7 @@ export function StudioRuntimeBar({
         <NovaIcon name="activity-pulse" size={17} />
       </span>
       <div className="studio-runtime-copy">
-        <strong>{runtimeLifecycleActive ? "实时主链" : "主链待机"}</strong>
+        <strong>{!runtimeAvailable ? "运行状态未确认" : runtimeLifecycleActive ? "实时主链" : "主链待机"}</strong>
         <small>{`采集 ${captureStatus} · 推理 ${inferenceStatus}`}</small>
       </div>
       <button
