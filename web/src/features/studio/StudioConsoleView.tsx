@@ -70,6 +70,7 @@ import {
   type ActionConfirmationRequest
 } from "./ActionConfirmationDialog";
 import { AimTargetRange, type AimRole, type AimRoleRatios } from "./AimTargetRange";
+import { activateClassPolicy, serializeClassAimRatios } from "./targetClassPolicy";
 import { ControlTracePanel } from "./ControlTracePanel";
 import { LaunchReadinessPanel } from "./LaunchReadinessPanel";
 import { ProductConfigProfilePanel } from "./ProductConfigProfilePanel";
@@ -285,6 +286,14 @@ function recordList(value: unknown): Record<string, string[]> {
   );
 }
 
+function recordStrings(value: unknown): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(asRecord(value)).flatMap(([key, item]) =>
+      typeof item === "string" ? [[key, item]] : []
+    )
+  );
+}
+
 function profileRoleRecords(value: unknown): Record<string, Record<string, AimRole>> {
   return Object.fromEntries(
     Object.entries(asRecord(value)).map(([profileName, rawValues]) => [
@@ -298,22 +307,6 @@ function profileRoleRecords(value: unknown): Record<string, Record<string, AimRo
       )
     ])
   );
-}
-
-function serializeRustClassAimRatios(
-  roles: Record<string, AimRole>,
-  ratios: AimRoleRatios
-): string {
-  return Object.entries(roles)
-    .flatMap(([classId, role]) => {
-      const numericClassId = Number(classId);
-      return Number.isInteger(numericClassId) && numericClassId >= 0 && numericClassId <= 255
-        ? [[numericClassId, ratios[role]] as const]
-        : [];
-    })
-    .sort(([left], [right]) => left - right)
-    .map(([classId, ratio]) => `${classId}:${ratio.toFixed(2)}`)
-    .join(",");
 }
 
 function classDisplayName(value: string, classId: number): string {
@@ -1351,18 +1344,28 @@ export function StudioConsoleView({
     [inferenceConfig.detection_class_profiles]
   );
   const activeDetectionProfile = readString(inferenceConfig.detection_class_profile, "default");
+  const detectionPriorityProfiles = useMemo(
+    () => recordStrings(inferenceConfig.detection_class_priorities),
+    [inferenceConfig.detection_class_priorities]
+  );
+  const detectionFilterProfiles = useMemo(
+    () => recordStrings(inferenceConfig.detection_class_filters),
+    [inferenceConfig.detection_class_filters]
+  );
   const activeDetectionClass = readString(
-    rustControlPlane
-      ? rustPipelineConfig.target_class_filter
-      : inferenceConfig.detection_class_filter,
+    detectionFilterProfiles[activeDetectionProfile]
+      ?? (rustControlPlane
+        ? rustPipelineConfig.target_class_filter
+        : inferenceConfig.detection_class_filter),
     "all"
   );
   const detectionProfileNames = useMemo(() => Object.keys(detectionProfiles), [detectionProfiles]);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(
-    rustControlPlane
-      ? rustPipelineConfig.target_class_priority
-      : inferenceConfig.detection_class_priority,
+    detectionPriorityProfiles[activeDetectionProfile]
+      ?? (rustControlPlane
+        ? rustPipelineConfig.target_class_priority
+        : inferenceConfig.detection_class_priority),
     "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
   );
   const classPriorityIds = useMemo(
@@ -1409,12 +1412,26 @@ export function StudioConsoleView({
   const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? EMPTY_AIM_ROLES;
   const targetFovRadiusPx = readNumber(rustPipelineConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(rustPipelineConfig.candidate_max_aspect_ratio, 6);
-  const normalizedSelectionClassWeight = clampNumber(
-    readNumber(rustPipelineConfig.target_selection_class_ratio, 0.35),
-    0,
-    1
+  const targetSelectionWeights = [
+    { key: "target_selection_distance_weight", label: "距离", className: "distance", value: readNumber(rustPipelineConfig.target_selection_distance_weight, 0.45), detail: "越靠近准星，候选分越高。" },
+    { key: "target_selection_class_weight", label: "内部类别", className: "class", value: readNumber(rustPipelineConfig.target_selection_class_weight, 0.20), detail: "使用当前模型配置中的类别优先顺序；raw cls 本身不锁定身份。" },
+    { key: "target_selection_confidence_weight", label: "置信度", className: "confidence", value: readNumber(rustPipelineConfig.target_selection_confidence_weight, 0.15), detail: "本帧 YOLO 置信度越高，候选分越高。" },
+    { key: "target_selection_size_weight", label: "大小", className: "size", value: readNumber(rustPipelineConfig.target_selection_size_weight, 0.05), detail: "画面中更大的目标获得少量加分。" },
+    { key: "target_selection_continuity_weight", label: "连续性", className: "continuity", value: readNumber(rustPipelineConfig.target_selection_continuity_weight, 0.10), detail: "最近稳定关联过的目标获得加分。" },
+    { key: "target_selection_motion_weight", label: "运动趋势", className: "motion", value: readNumber(rustPipelineConfig.target_selection_motion_weight, 0.05), detail: "短时间内向准星靠近的目标获得加分。" }
+  ] as const;
+  const targetSelectionWeightTotal = targetSelectionWeights.reduce(
+    (total, item) => total + Math.max(0, item.value),
+    0
   );
-  const normalizedSelectionDistanceWeight = 1 - normalizedSelectionClassWeight;
+  const normalizedTargetSelectionWeights = targetSelectionWeights.map((item) => ({
+    ...item,
+    share: targetSelectionWeightTotal > 0 ? Math.max(0, item.value) / targetSelectionWeightTotal : 0
+  }));
+  const dominantTargetSelectionWeight = normalizedTargetSelectionWeights.reduce(
+    (dominant, item) => item.share > dominant.share ? item : dominant,
+    normalizedTargetSelectionWeights[0]
+  );
   const trackerMaxMatchDistance = readNumber(rustPipelineConfig.tracker_max_match_distance, 1.5);
   const trackerPositionCostWeight = readNumber(rustPipelineConfig.tracker_position_cost_weight, 0.75);
   const trackerIouCostWeight = readNumber(rustPipelineConfig.tracker_iou_cost_weight, 0.25);
@@ -1437,6 +1454,7 @@ export function StudioConsoleView({
   const predictionActuationDelayMs = readNumber(rustPipelineConfig.prediction_actuation_delay_ms, 4);
   const targetMinConfidence = readNumber(rustPipelineConfig.target_min_confidence, 0.5);
   const trackerScaleCostWeight = readNumber(rustPipelineConfig.tracker_scale_cost_weight, 0.15);
+  const trackerClassCostWeight = readNumber(rustPipelineConfig.tracker_class_cost_weight, 0.35);
   const trackerMaxSizeRatio = readNumber(rustPipelineConfig.tracker_max_size_ratio, 2.5);
   const trackerMaxAssociationDtMs = readNumber(rustPipelineConfig.tracker_max_association_dt_ms, 150);
   const trackerKalmanAccelerationNoise = readNumber(rustPipelineConfig.tracker_kalman_acceleration_noise, 1200);
@@ -1447,6 +1465,7 @@ export function StudioConsoleView({
   const trackerKalmanMaxPredictSteps = readNumber(rustPipelineConfig.tracker_kalman_max_predict_steps, 5);
   const trackerKalmanNisThreshold = readNumber(rustPipelineConfig.tracker_kalman_nis_threshold, 9.21);
   const trackerKalmanNisHardReject = readNumber(rustPipelineConfig.tracker_kalman_nis_hard_reject, 16);
+  const targetSelectionMotionHorizonMs = readNumber(rustPipelineConfig.target_selection_motion_horizon_ms, 30);
   const recoilEnabled = readBoolean(recoilConfig.enabled, false);
   const recoilRequireTarget = readBoolean(recoilConfig.require_target, true);
   const recoilIntervalMs = readNumber(recoilConfig.interval_ms, 16);
@@ -2861,12 +2880,16 @@ export function StudioConsoleView({
 
   const updateDetectionClassFilter = useCallback(
     async (value: string) => {
+      await updateConfigField("inference", "detection_class_filters", {
+        ...detectionFilterProfiles,
+        [activeDetectionProfile]: value
+      } as RuntimeConfigValue);
+      await updateConfigField("inference", "detection_class_filter", value);
       if (rustControlPlane) {
         await updateConfigField("pipeline", "target_class_filter", value);
       }
-      await updateConfigField("inference", "detection_class_filter", value);
     },
-    [rustControlPlane, updateConfigField]
+    [activeDetectionProfile, detectionFilterProfiles, rustControlPlane, updateConfigField]
   );
 
   const updateControlGroupField = useCallback(
@@ -2950,6 +2973,7 @@ export function StudioConsoleView({
       trackerPositionCostWeight,
       trackerIouCostWeight,
       trackerScaleCostWeight,
+      trackerClassCostWeight,
       trackerMaxSizeRatio,
       trackerMaxAssociationDtMs,
       targetLostGraceMs,
@@ -2960,7 +2984,8 @@ export function StudioConsoleView({
       trackerKalmanMaxPredictMissingMs,
       trackerKalmanMaxPredictSteps,
       trackerKalmanNisThreshold,
-      trackerKalmanNisHardReject
+      trackerKalmanNisHardReject,
+      targetSelectionMotionHorizonMs
     }, configFieldIndex)
     : null;
   const targetAdvancedParameters = targetingParameterGroups?.targetAdvancedParameters ?? [];
@@ -3108,7 +3133,7 @@ export function StudioConsoleView({
         next.pipeline = {
           ...asRecord(next.pipeline),
           target_aim_y_ratio: nextRatios.other,
-          target_class_aim_y_ratios: serializeRustClassAimRatios(
+          target_class_aim_y_ratios: serializeClassAimRatios(
             activeClassRoles,
             nextRatios
           )
@@ -3155,7 +3180,7 @@ export function StudioConsoleView({
         } as RuntimeConfig[string];
         next.pipeline = {
           ...asRecord(next.pipeline),
-          target_class_aim_y_ratios: serializeRustClassAimRatios(
+          target_class_aim_y_ratios: serializeClassAimRatios(
             nextProfiles[activeDetectionProfile] ?? {},
             aimRoleRatios
           )
@@ -3194,7 +3219,11 @@ export function StudioConsoleView({
         }
         next.inference = {
           ...asRecord(next.inference),
-          detection_class_priority: current.join(",")
+          detection_class_priority: current.join(","),
+          detection_class_priorities: {
+            ...detectionPriorityProfiles,
+            [activeDetectionProfile]: current.join(",")
+          }
         } as RuntimeConfig[string];
         next.pipeline = {
           ...asRecord(next.pipeline),
@@ -3203,10 +3232,16 @@ export function StudioConsoleView({
         stageConfigDialogDraft(next);
         return;
       }
+      await updateConfigField("inference", "detection_class_priorities", {
+        ...detectionPriorityProfiles,
+        [activeDetectionProfile]: current.join(",")
+      } as RuntimeConfigValue);
       await updateConfigField("inference", "detection_class_priority", current.join(","));
     },
     [
       orderedClassEditorIds,
+      activeDetectionProfile,
+      detectionPriorityProfiles,
       runtimeConfig,
       rustControlPlane,
       stageConfigDialogDraft,
@@ -3245,10 +3280,24 @@ export function StudioConsoleView({
       if (!next) {
         return;
       }
+      const activePolicy = activateClassPolicy(
+        Object.keys(profiles),
+        roleProfiles,
+        detectionPriorityProfiles,
+        detectionFilterProfiles,
+        nextActiveProfile,
+        detectionClassPriority,
+        activeDetectionClass,
+        aimRoleRatios
+      );
       next.inference = {
         ...asRecord(next.inference),
         detection_class_profiles: profiles,
-        detection_class_profile: nextActiveProfile
+        detection_class_profile: nextActiveProfile,
+        detection_class_priorities: activePolicy.priorities,
+        detection_class_priority: activePolicy.priority,
+        detection_class_filters: activePolicy.filters,
+        detection_class_filter: activePolicy.filter
       } as RuntimeConfig[string];
       const control = asRecord(next.control);
       next.control = {
@@ -3261,17 +3310,25 @@ export function StudioConsoleView({
       if (rustControlPlane) {
         next.pipeline = {
           ...asRecord(next.pipeline),
+          target_class_priority: activePolicy.priority,
+          target_class_filter: activePolicy.filter,
           target_aim_y_ratio: aimRoleRatios.other,
-          target_class_aim_y_ratios: serializeRustClassAimRatios(
-            roleProfiles[nextActiveProfile] ?? {},
-            aimRoleRatios
-          )
+          target_class_aim_y_ratios: activePolicy.aimYRatios
         } as RuntimeConfig[string];
       }
       setLocalError(null);
       stageConfigDialogDraft(next);
     },
-    [aimRoleRatios, runtimeConfig, rustControlPlane, stageConfigDialogDraft]
+    [
+      activeDetectionClass,
+      aimRoleRatios,
+      detectionClassPriority,
+      detectionFilterProfiles,
+      detectionPriorityProfiles,
+      runtimeConfig,
+      rustControlPlane,
+      stageConfigDialogDraft
+    ]
   );
 
   const createClassProfile = useCallback(async (copyCurrent: boolean) => {
@@ -4671,11 +4728,11 @@ export function StudioConsoleView({
                 />
                 <div className="target-weight-summary">
                   <div>
-                    <span>类别 / 距离</span>
+                    <span>六项综合评分</span>
                     <strong>
-                      {(normalizedSelectionClassWeight * 100).toFixed(0)}%
+                      {dominantTargetSelectionWeight.label}
                       <i>·</i>
-                      {(normalizedSelectionDistanceWeight * 100).toFixed(0)}%
+                      {(dominantTargetSelectionWeight.share * 100).toFixed(0)}%
                     </strong>
                   </div>
                   <button type="button" className="console-button" disabled={configDialogSaving} onClick={() => openConfigDialog("target-weights")}              >
@@ -4690,7 +4747,8 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                <SectionTitle title="目标跟踪" />
+                <SectionTitle title="短时关联" />
+                <p className="console-field-hint">位置、重叠、大小和 raw cls 只提供短时关联证据；不把模型类别当成永久身份。</p>
                 <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("tracker")}              >
                   <NovaIcon name="settings" size={15} />
                   专家跟踪
@@ -5145,28 +5203,35 @@ export function StudioConsoleView({
                   <div>
                     <span>综合目标分数</span>
                   </div>
-                  <b>类别优先</b>
+                  <b>自动归一化</b>
                 </div>
                 <div className="target-weight-composition" aria-label="综合目标分数权重占比">
-                  <i className="class" style={{ flexGrow: normalizedSelectionClassWeight }} />
-                  <i className="distance" style={{ flexGrow: normalizedSelectionDistanceWeight }} />
+                  {normalizedTargetSelectionWeights.map((item) => (
+                    <i className={item.className} key={item.key} style={{ flexGrow: item.share }} />
+                  ))}
                 </div>
                 <div className="target-weight-legend">
-                  <span><i className="class" />类别 <b>{(normalizedSelectionClassWeight * 100).toFixed(0)}%</b></span>
-                  <span><i className="distance" />距离 <b>{(normalizedSelectionDistanceWeight * 100).toFixed(0)}%</b></span>
+                  {normalizedTargetSelectionWeights.map((item) => (
+                    <span key={item.key}><i className={item.className} />{item.label} <b>{(item.share * 100).toFixed(0)}%</b></span>
+                  ))}
                 </div>
-                <div className="target-weight-controls">
-                  <ParameterNumberControl
-                    compact
-                    label="类别偏好比例"
-                    detail="类别顺序按 1、0.5、0.25…递减；距离自动使用剩余比例。提高后更倾向高优先类别。"
-                    value={normalizedSelectionClassWeight}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    onCommit={(value) => updatePipelineField("target_selection_class_ratio", value)}
-                    onEditingChange={handleParameterEditingChange}
-                  />
+                <div className="target-weight-controls two-column">
+                  {targetSelectionWeights.map((item) => (
+                    <ParameterNumberControl
+                      compact
+                      detail={item.detail}
+                      key={item.key}
+                      label={`${item.label}权重`}
+                      max={100}
+                      min={0}
+                      onCommit={(value) => updatePipelineField(item.key, value)}
+                      onEditingChange={handleParameterEditingChange}
+                      recommendedMax={1}
+                      recommendedMin={0}
+                      step={0.01}
+                      value={item.value}
+                    />
+                  ))}
                 </div>
               </section>
 
@@ -5216,7 +5281,7 @@ export function StudioConsoleView({
               <div>
                 <span className="class-config-eyebrow">参数设置 / 类别配置</span>
                 <h2 id="class-config-dialog-title">管理类别配置</h2>
-                <p>把模型类别归入头部、身体或其他瞄点类型，再在人物靶上统一标定三条垂直瞄点线。</p>
+                <p>raw cls 保留为模型本帧事实；这里单独定义内部名称、优先级和瞄点角色，不把类别当成永久身份。</p>
               </div>
               <button type="button"
                 aria-label="关闭类别配置"
@@ -5244,7 +5309,7 @@ export function StudioConsoleView({
                       aria-current={name === activeDetectionProfile ? "page" : undefined}
                       className={name === activeDetectionProfile ? "active" : ""}
                       key={name}
-                      onClick={() => void updateConfigField("inference", "detection_class_profile", name)}
+                      onClick={() => void persistClassProfiles(detectionProfiles, classRoleProfiles, name)}
                     >
                       <span>{name}</span>
                       <small>{(detectionProfiles[name] ?? []).filter(Boolean).length} 类</small>

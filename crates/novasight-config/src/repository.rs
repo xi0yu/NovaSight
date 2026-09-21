@@ -34,8 +34,6 @@ const RETIRED_PIPELINE_FIELDS: &[&str] = &[
     "velocity_change_relative",
     "velocity_spread_base_px_ms",
     "velocity_spread_relative",
-    "target_selection_class_weight",
-    "target_selection_distance_weight",
     "target_sticky_bias",
     "target_debounce_distance_px",
     "max_command_age_ms",
@@ -503,54 +501,40 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     if recoil_requires_recommission {
         config.control.recoil.enabled = false;
     }
-    let retired_class_weight = config
+    let retired_class_ratio_present = config
         .pipeline
         .extra
-        .remove("target_selection_class_weight")
-        .and_then(|value| value.as_f64());
-    let retired_distance_weight = config
+        .contains_key("target_selection_class_ratio");
+    let retired_class_ratio = config
         .pipeline
         .extra
-        .remove("target_selection_distance_weight")
-        .and_then(|value| value.as_f64());
-    let retired_sticky_bias = config
-        .pipeline
-        .extra
-        .remove("target_sticky_bias")
-        .and_then(|value| value.as_f64());
-    let class_ratio_explicit =
-        section_has_fields(document, "pipeline", &["target_selection_class_ratio"]);
-    let has_retired_target_scoring = retired_class_weight.is_some()
-        || retired_distance_weight.is_some()
-        || retired_sticky_bias.is_some();
-    let migrated_class_ratio = (!class_ratio_explicit && has_retired_target_scoring)
-        .then(|| {
-            let class_weight = retired_class_weight.unwrap_or(0.55).max(0.0);
-            let distance_weight = retired_distance_weight.unwrap_or(0.40).max(0.0);
-            let generated_defaults = (class_weight - 0.55).abs() < f64::EPSILON
-                && (distance_weight - 0.40).abs() < f64::EPSILON
-                && retired_sticky_bias.is_none_or(|value| (value - 0.25).abs() < f64::EPSILON);
-            if generated_defaults {
-                return Some(0.35);
-            }
-            let total = class_weight + distance_weight;
-            (total > 0.0).then_some(class_weight / total)
-        })
-        .flatten();
-    if let Some(class_ratio) = migrated_class_ratio {
-        config.pipeline.target_selection_class_ratio = class_ratio;
-        if let Value::Mapping(root) = document {
-            let pipeline = root
-                .entry(Value::String("pipeline".to_owned()))
-                .or_insert_with(|| Value::Mapping(Default::default()));
-            if let Value::Mapping(pipeline) = pipeline {
-                pipeline.insert(
-                    Value::String("target_selection_class_ratio".to_owned()),
-                    serde_yaml::to_value(class_ratio)
-                        .expect("finite target selection class ratio migration value"),
-                );
-            }
-        }
+        .get("target_selection_class_ratio")
+        .and_then(|value| value.as_f64())
+        .filter(|value| value.is_finite() && (0.0..=1.0).contains(value));
+    config.pipeline.extra.remove("target_sticky_bias");
+    let new_target_weights_explicit = section_has_fields(
+        document,
+        "pipeline",
+        &[
+            "target_selection_distance_weight",
+            "target_selection_class_weight",
+        ],
+    );
+    let migrated_class_ratio = retired_class_ratio
+        .or_else(|| (schema_version < 17 && !retired_class_ratio_present).then_some(0.35));
+    if !new_target_weights_explicit && let Some(class_ratio) = migrated_class_ratio {
+        // Preserve the old two-signal decision behavior exactly. New signals
+        // become active only for new/default profiles or explicit settings.
+        config.pipeline.target_selection_class_weight = class_ratio;
+        config.pipeline.target_selection_distance_weight = 1.0 - class_ratio;
+        config.pipeline.target_selection_confidence_weight = 0.0;
+        config.pipeline.target_selection_size_weight = 0.0;
+        config.pipeline.target_selection_continuity_weight = 0.0;
+        config.pipeline.target_selection_motion_weight = 0.0;
+    }
+    if retired_class_ratio.is_some() {
+        config.pipeline.extra.remove("target_selection_class_ratio");
+        remove_section_fields(document, "pipeline", &["target_selection_class_ratio"]);
     }
     config.paths.extra.remove("python_executable");
     if let Some(device) = &mut config.device {
@@ -752,6 +736,38 @@ fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRunti
             config.target_track_max_lost_age_ms,
         ),
         (
+            "tracker_class_cost_weight",
+            config.tracker_class_cost_weight,
+        ),
+        (
+            "target_selection_distance_weight",
+            config.target_selection_distance_weight,
+        ),
+        (
+            "target_selection_class_weight",
+            config.target_selection_class_weight,
+        ),
+        (
+            "target_selection_confidence_weight",
+            config.target_selection_confidence_weight,
+        ),
+        (
+            "target_selection_size_weight",
+            config.target_selection_size_weight,
+        ),
+        (
+            "target_selection_continuity_weight",
+            config.target_selection_continuity_weight,
+        ),
+        (
+            "target_selection_motion_weight",
+            config.target_selection_motion_weight,
+        ),
+        (
+            "target_selection_motion_horizon_ms",
+            config.target_selection_motion_horizon_ms,
+        ),
+        (
             "prediction_actuation_delay_ms",
             config.prediction_actuation_delay_ms,
         ),
@@ -848,11 +864,18 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "tracker_position_cost_weight",
             "tracker_iou_cost_weight",
             "tracker_scale_cost_weight",
+            "tracker_class_cost_weight",
             "tracker_max_size_ratio",
             "tracker_max_association_dt_ms",
             "target_class_priority",
             "target_class_filter",
-            "target_selection_class_ratio",
+            "target_selection_distance_weight",
+            "target_selection_class_weight",
+            "target_selection_confidence_weight",
+            "target_selection_size_weight",
+            "target_selection_continuity_weight",
+            "target_selection_motion_weight",
+            "target_selection_motion_horizon_ms",
             "target_switch_min_preference_advantage",
             "target_switch_min_continuity_score",
             "target_switch_delay_ms",
@@ -1742,5 +1765,58 @@ mod tests {
 
         assert_eq!(error.code(), "CONFIG_UNSUPPORTED_CONFIG_KEY");
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn schema_16_class_ratio_migrates_without_changing_two_signal_behavior() {
+        let mut document: Value = serde_yaml::from_str(
+            "schema_version: 16\npipeline:\n  target_selection_class_ratio: 0.35\n",
+        )
+        .unwrap();
+        let mut config: AppConfig = serde_yaml::from_value(document.clone()).unwrap();
+
+        migrate_config(&mut document, &mut config);
+
+        assert_eq!(config.schema_version, 17);
+        assert_eq!(config.pipeline.target_selection_class_weight, 0.35);
+        assert_eq!(config.pipeline.target_selection_distance_weight, 0.65);
+        assert_eq!(config.pipeline.target_selection_confidence_weight, 0.0);
+        let pipeline = document["pipeline"].as_mapping().unwrap();
+        assert!(!pipeline.contains_key(Value::String("target_selection_class_ratio".to_owned())));
+    }
+
+    #[test]
+    fn schema_16_missing_class_ratio_uses_the_old_default_behavior() {
+        let mut document: Value =
+            serde_yaml::from_str("schema_version: 16\npipeline: {}\n").unwrap();
+        let mut config: AppConfig = serde_yaml::from_value(document.clone()).unwrap();
+
+        migrate_config(&mut document, &mut config);
+
+        assert_eq!(config.pipeline.target_selection_class_weight, 0.35);
+        assert_eq!(config.pipeline.target_selection_distance_weight, 0.65);
+        assert_eq!(config.pipeline.target_selection_motion_weight, 0.0);
+    }
+
+    #[test]
+    fn invalid_schema_16_class_ratio_is_not_silently_replaced() {
+        let mut document: Value = serde_yaml::from_str(
+            "schema_version: 16\npipeline:\n  target_selection_class_ratio: 1.5\n",
+        )
+        .unwrap();
+        let mut config: AppConfig = serde_yaml::from_value(document.clone()).unwrap();
+
+        migrate_config(&mut document, &mut config);
+
+        assert!(
+            config
+                .pipeline
+                .extra
+                .contains_key("target_selection_class_ratio")
+        );
+        assert!(document["pipeline"]["target_selection_class_ratio"].is_number());
+        let error = validate_extra_keys(Path::new("invalid-ratio.yaml"), &config)
+            .expect_err("invalid retired ratio must still fail closed");
+        assert_eq!(error.code(), "CONFIG_UNSUPPORTED_CONFIG_KEY");
     }
 }

@@ -97,3 +97,30 @@ fn compose_pipeline_config_uses_continuous_response_fields() {
     assert_eq!(pipeline.control.response_boost, 0.60);
     assert_eq!(pipeline.control.response_curve_shape, 1.50);
 }
+
+#[test]
+fn compose_pipeline_config_wires_target_decision_policy() {
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    YamlConfigRepository::initialize_default(&path).unwrap();
+    let mut config = YamlConfigRepository::load(&path).unwrap();
+    config.pipeline.tracker_class_cost_weight = 0.7;
+    config.pipeline.target_selection_distance_weight = 0.1;
+    config.pipeline.target_selection_class_weight = 0.2;
+    config.pipeline.target_selection_confidence_weight = 0.3;
+    config.pipeline.target_selection_size_weight = 0.4;
+    config.pipeline.target_selection_continuity_weight = 0.5;
+    config.pipeline.target_selection_motion_weight = 0.6;
+    config.pipeline.target_selection_motion_horizon_ms = 45.0;
+
+    let pipeline = compose_pipeline_config(&config, None).unwrap();
+
+    assert_eq!(pipeline.targeting.tracker_class_cost_weight, 0.7);
+    assert_eq!(pipeline.targeting.selection_weights.distance, 0.1);
+    assert_eq!(pipeline.targeting.selection_weights.class, 0.2);
+    assert_eq!(pipeline.targeting.selection_weights.confidence, 0.3);
+    assert_eq!(pipeline.targeting.selection_weights.size, 0.4);
+    assert_eq!(pipeline.targeting.selection_weights.continuity, 0.5);
+    assert_eq!(pipeline.targeting.selection_weights.motion, 0.6);
+    assert_eq!(pipeline.targeting.selection_motion_horizon_ms, 45.0);
+}

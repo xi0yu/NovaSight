@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use novasight_core::perception::types::Detection;
-use novasight_core::tracking::{KalmanConfig, LockReason, TargetingConfig, TargetingCore};
+use novasight_core::tracking::{
+    KalmanConfig, LockReason, SelectionWeights, TargetingConfig, TargetingCore,
+};
 use serde_json::Value;
 
 const OBSERVATION_CENTER: (f64, f64) = (320.0, 320.0);
@@ -138,6 +140,44 @@ fn detection_reacquired_inside_grace_keeps_the_same_track_id() {
 }
 
 #[test]
+fn strong_geometry_can_keep_identity_when_raw_class_changes() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
+    let first = Detection::new(1, 0, 280.0, 280.0, 80.0, 100.0, 0.95).expect("first");
+    let track_id = core
+        .select_at(&[first], OBSERVATION_CENTER, 1_000_000_000)
+        .target_track_id
+        .expect("initial track");
+
+    let changed_class =
+        Detection::new(2, 1, 282.0, 280.0, 80.0, 100.0, 0.95).expect("changed class");
+    let selection = core.select_at(&[changed_class], OBSERVATION_CENTER, 1_010_000_000);
+
+    assert_eq!(selection.target_track_id, Some(track_id));
+    assert_eq!(selection.target_class_id, Some(1));
+    assert!(!selection.target_rebuilt);
+}
+
+#[test]
+fn same_class_association_wins_over_a_slightly_closer_cross_class_box() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
+    let first = Detection::new(1, 0, 280.0, 280.0, 80.0, 100.0, 0.95).expect("first");
+    let track_id = core
+        .select_at(&[first], OBSERVATION_CENTER, 1_000_000_000)
+        .target_track_id
+        .expect("initial track");
+    let candidates = [
+        Detection::new(2, 1, 280.0, 280.0, 80.0, 100.0, 0.95).expect("cross class"),
+        Detection::new(3, 0, 290.0, 280.0, 80.0, 100.0, 0.95).expect("same class"),
+    ];
+
+    let selection = core.select_at(&candidates, OBSERVATION_CENTER, 1_010_000_000);
+
+    assert_eq!(selection.target_track_id, Some(track_id));
+    assert_eq!(selection.target_object_id, Some(3));
+    assert_eq!(selection.target_class_id, Some(0));
+}
+
+#[test]
 fn smooth_visual_motion_keeps_identity_and_does_not_rebuild_control_state() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let mut stable_track_id = None;
@@ -170,7 +210,14 @@ fn smooth_visual_motion_keeps_identity_and_does_not_rebuild_control_state() {
 fn switch_margin_holds_the_current_target_when_the_challenger_is_not_better_enough() {
     let mut core = TargetingCore::new(TargetingConfig {
         class_priority: Vec::new(),
-        selection_class_ratio: 0.0,
+        selection_weights: SelectionWeights {
+            distance: 1.0,
+            class: 0.0,
+            confidence: 0.0,
+            size: 0.0,
+            continuity: 0.0,
+            motion: 0.0,
+        },
         switch_min_preference_advantage: 0.30,
         switch_min_continuity_score: 0.0,
         switch_delay_ms: 0.0,
@@ -201,14 +248,20 @@ fn switch_margin_holds_the_current_target_when_the_challenger_is_not_better_enou
     let selected = core.select_at(&moved, OBSERVATION_CENTER, 1_020_000_000);
 
     assert_eq!(selected.target_track_id, Some(locked_track));
-    assert_eq!(selected.target_class_id, Some(0));
 }
 
 #[test]
 fn equal_scores_tie_break_by_stable_track_id_not_frame_local_object_id() {
     let mut core = TargetingCore::new(TargetingConfig {
         class_priority: Vec::new(),
-        selection_class_ratio: 0.0,
+        selection_weights: SelectionWeights {
+            distance: 1.0,
+            class: 0.0,
+            confidence: 0.0,
+            size: 0.0,
+            continuity: 0.0,
+            motion: 0.0,
+        },
         ..TargetingConfig::default()
     });
     let first = [
@@ -363,7 +416,14 @@ fn detections_outside_selection_fov_keep_their_tracker_identity() {
 fn every_declared_class_priority_rank_affects_selection() {
     let mut core = TargetingCore::new(TargetingConfig {
         class_priority: vec![0, 1, 2, 3],
-        selection_class_ratio: 1.0,
+        selection_weights: SelectionWeights {
+            distance: 0.0,
+            class: 1.0,
+            confidence: 0.0,
+            size: 0.0,
+            continuity: 0.0,
+            motion: 0.0,
+        },
         ..TargetingConfig::default()
     });
     let candidates = [
@@ -377,6 +437,167 @@ fn every_declared_class_priority_rank_affects_selection() {
     );
     let selected = core.select_at(&candidates, OBSERVATION_CENTER, 1_010_000_000);
     assert_eq!(selected.target_class_id, Some(2));
+}
+
+#[test]
+fn confidence_can_outweigh_a_small_distance_advantage() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        class_priority: Vec::new(),
+        selection_weights: SelectionWeights {
+            distance: 0.65,
+            class: 0.0,
+            confidence: 0.15,
+            size: 0.0,
+            continuity: 0.0,
+            motion: 0.0,
+        },
+        ..TargetingConfig::default()
+    });
+    let candidates = [
+        Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.51).expect("near low score"),
+        Detection::new(2, 0, 315.0, 280.0, 40.0, 80.0, 0.99).expect("far high score"),
+    ];
+    core.select_at(&candidates, OBSERVATION_CENTER, 1_000_000_000);
+    let selected = core.select_at(&candidates, OBSERVATION_CENTER, 1_010_000_000);
+
+    assert_eq!(selected.target_object_id, Some(2));
+}
+
+#[test]
+fn larger_visible_box_breaks_an_otherwise_equal_target_tie() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        class_priority: Vec::new(),
+        aim_y_ratio: 0.5,
+        ..TargetingConfig::default()
+    });
+    let candidates = [
+        Detection::new(1, 0, 270.0, 300.0, 20.0, 40.0, 0.9).expect("small"),
+        Detection::new(2, 0, 340.0, 280.0, 40.0, 80.0, 0.9).expect("large"),
+    ];
+    core.select_at(&candidates, OBSERVATION_CENTER, 1_000_000_000);
+    let selected = core.select_at(&candidates, OBSERVATION_CENTER, 1_010_000_000);
+
+    assert_eq!(selected.target_object_id, Some(2));
+}
+
+#[test]
+fn stable_continuity_breaks_an_equal_score_tie() {
+    let initial_config = TargetingConfig {
+        class_priority: Vec::new(),
+        aim_y_ratio: 0.5,
+        switch_min_preference_advantage: 1.0,
+        switch_min_continuity_score: 0.0,
+        switch_delay_ms: 0.0,
+        kalman: KalmanConfig {
+            nis_threshold: 1_000_000.0,
+            nis_hard_reject: 1_000_000.0,
+            min_prediction_confidence: 0.0,
+            ..KalmanConfig::default()
+        },
+        ..TargetingConfig::default()
+    };
+    let mut core = TargetingCore::new(initial_config.clone());
+    let initial = [
+        Detection::new(1, 0, 290.0, 280.0, 40.0, 80.0, 0.9).expect("left"),
+        Detection::new(2, 0, 330.0, 280.0, 40.0, 80.0, 0.9).expect("right"),
+    ];
+    core.select_at(&initial, OBSERVATION_CENTER, 1_000_000_000);
+    let locked = core
+        .select_at(&initial, OBSERVATION_CENTER, 1_010_000_000)
+        .target_track_id
+        .expect("locked");
+    let displaced = [
+        Detection::new(11, 0, 270.0, 280.0, 40.0, 80.0, 0.9).expect("left displaced"),
+        Detection::new(12, 0, 330.0, 280.0, 40.0, 80.0, 0.9).expect("right stable"),
+    ];
+    core.set_config(TargetingConfig {
+        switch_min_preference_advantage: 0.01,
+        ..initial_config
+    });
+    let selected = core.select_at(&displaced, OBSERVATION_CENTER, 1_020_000_000);
+
+    assert_ne!(selected.target_track_id, Some(locked));
+    assert_eq!(selected.target_object_id, Some(12));
+}
+
+#[test]
+fn motion_toward_the_crosshair_breaks_an_equal_distance_tie() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        class_priority: Vec::new(),
+        aim_y_ratio: 0.5,
+        switch_min_preference_advantage: 0.0,
+        switch_min_continuity_score: 0.0,
+        switch_delay_ms: 0.0,
+        kalman: KalmanConfig {
+            nis_threshold: 1_000_000.0,
+            nis_hard_reject: 1_000_000.0,
+            min_prediction_confidence: 0.0,
+            ..KalmanConfig::default()
+        },
+        ..TargetingConfig::default()
+    });
+    let initial = [
+        Detection::new(1, 0, 280.0, 280.0, 40.0, 80.0, 0.9).expect("near left"),
+        Detection::new(2, 0, 360.0, 280.0, 40.0, 80.0, 0.9).expect("far right"),
+    ];
+    core.select_at(&initial, OBSERVATION_CENTER, 1_000_000_000);
+    let locked = core
+        .select_at(&initial, OBSERVATION_CENTER, 1_010_000_000)
+        .target_track_id
+        .expect("locked");
+    let moving = [
+        Detection::new(11, 0, 260.0, 280.0, 40.0, 80.0, 0.9).expect("moving away"),
+        Detection::new(12, 0, 340.0, 280.0, 40.0, 80.0, 0.9).expect("moving toward"),
+    ];
+
+    let selected = core.select_at(&moving, OBSERVATION_CENTER, 1_020_000_000);
+
+    assert_ne!(selected.target_track_id, Some(locked));
+    assert_eq!(selected.target_object_id, Some(12));
+}
+
+#[test]
+fn invalid_motion_state_is_neutral_in_target_scoring() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        class_priority: Vec::new(),
+        aim_y_ratio: 0.5,
+        selection_weights: SelectionWeights {
+            distance: 0.0,
+            class: 0.0,
+            confidence: 0.0,
+            size: 0.0,
+            continuity: 0.0,
+            motion: 1.0,
+        },
+        switch_min_preference_advantage: 0.0,
+        switch_min_continuity_score: 0.0,
+        switch_delay_ms: 0.0,
+        kalman: KalmanConfig {
+            min_identity_confidence: 1.1,
+            nis_threshold: 1_000_000.0,
+            nis_hard_reject: 1_000_000.0,
+            ..KalmanConfig::default()
+        },
+        ..TargetingConfig::default()
+    });
+    let initial = [
+        Detection::new(1, 0, 280.0, 280.0, 40.0, 80.0, 0.9).expect("left"),
+        Detection::new(2, 0, 360.0, 280.0, 40.0, 80.0, 0.9).expect("right"),
+    ];
+    core.select_at(&initial, OBSERVATION_CENTER, 1_000_000_000);
+    let locked = core
+        .select_at(&initial, OBSERVATION_CENTER, 1_010_000_000)
+        .target_track_id
+        .expect("stable tie lock");
+    let moving = [
+        Detection::new(11, 0, 260.0, 280.0, 40.0, 80.0, 0.9).expect("moving away"),
+        Detection::new(12, 0, 340.0, 280.0, 40.0, 80.0, 0.9).expect("moving toward"),
+    ];
+
+    let selected = core.select_at(&moving, OBSERVATION_CENTER, 1_020_000_000);
+
+    assert_eq!(selected.target_track_id, Some(locked));
+    assert!(!selected.target_state_valid);
 }
 
 #[test]
@@ -448,7 +669,14 @@ fn head_movement_keeps_the_same_stable_lock() {
 #[test]
 fn stable_challenger_must_hold_its_advantage_for_capture_time_delay() {
     let mut core = TargetingCore::new(TargetingConfig {
-        selection_class_ratio: 0.01,
+        selection_weights: SelectionWeights {
+            distance: 0.99,
+            class: 0.01,
+            confidence: 0.0,
+            size: 0.0,
+            continuity: 0.0,
+            motion: 0.0,
+        },
         switch_min_preference_advantage: 0.01,
         switch_delay_ms: 50.0,
         ..TargetingConfig::default()
@@ -523,7 +751,7 @@ fn identity_confidence_is_spatial_continuity_not_detector_confidence() {
     let moved = Detection::new(2, 0, 318.0, 300.0, 40.0, 80.0, 0.95).expect("moved");
     let selection = core.select(&[moved], OBSERVATION_CENTER);
     let tracked = core.locked().expect("continued track");
-    let expected = 1.0 - (0.75 * 0.225 + 0.25 * (1.0 - 22.0 / 58.0)) / 1.15;
+    let expected = 1.0 - (0.75 * 0.225 + 0.25 * (1.0 - 22.0 / 58.0)) / 1.50;
     assert!((tracked.confidence - 0.95).abs() < f32::EPSILON);
     assert!((tracked.identity_confidence - expected).abs() < 1e-12);
     assert_eq!(selection.target_detection_confidence, Some(0.95));
@@ -666,6 +894,38 @@ fn temporarily_missing_locked_target_does_not_immediately_switch_to_challenger()
     assert_eq!(reacquired.target_track_id, Some(locked_track));
     assert_eq!(reacquired.target_object_id, Some(21));
     assert!(reacquired.target_rebuilt);
+}
+
+#[test]
+fn confirmed_challenger_takes_over_before_missing_lock_grace_expires() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        track_max_lost_age_ms: 120.0,
+        switch_delay_ms: 50.0,
+        ..TargetingConfig::default()
+    });
+    let both_visible = [
+        Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.95).expect("locked"),
+        Detection::new(2, 0, 380.0, 270.0, 80.0, 100.0, 0.95).expect("challenger"),
+    ];
+    core.select_at(&both_visible, OBSERVATION_CENTER, 1_000_000_000);
+    let locked = core
+        .select_at(&both_visible, OBSERVATION_CENTER, 1_010_000_000)
+        .target_track_id
+        .expect("locked track");
+    let challenger =
+        Detection::new(12, 0, 380.0, 270.0, 80.0, 100.0, 0.95).expect("challenger only");
+
+    let waiting = core.select_at(
+        std::slice::from_ref(&challenger),
+        OBSERVATION_CENTER,
+        1_020_000_000,
+    );
+    assert_eq!(waiting.target_track_id, None);
+    let switched = core.select_at(&[challenger], OBSERVATION_CENTER, 1_071_000_000);
+
+    assert!(switched.target_track_id.is_some());
+    assert_ne!(switched.target_track_id, Some(locked));
+    assert_eq!(switched.target_object_id, Some(12));
 }
 
 #[test]

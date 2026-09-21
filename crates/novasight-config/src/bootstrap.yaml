@@ -1,6 +1,6 @@
 # NovaSight's single runtime configuration. Relative paths resolve from the
 # directory in which novasightd is started.
-schema_version: 16
+schema_version: 17
 revision: 0
 server:
   # Public TCP belongs to novasight-web. novasightd listens only on control_socket.
@@ -43,6 +43,8 @@ pipeline:
   tracker_position_cost_weight: 0.75
   tracker_iou_cost_weight: 0.25
   tracker_scale_cost_weight: 0.15
+  # raw cls 只是软证据；跨类别仍可按几何关系关联。
+  tracker_class_cost_weight: 0.35
   tracker_max_size_ratio: 2.5
   tracker_max_association_dt_ms: 150.0
   tracker_kalman_max_predict_dt_ms: 35.0
@@ -50,8 +52,14 @@ pipeline:
   tracker_kalman_max_predict_steps: 5
   target_class_priority: "0,1"
   target_class_filter: all
-  # 0.35 类别偏好 + 0.65 准星距离；所有类别排名按 1, 0.5, 0.25... 生效。
-  target_selection_class_ratio: 0.35
+  # 六项权重会自动归一化；raw cls 只参与类别偏好，不决定内部身份。
+  target_selection_distance_weight: 0.45
+  target_selection_class_weight: 0.20
+  target_selection_confidence_weight: 0.15
+  target_selection_size_weight: 0.05
+  target_selection_continuity_weight: 0.10
+  target_selection_motion_weight: 0.05
+  target_selection_motion_horizon_ms: 30.0
   target_switch_min_preference_advantage: 0.08
   target_switch_min_continuity_score: 0.70
   target_switch_delay_ms: 50.0

@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use novasight_core::tracking::KalmanConfig;
+use novasight_core::tracking::{KalmanConfig, SelectionWeights, TargetingConfig};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 16;
+pub const CURRENT_SCHEMA_VERSION: u32 = 17;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -489,6 +489,8 @@ pub struct PipelineRuntimeConfig {
     pub tracker_iou_cost_weight: f64,
     #[serde(default = "default_tracker_scale_cost_weight")]
     pub tracker_scale_cost_weight: f64,
+    #[serde(default = "default_tracker_class_cost_weight")]
+    pub tracker_class_cost_weight: f64,
     #[serde(default = "default_tracker_max_size_ratio")]
     pub tracker_max_size_ratio: f64,
     #[serde(default = "default_tracker_max_association_dt_ms")]
@@ -513,8 +515,20 @@ pub struct PipelineRuntimeConfig {
     pub target_class_priority: String,
     #[serde(default = "default_target_class_filter")]
     pub target_class_filter: String,
-    #[serde(default = "default_target_selection_class_ratio")]
-    pub target_selection_class_ratio: f64,
+    #[serde(default = "default_target_selection_distance_weight")]
+    pub target_selection_distance_weight: f64,
+    #[serde(default = "default_target_selection_class_weight")]
+    pub target_selection_class_weight: f64,
+    #[serde(default = "default_target_selection_confidence_weight")]
+    pub target_selection_confidence_weight: f64,
+    #[serde(default = "default_target_selection_size_weight")]
+    pub target_selection_size_weight: f64,
+    #[serde(default = "default_target_selection_continuity_weight")]
+    pub target_selection_continuity_weight: f64,
+    #[serde(default = "default_target_selection_motion_weight")]
+    pub target_selection_motion_weight: f64,
+    #[serde(default = "default_target_selection_motion_horizon_ms")]
+    pub target_selection_motion_horizon_ms: f64,
     #[serde(default = "default_target_switch_min_preference_advantage")]
     pub target_switch_min_preference_advantage: f64,
     #[serde(default = "default_target_switch_min_continuity_score")]
@@ -562,6 +576,7 @@ impl Default for PipelineRuntimeConfig {
             tracker_position_cost_weight: default_tracker_position_cost_weight(),
             tracker_iou_cost_weight: default_tracker_iou_cost_weight(),
             tracker_scale_cost_weight: default_tracker_scale_cost_weight(),
+            tracker_class_cost_weight: default_tracker_class_cost_weight(),
             tracker_max_size_ratio: default_tracker_max_size_ratio(),
             tracker_max_association_dt_ms: default_tracker_max_association_dt_ms(),
             tracker_kalman_acceleration_noise: default_tracker_kalman_acceleration_noise(),
@@ -574,7 +589,13 @@ impl Default for PipelineRuntimeConfig {
             tracker_kalman_nis_hard_reject: default_tracker_kalman_nis_hard_reject(),
             target_class_priority: default_target_class_priority(),
             target_class_filter: default_target_class_filter(),
-            target_selection_class_ratio: default_target_selection_class_ratio(),
+            target_selection_distance_weight: default_target_selection_distance_weight(),
+            target_selection_class_weight: default_target_selection_class_weight(),
+            target_selection_confidence_weight: default_target_selection_confidence_weight(),
+            target_selection_size_weight: default_target_selection_size_weight(),
+            target_selection_continuity_weight: default_target_selection_continuity_weight(),
+            target_selection_motion_weight: default_target_selection_motion_weight(),
+            target_selection_motion_horizon_ms: default_target_selection_motion_horizon_ms(),
             target_switch_min_preference_advantage: default_target_switch_min_preference_advantage(
             ),
             target_switch_min_continuity_score: default_target_switch_min_continuity_score(),
@@ -715,14 +736,21 @@ impl PipelineRuntimeConfig {
             0.0,
             100.0,
         )?;
+        validate_finite_range(
+            "pipeline.tracker_class_cost_weight",
+            self.tracker_class_cost_weight,
+            0.0,
+            100.0,
+        )?;
         if self.tracker_position_cost_weight
             + self.tracker_iou_cost_weight
             + self.tracker_scale_cost_weight
+            + self.tracker_class_cost_weight
             <= 0.0
         {
             return Err(ConfigValidationError::new(
                 "pipeline.tracker_position_cost_weight",
-                "tracker position, IoU, and scale weights must not all be zero",
+                "tracker position, IoU, scale, and class weights must not all be zero",
             ));
         }
         validate_finite_range(
@@ -787,11 +815,52 @@ impl PipelineRuntimeConfig {
         )?;
         parse_target_class_priority(&self.target_class_priority)?;
         parse_target_class_filter(&self.target_class_filter)?;
+        for (field, value) in [
+            (
+                "pipeline.target_selection_distance_weight",
+                self.target_selection_distance_weight,
+            ),
+            (
+                "pipeline.target_selection_class_weight",
+                self.target_selection_class_weight,
+            ),
+            (
+                "pipeline.target_selection_confidence_weight",
+                self.target_selection_confidence_weight,
+            ),
+            (
+                "pipeline.target_selection_size_weight",
+                self.target_selection_size_weight,
+            ),
+            (
+                "pipeline.target_selection_continuity_weight",
+                self.target_selection_continuity_weight,
+            ),
+            (
+                "pipeline.target_selection_motion_weight",
+                self.target_selection_motion_weight,
+            ),
+        ] {
+            validate_finite_range(field, value, 0.0, 100.0)?;
+        }
+        if self.target_selection_distance_weight
+            + self.target_selection_class_weight
+            + self.target_selection_confidence_weight
+            + self.target_selection_size_weight
+            + self.target_selection_continuity_weight
+            + self.target_selection_motion_weight
+            <= 0.0
+        {
+            return Err(ConfigValidationError::new(
+                "pipeline.target_selection_distance_weight",
+                "target selection weights must not all be zero",
+            ));
+        }
         validate_finite_range(
-            "pipeline.target_selection_class_ratio",
-            self.target_selection_class_ratio,
+            "pipeline.target_selection_motion_horizon_ms",
+            self.target_selection_motion_horizon_ms,
             0.0,
-            1.0,
+            1_000.0,
         )?;
         validate_finite_range(
             "pipeline.target_switch_min_preference_advantage",
@@ -1031,6 +1100,10 @@ const fn default_tracker_scale_cost_weight() -> f64 {
     0.15
 }
 
+fn default_tracker_class_cost_weight() -> f64 {
+    TargetingConfig::default().tracker_class_cost_weight
+}
+
 const fn default_tracker_max_size_ratio() -> f64 {
     2.5
 }
@@ -1079,8 +1152,32 @@ fn default_target_class_filter() -> String {
     "all".to_owned()
 }
 
-const fn default_target_selection_class_ratio() -> f64 {
-    0.35
+fn default_target_selection_distance_weight() -> f64 {
+    SelectionWeights::default().distance
+}
+
+fn default_target_selection_class_weight() -> f64 {
+    SelectionWeights::default().class
+}
+
+fn default_target_selection_confidence_weight() -> f64 {
+    SelectionWeights::default().confidence
+}
+
+fn default_target_selection_size_weight() -> f64 {
+    SelectionWeights::default().size
+}
+
+fn default_target_selection_continuity_weight() -> f64 {
+    SelectionWeights::default().continuity
+}
+
+fn default_target_selection_motion_weight() -> f64 {
+    SelectionWeights::default().motion
+}
+
+fn default_target_selection_motion_horizon_ms() -> f64 {
+    TargetingConfig::default().selection_motion_horizon_ms
 }
 
 const fn default_target_switch_min_preference_advantage() -> f64 {
@@ -1780,6 +1877,7 @@ mod tests {
             tracker_position_cost_weight: 0.0,
             tracker_iou_cost_weight: 0.0,
             tracker_scale_cost_weight: 0.0,
+            tracker_class_cost_weight: 0.0,
             ..PipelineRuntimeConfig::default()
         };
         let error = config.validate().expect_err("zero association weights");
@@ -1854,13 +1952,20 @@ mod tests {
     }
 
     #[test]
-    fn target_selection_class_ratio_is_bounded() {
+    fn target_selection_weights_require_a_real_signal() {
         let config = PipelineRuntimeConfig {
-            target_selection_class_ratio: 1.1,
+            target_selection_distance_weight: 0.0,
+            target_selection_class_weight: 0.0,
+            target_selection_confidence_weight: 0.0,
+            target_selection_size_weight: 0.0,
+            target_selection_continuity_weight: 0.0,
+            target_selection_motion_weight: 0.0,
             ..PipelineRuntimeConfig::default()
         };
-        let error = config.validate().expect_err("class ratio above one");
-        assert_eq!(error.field, "pipeline.target_selection_class_ratio");
+        let error = config
+            .validate()
+            .expect_err("zero target selection weights");
+        assert_eq!(error.field, "pipeline.target_selection_distance_weight");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Deterministic tracker and targeting core.
+//! Deterministic short-term association and target-decision module.
 //!
 //! The runtime replaces the Python ``RuntimeTracker`` and
 //! ``RuntimeTargetSelector`` modules. It consumes admitted detector
@@ -22,12 +22,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::AppError;
 use crate::perception::types::Detection;
 
+mod association;
+mod classification;
 mod kalman;
+mod selection;
+use association::associate;
 pub use kalman::KalmanConfig;
 use kalman::KalmanState;
+use selection::{detection_aspect_ratio, euclidean, target_score};
 
 /// Timestamp-free replay fallback for expiring a non-matched track.
 pub const DEFAULT_TRACK_MAX_AGE: u64 = 5;
@@ -96,174 +100,6 @@ pub struct Association {
     pub center_y: f64,
     pub confidence: f32,
     pub identity_confidence: f64,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct AssociationEdge {
-    track_index: usize,
-    detection_index: usize,
-    cost: f64,
-    identity_confidence: f64,
-}
-
-/// Deterministic bounded minimum-cost association, avoiding TrackId-order
-/// greedy capture when multiple same-class targets converge.
-fn associate(
-    tracks: &[Track],
-    detections: &[Detection],
-    config: &TargetingConfig,
-    captured_at_ns: u64,
-) -> Result<Vec<Association>, AppError> {
-    if detections.len() > MAX_TRACK_CANDIDATES {
-        return Err(AppError::TooManyDetections {
-            actual: detections.len(),
-            maximum: MAX_TRACK_CANDIDATES,
-        });
-    }
-    let mut sorted_detections = detections.to_vec();
-    sorted_detections.sort_by_key(|det| (det.object_id(), det.class_id()));
-    for window in sorted_detections.windows(2) {
-        if window[0].object_id() == window[1].object_id() {
-            return Err(AppError::DuplicateObjectId {
-                object_id: window[0].object_id(),
-            });
-        }
-    }
-    let mut sorted_tracks = tracks.to_vec();
-    sorted_tracks.sort_by_key(|track| track.id.0);
-
-    let mut edges = Vec::with_capacity(sorted_tracks.len() * sorted_detections.len());
-    for (track_index, track) in sorted_tracks.iter().enumerate() {
-        for (detection_index, detection) in sorted_detections.iter().enumerate() {
-            if let Some((cost, identity_confidence)) =
-                association_edge(track, detection, config, captured_at_ns)
-            {
-                edges.push(AssociationEdge {
-                    track_index,
-                    detection_index,
-                    cost,
-                    identity_confidence,
-                });
-            }
-        }
-    }
-    const FORBIDDEN_COST: f64 = 1_000_000.0;
-    let mut matrix = vec![vec![FORBIDDEN_COST; sorted_detections.len()]; sorted_tracks.len()];
-    for edge in &edges {
-        matrix[edge.track_index][edge.detection_index] = edge.cost;
-    }
-    let mut out = Vec::with_capacity(sorted_tracks.len().min(sorted_detections.len()));
-    for (track_index, detection_index) in linear_sum_assignment(&matrix) {
-        let Some(edge) = edges.iter().find(|edge| {
-            edge.track_index == track_index && edge.detection_index == detection_index
-        }) else {
-            continue;
-        };
-        let track = &sorted_tracks[track_index];
-        let detection = &sorted_detections[detection_index];
-        out.push(Association {
-            track_id: track.id,
-            object_id: detection.object_id(),
-            center_x: detection.center_x(),
-            center_y: detection.center_y(),
-            confidence: detection.confidence(),
-            identity_confidence: edge.identity_confidence,
-        });
-    }
-    out.sort_by_key(|association| association.track_id.0);
-    Ok(out)
-}
-
-/// Deterministic rectangular minimum-cost assignment in O(n^3). The caller
-/// caps both dimensions at [`MAX_ACTIVE_TRACKS`].
-fn linear_sum_assignment(costs: &[Vec<f64>]) -> Vec<(usize, usize)> {
-    if costs.is_empty() || costs[0].is_empty() {
-        return Vec::new();
-    }
-    let row_count = costs.len();
-    let column_count = costs[0].len();
-    debug_assert!(costs.iter().all(|row| row.len() == column_count));
-    let transposed = row_count > column_count;
-    let matrix: Vec<Vec<f64>> = if transposed {
-        (0..column_count)
-            .map(|column| (0..row_count).map(|row| costs[row][column]).collect())
-            .collect()
-    } else {
-        costs.to_vec()
-    };
-    let rows = matrix.len();
-    let columns = matrix[0].len();
-    let mut u = vec![0.0; rows + 1];
-    let mut v = vec![0.0; columns + 1];
-    let mut p = vec![0_usize; columns + 1];
-    let mut way = vec![0_usize; columns + 1];
-    for row in 1..=rows {
-        p[0] = row;
-        let mut min_values = vec![f64::INFINITY; columns + 1];
-        let mut used = vec![false; columns + 1];
-        let mut column0 = 0;
-        loop {
-            used[column0] = true;
-            let row0 = p[column0];
-            let mut delta = f64::INFINITY;
-            let mut column1 = 0;
-            for column in 1..=columns {
-                if used[column] {
-                    continue;
-                }
-                let current = matrix[row0 - 1][column - 1] - u[row0] - v[column];
-                if current < min_values[column] {
-                    min_values[column] = current;
-                    way[column] = column0;
-                }
-                if min_values[column] < delta {
-                    delta = min_values[column];
-                    column1 = column;
-                }
-            }
-            for column in 0..=columns {
-                if used[column] {
-                    u[p[column]] += delta;
-                    v[column] -= delta;
-                } else {
-                    min_values[column] -= delta;
-                }
-            }
-            column0 = column1;
-            if p[column0] == 0 {
-                break;
-            }
-        }
-        loop {
-            let column1 = way[column0];
-            p[column0] = p[column1];
-            column0 = column1;
-            if column0 == 0 {
-                break;
-            }
-        }
-    }
-    let mut assignment = Vec::with_capacity(rows);
-    for (column, &assigned_row) in p.iter().enumerate().take(columns + 1).skip(1) {
-        if assigned_row == 0 {
-            continue;
-        }
-        let row_index = assigned_row - 1;
-        let column_index = column - 1;
-        assignment.push(if transposed {
-            (column_index, row_index)
-        } else {
-            (row_index, column_index)
-        });
-    }
-    assignment.sort_unstable();
-    assignment
-}
-
-fn euclidean(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
-    let dx = ax - bx;
-    let dy = ay - by;
-    (dx * dx + dy * dy).sqrt()
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -342,6 +178,9 @@ pub struct TargetingConfig {
     pub tracker_position_cost_weight: f64,
     pub tracker_iou_cost_weight: f64,
     pub tracker_scale_cost_weight: f64,
+    /// Soft penalty for associating a detection whose raw model class differs
+    /// from the track's latest observation. Geometry remains authoritative.
+    pub tracker_class_cost_weight: f64,
     pub tracker_max_size_ratio: f64,
     pub tracker_max_association_dt_ms: f64,
     pub kalman: KalmanConfig,
@@ -352,9 +191,10 @@ pub struct TargetingConfig {
     /// Optional class admission allowlist. `None` admits every detector class;
     /// an empty set intentionally disables target selection.
     pub allowed_class_ids: Option<BTreeSet<u32>>,
-    /// Share of the stateless candidate score assigned to class preference.
-    /// Distance receives the complementary `1.0 - selection_class_ratio`.
-    pub selection_class_ratio: f64,
+    pub selection_weights: SelectionWeights,
+    /// Short horizon used only to rank whether a candidate is moving toward
+    /// the observation center. It never changes the emitted aim point.
+    pub selection_motion_horizon_ms: f64,
     pub switch_min_preference_advantage: f64,
     pub switch_min_continuity_score: f64,
     pub switch_delay_ms: f64,
@@ -373,18 +213,43 @@ impl Default for TargetingConfig {
             tracker_position_cost_weight: 0.75,
             tracker_iou_cost_weight: 0.25,
             tracker_scale_cost_weight: 0.15,
+            tracker_class_cost_weight: 0.35,
             tracker_max_size_ratio: 2.5,
             tracker_max_association_dt_ms: 150.0,
             kalman: KalmanConfig::default(),
             class_priority: vec![0, 1],
             allowed_class_ids: None,
-            selection_class_ratio: 0.35,
+            selection_weights: SelectionWeights::default(),
+            selection_motion_horizon_ms: 30.0,
             switch_min_preference_advantage: 0.08,
             switch_min_continuity_score: 0.70,
             switch_delay_ms: 50.0,
             aim_y_ratio: 0.22,
             class_aim_y_ratios: BTreeMap::new(),
             candidate_max_aspect_ratio: 6.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SelectionWeights {
+    pub distance: f64,
+    pub class: f64,
+    pub confidence: f64,
+    pub size: f64,
+    pub continuity: f64,
+    pub motion: f64,
+}
+
+impl Default for SelectionWeights {
+    fn default() -> Self {
+        Self {
+            distance: 0.45,
+            class: 0.20,
+            confidence: 0.15,
+            size: 0.05,
+            continuity: 0.10,
+            motion: 0.05,
         }
     }
 }
@@ -696,26 +561,7 @@ impl TargetingCore {
             .locked
             .as_ref()
             .and_then(|locked| updated.iter().find(|track| track.id == locked.id).cloned());
-        // A temporary miss is not a switch opportunity. Keep the identity for
-        // reacquisition, but emit no target so control stops until a real
-        // observation of the same track returns or the grace period expires.
-        if retained_lock.is_some() {
-            self.pending_switch = None;
-            self.tracks = updated;
-            self.tracks.append(&mut retained);
-            self.locked = retained_lock;
-            return TargetSelection {
-                candidates,
-                inside_fov,
-                rejected_class_ids,
-                rejected_by_confidence,
-                rejected_by_class,
-                rejected_by_aspect_ratio,
-                rejected_by_fov,
-                lost_count: self.lost_count,
-                ..TargetSelection::empty()
-            };
-        }
+        let switch_lock = observed_lock.as_ref().or(retained_lock.as_ref()).cloned();
         // A target observed outside the selection radius remains tracked, but
         // it cannot drive control. This preserves identity for reacquisition
         // without treating the selection FOV as a tracker admission gate.
@@ -723,7 +569,7 @@ impl TargetingCore {
             self.pending_switch = None;
             self.tracks = updated;
             self.tracks.append(&mut retained);
-            self.locked = observed_lock;
+            self.locked = switch_lock;
             return TargetSelection {
                 candidates,
                 inside_fov,
@@ -774,7 +620,7 @@ impl TargetingCore {
                     Some(index)
                 }
             }
-            None => match observed_lock.as_ref() {
+            None => match switch_lock.as_ref() {
                 Some(locked) => self
                     .challenger_ready(
                         locked,
@@ -792,7 +638,7 @@ impl TargetingCore {
         let Some(chosen_index) = chosen_index else {
             self.tracks = updated;
             self.tracks.append(&mut retained);
-            self.locked = observed_lock;
+            self.locked = switch_lock;
             return TargetSelection {
                 candidates,
                 inside_fov,
@@ -860,7 +706,8 @@ impl TargetingCore {
         } else {
             0.0
         };
-        if advantage < self.config.switch_min_preference_advantage
+        if (locked.state != TrackState::Lost
+            && advantage < self.config.switch_min_preference_advantage)
             || continuity < self.config.switch_min_continuity_score
         {
             self.pending_switch = None;
@@ -920,36 +767,6 @@ fn track_within_loss_grace(track: &Track, captured_at_ns: u64, config: &Targetin
     }
 }
 
-fn target_score(track: &Track, observation_center: (f64, f64), config: &TargetingConfig) -> f64 {
-    let mut class_score = 1.0;
-    let mut class_matched = false;
-    for class_id in &config.class_priority {
-        if *class_id == track.class_id {
-            class_matched = true;
-            break;
-        }
-        class_score *= 0.5;
-    }
-    if !class_matched {
-        class_score = 0.0;
-    }
-    let distance = euclidean(
-        track.observed_aim_x,
-        track.observed_aim_y,
-        observation_center.0,
-        observation_center.1,
-    );
-    let distance_score = 1.0 - (distance / config.target_fov_radius_px.max(1e-6)).clamp(0.0, 1.0);
-    let class_ratio = config.selection_class_ratio.clamp(0.0, 1.0);
-    class_ratio * class_score + (1.0 - class_ratio) * distance_score
-}
-
-fn detection_aspect_ratio(detection: &Detection) -> f64 {
-    let width = f64::from(detection.width());
-    let height = f64::from(detection.height());
-    (width / height).max(height / width)
-}
-
 fn remember_track_id(slots: &mut [Option<TrackId>; MAX_ACTIVE_TRACKS], track_id: TrackId) {
     if slots.iter().flatten().any(|value| *value == track_id) {
         return;
@@ -961,102 +778,6 @@ fn remember_track_id(slots: &mut [Option<TrackId>; MAX_ACTIVE_TRACKS], track_id:
 
 fn has_track_id(slots: &[Option<TrackId>; MAX_ACTIVE_TRACKS], track_id: TrackId) -> bool {
     slots.iter().flatten().any(|value| *value == track_id)
-}
-
-fn association_edge(
-    track: &Track,
-    detection: &Detection,
-    config: &TargetingConfig,
-    captured_at_ns: u64,
-) -> Option<(f64, f64)> {
-    if track.class_id != detection.class_id() {
-        return None;
-    }
-    if captured_at_ns > 0 && track.last_seen_ns > 0 {
-        let elapsed_ms = captured_at_ns.saturating_sub(track.last_seen_ns) as f64 / 1e6;
-        if elapsed_ms > config.tracker_max_association_dt_ms {
-            return None;
-        }
-    }
-    let reference_height = track.height.max(f64::from(detection.height()));
-    if !reference_height.is_finite() || reference_height <= 0.0 {
-        return None;
-    }
-    // Identity association stays on the bbox geometry. Aim-point ratios are a
-    // control/selection preference and must not move a track's physical state.
-    let center = (detection.center_x(), detection.center_y());
-    let nis = if track.kalman.prediction_valid() {
-        track
-            .kalman
-            .measurement_nis(center.0, center.1, config.kalman)
-    } else {
-        track.kalman.measurement_nis_from_position(
-            center.0,
-            center.1,
-            track.box_x + track.width * 0.5,
-            track.box_y + track.height * 0.5,
-            config.kalman,
-        )
-    };
-    if !nis.is_finite() || nis > config.kalman.nis_hard_reject {
-        return None;
-    }
-    let normalized_distance =
-        euclidean(track.center_x, track.center_y, center.0, center.1) / reference_height;
-    if !normalized_distance.is_finite() || normalized_distance > config.tracker_max_match_distance {
-        return None;
-    }
-    let width_ratio = symmetric_ratio(track.width, f64::from(detection.width()))?;
-    let height_ratio = symmetric_ratio(track.height, f64::from(detection.height()))?;
-    if width_ratio > config.tracker_max_size_ratio || height_ratio > config.tracker_max_size_ratio {
-        return None;
-    }
-    let position_weight = config.tracker_position_cost_weight.max(0.0);
-    let iou_weight = config.tracker_iou_cost_weight.max(0.0);
-    let scale_weight = config.tracker_scale_cost_weight.max(0.0);
-    let total_weight = position_weight + iou_weight + scale_weight;
-    if !total_weight.is_finite() || total_weight <= 0.0 {
-        return None;
-    }
-    let overlap = track_detection_iou(track, detection);
-    let scale_cost = (track.width / f64::from(detection.width())).ln().abs()
-        + (track.height / f64::from(detection.height())).ln().abs();
-    let cost = (position_weight * normalized_distance
-        + iou_weight * (1.0 - overlap)
-        + scale_weight * scale_cost)
-        / total_weight;
-    Some((cost, (1.0 - cost).clamp(0.0, 1.0)))
-}
-
-fn symmetric_ratio(left: f64, right: f64) -> Option<f64> {
-    if !left.is_finite() || !right.is_finite() || left <= 0.0 || right <= 0.0 {
-        return None;
-    }
-    Some((left / right).max(right / left))
-}
-
-fn track_detection_iou(track: &Track, detection: &Detection) -> f64 {
-    let track_left = track.box_x;
-    let track_top = track.box_y;
-    let track_right = track.box_x + track.width;
-    let track_bottom = track.box_y + track.height;
-    let detection_left = f64::from(detection.x());
-    let detection_top = f64::from(detection.y());
-    let detection_right = detection_left + f64::from(detection.width());
-    let detection_bottom = detection_top + f64::from(detection.height());
-    let intersection_width =
-        (track_right.min(detection_right) - track_left.max(detection_left)).max(0.0);
-    let intersection_height =
-        (track_bottom.min(detection_bottom) - track_top.max(detection_top)).max(0.0);
-    let intersection = intersection_width * intersection_height;
-    let union = track.width * track.height
-        + f64::from(detection.width()) * f64::from(detection.height())
-        - intersection;
-    if union > 0.0 {
-        (intersection / union).clamp(0.0, 1.0)
-    } else {
-        0.0
-    }
 }
 
 fn detection_aim(detection: &Detection, config: &TargetingConfig) -> (f64, f64) {

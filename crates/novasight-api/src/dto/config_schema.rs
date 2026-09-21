@@ -341,6 +341,13 @@ impl ConfigSchemaResponse {
                             None,
                         ),
                         float(
+                            "pipeline.tracker_class_cost_weight",
+                            "跨类别关联代价",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
+                        float(
                             "pipeline.tracker_max_size_ratio",
                             "跟踪最大尺寸变化倍数",
                             1.0,
@@ -413,11 +420,53 @@ impl ConfigSchemaResponse {
                         string("pipeline.target_class_priority", "目标类别优先级"),
                         string("pipeline.target_class_filter", "参与目标选择的类别"),
                         float(
-                            "pipeline.target_selection_class_ratio",
-                            "目标类别偏好比例",
+                            "pipeline.target_selection_distance_weight",
+                            "准星距离权重",
                             0.0,
-                            1.0,
+                            100.0,
                             None,
+                        ),
+                        float(
+                            "pipeline.target_selection_class_weight",
+                            "内部类别偏好权重",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
+                        float(
+                            "pipeline.target_selection_confidence_weight",
+                            "识别置信度权重",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
+                        float(
+                            "pipeline.target_selection_size_weight",
+                            "目标大小权重",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
+                        float(
+                            "pipeline.target_selection_continuity_weight",
+                            "短时连续性权重",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
+                        float(
+                            "pipeline.target_selection_motion_weight",
+                            "运动趋势权重",
+                            0.0,
+                            100.0,
+                            None,
+                        ),
+                        float(
+                            "pipeline.target_selection_motion_horizon_ms",
+                            "运动趋势观察窗口",
+                            0.0,
+                            1_000.0,
+                            Some("ms"),
                         ),
                         float(
                             "pipeline.target_switch_min_preference_advantage",
@@ -779,7 +828,7 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 16);
+        assert_eq!(value["version"], 17);
         assert_eq!(value["algorithm"]["id"], "continuous_atan_medoid_v2");
         assert_eq!(value["algorithm"]["response"]["atan_scale_counts"], 256.0);
         assert_eq!(value["algorithm"]["prediction"]["aim_history_points"], 4);
@@ -859,6 +908,7 @@ mod tests {
             "pipeline.tracker_position_cost_weight",
             "pipeline.tracker_iou_cost_weight",
             "pipeline.tracker_scale_cost_weight",
+            "pipeline.tracker_class_cost_weight",
             "pipeline.tracker_max_size_ratio",
             "pipeline.tracker_max_association_dt_ms",
             "pipeline.tracker_kalman_acceleration_noise",
@@ -871,7 +921,13 @@ mod tests {
             "pipeline.tracker_kalman_nis_hard_reject",
             "pipeline.target_class_priority",
             "pipeline.target_class_filter",
-            "pipeline.target_selection_class_ratio",
+            "pipeline.target_selection_distance_weight",
+            "pipeline.target_selection_class_weight",
+            "pipeline.target_selection_confidence_weight",
+            "pipeline.target_selection_size_weight",
+            "pipeline.target_selection_continuity_weight",
+            "pipeline.target_selection_motion_weight",
+            "pipeline.target_selection_motion_horizon_ms",
             "pipeline.target_switch_min_preference_advantage",
             "pipeline.target_switch_min_continuity_score",
             "pipeline.target_switch_delay_ms",

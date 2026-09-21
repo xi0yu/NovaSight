@@ -2120,6 +2120,26 @@
   background: var(--signal-attention);
 }
 
+.target-weight-composition .confidence,
+.target-weight-legend .confidence {
+  background: var(--control-accent);
+}
+
+.target-weight-composition .size,
+.target-weight-legend .size {
+  background: color-mix(in srgb, var(--signal-target) 55%, var(--signal-attention));
+}
+
+.target-weight-composition .continuity,
+.target-weight-legend .continuity {
+  background: color-mix(in srgb, var(--signal-ink) 65%, var(--control-accent));
+}
+
+.target-weight-composition .motion,
+.target-weight-legend .motion {
+  background: color-mix(in srgb, var(--signal-attention) 55%, var(--control-accent));
+}
+
 .target-weight-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

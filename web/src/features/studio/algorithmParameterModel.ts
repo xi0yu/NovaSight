@@ -55,6 +55,7 @@ export const TARGETING_PIPELINE_FIELDS = [
   "tracker_position_cost_weight",
   "tracker_iou_cost_weight",
   "tracker_scale_cost_weight",
+  "tracker_class_cost_weight",
   "tracker_max_size_ratio",
   "tracker_max_association_dt_ms",
   "tracker_kalman_acceleration_noise",
@@ -67,7 +68,13 @@ export const TARGETING_PIPELINE_FIELDS = [
   "tracker_kalman_nis_hard_reject",
   "target_class_priority",
   "target_class_filter",
-  "target_selection_class_ratio",
+  "target_selection_distance_weight",
+  "target_selection_class_weight",
+  "target_selection_confidence_weight",
+  "target_selection_size_weight",
+  "target_selection_continuity_weight",
+  "target_selection_motion_weight",
+  "target_selection_motion_horizon_ms",
   "target_switch_min_preference_advantage",
   "target_switch_min_continuity_score",
   "target_switch_delay_ms",
@@ -229,6 +236,7 @@ export type TargetingParameterValues = {
   trackerPositionCostWeight: number;
   trackerIouCostWeight: number;
   trackerScaleCostWeight: number;
+  trackerClassCostWeight: number;
   trackerMaxSizeRatio: number;
   trackerMaxAssociationDtMs: number;
   targetLostGraceMs: number;
@@ -240,6 +248,7 @@ export type TargetingParameterValues = {
   trackerKalmanMaxPredictSteps: number;
   trackerKalmanNisThreshold: number;
   trackerKalmanNisHardReject: number;
+  targetSelectionMotionHorizonMs: number;
 };
 
 export type TargetingParameterGroups = {
@@ -451,6 +460,20 @@ export function buildTargetingParameterGroups(
         unit: "ms",
         kind: "stepper",
         transform: Math.round
+      },
+      {
+        key: "target_selection_motion_horizon_ms",
+        label: "运动趋势观察窗口",
+        detail: "仅用于比较候选是否正在靠近准星，不会把瞄点向未来外推。",
+        value: values.targetSelectionMotionHorizonMs,
+        min: 0,
+        max: 1000,
+        recommendedMin: 0,
+        recommendedMax: 100,
+        step: 1,
+        unit: "ms",
+        kind: "stepper",
+        transform: Math.round
       }
     ],
     trackerCoreParameters: [
@@ -527,6 +550,18 @@ export function buildTargetingParameterGroups(
         label: "尺度代价权重",
         detail: "候选框尺寸变化参与身份匹配的权重。",
         value: values.trackerScaleCostWeight,
+        min: 0,
+        max: 100,
+        recommendedMin: 0,
+        recommendedMax: 1,
+        step: 0.01,
+        riskLevel: "advanced"
+      },
+      {
+        key: "tracker_class_cost_weight",
+        label: "跨类别关联代价",
+        detail: "raw cls 变化时增加软代价，但不禁止关联；位置、重叠和尺度仍可证明它是同一目标。",
+        value: values.trackerClassCostWeight,
         min: 0,
         max: 100,
         recommendedMin: 0,

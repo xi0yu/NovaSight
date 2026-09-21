@@ -1,6 +1,6 @@
 use novasight_core::controller::AimAlgorithmConfig;
 use novasight_core::controller::recoil::RecoilConfig;
-use novasight_core::tracking::{KalmanConfig, TargetingConfig};
+use novasight_core::tracking::{KalmanConfig, SelectionWeights, TargetingConfig};
 use novasight_pipeline::{OutputLimitConfig, PipelineConfig, TriggerMode};
 use novasight_store::config::{
     AppConfig, parse_target_class_aim_y_ratios, parse_target_class_filter,
@@ -30,6 +30,7 @@ pub fn compose_pipeline_config(
             tracker_position_cost_weight: adapters.pipeline.tracker_position_cost_weight,
             tracker_iou_cost_weight: adapters.pipeline.tracker_iou_cost_weight,
             tracker_scale_cost_weight: adapters.pipeline.tracker_scale_cost_weight,
+            tracker_class_cost_weight: adapters.pipeline.tracker_class_cost_weight,
             tracker_max_size_ratio: adapters.pipeline.tracker_max_size_ratio,
             tracker_max_association_dt_ms: adapters.pipeline.tracker_max_association_dt_ms,
             kalman: KalmanConfig {
@@ -47,7 +48,15 @@ pub fn compose_pipeline_config(
                 .map_err(|error| error.to_string())?,
             allowed_class_ids: parse_target_class_filter(&adapters.pipeline.target_class_filter)
                 .map_err(|error| error.to_string())?,
-            selection_class_ratio: adapters.pipeline.target_selection_class_ratio,
+            selection_weights: SelectionWeights {
+                distance: adapters.pipeline.target_selection_distance_weight,
+                class: adapters.pipeline.target_selection_class_weight,
+                confidence: adapters.pipeline.target_selection_confidence_weight,
+                size: adapters.pipeline.target_selection_size_weight,
+                continuity: adapters.pipeline.target_selection_continuity_weight,
+                motion: adapters.pipeline.target_selection_motion_weight,
+            },
+            selection_motion_horizon_ms: adapters.pipeline.target_selection_motion_horizon_ms,
             switch_min_preference_advantage: adapters
                 .pipeline
                 .target_switch_min_preference_advantage,

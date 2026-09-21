@@ -118,6 +118,10 @@ impl KalmanState {
         (self.state[0], self.state[1])
     }
 
+    pub(super) fn velocity(&self) -> (f64, f64) {
+        (self.state[2], self.state[3])
+    }
+
     pub(super) fn prediction_valid(&self) -> bool {
         self.estimate_valid
     }
