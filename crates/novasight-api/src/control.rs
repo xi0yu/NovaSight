@@ -2742,15 +2742,39 @@ mod tests {
             "temporary connect: {}",
             response.status()
         );
+        let unacknowledged_output = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/commands")
+                    .extension(TrustedLocalControl)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"command":"set_output_gate","enabled":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            unacknowledged_output.status(),
+            StatusCode::PRECONDITION_REQUIRED
+        );
+        assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
         for enabled in [true, false] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/commands")
+                .extension(TrustedLocalControl)
+                .header("content-type", "application/json");
+            if enabled {
+                request = request.header(PHYSICAL_OUTPUT_ACK_HEADER, "confirmed");
+            }
             let response = app
                 .clone()
                 .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/api/v1/config/commands")
-                        .extension(TrustedLocalControl)
-                        .header("content-type", "application/json")
+                    request
                         .body(Body::from(
                             serde_json::json!({"command":"set_output_gate", "enabled":enabled})
                                 .to_string(),
