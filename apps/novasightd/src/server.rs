@@ -62,8 +62,8 @@ pub(super) async fn run_daemon(
     config_service: ConfigService,
     model_catalog: SqliteModelCatalog,
     mode: DaemonMode,
+    _instance_lock: Option<InstanceLock>,
 ) -> Result<(), DaemonRunError> {
-    let _instance_lock = acquire_instance_lock(mode.hardware_output_enabled())?;
     let control_socket = loaded.config().server.control_socket.clone();
     let license_repository = FileLicenseRepository::new(
         loaded.config().paths.license.clone(),
@@ -297,7 +297,9 @@ pub(super) fn preflight_instance_lock(mode: DaemonMode) -> Result<(), DaemonRunE
 const INSTANCE_LOCK_SOCKET: &str = "@novasightd-instance";
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn acquire_instance_lock(required: bool) -> Result<Option<InstanceLock>, DaemonRunError> {
+pub(super) fn acquire_instance_lock(
+    required: bool,
+) -> Result<Option<InstanceLock>, DaemonRunError> {
     if !required {
         return Ok(None);
     }
@@ -315,12 +317,14 @@ fn acquire_instance_lock(required: bool) -> Result<Option<InstanceLock>, DaemonR
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn acquire_instance_lock(_required: bool) -> Result<Option<InstanceLock>, DaemonRunError> {
+pub(super) fn acquire_instance_lock(
+    _required: bool,
+) -> Result<Option<InstanceLock>, DaemonRunError> {
     Ok(None)
 }
 
 #[derive(Debug)]
-struct InstanceLock(#[allow(dead_code)] UnixListener);
+pub(super) struct InstanceLock(#[allow(dead_code)] UnixListener);
 
 async fn monitor_runtime_license(
     repository: FileLicenseRepository,

@@ -167,6 +167,7 @@ it("asks before sending a physical kmNet diagnostic move", async () => {
   await waitFor(() => expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("diagnostic-move"))).toHaveLength(1));
   const request = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes("diagnostic-move"))!;
   expect(JSON.parse(String(request[1]?.body))).toMatchObject({ repeat: 1, move_kind: "raw" });
+  expect(new Headers(request[1]?.headers).get("X-NovaSight-Physical-Output-Ack")).toBe("confirmed");
 });
 
 it("asks before starting a stopped mainline with physical output enabled", async () => {

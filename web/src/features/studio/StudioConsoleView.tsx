@@ -3675,7 +3675,8 @@ export function StudioConsoleView({
     try {
       const result = await diagnosticMoveKmNet(
         Math.round(dx),
-        Math.round(dy)
+        Math.round(dy),
+        true
       );
       setKmnetTestMessageTone(result.sent ? "success" : "warning");
       setKmnetTestMessage(

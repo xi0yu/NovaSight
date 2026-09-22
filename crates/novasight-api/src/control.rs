@@ -867,12 +867,14 @@ async fn device_buttons(State(state): State<ControlState>) -> Json<DeviceButtons
 
 async fn diagnostic_device_move(
     State(state): State<ControlState>,
+    headers: HeaderMap,
     Json(request): Json<DiagnosticMoveRequest>,
 ) -> Result<Json<DiagnosticMoveResponse>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     if !state.hardware_output_enabled {
         return Err(ControlApiError::HardwareOutputDisabled);
     }
+    require_physical_output_ack_header(&headers)?;
     ensure_config_effective(&state).await?;
     let config = state
         .config
@@ -2399,6 +2401,24 @@ mod tests {
                 .is_success()
         );
         assert!(runtime.snapshot().pipeline_metrics.device_connected);
+        let before_move = runtime.snapshot().device_metrics.diagnostic_move_count;
+        let move_without_ack = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/executors/kmnet/diagnostic-move")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"dx":1,"dy":1}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(move_without_ack.status(), StatusCode::PRECONDITION_REQUIRED);
+        assert_eq!(
+            runtime.snapshot().device_metrics.diagnostic_move_count,
+            before_move
+        );
 
         // Safety-decreasing actions remain available without acknowledgement.
         assert!(

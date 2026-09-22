@@ -52,6 +52,20 @@ impl LoadedApplication {
         &self.config
     }
 
+    /// A previous process's output permission is not consent for this process.
+    pub fn disarm_persisted_output(mut self) -> Result<(Self, bool), ApplicationError> {
+        if !self.config.control.output_enabled {
+            return Ok((self, false));
+        }
+        self.config = YamlConfigRepository::new(&self.config_path).save_field(
+            "control",
+            "output_enabled",
+            serde_yaml::Value::Bool(false),
+            self.config.revision,
+        )?;
+        Ok((self, true))
+    }
+
     pub fn start(self, dependencies: RuntimeDependencies) -> Application {
         let (supervisor, runtime) = RuntimeSupervisor::spawn(dependencies);
         Application {
@@ -183,6 +197,29 @@ mod tests {
         app.runtime().shutdown_daemon().await.unwrap();
         app.runtime().wait_for_supervisor_exit().await;
         app.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restarting_clears_persisted_output_before_runtime_exists() {
+        let root = std::env::temp_dir().join(format!("ns-boot-output-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("config.yaml");
+        std::fs::write(&path, "revision: 0\ncontrol:\n  output_enabled: true\nhardware:\n  auto_connect: true\n  backend: native_udp\n  host: 127.0.0.1\n  port: 8888\n  uuid: A1B2C3D4\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n").unwrap();
+        let enabled = YamlConfigRepository::load(&path).unwrap();
+        let loaded = LoadedApplication::load(&path).await.unwrap();
+        let (loaded, disarmed) = loaded.disarm_persisted_output().unwrap();
+        assert!(disarmed);
+        assert!(!loaded.config().control.output_enabled);
+        let persisted = YamlConfigRepository::load(&path).unwrap();
+        assert!(!persisted.control.output_enabled);
+        assert_eq!(persisted.revision, enabled.revision + 1);
+        let (_, disarmed_again) = loaded.disarm_persisted_output().unwrap();
+        assert!(!disarmed_again);
+        assert_eq!(
+            YamlConfigRepository::load(&path).unwrap().revision,
+            persisted.revision
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

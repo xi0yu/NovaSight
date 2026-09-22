@@ -551,8 +551,9 @@ export function crosshairTemplatePreviewUrl(cacheKey: number): string {
 }
 
 export function diagnosticMoveKmNet(
-  dx = 1,
-  dy = 0
+  dx: number,
+  dy: number,
+  physicalOutputAcknowledged: boolean
 ): Promise<DiagnosticMoveResponse> {
   const checkedDx = requireI16(dx, "dx");
   const checkedDy = requireI16(dy, "dy");
@@ -564,7 +565,8 @@ export function diagnosticMoveKmNet(
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        ...(physicalOutputAcknowledged ? { "X-NovaSight-Physical-Output-Ack": "confirmed" } : {})
       },
       body: encodeJsonBody({
         dx: checkedDx,

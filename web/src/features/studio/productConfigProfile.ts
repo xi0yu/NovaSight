@@ -188,7 +188,7 @@ function buildOutputItem(input: BuildProductConfigProfileInput): ProductConfigIt
       label: "物理输出",
       state: "paused",
       value: "已暂停",
-      detail: input.outputEnableBlockedReason || "算法继续计算，但不会把偏移量交付给设备。",
+      detail: input.outputEnableBlockedReason || "算法继续计算，但不会把偏移量交付给设备。服务重启后也会默认暂停，需手动打开。",
       evidence: "output_enabled=false",
       action: !input.hardwareControlLicensed ? "license" : input.outputEnableBlockedReason ? "kmnet" : "output",
       actionLabel: !input.hardwareControlLicensed ? "查看授权" : input.outputEnableBlockedReason ? "检查设备" : "打开输出"

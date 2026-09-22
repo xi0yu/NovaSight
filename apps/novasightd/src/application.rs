@@ -157,6 +157,25 @@ pub async fn entry() -> ExitCode {
         eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
         return ExitCode::FAILURE;
     }
+    let instance_lock = match server::acquire_instance_lock(mode.hardware_output_enabled()) {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("{}: {error}", error.code());
+            return ExitCode::FAILURE;
+        }
+    };
+    let (loaded, disarmed_output) = match loaded.disarm_persisted_output() {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("{}: {error}", error.code());
+            return ExitCode::FAILURE;
+        }
+    };
+    if disarmed_output {
+        eprintln!(
+            "PHYSICAL_OUTPUT_DISARMED_ON_BOOT: 为安全起见，重启后物理输出已暂停；如需输出，请在 Studio 中手动打开。"
+        );
+    }
     let model_catalog = match SqliteModelCatalog::open_with_model_root(
         &loaded.config().paths.database,
         &loaded.config().paths.model_dir,
@@ -188,7 +207,16 @@ pub async fn entry() -> ExitCode {
     let dependencies = dependencies.with_output_enabled(
         mode.hardware_output_enabled() && loaded.config().control.output_enabled,
     );
-    match server::run_daemon(loaded, dependencies, config_service, model_catalog, mode).await {
+    match server::run_daemon(
+        loaded,
+        dependencies,
+        config_service,
+        model_catalog,
+        mode,
+        instance_lock,
+    )
+    .await
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}: {error}", error.code());
