@@ -199,7 +199,14 @@ async fn health(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(error) = state.auth.validate_request_site(&headers) {
         return auth_error_response(error);
     }
+    let started = Instant::now();
     let ok = state.daemon.healthy().await;
+    tracing::info!(
+        event = "gateway_health_checked",
+        daemon_healthy = ok,
+        latency_ms = started.elapsed().as_millis() as u64,
+        "gateway daemon health checked"
+    );
     let status = if ok {
         StatusCode::OK
     } else {
