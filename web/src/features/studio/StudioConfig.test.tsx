@@ -168,6 +168,37 @@ it("asks before sending a physical kmNet diagnostic move", async () => {
   expect(JSON.parse(String(request[1]?.body))).toMatchObject({ repeat: 1, move_kind: "raw" });
 });
 
+it("asks before starting a stopped mainline with physical output enabled", async () => {
+  history.replaceState(null, "", "/?page=capture");
+  const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState;
+  render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} runtimeConfig={{ ...props.runtimeConfig, control: { output_enabled: true } }} /></SafetyOperationProvider>);
+  const starts = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/api/runtime/start"));
+  await userEvent.click(screen.getByRole("button", { name: /^运行$/ }));
+  expect(screen.getByRole("alertdialog", { name: "物理输出仍开启，确认启动主链？" })).toHaveTextContent("可能自动连接 kmNet");
+  expect(starts()).toHaveLength(0);
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(starts()).toHaveLength(0);
+  await userEvent.click(screen.getByRole("button", { name: /^运行$/ }));
+  await userEvent.click(screen.getByRole("button", { name: "确认启动并允许物理输出" }));
+  expect(starts()).toHaveLength(1);
+});
+
+it("asks before reconnecting kmNet while physical output is enabled", async () => {
+  history.replaceState(null, "", "/?page=control-test");
+  const disconnected = { ...runtime, executor: { executors: { kmnet: { available: true, connected: false, runtime_connected: false, connection_state: "disconnected", configuration_ready: true, can_connect: true } } } } as unknown as RuntimeState;
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={disconnected} runtimeConfig={{ ...props.runtimeConfig, control: { output_enabled: true } }} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByText("设备连接配置", { selector: "b" }));
+  const connects = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/api/executors/kmnet/connect"));
+  await userEvent.click(screen.getByRole("button", { name: "连接实时会话" }));
+  expect(screen.getByRole("alertdialog", { name: "物理输出仍开启，确认连接 kmNet？" })).toHaveTextContent("可能立即发送");
+  expect(connects()).toHaveLength(0);
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(connects()).toHaveLength(0);
+  await userEvent.click(screen.getByRole("button", { name: "连接实时会话" }));
+  await userEvent.click(screen.getByRole("button", { name: "确认连接并允许物理输出" }));
+  expect(connects()).toHaveLength(1);
+});
+
 it("shows tracking-budget losses in control diagnostics", async () => {
   history.replaceState(null, "", "/?page=control");
   const counts = { ...runtime.vision.target_pipeline.counts, admitted_to_tracking: 16, dropped_by_budget: 1 };

@@ -2564,9 +2564,25 @@ export function StudioConsoleView({
       await stopMainlineLaunch();
       return;
     }
+    if (runtimeOutputEnabled === true || outputEnabled) {
+      setConfirmationRequest({
+        eyebrow: "启动主链",
+        title: "物理输出仍开启，确认启动主链？",
+        description: "启动后可能自动连接 kmNet，并立即向物理设备发送新的控制量。取消后主链保持停止。",
+        details: [`设备：${kmnetHost || "未填写"}:${kmnetPort || "未填写"}`, "若只想预览识别和算法结果，请先到参数设置关闭物理输出。"],
+        confirmLabel: "确认启动并允许物理输出",
+        danger: true,
+        onConfirm: startMainlineLaunch
+      });
+      return;
+    }
     await startMainlineLaunch();
   }, [
+    kmnetHost,
+    kmnetPort,
+    outputEnabled,
     runtimeLifecycleActive,
+    runtimeOutputEnabled,
     startMainlineLaunch,
     stopMainlineLaunch
   ]);
@@ -3592,6 +3608,22 @@ export function StudioConsoleView({
       setBusy(null);
     }
   }, [beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, kmnetAutoConnect, onRefresh, outputEnabled]);
+
+  const requestKmNetConnect = useCallback(() => {
+    if (runtimeOutputEnabled !== true && !outputEnabled) {
+      void setKmNetConnection(true);
+      return;
+    }
+    setConfirmationRequest({
+      eyebrow: "kmNet 实时会话",
+      title: "物理输出仍开启，确认连接 kmNet？",
+      description: "连接成功后，主链的新控制量可能立即发送到物理设备。取消后不会发起连接。",
+      details: [`设备：${kmnetHost || "未填写"}:${kmnetPort || "未填写"}`, "若只想验证设备连接，请先到参数设置关闭物理输出。"],
+      confirmLabel: "确认连接并允许物理输出",
+      danger: true,
+      onConfirm: () => setKmNetConnection(true)
+    });
+  }, [kmnetHost, kmnetPort, outputEnabled, runtimeOutputEnabled, setKmNetConnection]);
 
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
@@ -5157,7 +5189,7 @@ export function StudioConsoleView({
                         aria-pressed={kmnetConnected}
                         className="console-button"
                         disabled={busy !== null || kmnetRestartRequired || !kmnetAutoConnect || !kmnetCanConnect}
-                        onClick={() => void setKmNetConnection(true)}
+                        onClick={requestKmNetConnect}
                         type="button"
                       >
                         {kmnetConnecting ? "连接中" : kmnetConnectionDegraded ? "重试实时连接" : "连接实时会话"}
