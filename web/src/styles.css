@@ -1184,9 +1184,15 @@ tbody tr:hover {
 }
 .model-folder-create label { color: var(--text-primary); font-size: 0.78rem; font-weight: 700; }
 .model-folder-create > div { display: flex; gap: 8px; }
-.model-folder-create input { min-width: 0; flex: 1; padding: 8px 10px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-surface); color: var(--text-primary); }
+.model-folder-create input,
+.model-folder-create select { min-width: 0; flex: 1; min-height: 44px; padding: 8px 10px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-surface); color: var(--text-primary); }
 .model-folder-create small { color: var(--text-tertiary); }
 .model-folder-create p { margin: 0; color: var(--danger); font-size: 0.76rem; }
+
+.model-file-organize { display: grid; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.model-file-organize-heading { display: grid; gap: 3px; }
+.model-file-organize-heading strong { color: var(--text-primary); font-size: 0.78rem; }
+.model-file-organize-heading small { color: var(--text-tertiary); line-height: 1.45; }
 
 .model-vault-filters {
   display: grid;
@@ -2191,7 +2197,8 @@ tbody tr:hover {
 
   .model-selection-toolbar .model-selection-toolbar-actions { width: 100%; }
   .model-folder-create > div { flex-wrap: wrap; }
-  .model-folder-create input { flex: 1 1 100%; min-height: 44px; }
+  .model-folder-create input,
+  .model-folder-create select { flex: 1 1 100%; }
   .model-folder-create .console-button { flex: 1 1 0; }
 
   .model-selection-preview-heading {

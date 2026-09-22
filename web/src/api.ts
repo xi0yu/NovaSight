@@ -7,7 +7,7 @@ import {
 } from "./contracts/runtime";
 import {
   decodeConversionJobs,
-  decodeCatalogFolderResponse,
+  decodeCatalogPathResponse,
   decodeModelArtifactMetadata,
   decodeModelArtifacts,
   decodeModelCatalog,
@@ -229,6 +229,7 @@ export const API_PATHS = {
   modelProjects: "/api/models/projects",
   modelCatalog: "/api/models/catalog",
   modelCatalogFolders: "/api/models/catalog/folders",
+  modelCatalogMove: "/api/models/catalog/move",
   modelJobs: "/api/models/jobs",
   modelJobsList: "/api/models/jobs/list",
   license: "/api/license",
@@ -821,7 +822,20 @@ export function createCatalogFolder(relativePath: string): Promise<{ relative_pa
       body: encodeJsonBody({ relative_path: requireNonBlank(relativePath, "relative_path") })
     },
     { timeoutMs: STANDARD_READ_TIMEOUT_MS },
-    decodeCatalogFolderResponse
+    decodeCatalogPathResponse
+  );
+}
+
+export function moveCatalogEngine(fromPath: string, toPath: string): Promise<{ relative_path: string }> {
+  return requestJson(
+    API_PATHS.modelCatalogMove,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: encodeJsonBody({ from_path: requireNonBlank(fromPath, "from_path"), to_path: requireNonBlank(toPath, "to_path") })
+    },
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeCatalogPathResponse
   );
 }
 

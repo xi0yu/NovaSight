@@ -1163,6 +1163,120 @@ impl SqliteModelCatalog {
         Ok(relative.to_string_lossy().replace('\\', "/"))
     }
 
+    /// Reorganize only an unregistered, manifest-free engine. Registered paths
+    /// are deployment identities and require a separate deployment transaction.
+    pub fn move_catalog_engine(
+        &self,
+        from_path: &str,
+        to_path: &str,
+    ) -> Result<String, ModelCatalogError> {
+        let from = validate_catalog_engine_file_path(from_path)?;
+        let to = validate_catalog_engine_file_path(to_path)?;
+        if from == to {
+            return Err(ModelCatalogError::InvalidCatalogModelPath(
+                to_path.to_owned(),
+            ));
+        }
+        let source = self.resolve_catalog_engine(&from)?;
+        let root = self
+            .catalog_roots
+            .iter()
+            .find(|root| {
+                let path = root.join(&from);
+                std::fs::symlink_metadata(&path)
+                    .ok()
+                    .is_some_and(|metadata| {
+                        metadata.is_file() && !metadata.file_type().is_symlink()
+                    })
+                    && path.canonicalize().ok().as_deref() == Some(source.as_path())
+            })
+            .ok_or_else(|| ModelCatalogError::CatalogModelNotFound(from.clone()))?;
+        if self.catalog_roots.iter().any(|other_root| {
+            other_root
+                .join(&from)
+                .canonicalize()
+                .ok()
+                .is_some_and(|other| other != source)
+        }) {
+            return Err(ModelCatalogError::CatalogModelAmbiguousSource(
+                from_path.to_owned(),
+            ));
+        }
+        for catalog_root in &self.catalog_roots {
+            let candidate = catalog_root.join(&to);
+            match std::fs::symlink_metadata(&candidate) {
+                Ok(_) => {
+                    return Err(ModelCatalogError::CatalogModelDestinationExists(
+                        to_path.to_owned(),
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(ModelCatalogError::ReadModelFile {
+                        path: candidate,
+                        source,
+                    });
+                }
+            }
+        }
+        let destination_parent = root.join(to.parent().unwrap_or_else(|| Path::new("")));
+        let destination_root = match std::fs::symlink_metadata(&destination_parent) {
+            Ok(_) => root.as_path(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => self.model_root.as_path(),
+            Err(source) => {
+                return Err(ModelCatalogError::ReadModelDirectory {
+                    path: destination_parent,
+                    source,
+                });
+            }
+        };
+        for candidate in [
+            source.with_file_name(format!(
+                "{}.manifest.json",
+                source.file_name().unwrap_or_default().to_string_lossy()
+            )),
+            source.with_file_name("model.manifest.json"),
+            destination_root.join(&to).with_file_name(format!(
+                "{}.manifest.json",
+                to.file_name().unwrap_or_default().to_string_lossy()
+            )),
+            destination_root
+                .join(&to)
+                .with_file_name("model.manifest.json"),
+        ] {
+            match std::fs::symlink_metadata(&candidate) {
+                Ok(_) => {
+                    return Err(ModelCatalogError::CatalogModelHasManifest(
+                        candidate.display().to_string(),
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(ModelCatalogError::ReadModelFile {
+                        path: candidate,
+                        source,
+                    });
+                }
+            }
+        }
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(ModelCatalogError::Sqlite)?;
+        if let Some((_, _, artifact)) =
+            registered_artifact_by_resolved_path(&transaction, self, &source)?
+        {
+            return Err(ModelCatalogError::CatalogModelRegistered(artifact.id));
+        }
+        move_file_beneath_root(root, destination_root, &from, &to)?;
+        drop(transaction);
+        *self
+            .catalog_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        Ok(to.to_string_lossy().replace('\\', "/"))
+    }
+
     /// Register one existing TensorRT engine by reference. The model body is
     /// neither copied nor hashed here; its immutable identity is established
     /// later by the existing ingress/probe transaction before deployment.
@@ -1171,6 +1285,12 @@ impl SqliteModelCatalog {
         relative_path: &str,
     ) -> Result<CatalogEngineRegistration, ModelCatalogError> {
         let relative = validate_catalog_relative_path(relative_path)?;
+        // Registration and file moves must serialize before either resolves
+        // the path, or the registry could commit a name that was just moved.
+        let mut connection = self.connect()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(ModelCatalogError::Sqlite)?;
         let engine_path = self.resolve_catalog_engine(&relative)?;
         let metadata =
             engine_path
@@ -1190,11 +1310,6 @@ impl SqliteModelCatalog {
         );
         let version_name = format!("external-{reference_token}");
         let engine_path_text = engine_path.to_string_lossy().into_owned();
-
-        let mut connection = self.connect()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(ModelCatalogError::Sqlite)?;
 
         if let Some((project, version, mut artifact)) =
             registered_artifact_by_resolved_path(&transaction, self, &engine_path)?
@@ -1812,6 +1927,19 @@ fn validate_catalog_directory_path(value: &str) -> Result<PathBuf, ModelCatalogE
     Ok(path.to_owned())
 }
 
+fn validate_catalog_engine_file_path(value: &str) -> Result<PathBuf, ModelCatalogError> {
+    let path = validate_catalog_directory_path(value)
+        .map_err(|_| ModelCatalogError::InvalidCatalogModelPath(value.to_owned()))?;
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("engine"))
+    {
+        return Err(ModelCatalogError::InvalidCatalogModelPath(value.to_owned()));
+    }
+    Ok(path)
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn create_directory_beneath_root(
     root: &Path,
@@ -1843,6 +1971,77 @@ fn create_directory_beneath_root(
             source: source.into(),
         }),
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn move_file_beneath_root(
+    source_root: &Path,
+    destination_root: &Path,
+    from: &Path,
+    to: &Path,
+) -> Result<(), ModelCatalogError> {
+    use rustix::fs::{Mode, OFlags, RenameFlags, open, openat, renameat_with};
+
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let open_parent = |root: &Path, relative: &Path| -> Result<_, ModelCatalogError> {
+        let mut parent = open(root, flags, Mode::empty())
+            .map_err(|_| ModelCatalogError::CatalogDirectoryParentInvalid(root.to_owned()))?;
+        let mut path = root.to_owned();
+        for part in relative.parent().into_iter().flat_map(Path::components) {
+            path.push(part.as_os_str());
+            parent = openat(&parent, part.as_os_str(), flags, Mode::empty())
+                .map_err(|_| ModelCatalogError::CatalogDirectoryParentInvalid(path.clone()))?;
+        }
+        Ok(parent)
+    };
+    let source_parent = open_parent(source_root, from)?;
+    let destination_parent = open_parent(destination_root, to)?;
+    let source_name = from.file_name().expect("validated model path");
+    let destination_name = to.file_name().expect("validated model path");
+    let source_file = openat(
+        &source_parent,
+        source_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| ModelCatalogError::CatalogModelNotFound(from.to_owned()))?;
+    if !std::fs::File::from(source_file)
+        .metadata()
+        .map_err(|source| ModelCatalogError::ReadModelFile {
+            path: source_root.join(from),
+            source,
+        })?
+        .is_file()
+    {
+        return Err(ModelCatalogError::CatalogModelNotFound(from.to_owned()));
+    }
+    match renameat_with(
+        &source_parent,
+        source_name,
+        &destination_parent,
+        destination_name,
+        RenameFlags::NOREPLACE,
+    ) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::EXIST) => Err(ModelCatalogError::CatalogModelDestinationExists(
+            to.display().to_string(),
+        )),
+        Err(source) => Err(ModelCatalogError::MoveModelFile {
+            from: source_root.join(from),
+            to: destination_root.join(to),
+            source: source.into(),
+        }),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn move_file_beneath_root(
+    _source_root: &Path,
+    _destination_root: &Path,
+    _from: &Path,
+    _to: &Path,
+) -> Result<(), ModelCatalogError> {
+    Err(ModelCatalogError::CatalogModelMoveUnsupported)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -2415,6 +2614,24 @@ pub enum ModelCatalogError {
     CatalogDirectoryExists(String),
     #[error("model directory parent is missing, not a directory, or a symlink: {}", .0.display())]
     CatalogDirectoryParentInvalid(PathBuf),
+    #[error("model file already exists at destination: {0}")]
+    CatalogModelDestinationExists(String),
+    #[error("more than one configured model root contains this relative file path: {0}")]
+    CatalogModelAmbiguousSource(String),
+    #[error(
+        "model artifact {0} is registered; switch away and use a deployment-aware migration before changing its path"
+    )]
+    CatalogModelRegistered(i64),
+    #[error("model file has a companion manifest and cannot be moved separately: {0}")]
+    CatalogModelHasManifest(String),
+    #[error("model file moves are unsupported on this platform")]
+    CatalogModelMoveUnsupported,
+    #[error("failed to move model file {} to {}: {source}", from.display(), to.display())]
+    MoveModelFile {
+        from: PathBuf,
+        to: PathBuf,
+        source: std::io::Error,
+    },
     #[error("failed to create model directory {}: {source}", path.display())]
     CreateModelDirectory {
         path: PathBuf,

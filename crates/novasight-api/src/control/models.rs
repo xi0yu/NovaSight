@@ -21,6 +21,7 @@ pub(super) fn routes() -> Router<ControlState> {
         .route("/api/models/projects", get(model_projects))
         .route("/api/models/catalog", get(get_model_catalog))
         .route("/api/models/catalog/folders", post(create_catalog_folder))
+        .route("/api/models/catalog/move", post(move_catalog_engine))
         .route("/api/models/catalog/register", post(register_catalog_model))
         .route(
             "/api/models/artifacts/{artifact_id}/metadata",
@@ -418,19 +419,37 @@ struct CreateCatalogFolderRequest {
 }
 
 #[derive(Serialize)]
-struct CatalogFolderResponse {
+struct CatalogPathResponse {
     relative_path: String,
 }
 
 async fn create_catalog_folder(
     State(state): State<ControlState>,
     Json(request): Json<CreateCatalogFolderRequest>,
-) -> Result<Json<CatalogFolderResponse>, ControlApiError> {
+) -> Result<Json<CatalogPathResponse>, ControlApiError> {
     let relative_path = run(&state, move |catalog| {
         catalog.create_catalog_directory(&request.relative_path)
     })
     .await?;
-    Ok(Json(CatalogFolderResponse { relative_path }))
+    Ok(Json(CatalogPathResponse { relative_path }))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MoveCatalogEngineRequest {
+    from_path: String,
+    to_path: String,
+}
+
+async fn move_catalog_engine(
+    State(state): State<ControlState>,
+    Json(request): Json<MoveCatalogEngineRequest>,
+) -> Result<Json<CatalogPathResponse>, ControlApiError> {
+    let relative_path = run(&state, move |catalog| {
+        catalog.move_catalog_engine(&request.from_path, &request.to_path)
+    })
+    .await?;
+    Ok(Json(CatalogPathResponse { relative_path }))
 }
 
 #[derive(Deserialize)]

@@ -1774,6 +1774,18 @@ impl IntoResponse for ControlApiError {
                     "MODEL_DIRECTORY_EXISTS",
                     error.to_string(),
                 ),
+                ModelCatalogError::CatalogModelDestinationExists(_)
+                | ModelCatalogError::CatalogModelAmbiguousSource(_) => (
+                    StatusCode::CONFLICT,
+                    "MODEL_FILE_EXISTS",
+                    error.to_string(),
+                ),
+                ModelCatalogError::CatalogModelRegistered(_)
+                | ModelCatalogError::CatalogModelHasManifest(_) => (
+                    StatusCode::CONFLICT,
+                    "MODEL_FILE_IN_USE",
+                    error.to_string(),
+                ),
                 ModelCatalogError::CatalogDirectoryParentInvalid(_) => (
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "MODEL_DIRECTORY_PARENT_INVALID",
@@ -2062,6 +2074,74 @@ mod tests {
         assert_eq!(
             app.oneshot(create()).await.unwrap().status(),
             StatusCode::CONFLICT
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn catalog_engine_move_http_reads_back_without_replacing_a_file() {
+        use super::*;
+        use novasight_runtime::RuntimeSupervisor;
+        use tower::ServiceExt;
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "novasight-move-http-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let catalog =
+            SqliteModelCatalog::open_with_model_root(root.join("registry.db"), root.join("models"))
+                .unwrap();
+        catalog.create_catalog_directory("Arena").unwrap();
+        std::fs::write(root.join("models/model.engine"), b"engine").unwrap();
+        let (_supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+        let app = build_control_router_with_control_plane(
+            runtime,
+            None,
+            None,
+            Some(catalog),
+            false,
+            None,
+        );
+        let move_request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/models/catalog/move")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"from_path":"model.engine","to_path":"Arena/renamed.engine"}"#,
+                ))
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone().oneshot(move_request()).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/catalog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value["root"]["children"][0]["children"][0]["relative_path"],
+            "Arena/renamed.engine"
+        );
+        assert_eq!(
+            app.oneshot(move_request()).await.unwrap().status(),
+            StatusCode::NOT_FOUND
         );
         std::fs::remove_dir_all(root).unwrap();
     }

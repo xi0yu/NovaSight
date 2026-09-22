@@ -430,9 +430,9 @@ export function decodeModelCatalog(value: unknown): ModelCatalogResponse {
   };
 }
 
-export function decodeCatalogFolderResponse(value: unknown): { relative_path: string } {
-  const record = expectRecord(value, "model_catalog_folder");
-  return { relative_path: expectString(record.relative_path, "model_catalog_folder.relative_path") };
+export function decodeCatalogPathResponse(value: unknown): { relative_path: string } {
+  const record = expectRecord(value, "model_catalog_path");
+  return { relative_path: expectString(record.relative_path, "model_catalog_path.relative_path") };
 }
 
 export function decodeModelCatalogRegisterResponse(

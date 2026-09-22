@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import type {
   ModelArtifact,
@@ -26,6 +26,21 @@ const RECOMMENDATION_OPTIONS: Array<{ value: ModelRecommendation; label: string 
 ];
 const SUGGESTED_MODEL_TAGS = ["高精度模型", "低精度模型", "低延迟", "延迟大", "稳定", "实验模型"];
 const MODEL_FILTER_SESSION_KEY = "novasight.model-filters.v1";
+
+function catalogFolderPaths(root: ModelCatalogDirectory | null): string[] {
+  if (!root) return [""];
+  const paths = [""];
+  const visit = (directory: ModelCatalogDirectory) => {
+    for (const child of directory.children) {
+      if (child.type === "directory") {
+        paths.push(child.relative_path);
+        visit(child);
+      }
+    }
+  };
+  visit(root);
+  return paths.sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+}
 
 function readModelFilterSession(): {
   recommendation: ModelRecommendation | "all";
@@ -73,6 +88,7 @@ export interface ModelSelectionPanelProps {
   onParserPresetChange: (preset: ParserPresetId) => void;
   onRefresh: () => void;
   onCreateFolder: (relativePath: string) => Promise<void>;
+  onRequestMove: (fromPath: string, toPath: string) => void;
   onSelectModel: (model: ModelCatalogModel) => void;
   onSaveMetadata: (recommendation: ModelRecommendation, tags: string[]) => void;
   onSwitch: () => void;
@@ -100,10 +116,14 @@ export function ModelSelectionPanel({
   onParserPresetChange,
   onRefresh,
   onCreateFolder,
+  onRequestMove,
   onSelectModel,
   onSaveMetadata,
   onSwitch
 }: ModelSelectionPanelProps) {
+  const folderNameId = useId();
+  const moveNameId = useId();
+  const moveFolderId = useId();
   const [initialFilters] = useState(readModelFilterSession);
   const [recommendationFilter, setRecommendationFilter] = useState<ModelRecommendation | "all">(
     initialFilters.recommendation
@@ -115,12 +135,18 @@ export function ModelSelectionPanel({
   const [newFolderName, setNewFolderName] = useState("");
   const [folderCreating, setFolderCreating] = useState(false);
   const [folderActionError, setFolderActionError] = useState<string | null>(null);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveName, setMoveName] = useState("");
+  const [moveFolder, setMoveFolder] = useState("");
+  const [moveError, setMoveError] = useState<string | null>(null);
   const folderChosenRef = useRef(false);
+  const previousSelectedPathRef = useRef(selectedPath);
   const [searchTerm, setSearchTerm] = useState("");
   const [draftRecommendation, setDraftRecommendation] = useState<ModelRecommendation>("unrated");
   const [draftTags, setDraftTags] = useState<string[]>([]);
   const [newTag, setNewTag] = useState("");
   const models = useMemo(() => flattenCatalogModels(root), [root]);
+  const folderOptions = useMemo(() => catalogFolderPaths(root), [root]);
   const availableTags = useMemo(
     () => Array.from(new Set(models.flatMap((model) => model.tags))).sort((left, right) => left.localeCompare(right)),
     [models]
@@ -145,7 +171,8 @@ export function ModelSelectionPanel({
   const folderParts = folderPath ? folderPath.split("/") : [];
 
   useEffect(() => {
-    if (!root || folderChosenRef.current || !selectedPath) return;
+    if (!root || !selectedPath || (folderChosenRef.current && previousSelectedPathRef.current === selectedPath)) return;
+    previousSelectedPathRef.current = selectedPath;
     const parent = selectedPath.split("/").slice(0, -1).join("/");
     if (findCatalogDirectory(root, parent)) setFolderPath(parent);
     folderChosenRef.current = true;
@@ -182,7 +209,9 @@ export function ModelSelectionPanel({
     setDraftRecommendation(selectedModel?.recommendation ?? "unrated");
     setDraftTags(selectedModel?.tags ?? []);
     setNewTag("");
-  }, [selectedModel?.relative_path]);
+    setMoveOpen(false);
+    setMoveError(null);
+  }, [selectedModel?.relative_path, selectedModel?.artifact_id]);
 
   const selectedStatus = selectedModel
     ? selectedModel.artifact_status ?? selectedModel.scan_status
@@ -264,6 +293,21 @@ export function ModelSelectionPanel({
     chooseFolder(model.relative_path.split("/").slice(0, -1).join("/"));
     onSelectModel(model);
   };
+  const requestMove = () => {
+    if (!selectedModel || selectedModel.kind !== "engine" || selectedModel.artifact_id != null || selectedIsActive || busy !== null || metadataDirty || pendingTagIsNew) return;
+    const stem = moveName.trim();
+    if (!stem || stem === "." || stem === ".." || stem.includes("/") || stem.includes("\\")) {
+      setMoveError("请输入不含路径分隔符的模型名称。");
+      return;
+    }
+    const toPath = `${moveFolder ? `${moveFolder}/` : ""}${stem}.engine`;
+    if (toPath === selectedModel.relative_path) {
+      setMoveError("名称和文件夹都没有变化。");
+      return;
+    }
+    setMoveError(null);
+    onRequestMove(selectedModel.relative_path, toPath);
+  };
   return (
     <div className="model-selection-panel">
       <header className="model-selection-toolbar">
@@ -290,9 +334,9 @@ export function ModelSelectionPanel({
       </header>
 
       {newFolderOpen ? <form className="model-folder-create" onSubmit={(event) => { event.preventDefault(); void createFolder(); }}>
-        <label htmlFor="model-folder-name">在 {folderPath || "全部文件夹"} 中新建文件夹</label>
+        <label htmlFor={folderNameId}>在 {folderPath || "全部文件夹"} 中新建文件夹</label>
         <div>
-          <input autoFocus id="model-folder-name" maxLength={50} onChange={(event) => { setNewFolderName(event.target.value); setFolderActionError(null); }} placeholder="文件夹名称" value={newFolderName} />
+          <input autoFocus id={folderNameId} maxLength={50} onChange={(event) => { setNewFolderName(event.target.value); setFolderActionError(null); }} placeholder="文件夹名称" value={newFolderName} />
           <button className="console-button primary" disabled={folderCreating || busy !== null} type="submit">{folderCreating ? "创建中..." : "创建"}</button>
           <button className="console-button secondary" disabled={folderCreating} onClick={() => { setNewFolderOpen(false); setFolderActionError(null); }} type="button">取消</button>
         </div>
@@ -448,6 +492,22 @@ export function ModelSelectionPanel({
               {selectedIsActive ? "当前部署不会重复发布；装载状态请看页面顶部。" : canSwitch ? "运行中切换会先征求确认；失败时保留原因并尝试回滚。" : "当前文件暂不可切换；请检查文件类型和模型状态。"}
             </small> : null}
           </div>
+          {selectedModel?.kind === "engine" ? <section className="model-file-organize" aria-label="整理模型文件位置">
+            <div className="model-file-organize-heading"><strong>文件位置与名称</strong><small>已登记或已部署的模型不能直接改路径。</small></div>
+            <button className="console-button secondary" disabled={busy !== null || metadataDirty || pendingTagIsNew || selectedModel.artifact_id != null || selectedIsActive || selectionHiddenByFilter}
+              onClick={() => { setMoveName(selectedModel.name.replace(/\.engine$/i, "")); setMoveFolder(selectedModel.relative_path.split("/").slice(0, -1).join("/")); setMoveOpen((open) => !open); setMoveError(null); }}
+              type="button">移动或改名文件</button>
+            {moveOpen ? <form className="model-folder-create" onSubmit={(event) => { event.preventDefault(); requestMove(); }}>
+              <label htmlFor={moveNameId}>新文件名（.engine）</label>
+              <input id={moveNameId} maxLength={200} onChange={(event) => { setMoveName(event.target.value); setMoveError(null); }} value={moveName} />
+              <label htmlFor={moveFolderId}>移到文件夹</label>
+              <select id={moveFolderId} onChange={(event) => { setMoveFolder(event.target.value); setMoveError(null); }} value={moveFolder}>
+                {folderOptions.map((path) => <option key={path} value={path}>{path || "全部文件夹"}</option>)}
+              </select>
+              <div><button className="console-button primary" type="submit">检查并确认</button><button className="console-button secondary" onClick={() => setMoveOpen(false)} type="button">取消</button></div>
+              {moveError ? <p role="alert">{moveError}</p> : <small>只移动未登记且没有清单文件的 Engine；确认后才会更改设备文件。</small>}
+            </form> : null}
+          </section> : null}
           {selectedModel ? <dl className="model-selection-key-facts">
             <div><dt>所属项目</dt><dd title={selectedProject}>{selectedProject}</dd></div>
             <div><dt>文件大小</dt><dd>{formatModelSize(selectedModel.size_bytes)}</dd></div>

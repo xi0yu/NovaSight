@@ -298,6 +298,66 @@ test("an empty model library creates a folder and reads it back without switchin
   expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => document.body.clientWidth));
 });
 
+test("model file move requires confirmation and reads back the new path", async ({ page }) => {
+  await mockStudioApi(page);
+  let moved = false;
+  let publishRequests = 0;
+  page.on("request", (request) => {
+    if (request.url().endsWith("/publish")) publishRequests += 1;
+  });
+  const engine = (name: string, relative_path: string) => ({
+    type: "model", name, relative_path, kind: "engine", size_bytes: 100,
+    scan_status: "need_confirm", scan_reason: "", recommendation: "unrated", tags: [],
+  });
+  await page.route("**/api/models/catalog?*", async (route) => route.fulfill({ json: {
+    root: { type: "directory", name: "models", relative_path: "", children: [
+      ...(moved ? [] : [engine("model.engine", "model.engine")]),
+      { type: "directory", name: "Arena", relative_path: "Arena", children: moved ? [engine("renamed.engine", "Arena/renamed.engine")] : [] },
+    ] }, directory_count: 1, model_count: 1, discovered_files: 1, updated_files: 0, cache_hits: 0, force: false,
+  } }));
+  await page.route("**/api/models/catalog/move", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().postDataJSON()).toEqual({ from_path: "model.engine", to_path: "Arena/renamed.engine" });
+    moved = true;
+    await route.fulfill({ json: { relative_path: "Arena/renamed.engine" } });
+  });
+  await page.goto("/?page=models");
+  await page.getByRole("button", { name: /model.engine，路径 model.engine/ }).click();
+  await page.getByRole("button", { name: "移动或改名文件" }).click();
+  await page.getByRole("textbox", { name: "新文件名（.engine）" }).fill("renamed");
+  await page.getByRole("combobox", { name: "移到文件夹" }).selectOption("Arena");
+  await page.getByRole("button", { name: "检查并确认" }).click();
+  await expect(page.getByRole("alertdialog", { name: "确认移动或改名模型文件？" })).toBeVisible();
+  expect(moved).toBe(false);
+  await page.getByRole("button", { name: "确认更改文件路径" }).click();
+  await expect(page.getByText("模型文件已移至 Arena/renamed.engine；当前部署未改变。")).toBeVisible();
+  await expect(page.getByRole("button", { name: /renamed.engine，路径 Arena\/renamed.engine/ })).toBeVisible();
+  expect(publishRequests).toBe(0);
+  expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => document.body.clientWidth));
+});
+
+test("rejected model file move keeps the original selection and shows the backend reason", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.route("**/api/models/catalog?*", async (route) => route.fulfill({ json: {
+    root: { type: "directory", name: "models", relative_path: "", children: [
+      { type: "model", name: "model.engine", relative_path: "model.engine", kind: "engine", size_bytes: 100,
+        scan_status: "need_confirm", scan_reason: "", recommendation: "unrated", tags: [] },
+    ] }, directory_count: 0, model_count: 1, discovered_files: 1, updated_files: 0, cache_hits: 0, force: false,
+  } }));
+  await page.route("**/api/models/catalog/move", async (route) => route.fulfill({ status: 409, json: {
+    code: "MODEL_FILE_IN_USE", message: "model artifact 17 is registered", detail: "model artifact 17 is registered",
+  } }));
+  await page.goto("/?page=models");
+  await page.getByRole("button", { name: /model.engine，路径 model.engine/ }).click();
+  await page.getByRole("button", { name: "移动或改名文件" }).click();
+  await page.getByRole("textbox", { name: "新文件名（.engine）" }).fill("new");
+  await page.getByRole("button", { name: "检查并确认" }).click();
+  await page.getByRole("button", { name: "确认更改文件路径" }).click();
+  await expect(page.getByRole("alertdialog", { name: "确认移动或改名模型文件？" })).toContainText("model artifact 17 is registered");
+  await expect(page.getByRole("button", { name: /model.engine，路径 model.engine/ })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "新文件名（.engine）" })).toHaveValue("new");
+});
+
 test("model organization saves catalog metadata without switching the runtime model", async ({ page }) => {
   await mockStudioApi(page);
   let recommendation = "unrated";

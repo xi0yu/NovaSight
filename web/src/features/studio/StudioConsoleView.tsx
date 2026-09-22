@@ -44,6 +44,7 @@ import {
   getModelArtifacts,
   getModelCatalog,
   createCatalogFolder,
+  moveCatalogEngine,
   getModelVersions,
   selectCaptureProfile,
   setRuntimeOutputGate,
@@ -3802,6 +3803,38 @@ export function StudioConsoleView({
     }
   };
 
+  const requestMoveModelEngine = (fromPath: string, toPath: string) => {
+    setConfirmationRequest({
+      eyebrow: "整理模型文件",
+      title: "确认移动或改名模型文件？",
+      description: "这会改变设备上未登记 Engine 的文件路径；不会加载模型或切换当前部署。",
+      details: [`原位置：${fromPath}`, `新位置：${toPath}`],
+      confirmLabel: "确认更改文件路径",
+      onConfirm: async () => {
+        setBusy("model.file.move");
+        setLocalError(null);
+        let moved = false;
+        try {
+          await moveCatalogEngine(fromPath, toPath);
+          moved = true;
+          const result = await getModelCatalog(true);
+          applyModelCatalogResult(result);
+          setSelectedModelCatalogPath(toPath);
+          setModelCatalogMessage(`模型文件已移至 ${toPath}；当前部署未改变。`);
+        } catch (error) {
+          const message = moved
+            ? `文件已移动，但列表刷新失败：${getErrorMessage(error)}。请点击“刷新模型”重新读取。`
+            : `模型文件移动失败：${getErrorMessage(error)}`;
+          setLocalError(message);
+          reportError(error, { source: "model-file-move", title: moved ? "模型目录刷新失败" : "模型文件移动失败", popup: false });
+          if (!moved) throw error;
+        } finally {
+          setBusy(null);
+        }
+      }
+    });
+  };
+
   const realtimeStatusText = runtimeDeliveryLabel(realtimeStatus);
   const realtimeStatusDescription = runtimeDeliveryDescription(realtimeStatus);
   const realtimeStatusClass = `console-live ${runtimeDeliveryTone(realtimeStatus)}`;
@@ -4029,6 +4062,7 @@ export function StudioConsoleView({
                 onParserPresetChange: setParserPreset,
                 onRefresh: () => void refreshModelCatalog(),
                 onCreateFolder: createModelFolder,
+                onRequestMove: requestMoveModelEngine,
                 onSelectModel: selectModelFromCatalog,
                 onSaveMetadata: (recommendation, tags) => void modelSwitch.saveMetadata(recommendation, tags),
                 onSwitch: modelSwitch.switchModel,
@@ -5846,6 +5880,7 @@ export function StudioConsoleView({
           onParserPresetChange: setParserPreset,
           onRefresh: () => void refreshModelCatalog(),
           onCreateFolder: createModelFolder,
+          onRequestMove: requestMoveModelEngine,
           onSelectModel: selectModelFromCatalog,
           onSaveMetadata: (recommendation, tags) => void modelSwitch.saveMetadata(recommendation, tags),
           onSwitch: modelSwitch.switchModel

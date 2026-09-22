@@ -26,7 +26,7 @@ describe("ModelSelectionPanel", () => {
       selectedArtifact: null, selectedVersion: null, activeArtifactId: null, activeArtifactPath: "",
       runtimeBackend: "", runtimeInputShape: "", catalogMessage: "", switchMessage: "",
       busy: null, canSwitch: true, parserPreset: "auto" as const,
-      onParserPresetChange: vi.fn(), onRefresh: vi.fn(), onCreateFolder: vi.fn(async () => {}), onSelectModel: vi.fn(),
+      onParserPresetChange: vi.fn(), onRefresh: vi.fn(), onCreateFolder: vi.fn(async () => {}), onRequestMove: vi.fn(), onSelectModel: vi.fn(),
       onSaveMetadata: vi.fn(), onSwitch: vi.fn(), ...overrides,
     };
   }
@@ -110,6 +110,7 @@ describe("ModelSelectionPanel", () => {
         onParserPresetChange={vi.fn()}
         onRefresh={vi.fn()}
         onCreateFolder={vi.fn(async () => {})}
+        onRequestMove={vi.fn()}
         onSelectModel={vi.fn()}
         onSaveMetadata={vi.fn()}
         onSwitch={vi.fn()}
@@ -163,6 +164,7 @@ describe("ModelSelectionPanel", () => {
       onParserPresetChange: vi.fn(),
       onRefresh: vi.fn(),
       onCreateFolder: vi.fn(async () => {}),
+      onRequestMove: vi.fn(),
       onSelectModel: vi.fn(),
       onSaveMetadata: vi.fn(),
       onSwitch: vi.fn(),
@@ -197,7 +199,7 @@ describe("ModelSelectionPanel", () => {
       selectedPath="stable.engine" selectedModel={model} selectedArtifact={null} selectedVersion={null}
       activeArtifactId={null} activeArtifactPath="" runtimeBackend="" runtimeInputShape=""
       catalogMessage="" switchMessage="" busy={null} canSwitch
-      parserPreset="auto" onParserPresetChange={vi.fn()} onRefresh={vi.fn()} onCreateFolder={vi.fn(async () => {})}
+      parserPreset="auto" onParserPresetChange={vi.fn()} onRefresh={vi.fn()} onCreateFolder={vi.fn(async () => {})} onRequestMove={vi.fn()}
       onSelectModel={vi.fn()} onSaveMetadata={vi.fn()} onSwitch={onSwitch}
     />);
 
@@ -280,6 +282,28 @@ describe("ModelSelectionPanel", () => {
     await userEvent.click(screen.getByRole("button", { name: "创建" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("文件夹已存在");
     expect(screen.getByLabelText("在 全部文件夹 中新建文件夹")).toHaveValue("Arena");
+  });
+
+  it("requests an explicit file move without switching the deployed model", async () => {
+    const onRequestMove = vi.fn();
+    const onSwitch = vi.fn();
+    const root: ModelCatalogDirectory = { ...catalog, children: [stableModel, {
+      type: "directory", name: "Arena", relative_path: "Arena", children: []
+    }] };
+    render(<ModelSelectionPanel {...panelProps({ root, onRequestMove, onSwitch })} />);
+    await userEvent.click(screen.getByRole("button", { name: "移动或改名文件" }));
+    await userEvent.clear(screen.getByRole("textbox", { name: "新文件名（.engine）" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "新文件名（.engine）" }), "renamed");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "移到文件夹" }), "Arena");
+    await userEvent.click(screen.getByRole("button", { name: "检查并确认" }));
+    expect(onRequestMove).toHaveBeenCalledWith("stable.engine", "Arena/renamed.engine");
+    expect(onSwitch).not.toHaveBeenCalled();
+  });
+
+  it("does not offer direct file moves for registered or active models", () => {
+    const registered = { ...stableModel, artifact_id: 7 };
+    render(<ModelSelectionPanel {...panelProps({ root: { ...catalog, children: [registered] }, selectedModel: registered, activeArtifactId: 7 })} />);
+    expect(screen.getByRole("button", { name: "移动或改名文件" })).toBeDisabled();
   });
 
   it("remembers the operator's sorting choice for this browser session", async () => {
