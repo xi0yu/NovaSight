@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise class-profile save/delete through real isolated daemon and Web API."""
+"""Exercise class-profile and catalog edits through real isolated daemon and Web API."""
 
 import copy
 import http.cookiejar
@@ -135,7 +135,19 @@ def main():
             assert runtime["config"]["effective_version"] == final["revision"], runtime["config"]
             assert runtime["config"]["restart_required"] is False, runtime["config"]
             assert runtime["vision"]["control"]["will_emit"] is not True
+            model_root = workspace / "data/models"
+            (model_root / "catalog-smoke.engine").write_bytes(b"catalog-only-not-a-loadable-engine")
+            assert request("/api/models/catalog/folders", {"relative_path": "Arena"}, csrf)["relative_path"] == "Arena"
+            assert request("/api/models/catalog/move", {
+                "from_path": "catalog-smoke.engine", "to_path": "Arena/renamed.engine",
+            }, csrf)["relative_path"] == "Arena/renamed.engine"
+            catalog = request("/api/models/catalog?force=true")
+            arena = next(node for node in catalog["root"]["children"] if node["type"] == "directory" and node["relative_path"] == "Arena")
+            assert [node["relative_path"] for node in arena["children"]] == ["Arena/renamed.engine"], catalog
+            assert not (model_root / "catalog-smoke.engine").exists()
+            assert (model_root / "Arena/renamed.engine").read_bytes() == b"catalog-only-not-a-loadable-engine"
             print("CLASS_CONFIG_HTTP_PASS login=real save=epoch_reload readback=verified delete=verified effective=verified output=off")
+            print("MODEL_CATALOG_HTTP_PASS folder=create move=confirmed readback=verified output=off")
         finally:
             for process in reversed(processes):
                 if process.poll() is None:
