@@ -134,6 +134,17 @@ describe("ModelSelectionPanel", () => {
     expect(screen.getByRole("button", { name: /other.engine/ })).toBeEnabled();
   });
 
+  it("keeps the tag draft when a failed save has nevertheless registered the same file", async () => {
+    const view = render(<ModelSelectionPanel {...panelProps()} />);
+    await userEvent.type(screen.getByRole("textbox", { name: "新增模型标签" }), "低延迟");
+    view.rerender(<ModelSelectionPanel {...panelProps({
+      root: { ...catalog, children: [{ ...stableModel, project_id: 1, artifact_id: 2 }, otherModel] },
+      selectedModel: { ...stableModel, project_id: 1, artifact_id: 2 },
+    })} />);
+    expect(screen.getByRole("textbox", { name: "新增模型标签" })).toHaveValue("低延迟");
+    expect(screen.getByRole("button", { name: "保存整理结果" })).toBeEnabled();
+  });
+
   it("does not offer editable metadata for ONNX files that cannot be saved", async () => {
     const onnx = { ...otherModel, kind: "onnx" as const, name: "other.onnx", relative_path: "other.onnx" };
     render(<ModelSelectionPanel {...panelProps({ root: { ...catalog, children: [onnx] }, selectedModel: onnx, selectedPath: onnx.relative_path })} />);

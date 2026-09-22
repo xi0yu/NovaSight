@@ -226,7 +226,7 @@ export function ModelSelectionPanel({
     setNewTag("");
     setMoveOpen(false);
     setMoveError(null);
-  }, [selectedModel?.relative_path, selectedModel?.artifact_id]);
+  }, [selectedModel?.relative_path]);
 
   const selectedStatus = selectedModel
     ? selectedModel.artifact_status ?? selectedModel.scan_status

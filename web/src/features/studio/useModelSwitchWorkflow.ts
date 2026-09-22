@@ -150,9 +150,13 @@ export function useModelSwitchWorkflow({
     }
     setBusy("model.metadata");
     setLocalError(null);
+    let registered = false;
+    let metadataSaved = false;
     try {
       const registration = await ensureCatalogModelRegistration(model);
+      registered = true;
       await updateModelArtifactMetadata(registration.artifactId, recommendation, tags);
+      metadataSaved = true;
       const updatedCatalog = await getModelCatalog(false);
       applyModelCatalogResult(updatedCatalog);
       setModelCatalogMessage(`已保存 ${model.name} 的推荐状态与 ${tags.length} 个标签。`);
@@ -161,7 +165,19 @@ export function useModelSwitchWorkflow({
         await onRefresh();
       }
     } catch (err) {
-      setLocalError(`模型整理结果保存失败：${getErrorMessage(err)}`);
+      let detail = "；目录已重新读取，请核对标签后重试";
+      if (registered && !metadataSaved) {
+        try {
+          applyModelCatalogResult(await getModelCatalog(false));
+        } catch {
+          detail = "；模型列表也未能重新读取，请点击“刷新模型”核对登记状态";
+        }
+      }
+      setLocalError(metadataSaved
+        ? `模型标签已保存，但页面更新失败：${getErrorMessage(err)}。请点击“刷新模型”核对。`
+        : registered
+          ? `模型引用已登记，标签保存结果未确认：${getErrorMessage(err)}${detail}。当前整理输入已保留。`
+          : `模型整理结果保存失败：${getErrorMessage(err)}`);
       reportError(err, { source: "model-metadata", title: "模型整理失败" });
     } finally {
       setBusy(null);
