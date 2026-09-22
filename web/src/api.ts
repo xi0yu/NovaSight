@@ -923,7 +923,8 @@ export function getConversionJobs(versionId?: number): Promise<ConversionJob[]> 
 export function publishModel(
   projectId: number,
   artifactId: number,
-  parserPreset: ParserPresetId = "auto"
+  parserPreset: ParserPresetId = "auto",
+  physicalOutputAcknowledged = false
 ): Promise<ModelPublishResponse> {
   const checkedProjectId = requirePositiveSafeInteger(projectId, "project_id");
   const checkedArtifactId = requirePositiveSafeInteger(artifactId, "artifact_id");
@@ -932,7 +933,8 @@ export function publishModel(
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        ...(physicalOutputAcknowledged ? { "X-NovaSight-Physical-Output-Ack": "confirmed" } : {})
       },
       body: encodeJsonBody({ artifact_id: checkedArtifactId, parser_preset: parserPreset })
     },
@@ -1011,11 +1013,11 @@ export function probeModelArtifact(
   );
 }
 
-export function rollbackModel(projectId: number): Promise<ModelPublishResponse> {
+export function rollbackModel(projectId: number, physicalOutputAcknowledged = false): Promise<ModelPublishResponse> {
   const checkedProjectId = requirePositiveSafeInteger(projectId, "project_id");
   return requestJson<ModelPublishResponse>(
     `${API_PATHS.modelProjects}/${checkedProjectId}/rollback`,
-    { method: "POST" },
+    { method: "POST", headers: physicalOutputAcknowledged ? { "X-NovaSight-Physical-Output-Ack": "confirmed" } : undefined },
     { timeoutMs: MODEL_OPERATION_TIMEOUT_MS },
     decodeModelPublishResponse
   );

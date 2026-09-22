@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    http::HeaderMap,
     routing::{get, post},
 };
 use novasight_runtime::{
@@ -14,7 +15,7 @@ use novasight_store::model_catalog::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{ControlApiError, ControlState};
+use super::{ControlApiError, ControlState, PipelineState, require_physical_output_ack};
 
 pub(super) fn routes() -> Router<ControlState> {
     Router::new()
@@ -601,9 +602,16 @@ struct ModelSwitchSection {
 async fn publish_model(
     Path(project_id): Path<i64>,
     State(state): State<ControlState>,
+    headers: HeaderMap,
     Json(request): Json<PublishModelRequest>,
 ) -> Result<Json<ModelSwitchResponse>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    if matches!(
+        state.runtime.snapshot().pipeline.state,
+        PipelineState::Running | PipelineState::Standby
+    ) {
+        require_physical_output_ack(&state, &headers).await?;
+    }
     let backend = configured_inference_backend(&state).await;
     let result = state
         .runtime
@@ -620,8 +628,15 @@ async fn publish_model(
 async fn rollback_model(
     Path(project_id): Path<i64>,
     State(state): State<ControlState>,
+    headers: HeaderMap,
 ) -> Result<Json<ModelSwitchResponse>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    if matches!(
+        state.runtime.snapshot().pipeline.state,
+        PipelineState::Running | PipelineState::Standby
+    ) {
+        require_physical_output_ack(&state, &headers).await?;
+    }
     let backend = configured_inference_backend(&state).await;
     let result = state
         .runtime

@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ModelPublishResponse } from "../../api";
+import { publishModel, rollbackModel, type ModelPublishResponse } from "../../api";
 import { isActiveModelNoOp } from "./useModelSwitchWorkflow";
 
 function response(overrides: Partial<ModelPublishResponse["report"]> = {}): ModelPublishResponse {
@@ -25,4 +25,17 @@ describe("model switch no-op", () => {
     expect(isActiveModelNoOp(response({ artifact_id: 41 }), 42)).toBe(false);
     expect(isActiveModelNoOp(response(), 41)).toBe(false);
   });
+});
+
+afterEach(() => vi.unstubAllGlobals());
+
+it("sends physical-output acknowledgement only when explicitly requested", async () => {
+  const fetchMock = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response("blocked", { status: 428 }));
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(publishModel(1, 2)).rejects.toThrow();
+  await expect(publishModel(1, 2, "auto", true)).rejects.toThrow();
+  await expect(rollbackModel(1)).rejects.toThrow();
+  await expect(rollbackModel(1, true)).rejects.toThrow();
+  expect(fetchMock.mock.calls.map(([, init]) => new Headers(init?.headers).get("x-novasight-physical-output-ack")))
+    .toEqual([null, "confirmed", null, "confirmed"]);
 });

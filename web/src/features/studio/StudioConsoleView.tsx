@@ -2232,6 +2232,7 @@ export function StudioConsoleView({
     applyModelCatalogResult,
     onRefresh,
     parserPreset,
+    physicalOutputEnabled: runtimeOutputEnabled === true || outputEnabled,
     runtimeMainlineRunning,
     selectedCatalogModel,
     setBusy,

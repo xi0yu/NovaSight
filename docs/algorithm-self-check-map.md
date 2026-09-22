@@ -36,7 +36,7 @@ flowchart LR
 | 短暂保留身份 → 当前控制目标 | [目标选择](../crates/novasight-core/src/tracking/mod.rs)可保留丢失的锁定身份，但只从本帧确认且在 FOV 内的目标产出瞄点；[控制算法](../crates/novasight-core/src/controller/algorithm.rs)在 `target_valid=false` 时阻断并清除预测。 | 身份可等待，旧目标不得继续驱动物理命令；仍需真实遮挡/快移轨迹验证恢复与切换行为。 |
 | 跟踪 Kalman → 控制短窗预测 | [目标评分](../crates/novasight-core/src/tracking/selection.rs)用 Kalman 速度只评价候选运动趋势；[AimAlgorithm](../crates/novasight-core/src/controller/algorithm.rs)用当前观测和独立的 `SingleTargetPredictor` 求瞄准偏移。 | 两者职责不同，未见 Kalman 预测位置再次叠加到控制误差；真实时间戳与噪声未标定，不推断数学最优。 |
 | GPU 最终框 → CPU 结果校验 | [正式 GPU 边界](gpu-image-pipeline.md)只回传有界最终框；[结果校验](../crates/novasight-tensorrt/src/gpu.rs)拒绝越界/非法结果，不在 CPU 重做 decode、NMS 或修框。 | 合同方向一致；当前缺非空真实目标对照，不能由空帧证明排序/NMS 正确。 |
-| 已保存输出许可 → 本次运行同意 → 最终发送 | [daemon 启动](../apps/novasightd/src/application.rs)和[Supervisor 初始状态](../crates/novasight-runtime/src/supervisor.rs)会从已保存配置恢复输出门；[控制 API](../crates/novasight-api/src/control.rs)已要求输出可能生效时的启动、重启、kmNet 连接请求显式确认，否则返回 428；Studio 和本地 CLI 都可传递该标记；[设备 worker](../crates/novasight-pipeline/src/runtime.rs)在发送前复核门控、代数、触发和设备连接。 | **仍未闭环**：请求标记不证明真人在场，内部模型发布/配置重载也可能重建运行 epoch；需继续核查并做实机回执，不能据此宣称所有物理路径逐次确认。 |
+| 已保存输出许可 → 本次运行同意 → 最终发送 | [daemon 启动](../apps/novasightd/src/application.rs)和[Supervisor 初始状态](../crates/novasight-runtime/src/supervisor.rs)会从已保存配置恢复输出门；[控制 API](../crates/novasight-api/src/control.rs)已要求输出可能生效时的启动、重启、kmNet 连接及运行中模型发布/回滚请求显式确认，否则返回 428；Studio 和本地 CLI 可传递该标记；[设备 worker](../crates/novasight-pipeline/src/runtime.rs)在发送前复核门控、代数、触发和设备连接。 | **仍未闭环**：请求标记不证明真人在场，配置重载等内部路径也可能重建运行 epoch；需继续核查并做实机回执，不能据此宣称所有物理路径逐次确认。 |
 
 自检顺序：先核实输入和结果有效，再核实目标选择与缺失期间零旧命令，再核实预测/控制与输出回执；出现异常时保留同一帧的 `epoch / generation / captured_at`、目标 ID、门控决定和原始错误。禁止拿旧提交收据、空检测或模拟前端页面证明当前物理行为。
 

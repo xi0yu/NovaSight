@@ -304,18 +304,30 @@ impl ControlClient {
         artifact_id: i64,
         parser_preset: &str,
     ) -> Result<ModelSwitchResponse, ClientError> {
+        self.publish_model_with_output_ack(project_id, artifact_id, parser_preset, false)
+            .await
+    }
+
+    pub async fn publish_model_with_output_ack(
+        &self,
+        project_id: i64,
+        artifact_id: i64,
+        parser_preset: &str,
+        physical_output_acknowledged: bool,
+    ) -> Result<ModelSwitchResponse, ClientError> {
         #[derive(Serialize)]
         struct PublishModelRequest<'a> {
             artifact_id: i64,
             parser_preset: &'a str,
         }
-        self.request(
+        self.request_with_output_ack(
             Method::POST,
             &format!("/api/models/projects/{project_id}/publish"),
             Some(&PublishModelRequest {
                 artifact_id,
                 parser_preset,
             }),
+            physical_output_acknowledged,
         )
         .await
     }
@@ -324,10 +336,19 @@ impl ControlClient {
         &self,
         project_id: i64,
     ) -> Result<ModelSwitchResponse, ClientError> {
-        self.request(
+        self.rollback_model_with_output_ack(project_id, false).await
+    }
+
+    pub async fn rollback_model_with_output_ack(
+        &self,
+        project_id: i64,
+        physical_output_acknowledged: bool,
+    ) -> Result<ModelSwitchResponse, ClientError> {
+        self.request_with_output_ack(
             Method::POST,
             &format!("/api/models/projects/{project_id}/rollback"),
             None::<&()>,
+            physical_output_acknowledged,
         )
         .await
     }

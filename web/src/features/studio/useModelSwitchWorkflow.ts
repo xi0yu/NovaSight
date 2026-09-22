@@ -40,6 +40,7 @@ type UseModelSwitchWorkflowInput = {
   applyModelCatalogResult: (result: ModelCatalogResponse) => void;
   onRefresh: () => Promise<void>;
   parserPreset: ParserPresetId;
+  physicalOutputEnabled: boolean;
   runtimeMainlineRunning: boolean;
   selectedCatalogModel: ModelCatalogModel | null;
   setBusy: (busy: string | null) => void;
@@ -68,6 +69,7 @@ export function useModelSwitchWorkflow({
   applyModelCatalogResult,
   onRefresh,
   parserPreset,
+  physicalOutputEnabled,
   runtimeMainlineRunning,
   selectedCatalogModel,
   setBusy,
@@ -175,7 +177,7 @@ export function useModelSwitchWorkflow({
     setModelDetailsRefreshKey
   ]);
 
-  const performSwitch = useCallback(async () => {
+  const performSwitch = useCallback(async (physicalOutputAcknowledged = false) => {
     const model = selectedCatalogModel;
     if (!model || model.kind !== "engine") {
       setLocalError("请选择 TensorRT engine 产物。");
@@ -205,7 +207,8 @@ export function useModelSwitchWorkflow({
       const response = await publishModel(
         projectId,
         artifactId,
-        parserPreset
+        parserPreset,
+        physicalOutputAcknowledged
       );
       const activeNoOp = isActiveModelNoOp(response, artifactId);
       if (!response.report.applied && !activeNoOp) {
@@ -272,15 +275,18 @@ export function useModelSwitchWorkflow({
       description: "当前主链正在运行。模型发布会停止现有管线、验证所选 Engine，并在成功后使用新模型重新启动。",
       details: [
         `所选模型：${candidatePath}`,
-        "切换期间识别结果与物理输出会短暂停止；失败时会回滚原部署。"
+        physicalOutputEnabled
+          ? "当前物理输出已开启。确认后，切换或失败回滚可能重新开启设备输出；请确保设备有人看管。"
+          : "切换期间识别结果会短暂停止；失败时会回滚原部署。"
       ],
       confirmLabel: "确认切换模型",
       danger: true,
       handoffOnConfirm: true,
-      onConfirm: performSwitch
+      onConfirm: () => performSwitch(physicalOutputEnabled)
     });
   }, [
     performSwitch,
+    physicalOutputEnabled,
     runtimeMainlineRunning,
     selectedCatalogModel,
     setConfirmationRequest,

@@ -2290,7 +2290,33 @@ mod tests {
             StatusCode::NO_CONTENT
         );
         let before_restart = runtime.snapshot().pipeline.state;
-        assert_ne!(before_restart, PipelineState::Stopped);
+        assert!(matches!(
+            before_restart,
+            PipelineState::Running | PipelineState::Standby
+        ));
+        for endpoint in [
+            "/api/models/projects/1/publish",
+            "/api/models/projects/1/rollback",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(endpoint)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"artifact_id":1,"parser_preset":"auto"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::PRECONDITION_REQUIRED,
+                "{endpoint}"
+            );
+            assert_eq!(runtime.snapshot().pipeline.state, before_restart);
+        }
         let restart = app
             .clone()
             .oneshot(

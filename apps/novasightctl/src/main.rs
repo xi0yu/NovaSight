@@ -152,9 +152,15 @@ enum ModelCommand {
         artifact_id: i64,
         #[arg(long, default_value = "auto")]
         parser_preset: String,
+        #[arg(long)]
+        allow_physical_output: bool,
     },
     /// Roll back one project through the same compensated activation transaction.
-    Rollback { project_id: i64 },
+    Rollback {
+        project_id: i64,
+        #[arg(long)]
+        allow_physical_output: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -447,15 +453,25 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
                     project_id,
                     artifact_id,
                     parser_preset,
+                    allow_physical_output,
                 },
         } => client
-            .publish_model(project_id, artifact_id, &parser_preset)
+            .publish_model_with_output_ack(
+                project_id,
+                artifact_id,
+                &parser_preset,
+                allow_physical_output,
+            )
             .await
             .map(CommandOutput::ModelSwitch),
         Command::Model {
-            command: ModelCommand::Rollback { project_id },
+            command:
+                ModelCommand::Rollback {
+                    project_id,
+                    allow_physical_output,
+                },
         } => client
-            .rollback_model(project_id)
+            .rollback_model_with_output_ack(project_id, allow_physical_output)
             .await
             .map(CommandOutput::ModelSwitch),
         Command::Device {
