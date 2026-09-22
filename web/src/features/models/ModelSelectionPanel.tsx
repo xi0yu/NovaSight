@@ -26,6 +26,7 @@ const RECOMMENDATION_OPTIONS: Array<{ value: ModelRecommendation; label: string 
 ];
 const SUGGESTED_MODEL_TAGS = ["高精度模型", "低精度模型", "低延迟", "延迟大", "稳定", "实验模型"];
 const MODEL_FILTER_SESSION_KEY = "novasight.model-filters.v1";
+type ModelUsageFilter = "all" | "registered" | "unregistered_engine" | "view_only";
 
 function catalogFolderPaths(root: ModelCatalogDirectory | null): string[] {
   if (!root) return [""];
@@ -43,14 +44,18 @@ function catalogFolderPaths(root: ModelCatalogDirectory | null): string[] {
 }
 
 function readModelFilterSession(): {
+  usage: ModelUsageFilter;
   recommendation: ModelRecommendation | "all";
   tags: string[];
   sort: ModelSortOrder;
 } {
   try {
     const value: unknown = JSON.parse(window.sessionStorage.getItem(MODEL_FILTER_SESSION_KEY) ?? "null");
-    if (!value || typeof value !== "object") return { recommendation: "all", tags: [], sort: "name_asc" };
+    if (!value || typeof value !== "object") return { usage: "all", recommendation: "all", tags: [], sort: "name_asc" };
     const record = value as Record<string, unknown>;
+    const usage = ["all", "registered", "unregistered_engine", "view_only"].includes(String(record.usage))
+      ? record.usage as ModelUsageFilter
+      : "all";
     const recommendation = ["all", "recommended", "unrated", "not_recommended"].includes(String(record.recommendation))
       ? record.recommendation as ModelRecommendation | "all"
       : "all";
@@ -60,9 +65,9 @@ function readModelFilterSession(): {
     const sort = ["name_asc", "name_desc", "size_desc", "size_asc", "active_first"].includes(String(record.sort))
       ? record.sort as ModelSortOrder
       : "name_asc";
-    return { recommendation, tags, sort };
+    return { usage, recommendation, tags, sort };
   } catch {
-    return { recommendation: "all", tags: [], sort: "name_asc" };
+    return { usage: "all", recommendation: "all", tags: [], sort: "name_asc" };
   }
 }
 
@@ -125,6 +130,7 @@ export function ModelSelectionPanel({
   const moveNameId = useId();
   const moveFolderId = useId();
   const [initialFilters] = useState(readModelFilterSession);
+  const [usageFilter, setUsageFilter] = useState<ModelUsageFilter>(initialFilters.usage);
   const [recommendationFilter, setRecommendationFilter] = useState<ModelRecommendation | "all">(
     initialFilters.recommendation
   );
@@ -159,18 +165,23 @@ export function ModelSelectionPanel({
   const normalizedSearch = searchTerm.trim().toLocaleLowerCase();
   const filteredModels = useMemo(
     () => models.filter((model) =>
+      (usageFilter === "all" ||
+        (usageFilter === "registered" && model.kind === "engine" && model.artifact_id != null) ||
+        (usageFilter === "unregistered_engine" && model.kind === "engine" && model.artifact_id == null) ||
+        (usageFilter === "view_only" && model.kind !== "engine")) &&
       (recommendationFilter === "all" || model.recommendation === recommendationFilter) &&
       activeTagFilters.every((tag) => model.tags.includes(tag)) &&
       (normalizedSearch === "" || `${model.name} ${model.relative_path} ${model.project_name ?? ""} ${model.tags.join(" ")}`.toLocaleLowerCase().includes(normalizedSearch))
     ),
-    [activeTagFilters, models, normalizedSearch, recommendationFilter]
+    [activeTagFilters, models, normalizedSearch, recommendationFilter, usageFilter]
   );
-  const filterActive = normalizedSearch !== "" || recommendationFilter !== "all" || tagFilters.size > 0;
+  const filterActive = normalizedSearch !== "" || usageFilter !== "all" || recommendationFilter !== "all" || tagFilters.size > 0;
   const currentDirectory = useMemo(() => findCatalogDirectory(root, folderPath) ?? root, [folderPath, root]);
   const currentFolders = currentDirectory?.children.filter((node): node is ModelCatalogDirectory => node.type === "directory") ?? [];
   const currentModels = currentDirectory?.children.filter((node): node is ModelCatalogModel => node.type === "model") ?? [];
   const displayedModels = filterActive ? filteredModels : currentModels;
   const displayedFolders = filterActive ? [] : currentFolders;
+  const catalogViewKey = JSON.stringify([folderPath, normalizedSearch, usageFilter, recommendationFilter, activeTagFilters, sortOrder]);
   const folderParts = folderPath ? folderPath.split("/") : [];
 
   useEffect(() => {
@@ -199,6 +210,7 @@ export function ModelSelectionPanel({
   useEffect(() => {
     try {
       window.sessionStorage.setItem(MODEL_FILTER_SESSION_KEY, JSON.stringify({
+        usage: usageFilter,
         recommendation: recommendationFilter,
         tags: activeTagFilters,
         sort: sortOrder,
@@ -206,7 +218,7 @@ export function ModelSelectionPanel({
     } catch {
       // Filtering remains functional when browser storage is unavailable.
     }
-  }, [activeTagFilters, recommendationFilter, sortOrder]);
+  }, [activeTagFilters, recommendationFilter, sortOrder, usageFilter]);
 
   useEffect(() => {
     setDraftRecommendation(selectedModel?.recommendation ?? "unrated");
@@ -264,6 +276,7 @@ export function ModelSelectionPanel({
   };
   const clearFilters = () => {
     setSearchTerm("");
+    setUsageFilter("all");
     setRecommendationFilter("all");
     setTagFilters(new Set());
   };
@@ -361,6 +374,15 @@ export function ModelSelectionPanel({
                 value={searchTerm}
               />
             </label>
+            <label className="model-sort-control">
+              <span>使用状态</span>
+              <select aria-label="文件使用状态" onChange={(event) => setUsageFilter(event.target.value as ModelUsageFilter)} value={usageFilter}>
+                <option value="all">全部文件（{models.length}）</option>
+                <option value="registered">已登记 Engine（{registeredCount}）</option>
+                <option value="unregistered_engine">待验证 Engine（{unregisteredEngineCount}）</option>
+                <option value="view_only">仅供查看（{viewOnlyCount}）</option>
+              </select>
+            </label>
             <div className="model-vault-recommendation-filter" role="group" aria-label="推荐状态筛选">
               {([
                 ["all", "全部"],
@@ -394,7 +416,7 @@ export function ModelSelectionPanel({
                   {tag}
                 </button>
               )) : <small>保存标签后可在这里筛选</small>}
-              {tagFilters.size > 0 || recommendationFilter !== "all" || searchTerm ? (
+              {tagFilters.size > 0 || usageFilter !== "all" || recommendationFilter !== "all" || searchTerm ? (
                 <button type="button" className="clear" onClick={clearFilters}>清除筛选</button>
               ) : null}
             </div>
@@ -432,6 +454,7 @@ export function ModelSelectionPanel({
             <div className="model-catalog-placeholder">正在读取 models 目录...</div>
           ) : displayedModels.length > 0 || displayedFolders.length > 0 ? (
             <ModelCatalogTree
+              key={catalogViewKey}
               folders={displayedFolders}
               models={displayedModels}
               sortOrder={sortOrder}

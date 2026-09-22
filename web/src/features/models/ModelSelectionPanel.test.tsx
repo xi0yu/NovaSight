@@ -50,6 +50,48 @@ describe("ModelSelectionPanel", () => {
     expect(screen.getByText(/1 个已登记 Engine · 1 个待验证 Engine · 1 个仅供查看/)).toBeVisible();
   });
 
+  it("filters by actual file usage without changing deployment or losing the selected model", async () => {
+    const registered = { ...stableModel, artifact_id: 12 };
+    const viewOnly = { ...otherModel, kind: "onnx" as const, name: "preview.onnx", relative_path: "preview.onnx" };
+    const onSwitch = vi.fn();
+    render(<ModelSelectionPanel {...panelProps({
+      root: { ...catalog, children: [registered, otherModel, viewOnly] },
+      modelCount: 3,
+      selectedModel: registered,
+      activeArtifactId: 12,
+      onSwitch,
+    })} />);
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "文件使用状态" }), "unregistered_engine");
+    expect(screen.getByRole("button", { name: /other.engine，路径 other.engine/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /stable.engine，路径 stable.engine/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /preview.onnx，路径 preview.onnx/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/当前筛选隐藏了已选模型/)).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+    expect(screen.getByRole("button", { name: /stable.engine，路径 stable.engine/ })).toBeVisible();
+    expect(onSwitch).not.toHaveBeenCalled();
+  });
+
+  it("returns to the first page after the operator changes file usage", async () => {
+    const files: ModelCatalogModel[] = Array.from({ length: 73 }, (_, index) => ({
+      ...otherModel,
+      name: `engine-${index}.engine`,
+      relative_path: `engine-${index}.engine`,
+      artifact_id: index === 0 ? 12 : undefined,
+    }));
+    render(<ModelSelectionPanel {...panelProps({
+      root: { ...catalog, children: files },
+      modelCount: files.length,
+      selectedModel: null,
+      selectedPath: undefined,
+    })} />);
+    await userEvent.click(screen.getByRole("button", { name: "再显示 24 个模型" }));
+    expect(screen.getAllByRole("button", { name: /engine-\d+\.engine，路径/ })).toHaveLength(48);
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "文件使用状态" }), "registered");
+    expect(screen.getAllByRole("button", { name: /engine-\d+\.engine，路径/ })).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+    expect(screen.getAllByRole("button", { name: /engine-\d+\.engine，路径/ })).toHaveLength(24);
+  });
+
   it("does not switch a model hidden by the current filters", async () => {
     const onSwitch = vi.fn();
     render(<ModelSelectionPanel {...panelProps({ onSwitch })} />);

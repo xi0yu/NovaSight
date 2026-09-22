@@ -240,6 +240,34 @@ test("model search keeps selection and verification together", async ({ page }) 
   await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
 });
 
+test("model library separates registered, unverified, and view-only files", async ({ page }) => {
+  await mockStudioApi(page);
+  const model = (name: string, kind: "engine" | "onnx", artifact_id?: number) => ({
+    type: "model", name, relative_path: name, kind, size_bytes: 1_048_576,
+    scan_status: "need_confirm", scan_reason: "", recommendation: "unrated", tags: [], artifact_id,
+  });
+  await page.route("**/api/models/catalog?*", async (route) => route.fulfill({ json: {
+    root: { type: "directory", name: "models", relative_path: "", children: [
+      model("active.engine", "engine", 12),
+      model("candidate.engine", "engine"),
+      model("source.onnx", "onnx"),
+    ] },
+    directory_count: 0, model_count: 3, discovered_files: 0, updated_files: 0, cache_hits: 3, force: false,
+  } }));
+  await page.goto("/?page=models");
+  await expect(page.getByText(/1 个已登记 Engine · 1 个待验证 Engine · 1 个仅供查看/)).toBeVisible();
+  const usage = page.getByRole("combobox", { name: "文件使用状态" });
+  await usage.selectOption("unregistered_engine");
+  await expect(page.locator(".model-catalog-row.model")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /candidate.engine，路径 candidate.engine/ })).toBeVisible();
+  await usage.selectOption("view_only");
+  await expect(page.locator(".model-catalog-row.model")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /source.onnx，路径 source.onnx/ })).toBeVisible();
+  expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(
+    await page.evaluate(() => document.documentElement.clientWidth),
+  );
+});
+
 test("model library browses nested folders and respects name and size sorting", async ({ page }) => {
   await mockStudioApi(page);
   const engine = (name: string, relative_path: string, size_bytes: number) => ({
