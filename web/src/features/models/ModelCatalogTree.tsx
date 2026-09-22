@@ -145,7 +145,7 @@ function ModelCatalogRow({
       : "待整理";
   return (
     <button type="button"
-      aria-label={`${model.name}，路径 ${model.relative_path}，${active ? "当前使用，" : ""}${recommendationLabel}，${formatModelSize(model.size_bytes)}，${modelStatusLabel(status)}`}
+      aria-label={`${model.name}，路径 ${model.relative_path}，${active ? "已部署，" : ""}${recommendationLabel}，${formatModelSize(model.size_bytes)}，${modelStatusLabel(status)}`}
       aria-pressed={selected}
       disabled={disabled}
       className={`model-catalog-row model ${selected ? "selected" : ""}`}
@@ -158,6 +158,7 @@ function ModelCatalogRow({
         <span className="model-catalog-meta">
           <span>{model.kind.toUpperCase()}</span>
           <span className="model-catalog-size">{formatModelSize(model.size_bytes)}</span>
+          {model.project_name ? <span className="model-catalog-project" title={`所属项目：${model.project_name}`}>项目：{model.project_name}</span> : null}
           <span className="model-catalog-path" title={model.relative_path}>{model.relative_path}</span>
         </span>
         {model.tags.length > 0 ? (
@@ -168,7 +169,7 @@ function ModelCatalogRow({
         ) : null}
       </div>
       <aside>
-        {active ? <Badge tone="good">当前使用</Badge> : null}
+        {active ? <Badge tone="good">已部署</Badge> : null}
         {model.recommendation === "recommended" ? <Badge tone="good">推荐</Badge> : null}
         {model.recommendation === "not_recommended" ? <Badge tone="warn">不推荐</Badge> : null}
         <StatusIndicator tone={modelStatusTone(status)}>

@@ -26,10 +26,10 @@ export function modelStatusTone(status: string): "good" | "warn" | "bad" | "idle
 
 export function modelStatusLabel(status: string): string {
   const labels: Record<string, string> = {
-    ready: "可用",
+    ready: "有验证记录",
     pending: "待验证",
     running: "处理中",
-    need_confirm: "待加载验证",
+    need_confirm: "切换时验证",
     invalid: "无效",
     failed: "失败",
     unsupported: "不支持"

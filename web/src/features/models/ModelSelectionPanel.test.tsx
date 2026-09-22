@@ -63,7 +63,7 @@ describe("ModelSelectionPanel", () => {
   it("includes a typed tag when saving and protects an unsaved metadata draft", async () => {
     const onSaveMetadata = vi.fn();
     render(<ModelSelectionPanel {...panelProps({ onSaveMetadata })} />);
-    await userEvent.click(screen.getByText("整理模型标签与推荐状态"));
+    expect(screen.getByRole("region", { name: "整理此模型" })).toBeVisible();
     await userEvent.type(screen.getByRole("textbox", { name: "新增模型标签" }), "低延迟");
     expect(screen.getByRole("button", { name: /other.engine/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "刷新模型" })).toBeDisabled();
@@ -73,7 +73,6 @@ describe("ModelSelectionPanel", () => {
 
   it("lets the operator explicitly discard metadata edits before choosing another model", async () => {
     render(<ModelSelectionPanel {...panelProps()} />);
-    await userEvent.click(screen.getByText("整理模型标签与推荐状态"));
     await userEvent.click(within(screen.getByRole("group", { name: "模型推荐状态" })).getByRole("button", { name: "不推荐" }));
     expect(screen.getByRole("button", { name: /other.engine/ })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "放弃整理修改" }));
@@ -83,7 +82,6 @@ describe("ModelSelectionPanel", () => {
   it("does not offer editable metadata for ONNX files that cannot be saved", async () => {
     const onnx = { ...otherModel, kind: "onnx" as const, name: "other.onnx", relative_path: "other.onnx" };
     render(<ModelSelectionPanel {...panelProps({ root: { ...catalog, children: [onnx] }, selectedModel: onnx, selectedPath: onnx.relative_path })} />);
-    await userEvent.click(screen.getByText("整理模型标签与推荐状态"));
     expect(screen.getByRole("textbox", { name: "新增模型标签" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "保存整理结果" })).toBeDisabled();
   });
@@ -200,10 +198,35 @@ describe("ModelSelectionPanel", () => {
       onSelectModel={vi.fn()} onSaveMetadata={vi.fn()} onSwitch={onSwitch}
     />);
 
-    expect(screen.getByText(/所选文件尚未生效/)).toBeVisible();
+    expect(screen.getByText(/此文件尚未部署/)).toBeVisible();
     expect(screen.getByRole("combobox", { name: "模型解析格式" })).not.toBeVisible();
     await userEvent.click(screen.getByText("查看文件详情与解析设置"));
     expect(screen.getByRole("combobox", { name: "模型解析格式" })).toBeVisible();
     expect(onSwitch).not.toHaveBeenCalled();
+  });
+
+  it("does not mistake an unregistered file for the active deployment", () => {
+    render(<ModelSelectionPanel {...panelProps({ selectedArtifact: null, activeArtifactId: null })} />);
+    expect(screen.getByText(/此文件尚未部署/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
+  });
+
+  it("shows the actual deployed state and does not offer a no-op switch", () => {
+    const registered = { ...stableModel, artifact_id: 12, project_name: "Kenny", artifact_status: "ready" };
+    render(<ModelSelectionPanel {...panelProps({
+      root: { ...catalog, children: [registered] }, selectedModel: registered,
+      activeArtifactId: 12, activeArtifactPath: "/models/stable.engine", activeLoaded: false,
+    })} />);
+    expect(screen.getByText(/此文件已部署，但当前尚未装载/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "已是当前部署模型" })).toBeDisabled();
+    expect(screen.getByText("Kenny")).toBeVisible();
+  });
+
+  it("finds a model by its project or tag", async () => {
+    const registered = { ...stableModel, project_name: "Kenny" };
+    render(<ModelSelectionPanel {...panelProps({ root: { ...catalog, children: [registered, otherModel] }, selectedModel: registered })} />);
+    await userEvent.type(screen.getByRole("searchbox", { name: "查找模型文件" }), "Kenny");
+    expect(screen.getByRole("button", { name: /stable.engine，路径 stable.engine/ })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /other.engine，路径 other.engine/ })).not.toBeInTheDocument();
   });
 });

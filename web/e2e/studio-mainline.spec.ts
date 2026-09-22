@@ -240,6 +240,39 @@ test("model search keeps selection and verification together", async ({ page }) 
   await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
 });
 
+test("model organization saves catalog metadata without switching the runtime model", async ({ page }) => {
+  await mockStudioApi(page);
+  let recommendation = "unrated";
+  let tags: string[] = [];
+  let publishRequests = 0;
+  page.on("request", (request) => {
+    if (request.url().includes("/api/models/projects/") && request.url().endsWith("/publish")) publishRequests += 1;
+  });
+  await page.route("**/api/models/catalog?*", async (route) => route.fulfill({ json: {
+    root: { type: "directory", name: "models", relative_path: "", children: [
+      { type: "model", name: "stable.engine", relative_path: "stable.engine", kind: "engine", size_bytes: 1_048_576,
+        scan_status: "need_confirm", scan_reason: "", project_id: 3, project_name: "stable", version_id: 4,
+        version_name: "external-1", artifact_id: 12, artifact_status: "pending", recommendation, tags },
+    ] },
+    directory_count: 1, model_count: 1, discovered_files: 1, updated_files: 0, cache_hits: 0, force: false,
+  } }));
+  await page.route("**/api/models/artifacts/12/metadata", async (route) => {
+    const body = route.request().postDataJSON() as { recommendation: string; tags: string[] };
+    recommendation = body.recommendation;
+    tags = body.tags;
+    await route.fulfill({ json: { artifact_id: 12, recommendation, tags } });
+  });
+  await page.goto("/?page=models");
+  await page.getByRole("button", { name: /stable.engine，路径 stable.engine/ }).click();
+  await page.getByRole("button", { name: "推荐", exact: true }).last().click();
+  await page.getByRole("textbox", { name: "新增模型标签" }).fill("低延迟");
+  await page.getByRole("button", { name: "保存整理结果" }).click();
+  await expect(page.getByText(/已保存 stable.engine 的推荐状态与 1 个标签/)).toBeVisible();
+  expect(recommendation).toBe("recommended");
+  expect(tags).toEqual(["低延迟"]);
+  expect(publishRequests).toBe(0);
+});
+
 test("parameter sections navigate without changing physical output", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "hardware", output_enabled: false }, pipeline: {} });
   await page.goto("/?page=params");
@@ -450,7 +483,7 @@ test("configuration pages explain the next action without horizontal overflow", 
   await mockStudioApi(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   for (const [route, text] of [
-    ["models", "找到模型，确认后切换"],
+    ["models", "模型库"],
     ["license", "需要更换授权？"],
     ["params", "先调好控制，再决定是否输出"],
   ] as const) {

@@ -57,6 +57,7 @@ export interface ModelSelectionPanelProps {
   selectedVersion: ModelVersion | null;
   activeArtifactId: number | null;
   activeArtifactPath: string;
+  activeLoaded?: boolean;
   runtimeBackend: string;
   runtimeInputShape: string;
   catalogMessage: string;
@@ -82,6 +83,7 @@ export function ModelSelectionPanel({
   selectedVersion,
   activeArtifactId,
   activeArtifactPath,
+  activeLoaded = false,
   runtimeBackend,
   runtimeInputShape,
   catalogMessage,
@@ -116,7 +118,7 @@ export function ModelSelectionPanel({
     () => models.filter((model) =>
       (recommendationFilter === "all" || model.recommendation === recommendationFilter) &&
       activeTagFilters.every((tag) => model.tags.includes(tag)) &&
-      (normalizedSearch === "" || `${model.name} ${model.relative_path}`.toLocaleLowerCase().includes(normalizedSearch))
+      (normalizedSearch === "" || `${model.name} ${model.relative_path} ${model.project_name ?? ""} ${model.tags.join(" ")}`.toLocaleLowerCase().includes(normalizedSearch))
     ),
     [activeTagFilters, models, normalizedSearch, recommendationFilter]
   );
@@ -153,7 +155,8 @@ export function ModelSelectionPanel({
     ? selectedModel.artifact_status ?? selectedModel.scan_status
     : artifactStatus(selectedArtifact);
   const selectedKind = selectedModel?.kind ?? selectedArtifact?.kind;
-  const selectedIsActive = selectedArtifact?.id === activeArtifactId;
+  const selectedIsActive = typeof activeArtifactId === "number"
+    && selectedModel?.artifact_id === activeArtifactId;
   const previewBackend = selectedKind === "engine"
     ? "DeepStream 推理"
     : selectedKind === "onnx"
@@ -166,7 +169,7 @@ export function ModelSelectionPanel({
     "切换时验证输入输出";
   const switchLabel = busy === "model.switch"
     ? "正在验证并切换..."
-    : "验证并切换到所选模型";
+    : selectedIsActive ? "已是当前部署模型" : "验证并切换到所选模型";
   const metadataDirty = selectedModel !== null && (
     draftRecommendation !== selectedModel.recommendation ||
     draftTags.length !== selectedModel.tags.length ||
@@ -176,6 +179,12 @@ export function ModelSelectionPanel({
   const pendingTagIsNew = pendingTag !== "" && !draftTags.some((tag) => tag.toLocaleLowerCase() === pendingTag.toLocaleLowerCase());
   const metadataEditable = selectedModel?.kind === "engine" && busy === null;
   const selectionHiddenByFilter = selectedModel !== null && !filteredModels.some((model) => model.relative_path === selectedModel.relative_path);
+  const selectedProject = selectedModel?.project_name ?? (selectedModel?.kind === "engine" ? "切换时自动登记" : "不适用");
+  const selectedPreparation = selectedModel?.kind !== "engine"
+    ? "当前主链不支持"
+    : selectedModel?.artifact_status === "ready"
+      ? "有验证记录 · 切换时复核"
+      : "切换时验证";
   const saveMetadata = () => {
     const tags = pendingTagIsNew ? [...draftTags, pendingTag] : draftTags;
     setDraftTags(tags);
@@ -197,8 +206,8 @@ export function ModelSelectionPanel({
     <div className="model-selection-panel">
       <header className="model-selection-toolbar">
         <div>
-          <strong>设备中的模型</strong>
-          <span>{directoryCount} 个物理文件夹 · 当前显示 {filteredModels.length}/{modelCount} 个模型</span>
+          <strong>设备模型文件</strong>
+          <span>{directoryCount} 个文件夹 · 当前显示 {filteredModels.length}/{modelCount} 个模型；项目与版本在首次使用时自动登记</span>
         </div>
         <button
           className="console-button secondary"
@@ -213,58 +222,57 @@ export function ModelSelectionPanel({
 
       {catalogMessage ? <div className="model-switch-note good">{catalogMessage}</div> : null}
 
-      {models.length > 0 ? <section className="model-vault-filters" aria-label="模型筛选">
-        <label className="model-vault-search">
-          <NovaIcon name="search" size={17} />
-          <input
-            aria-label="查找模型文件"
-            onChange={(event) => setSearchTerm(event.target.value)}
-            placeholder="按文件名或路径查找模型"
-            type="search"
-            value={searchTerm}
-          />
-        </label>
-        <div className="model-vault-recommendation-filter" role="group" aria-label="推荐状态筛选">
-          {([
-            ["all", "全部"],
-            ["recommended", "推荐"],
-            ["unrated", "待整理"],
-            ["not_recommended", "不推荐"]
-          ] as const).map(([value, label]) => (
-            <button type="button"
-              aria-pressed={recommendationFilter === value}
-              className={recommendationFilter === value ? "active" : ""}
-              key={value}
-              onClick={() => setRecommendationFilter(value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <div className="model-vault-tag-filter" aria-label="标签筛选">
-          <span>标签筛选</span>
-          {availableTags.length > 0 ? availableTags.map((tag) => (
-            <button type="button"
-              aria-pressed={tagFilters.has(tag)}
-              className={tagFilters.has(tag) ? "active" : ""}
-              key={tag}
-              onClick={() => setTagFilters((current) => {
-                const next = new Set(current);
-                if (next.has(tag)) next.delete(tag); else next.add(tag);
-                return next;
-              })}
-            >
-              {tag}
-            </button>
-          )) : <small>保存标签后可在这里筛选</small>}
-          {tagFilters.size > 0 || recommendationFilter !== "all" || searchTerm ? (
-            <button type="button" className="clear" onClick={clearFilters}>清除筛选</button>
-          ) : null}
-        </div>
-      </section> : null}
-
       <div className={models.length > 0 ? "model-selection-workspace" : "model-selection-workspace empty"}>
         <div className="model-selection-browser">
+          {models.length > 0 ? <section className="model-vault-filters" aria-label="模型筛选">
+            <label className="model-vault-search">
+              <NovaIcon name="search" size={17} />
+              <input
+                aria-label="查找模型文件"
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="搜索文件、路径、项目或标签"
+                type="search"
+                value={searchTerm}
+              />
+            </label>
+            <div className="model-vault-recommendation-filter" role="group" aria-label="推荐状态筛选">
+              {([
+                ["all", "全部"],
+                ["recommended", "推荐"],
+                ["unrated", "待整理"],
+                ["not_recommended", "不推荐"]
+              ] as const).map(([value, label]) => (
+                <button type="button"
+                  aria-pressed={recommendationFilter === value}
+                  className={recommendationFilter === value ? "active" : ""}
+                  key={value}
+                  onClick={() => setRecommendationFilter(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="model-vault-tag-filter" aria-label="标签筛选">
+              <span>标签筛选</span>
+              {availableTags.length > 0 ? availableTags.map((tag) => (
+                <button type="button"
+                  aria-pressed={tagFilters.has(tag)}
+                  className={tagFilters.has(tag) ? "active" : ""}
+                  key={tag}
+                  onClick={() => setTagFilters((current) => {
+                    const next = new Set(current);
+                    if (next.has(tag)) next.delete(tag); else next.add(tag);
+                    return next;
+                  })}
+                >
+                  {tag}
+                </button>
+              )) : <small>保存标签后可在这里筛选</small>}
+              {tagFilters.size > 0 || recommendationFilter !== "all" || searchTerm ? (
+                <button type="button" className="clear" onClick={clearFilters}>清除筛选</button>
+              ) : null}
+            </div>
+          </section> : null}
           {loading && root === null ? (
             <div className="model-catalog-placeholder">正在读取 models 目录...</div>
           ) : filteredModels.length > 0 ? (
@@ -278,7 +286,7 @@ export function ModelSelectionPanel({
           ) : (
             <div className="model-catalog-placeholder">
               {models.length > 0
-                ? <><p>没有符合查找条件的模型。</p><button className="console-button" onClick={clearFilters} type="button">清除筛选</button></>
+                ? <><p>没有符合条件的模型文件。</p><button className="console-button" onClick={clearFilters} type="button">清除筛选</button></>
                 : "暂无可选模型。将 .engine 文件放入设备的 models 目录后点击“刷新模型”；.onnx 文件不能直接切换到当前主链。"}
             </div>
           )}
@@ -290,32 +298,32 @@ export function ModelSelectionPanel({
               <NovaIcon name="engine" size={20} />
             </span>
             <div>
-              <span>准备切换到</span>
+              <span>所选模型文件</span>
               <strong title={selectedModel?.name ?? selectedArtifact?.path ?? ""}>
                 {selectedModel?.name ?? selectedArtifact?.path ?? "尚未选择模型"}
               </strong>
             </div>
-            <StatusIndicator tone={modelStatusTone(selectedStatus)}>
+            {selectedModel ? <StatusIndicator tone={modelStatusTone(selectedStatus)}>
               {modelStatusLabel(selectedStatus)}
-            </StatusIndicator>
+            </StatusIndicator> : null}
           </div>
 
           <p className="model-selection-next-step">
             {selectionHiddenByFilter
               ? "当前筛选隐藏了已选模型；清除筛选或重新选择后才能切换。"
               : selectedModel === null
-              ? "请先从左侧目录选择一个 Engine 文件。"
+              ? "请先从左侧选择模型文件，再查看用途与切换条件。"
               : selectedModel.kind !== "engine"
                 ? "这个文件不能直接用于当前主链；请选择 .engine 文件。"
                 : selectedIsActive
-                  ? "这是当前使用的模型；再次验证不会重复切换。"
-                  : "所选文件尚未生效；点击下方“验证并切换”后才会影响运行。"}
+                  ? activeLoaded ? "此文件已部署且运行中已装载，无需重复切换。" : "此文件已部署，但当前尚未装载；请到运行总览启动主链。"
+                  : "此文件尚未部署；只有完成验证并切换后才会改变运行模型。"}
           </p>
           <div className="model-selection-action">
-            <span>选择文件不会改变正在运行的模型</span>
+            <span>使用此文件</span>
             <button
               className="console-button primary"
-              disabled={busy !== null || !canSwitch || selectionHiddenByFilter || metadataDirty || pendingTagIsNew}
+              disabled={busy !== null || !canSwitch || selectedIsActive || selectionHiddenByFilter || metadataDirty || pendingTagIsNew}
               onClick={onSwitch}
               type="button"
             >
@@ -323,15 +331,20 @@ export function ModelSelectionPanel({
               {switchLabel}
             </button>
             {selectedModel?.kind === "engine" ? <small>
-              {canSwitch ? "需要停止主链时会先请你确认；切换失败会保留原因。" : "当前文件暂不可切换；请检查文件类型和模型状态。"}
+              {selectedIsActive ? "当前部署不会重复发布；装载状态请看页面顶部。" : canSwitch ? "运行中切换会先征求确认；失败时保留原因并尝试回滚。" : "当前文件暂不可切换；请检查文件类型和模型状态。"}
             </small> : null}
           </div>
+          {selectedModel ? <dl className="model-selection-key-facts">
+            <div><dt>所属项目</dt><dd title={selectedProject}>{selectedProject}</dd></div>
+            <div><dt>文件大小</dt><dd>{formatModelSize(selectedModel.size_bytes)}</dd></div>
+            <div><dt>使用准备</dt><dd>{selectedPreparation}</dd></div>
+          </dl> : null}
           <details className="model-selection-advanced">
             <summary>查看文件详情与解析设置</summary>
             <dl className="model-selection-facts">
               <div className="wide">
-                <dt>当前使用路径</dt>
-                <dd title={activeArtifactPath}>{activeArtifactPath || "未加载产物"}</dd>
+                <dt>当前部署路径</dt>
+                <dd title={activeArtifactPath}>{activeArtifactPath || "未部署模型"}</dd>
               </div>
               <div className="wide">
                 <dt>所选文件路径</dt>
@@ -348,8 +361,8 @@ export function ModelSelectionPanel({
                 <dd>{formatModelSize(selectedModel?.size_bytes ?? selectedArtifact?.size_bytes)}</dd>
               </div>
               <div>
-                <dt>模型版本</dt>
-                <dd>{selectedVersion?.version === "default" ? "自动发现版本" : selectedVersion?.version ?? "-"}</dd>
+                <dt>内部版本引用</dt>
+                <dd title={selectedVersion?.version ?? selectedModel?.version_name ?? ""}>{selectedVersion?.version === "default" ? "自动发现" : selectedVersion?.version ?? selectedModel?.version_name ?? "首次使用时登记"}</dd>
               </div>
               <div>
                 <dt>输入尺寸</dt>
@@ -384,13 +397,11 @@ export function ModelSelectionPanel({
             </dl>
           </details>
 
-          <details className="model-selection-advanced">
-            <summary>整理模型标签与推荐状态</summary>
-            <section className="model-metadata-editor" aria-labelledby="model-metadata-title">
+          <section className="model-metadata-editor" aria-labelledby="model-metadata-title">
               <div className="model-metadata-heading">
                 <div>
-                  <strong id="model-metadata-title">整理与标签</strong>
-                  <small>仅更新模型目录元数据，不加载 Engine，也不会影响正在运行的推理。</small>
+                  <strong id="model-metadata-title">整理此模型</strong>
+                  <small>{selectedModel?.kind === "engine" ? "推荐状态与标签只用于查找，不会切换或加载模型。" : "当前只支持整理 .engine 文件；.onnx 仅供查看。"}</small>
                 </div>
                 {metadataDirty ? <span>待保存</span> : null}
               </div>
@@ -466,8 +477,7 @@ export function ModelSelectionPanel({
                   {busy === "model.metadata" ? "保存中..." : "保存整理结果"}
                 </button>
               </div>
-            </section>
-          </details>
+          </section>
         </aside> : null}
       </div>
 

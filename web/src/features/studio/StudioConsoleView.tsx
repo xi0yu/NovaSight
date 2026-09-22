@@ -1721,12 +1721,13 @@ export function StudioConsoleView({
       : null,
     [modelCatalog, selectedModelCatalogPath]
   );
-  const selectedCatalogArtifactMatches = selectedCatalogModel === null ||
-    selectedCatalogModel.artifact_id === selectedSwitchArtifact?.id;
-  const selectedPreviewArtifact = selectedCatalogArtifactMatches ? selectedSwitchArtifact : null;
+  const selectedPreviewArtifact = selectedCatalogModel?.artifact_id === selectedSwitchArtifact?.id
+    ? selectedSwitchArtifact
+    : null;
   const selectedPreviewVersion =
+    selectedCatalogModel !== null &&
     typeof selectedModelVersionId === "number" &&
-    (selectedCatalogModel === null || selectedCatalogModel.version_id === selectedModelVersionId)
+    selectedCatalogModel.version_id === selectedModelVersionId
       ? modelVersions.find((item) => item.id === selectedModelVersionId) ?? null
       : null;
   const detectionCount = vision?.detections ?? null;
@@ -3994,6 +3995,7 @@ export function StudioConsoleView({
                 selectedVersion: selectedPreviewVersion,
                 activeArtifactId: artifact?.id ?? null,
                 activeArtifactPath: artifact?.path ?? "",
+                activeLoaded: runtimeInference?.loaded === true,
                 runtimeBackend: readString(runtime?.inference?.selected, ""),
                 runtimeInputShape: displayedInputShape,
                 catalogMessage: modelCatalogMessage,
@@ -5809,6 +5811,7 @@ export function StudioConsoleView({
           selectedVersion: selectedPreviewVersion,
           activeArtifactId: artifact?.id ?? null,
           activeArtifactPath: artifact?.path ?? "",
+          activeLoaded: runtimeInference?.loaded === true,
           runtimeBackend: readString(runtime?.inference?.selected, ""),
           runtimeInputShape: displayedInputShape,
           catalogMessage: modelCatalogMessage,
