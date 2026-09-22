@@ -36,7 +36,7 @@ describe("ModelSelectionPanel", () => {
     const view = render(<ModelSelectionPanel {...panelProps({ root: null, loading: true })} />);
     view.rerender(<ModelSelectionPanel {...panelProps()} />);
     expect(screen.getByRole("button", { name: "稳定" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText(/当前显示 1\/2 个模型/)).toBeInTheDocument();
+    expect(screen.getByText(/1 个模型 · 清除筛选后返回当前文件夹/)).toBeInTheDocument();
   });
 
   it("does not switch a model hidden by the current filters", async () => {
@@ -66,6 +66,7 @@ describe("ModelSelectionPanel", () => {
     expect(screen.getByRole("region", { name: "整理此模型" })).toBeVisible();
     await userEvent.type(screen.getByRole("textbox", { name: "新增模型标签" }), "低延迟");
     expect(screen.getByRole("button", { name: /other.engine/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "全部文件夹" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "刷新模型" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "保存整理结果" }));
     expect(onSaveMetadata).toHaveBeenCalledWith("recommended", ["稳定", "低延迟"]);
@@ -228,5 +229,39 @@ describe("ModelSelectionPanel", () => {
     await userEvent.type(screen.getByRole("searchbox", { name: "查找模型文件" }), "Kenny");
     expect(screen.getByRole("button", { name: /stable.engine，路径 stable.engine/ })).toBeVisible();
     expect(screen.queryByRole("button", { name: /other.engine，路径 other.engine/ })).not.toBeInTheDocument();
+  });
+
+  it("browses nested folders and searches across the entire catalog", async () => {
+    const nested = { ...otherModel, name: "arena.engine", relative_path: "Arena/v2/arena.engine" };
+    const root: ModelCatalogDirectory = { ...catalog, children: [stableModel, {
+      type: "directory", name: "Arena", relative_path: "Arena", children: [{
+        type: "directory", name: "v2", relative_path: "Arena/v2", children: [nested],
+      }],
+    }] };
+    render(<ModelSelectionPanel {...panelProps({ root, modelCount: 2, directoryCount: 2 })} />);
+
+    await userEvent.click(screen.getByRole("button", { name: "打开文件夹 Arena，包含 1 个模型" }));
+    expect(screen.queryByRole("button", { name: /stable.engine，路径 stable.engine/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "打开文件夹 v2，包含 1 个模型" }));
+    expect(screen.getByRole("button", { name: /arena.engine，路径 Arena\/v2\/arena.engine/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: "v2" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByText("位置：stable.engine")).toBeVisible();
+
+    await userEvent.type(screen.getByRole("searchbox", { name: "查找模型文件" }), "stable.engine");
+    expect(screen.getByText("全部文件夹的筛选结果")).toBeVisible();
+    expect(screen.getByRole("button", { name: /stable.engine，路径 stable.engine/ })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+    expect(screen.getByRole("button", { name: /arena.engine，路径 Arena\/v2\/arena.engine/ })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "全部文件夹" }));
+    expect(screen.getByRole("button", { name: "打开文件夹 Arena，包含 1 个模型" })).toBeVisible();
+  });
+
+  it("remembers the operator's sorting choice for this browser session", async () => {
+    const first = render(<ModelSelectionPanel {...panelProps()} />);
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "模型排序" }), "size_desc");
+    expect(JSON.parse(window.sessionStorage.getItem("novasight.model-filters.v1") ?? "null").sort).toBe("size_desc");
+    first.unmount();
+    render(<ModelSelectionPanel {...panelProps()} />);
+    expect(screen.getByRole("combobox", { name: "模型排序" })).toHaveValue("size_desc");
   });
 });

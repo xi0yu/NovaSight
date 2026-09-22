@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ModelArtifact,
@@ -10,7 +10,7 @@ import type {
 } from "../../api";
 import { StatusIndicator } from "../../components/ui";
 import { NovaIcon } from "../../components/visual";
-import { flattenCatalogModels, ModelCatalogTree } from "./ModelCatalogTree";
+import { findCatalogDirectory, flattenCatalogModels, ModelCatalogTree, type ModelSortOrder } from "./ModelCatalogTree";
 import {
   artifactStatus,
   formatModelSize,
@@ -29,10 +29,11 @@ const MODEL_FILTER_SESSION_KEY = "novasight.model-filters.v1";
 function readModelFilterSession(): {
   recommendation: ModelRecommendation | "all";
   tags: string[];
+  sort: ModelSortOrder;
 } {
   try {
     const value: unknown = JSON.parse(window.sessionStorage.getItem(MODEL_FILTER_SESSION_KEY) ?? "null");
-    if (!value || typeof value !== "object") return { recommendation: "all", tags: [] };
+    if (!value || typeof value !== "object") return { recommendation: "all", tags: [], sort: "name_asc" };
     const record = value as Record<string, unknown>;
     const recommendation = ["all", "recommended", "unrated", "not_recommended"].includes(String(record.recommendation))
       ? record.recommendation as ModelRecommendation | "all"
@@ -40,9 +41,12 @@ function readModelFilterSession(): {
     const tags = Array.isArray(record.tags)
       ? record.tags.filter((tag): tag is string => typeof tag === "string")
       : [];
-    return { recommendation, tags };
+    const sort = ["name_asc", "name_desc", "size_desc", "size_asc", "active_first"].includes(String(record.sort))
+      ? record.sort as ModelSortOrder
+      : "name_asc";
+    return { recommendation, tags, sort };
   } catch {
-    return { recommendation: "all", tags: [] };
+    return { recommendation: "all", tags: [], sort: "name_asc" };
   }
 }
 
@@ -102,6 +106,9 @@ export function ModelSelectionPanel({
     initialFilters.recommendation
   );
   const [tagFilters, setTagFilters] = useState<Set<string>>(() => new Set(initialFilters.tags));
+  const [sortOrder, setSortOrder] = useState<ModelSortOrder>(initialFilters.sort);
+  const [folderPath, setFolderPath] = useState("");
+  const folderChosenRef = useRef(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [draftRecommendation, setDraftRecommendation] = useState<ModelRecommendation>("unrated");
   const [draftTags, setDraftTags] = useState<string[]>([]);
@@ -122,6 +129,24 @@ export function ModelSelectionPanel({
     ),
     [activeTagFilters, models, normalizedSearch, recommendationFilter]
   );
+  const filterActive = normalizedSearch !== "" || recommendationFilter !== "all" || tagFilters.size > 0;
+  const currentDirectory = useMemo(() => findCatalogDirectory(root, folderPath) ?? root, [folderPath, root]);
+  const currentFolders = currentDirectory?.children.filter((node): node is ModelCatalogDirectory => node.type === "directory") ?? [];
+  const currentModels = currentDirectory?.children.filter((node): node is ModelCatalogModel => node.type === "model") ?? [];
+  const displayedModels = filterActive ? filteredModels : currentModels;
+  const displayedFolders = filterActive ? [] : currentFolders;
+  const folderParts = folderPath ? folderPath.split("/") : [];
+
+  useEffect(() => {
+    if (!root || folderChosenRef.current || !selectedPath) return;
+    const parent = selectedPath.split("/").slice(0, -1).join("/");
+    if (findCatalogDirectory(root, parent)) setFolderPath(parent);
+    folderChosenRef.current = true;
+  }, [root, selectedPath]);
+
+  useEffect(() => {
+    if (root && folderPath && !findCatalogDirectory(root, folderPath)) setFolderPath("");
+  }, [folderPath, root]);
 
   useEffect(() => {
     if (!root || loading) return;
@@ -139,11 +164,12 @@ export function ModelSelectionPanel({
       window.sessionStorage.setItem(MODEL_FILTER_SESSION_KEY, JSON.stringify({
         recommendation: recommendationFilter,
         tags: activeTagFilters,
+        sort: sortOrder,
       }));
     } catch {
       // Filtering remains functional when browser storage is unavailable.
     }
-  }, [activeTagFilters, recommendationFilter]);
+  }, [activeTagFilters, recommendationFilter, sortOrder]);
 
   useEffect(() => {
     setDraftRecommendation(selectedModel?.recommendation ?? "unrated");
@@ -202,12 +228,20 @@ export function ModelSelectionPanel({
     setRecommendationFilter("all");
     setTagFilters(new Set());
   };
+  const chooseFolder = (path: string) => {
+    folderChosenRef.current = true;
+    setFolderPath(path);
+  };
+  const selectModel = (model: ModelCatalogModel) => {
+    chooseFolder(model.relative_path.split("/").slice(0, -1).join("/"));
+    onSelectModel(model);
+  };
   return (
     <div className="model-selection-panel">
       <header className="model-selection-toolbar">
         <div>
           <strong>设备模型文件</strong>
-          <span>{directoryCount} 个文件夹 · 当前显示 {filteredModels.length}/{modelCount} 个模型；项目与版本在首次使用时自动登记</span>
+          <span>共 {modelCount} 个模型 · {directoryCount} 个文件夹；项目与版本在首次使用时自动登记</span>
         </div>
         <button
           className="console-button secondary"
@@ -273,20 +307,52 @@ export function ModelSelectionPanel({
               ) : null}
             </div>
           </section> : null}
+          {models.length > 0 ? <div className="model-folder-toolbar">
+            {filterActive ? <div className="model-folder-results">
+              <strong>全部文件夹的筛选结果</strong>
+              <small>{filteredModels.length} 个模型 · 清除筛选后返回当前文件夹</small>
+            </div> : <nav className="model-folder-breadcrumb" aria-label="模型文件夹路径">
+              <button aria-current={folderParts.length === 0 ? "page" : undefined} disabled={metadataDirty || pendingTagIsNew} onClick={() => chooseFolder("")} type="button">全部文件夹</button>
+              {folderParts.map((part, index) => (
+                <span key={folderParts.slice(0, index + 1).join("/")}>
+                  <span aria-hidden="true">/</span>
+                  <button
+                    aria-current={index === folderParts.length - 1 ? "page" : undefined}
+                    disabled={metadataDirty || pendingTagIsNew}
+                    onClick={() => chooseFolder(folderParts.slice(0, index + 1).join("/"))}
+                    type="button"
+                  >{part}</button>
+                </span>
+              ))}
+            </nav>}
+            <label className="model-sort-control">
+              <span>排序</span>
+              <select aria-label="模型排序" onChange={(event) => setSortOrder(event.target.value as ModelSortOrder)} value={sortOrder}>
+                <option value="name_asc">名称 A–Z</option>
+                <option value="name_desc">名称 Z–A</option>
+                <option value="size_desc">文件大小：大到小</option>
+                <option value="size_asc">文件大小：小到大</option>
+                <option value="active_first">已部署优先</option>
+              </select>
+            </label>
+          </div> : null}
           {loading && root === null ? (
             <div className="model-catalog-placeholder">正在读取 models 目录...</div>
-          ) : filteredModels.length > 0 ? (
+          ) : displayedModels.length > 0 || displayedFolders.length > 0 ? (
             <ModelCatalogTree
-              models={filteredModels}
+              folders={displayedFolders}
+              models={displayedModels}
+              sortOrder={sortOrder}
               selectionLocked={metadataDirty || pendingTagIsNew}
               selectedPath={selectedPath}
               activeArtifactId={activeArtifactId}
-              onSelectModel={onSelectModel}
+              onOpenFolder={chooseFolder}
+              onSelectModel={selectModel}
             />
           ) : (
             <div className="model-catalog-placeholder">
               {models.length > 0
-                ? <><p>没有符合条件的模型文件。</p><button className="console-button" onClick={clearFilters} type="button">清除筛选</button></>
+                ? <><p>{filterActive ? "没有符合条件的模型文件。" : "当前文件夹没有模型文件。"}</p>{filterActive ? <button className="console-button" onClick={clearFilters} type="button">清除筛选</button> : <button className="console-button" onClick={() => chooseFolder("")} type="button">返回全部文件夹</button>}</>
                 : "暂无可选模型。将 .engine 文件放入设备的 models 目录后点击“刷新模型”；.onnx 文件不能直接切换到当前主链。"}
             </div>
           )}
@@ -302,6 +368,7 @@ export function ModelSelectionPanel({
               <strong title={selectedModel?.name ?? selectedArtifact?.path ?? ""}>
                 {selectedModel?.name ?? selectedArtifact?.path ?? "尚未选择模型"}
               </strong>
+              {selectedModel ? <small className="model-selection-selected-path" title={selectedModel.relative_path}>位置：{selectedModel.relative_path}</small> : null}
             </div>
             {selectedModel ? <StatusIndicator tone={modelStatusTone(selectedStatus)}>
               {modelStatusLabel(selectedStatus)}

@@ -2,122 +2,105 @@ import { memo, useMemo, useState } from "react";
 
 import type {
   ModelCatalogDirectory,
-  ModelCatalogModel,
-  ModelRecommendation
+  ModelCatalogModel
 } from "../../api";
 import { Badge, StatusIndicator } from "../../components/ui";
 import { NovaIcon } from "../../components/visual/NovaIcon";
 import { formatModelSize, modelStatusLabel, modelStatusTone } from "./modelPresentation";
 
-const SHELVES: Array<{
-  recommendation: ModelRecommendation;
-  label: string;
-  description: string;
-}> = [
-  {
-    recommendation: "recommended",
-    label: "推荐模型",
-    description: "优先用于实际运行"
-  },
-  {
-    recommendation: "unrated",
-    label: "待整理",
-    description: "尚未给出使用结论"
-  },
-  {
-    recommendation: "not_recommended",
-    label: "不推荐模型",
-    description: "保留文件，但降低选择优先级"
+const INITIAL_ROWS = 100;
+const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+export type ModelSortOrder = "name_asc" | "name_desc" | "size_desc" | "size_asc" | "active_first";
+
+export function findCatalogDirectory(root: ModelCatalogDirectory | null, path: string): ModelCatalogDirectory | null {
+  if (!root) return null;
+  if (!path) return root;
+  let directory = root;
+  for (const part of path.split("/")) {
+    const child = directory.children.find((node) => node.type === "directory" && node.name === part);
+    if (!child || child.type !== "directory") return null;
+    directory = child;
   }
-];
+  return directory;
+}
 
-const INITIAL_SHELF_ROWS = 100;
-
-type ShelfModelMap = Record<ModelRecommendation, ModelCatalogModel[]>;
+export function sortCatalogModels(models: ModelCatalogModel[], order: ModelSortOrder, activeArtifactId: number | null): ModelCatalogModel[] {
+  const byName = (left: ModelCatalogModel, right: ModelCatalogModel) =>
+    nameCollator.compare(left.name, right.name) || nameCollator.compare(left.relative_path, right.relative_path);
+  return [...models].sort((left, right) => {
+    if (order === "active_first") {
+      const activeOrder = Number(right.artifact_id === activeArtifactId) - Number(left.artifact_id === activeArtifactId);
+      return activeOrder || byName(left, right);
+    }
+    if (order === "name_desc") return -byName(left, right);
+    if (order === "size_desc") return right.size_bytes - left.size_bytes || byName(left, right);
+    if (order === "size_asc") return left.size_bytes - right.size_bytes || byName(left, right);
+    return byName(left, right);
+  });
+}
 
 export const ModelCatalogTree = memo(function ModelCatalogTree({
+  folders,
   models,
+  sortOrder,
   selectionLocked = false,
   selectedPath,
   activeArtifactId,
+  onOpenFolder,
   onSelectModel
 }: {
+  folders: ModelCatalogDirectory[];
   models: ModelCatalogModel[];
+  sortOrder: ModelSortOrder;
   selectionLocked?: boolean;
   selectedPath: string | undefined;
   activeArtifactId: number | null;
+  onOpenFolder: (path: string) => void;
   onSelectModel: (model: ModelCatalogModel) => void;
 }) {
-  const [visibleRows, setVisibleRows] = useState<Record<ModelRecommendation, number>>({
-    recommended: INITIAL_SHELF_ROWS,
-    unrated: INITIAL_SHELF_ROWS,
-    not_recommended: INITIAL_SHELF_ROWS
-  });
-  const shelfModels = useMemo(() => {
-    const grouped: ShelfModelMap = {
-      recommended: [],
-      unrated: [],
-      not_recommended: []
-    };
-    for (const model of models) {
-      grouped[model.recommendation].push(model);
-    }
-    for (const shelf of SHELVES) {
-      grouped[shelf.recommendation].sort((left, right) => {
-        const activeOrder = Number(right.artifact_id === activeArtifactId) - Number(left.artifact_id === activeArtifactId);
-        return activeOrder || left.name.localeCompare(right.name);
-      });
-    }
-    return grouped;
-  }, [activeArtifactId, models]);
+  const [visibleRows, setVisibleRows] = useState(INITIAL_ROWS);
+  const sortedModels = useMemo(() => sortCatalogModels(models, sortOrder, activeArtifactId), [activeArtifactId, models, sortOrder]);
+  const visibleModels = sortedModels.slice(0, visibleRows);
+  const sortedFolders = useMemo(() => [...folders].sort((left, right) => nameCollator.compare(left.name, right.name)), [folders]);
 
   return (
-    <div className="model-catalog model-vault-shelves" aria-label="按推荐状态整理的模型" role="list">
-      {SHELVES.map((shelf) => {
-        const modelsForShelf = shelfModels[shelf.recommendation];
-        if (modelsForShelf.length === 0) return null;
-        const visibleModels = modelsForShelf.slice(0, visibleRows[shelf.recommendation]);
-        return (
-          <section
-            className={`model-vault-shelf ${shelf.recommendation}`}
-            key={shelf.recommendation}
-            role="listitem"
+    <div className="model-catalog model-browser-list" aria-label="模型文件与文件夹" role="list">
+      {sortedFolders.map((folder) => (
+        <div key={folder.relative_path} role="listitem">
+          <button
+            aria-label={`打开文件夹 ${folder.name}，包含 ${flattenCatalogModels(folder).length} 个模型`}
+            className="model-catalog-row folder"
+            disabled={selectionLocked}
+            onClick={() => onOpenFolder(folder.relative_path)}
+            type="button"
           >
-            <header className="model-vault-shelf-heading">
-              <span aria-hidden="true"><NovaIcon name="batch" size={17} /></span>
-              <div>
-                <strong>{shelf.label}</strong>
-                <small>{shelf.description}</small>
-              </div>
-              <b>{modelsForShelf.length}</b>
-            </header>
-            <div className="model-catalog-level" role="group">
-              {visibleModels.map((model) => (
-                <ModelCatalogRow
-                  activeArtifactId={activeArtifactId}
-                  disabled={selectionLocked}
-                  key={model.relative_path}
-                  model={model}
-                  onSelectModel={onSelectModel}
-                  selectedPath={selectedPath}
-                />
-              ))}
-              {visibleModels.length < modelsForShelf.length ? (
-                <button type="button"
-                  className="console-button secondary model-vault-load-more"
-                  aria-label={`${shelf.label}再显示 ${Math.min(INITIAL_SHELF_ROWS, modelsForShelf.length - visibleModels.length)} 个`}
-                  onClick={() => setVisibleRows((current) => ({
-                    ...current,
-                    [shelf.recommendation]: current[shelf.recommendation] + INITIAL_SHELF_ROWS
-                  }))}
-                >
-                  再显示 {Math.min(INITIAL_SHELF_ROWS, modelsForShelf.length - visibleModels.length)} 个
-                </button>
-              ) : null}
-            </div>
-          </section>
-        );
-      })}
+            <span className="model-folder-icon" aria-hidden="true"><NovaIcon name="batch" size={17} /></span>
+            <span className="model-folder-copy"><strong>{folder.name}</strong><small>{flattenCatalogModels(folder).length} 个模型</small></span>
+            <NovaIcon name="forward" size={16} aria-hidden="true" />
+          </button>
+        </div>
+      ))}
+      {visibleModels.map((model) => (
+        <div key={model.relative_path} role="listitem">
+          <ModelCatalogRow
+            activeArtifactId={activeArtifactId}
+            disabled={selectionLocked}
+            model={model}
+            onSelectModel={onSelectModel}
+            selectedPath={selectedPath}
+          />
+        </div>
+      ))}
+      {visibleModels.length < sortedModels.length ? (
+        <button type="button"
+          className="console-button secondary model-vault-load-more"
+          aria-label={`再显示 ${Math.min(INITIAL_ROWS, sortedModels.length - visibleModels.length)} 个模型`}
+          onClick={() => setVisibleRows((current) => current + INITIAL_ROWS)}
+        >
+          再显示 {Math.min(INITIAL_ROWS, sortedModels.length - visibleModels.length)} 个模型
+        </button>
+      ) : null}
     </div>
   );
 });

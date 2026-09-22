@@ -240,6 +240,38 @@ test("model search keeps selection and verification together", async ({ page }) 
   await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
 });
 
+test("model library browses nested folders and respects name and size sorting", async ({ page }) => {
+  await mockStudioApi(page);
+  const engine = (name: string, relative_path: string, size_bytes: number) => ({
+    type: "model", name, relative_path, kind: "engine", size_bytes,
+    scan_status: "need_confirm", scan_reason: "", recommendation: "unrated", tags: [],
+  });
+  await page.route("**/api/models/catalog?*", async (route) => route.fulfill({ json: {
+    root: { type: "directory", name: "models", relative_path: "", children: [
+      engine("root.engine", "root.engine", 100),
+      { type: "directory", name: "Arena", relative_path: "Arena", children: [
+        engine("engine-10.engine", "Arena/engine-10.engine", 100),
+        engine("engine-2.engine", "Arena/engine-2.engine", 200),
+      ] },
+    ] },
+    directory_count: 1, model_count: 3, discovered_files: 3, updated_files: 0, cache_hits: 0, force: false,
+  } }));
+  await page.goto("/?page=models");
+  await page.getByRole("button", { name: "打开文件夹 Arena，包含 2 个模型" }).click();
+  await expect(page.getByRole("button", { name: "Arena", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.locator(".model-catalog-row.model").first()).toContainText("engine-2.engine");
+  await page.getByRole("combobox", { name: "模型排序" }).selectOption("name_desc");
+  await expect(page.locator(".model-catalog-row.model").first()).toContainText("engine-10.engine");
+  await page.getByRole("combobox", { name: "模型排序" }).selectOption("size_desc");
+  await expect(page.locator(".model-catalog-row.model").first()).toContainText("engine-2.engine");
+  await page.getByRole("searchbox", { name: "查找模型文件" }).fill("root.engine");
+  await expect(page.getByText("全部文件夹的筛选结果")).toBeVisible();
+  await expect(page.getByRole("button", { name: /root.engine，路径 root.engine/ })).toBeVisible();
+  await page.getByRole("button", { name: "清除筛选" }).click();
+  await expect(page.getByRole("button", { name: /engine-2.engine，路径 Arena\/engine-2.engine/ })).toBeVisible();
+  expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => document.body.clientWidth));
+});
+
 test("model organization saves catalog metadata without switching the runtime model", async ({ page }) => {
   await mockStudioApi(page);
   let recommendation = "unrated";
