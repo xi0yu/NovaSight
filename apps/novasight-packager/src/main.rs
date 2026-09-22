@@ -28,6 +28,9 @@ struct Args {
     /// Output package directory. It must stay below the workspace out/ tree.
     #[arg(long, default_value = DEFAULT_OUTPUT)]
     output: PathBuf,
+    /// Assemble already-built Rust binaries and Web assets without rebuilding.
+    #[arg(long)]
+    skip_build: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -68,7 +71,9 @@ fn run() -> Result<()> {
     let args = Args::parse();
     let workspace = find_workspace_root(&std::env::current_dir().context("read current dir")?)?;
     let output = resolve_output_path(&workspace, &args.output)?;
-    build_artifacts(&workspace, args.profile)?;
+    if !args.skip_build {
+        build_artifacts(&workspace, args.profile)?;
+    }
     assemble_package(&workspace, args.profile, &output)?;
     validate_package(&output)?;
     println!("{}", output.display());
@@ -216,7 +221,7 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
     )?;
     fs::write(
         layout.root.join("README-USER.txt"),
-        "Run ./NovaSight from this directory. NovaSight listens on 0.0.0.0:7351; use the printed authenticated LAN URL from another computer on the same network. The browser exchanges its one-time URL fragment for an HttpOnly operator session. Press Ctrl+C in the launcher terminal to stop NovaSight. Open USER_MANUAL.md for the user guide.\n",
+        "Run ./NovaSight from this directory. NovaSight listens on 0.0.0.0:7351; open the printed LAN URL from another computer on the same network and enter one license code. Press Ctrl+C in the launcher terminal to stop NovaSight. Open USER_MANUAL.md for the user guide.\n",
     )
     .with_context(|| format!("write {}", layout.root.join("README-USER.txt").display()))?;
     Ok(())

@@ -36,6 +36,11 @@ Release package:
 cargo run -p novasight-packager -- --profile release
 ```
 
+When the Rust binaries and `out/web` have already been built on the target
+machine, `cargo run -p novasight-packager -- --skip-build` assembles and validates
+them without invoking the frontend package manager again. This is an author-side
+option; users still start only `./NovaSight`.
+
 Both profiles build the same DeepStream/TensorRT production runtime. Use
 `debug` only when the author build needs unoptimized Rust binaries for local
 diagnosis.
