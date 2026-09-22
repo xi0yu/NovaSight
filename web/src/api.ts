@@ -340,8 +340,7 @@ async function requestJson<T>(
       throw error;
     }
 
-    // A response from an older daemon may not log our client-generated ID.
-    // Show a confirmed ID only when the daemon echoes it back.
+    // Only show a confirmed ID when the gateway or daemon echoes it back.
     const responseRequestId = response.headers.get("x-request-id");
     const contentType = response.headers.get("content-type") ?? "";
     let responseText = "";

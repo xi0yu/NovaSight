@@ -8,6 +8,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Component, Path, PathBuf};
 use std::process::{self, ExitCode};
 use std::sync::Arc;
+use std::time::Instant;
 
 use auth::{AuthError, AuthService, SESSION_SECONDS, SessionStatus};
 use axum::body::Body;
@@ -369,11 +370,26 @@ async fn dispatch(
         {
             return auth_error_response(error);
         }
+        let request_id = request
+            .headers()
+            .get("x-request-id")
+            .filter(|value| {
+                value.as_bytes().len() == 32 && value.as_bytes().iter().all(u8::is_ascii_hexdigit)
+            })
+            .cloned();
+        let request_id_text = request_id
+            .as_ref()
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("-");
+        let method = request.method().clone();
+        let path = path.to_owned();
+        let started = Instant::now();
+        tracing::info!(event = "gateway_request_received", request_id = request_id_text, %method, %path, "gateway request received");
         let websocket_session = path.starts_with("/ws/").then_some(session);
-        return match state.daemon.forward(request, websocket_session).await {
+        let mut response = match state.daemon.forward(request, websocket_session).await {
             Ok(response) => no_store(response),
             Err(error) => {
-                tracing::warn!(%error, "daemon IPC request failed");
+                tracing::warn!(%error, request_id = request_id_text, %method, %path, "daemon IPC request failed");
                 api_error(
                     StatusCode::BAD_GATEWAY,
                     "DAEMON_UNAVAILABLE",
@@ -381,6 +397,23 @@ async fn dispatch(
                 )
             }
         };
+        if !response.headers().contains_key("x-request-id")
+            && let Some(request_id) = request_id.as_ref()
+        {
+            response
+                .headers_mut()
+                .insert("x-request-id", request_id.clone());
+        }
+        tracing::info!(
+            event = "gateway_response_headers",
+            request_id = request_id_text,
+            %method,
+            %path,
+            http_status = response.status().as_u16(),
+            latency_ms = started.elapsed().as_millis() as u64,
+            "gateway response headers ready"
+        );
+        return response;
     }
     serve_web_ui(&state, request.uri()).await
 }
@@ -779,6 +812,7 @@ mod tests {
             .header(header::COOKIE, cookie)
             .header(CSRF_HEADER, csrf)
             .header(header::CONTENT_TYPE, "application/json")
+            .header("x-request-id", "0123456789abcdef0123456789abcdef")
             .extension(ConnectInfo(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::new(192, 168, 10, 21)),
                 50001,
@@ -787,6 +821,10 @@ mod tests {
             .unwrap();
         let response = app.oneshot(mutation).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            response.headers()["x-request-id"],
+            "0123456789abcdef0123456789abcdef"
+        );
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["code"], "DAEMON_UNAVAILABLE");
