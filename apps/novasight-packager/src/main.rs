@@ -74,6 +74,7 @@ fn run() -> Result<()> {
     if !args.skip_build {
         build_artifacts(&workspace, args.profile)?;
     }
+    validate_artifact_revision(&workspace, args.profile)?;
     assemble_package(&workspace, args.profile, &output)?;
     validate_package(&output)?;
     println!("{}", output.display());
@@ -129,6 +130,45 @@ fn build_artifacts(workspace: &Path, profile: PackageProfile) -> Result<()> {
         ["--dir", "web", "build"],
         &[("CI", "true")],
     )
+}
+
+fn validate_artifact_revision(workspace: &Path, profile: PackageProfile) -> Result<()> {
+    let git = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(workspace)
+        .output()
+        .context("read package source revision")?;
+    if !git.status.success() {
+        bail!("package source revision is unavailable");
+    }
+    let expected = String::from_utf8(git.stdout).context("decode package source revision")?;
+    let daemon = workspace
+        .join("out/cargo")
+        .join(profile.artifact_dir())
+        .join(executable_name("novasightd"));
+    let info = Command::new(&daemon)
+        .arg("--build-info-json")
+        .output()
+        .with_context(|| format!("read build identity from {}", daemon.display()))?;
+    if !info.status.success() {
+        bail!(
+            "daemon build identity is unavailable from {}",
+            daemon.display()
+        );
+    }
+    let info: serde_json::Value =
+        serde_json::from_slice(&info.stdout).context("decode daemon build identity")?;
+    let actual = info["source_revision"].as_str().unwrap_or("unknown");
+    require_matching_revision(expected.trim(), actual)
+}
+
+fn require_matching_revision(expected: &str, actual: &str) -> Result<()> {
+    if actual != expected {
+        bail!(
+            "stale daemon build: source revision {expected}, binary revision {actual}; rebuild before packaging"
+        );
+    }
+    Ok(())
 }
 
 fn build_rust_artifacts(workspace: &Path, profile: PackageProfile) -> Result<()> {
@@ -464,4 +504,20 @@ fn validate_package(output: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::require_matching_revision;
+
+    #[test]
+    fn stale_daemon_revision_is_rejected() {
+        assert!(require_matching_revision("current", "current").is_ok());
+        assert!(
+            require_matching_revision("current", "old")
+                .unwrap_err()
+                .to_string()
+                .contains("stale daemon build")
+        );
+    }
 }
