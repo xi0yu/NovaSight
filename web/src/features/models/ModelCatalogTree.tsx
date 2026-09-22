@@ -8,7 +8,7 @@ import { Badge, StatusIndicator } from "../../components/ui";
 import { NovaIcon } from "../../components/visual/NovaIcon";
 import { formatModelSize, modelStatusLabel, modelStatusTone } from "./modelPresentation";
 
-const INITIAL_ROWS = 100;
+const INITIAL_ROWS = 24;
 const nameCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 export type ModelSortOrder = "name_asc" | "name_desc" | "size_desc" | "size_asc" | "active_first";
@@ -98,7 +98,7 @@ export const ModelCatalogTree = memo(function ModelCatalogTree({
           aria-label={`再显示 ${Math.min(INITIAL_ROWS, sortedModels.length - visibleModels.length)} 个模型`}
           onClick={() => setVisibleRows((current) => current + INITIAL_ROWS)}
         >
-          再显示 {Math.min(INITIAL_ROWS, sortedModels.length - visibleModels.length)} 个模型
+          再显示 {Math.min(INITIAL_ROWS, sortedModels.length - visibleModels.length)} 个模型（已显示 {visibleModels.length}/{sortedModels.length}）
         </button>
       ) : null}
     </div>

@@ -146,6 +146,9 @@ export function ModelSelectionPanel({
   const [draftTags, setDraftTags] = useState<string[]>([]);
   const [newTag, setNewTag] = useState("");
   const models = useMemo(() => flattenCatalogModels(root), [root]);
+  const registeredCount = models.filter((model) => model.kind === "engine" && model.artifact_id != null).length;
+  const unregisteredEngineCount = models.filter((model) => model.kind === "engine" && model.artifact_id == null).length;
+  const viewOnlyCount = models.length - registeredCount - unregisteredEngineCount;
   const folderOptions = useMemo(() => catalogFolderPaths(root), [root]);
   const availableTags = useMemo(
     () => Array.from(new Set(models.flatMap((model) => model.tags))).sort((left, right) => left.localeCompare(right)),
@@ -313,7 +316,7 @@ export function ModelSelectionPanel({
       <header className="model-selection-toolbar">
         <div>
           <strong>设备模型文件</strong>
-          <span>共 {modelCount} 个模型 · {directoryCount} 个文件夹；项目与版本在首次使用时自动登记</span>
+          <span>共 {modelCount} 个文件 · {directoryCount} 个文件夹；{root ? `${registeredCount} 个已登记 Engine · ${unregisteredEngineCount} 个待验证 Engine · ${viewOnlyCount} 个仅供查看` : "正在读取使用状态"}</span>
         </div>
         <div className="model-selection-toolbar-actions">
           <button className="console-button secondary"

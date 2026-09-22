@@ -39,6 +39,17 @@ describe("ModelSelectionPanel", () => {
     expect(screen.getByText(/1 个模型 · 清除筛选后返回当前文件夹/)).toBeInTheDocument();
   });
 
+  it("explains which files are registered, need validation, or are view-only", () => {
+    const registered = { ...stableModel, artifact_id: 12 };
+    const viewOnly = { ...otherModel, kind: "onnx" as const, name: "preview.onnx", relative_path: "preview.onnx" };
+    render(<ModelSelectionPanel {...panelProps({
+      root: { ...catalog, children: [registered, otherModel, viewOnly] },
+      modelCount: 3,
+      selectedModel: registered,
+    })} />);
+    expect(screen.getByText(/1 个已登记 Engine · 1 个待验证 Engine · 1 个仅供查看/)).toBeVisible();
+  });
+
   it("does not switch a model hidden by the current filters", async () => {
     const onSwitch = vi.fn();
     render(<ModelSelectionPanel {...panelProps({ onSwitch })} />);

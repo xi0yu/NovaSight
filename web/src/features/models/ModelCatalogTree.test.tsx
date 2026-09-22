@@ -11,11 +11,11 @@ function model(name: string, size_bytes = 100): ModelCatalogModel {
   };
 }
 
-it("navigates real catalog folders and keeps large file lists bounded", () => {
+it("navigates folders and progressively reveals a 73-file catalog", () => {
   const folders: ModelCatalogDirectory[] = [{
     type: "directory", name: "Arena", relative_path: "Arena", children: [model("engine-2.engine")],
   }];
-  const models = Array.from({ length: 101 }, (_, index) => model(`engine-${index}.engine`));
+  const models = Array.from({ length: 73 }, (_, index) => model(`engine-${index}.engine`));
   const onOpenFolder = vi.fn();
   render(<ModelCatalogTree
     folders={folders} models={models} sortOrder="name_asc" selectedPath={undefined}
@@ -24,7 +24,10 @@ it("navigates real catalog folders and keeps large file lists bounded", () => {
 
   fireEvent.click(screen.getByRole("button", { name: "打开文件夹 Arena，包含 1 个模型" }));
   expect(onOpenFolder).toHaveBeenCalledWith("Arena");
-  expect(screen.getByRole("button", { name: "再显示 1 个模型" })).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: /engine-\d+\.engine/ })).toHaveLength(24);
+  fireEvent.click(screen.getByRole("button", { name: "再显示 24 个模型" }));
+  expect(screen.getAllByRole("button", { name: /engine-\d+\.engine/ })).toHaveLength(48);
+  expect(screen.getByRole("button", { name: "再显示 24 个模型" })).toHaveTextContent("已显示 48/73");
 });
 
 it("resolves nested directories and sorts names naturally without losing size sorting", () => {
