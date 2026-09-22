@@ -135,7 +135,7 @@ test("unavailable runtime leads to the error details", async ({ page }) => {
   await mockStudioApi(page);
   await page.goto("/?page=overview");
 
-  await page.getByRole("button", { name: "查看异常信息" }).click();
+  await page.getByRole("button", { name: "查看异常信息", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "异常信息" })).toBeVisible();
 });
 
@@ -336,7 +336,7 @@ test("model file move requires confirmation and reads back the new path", async 
   expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => document.body.clientWidth));
 });
 
-test("rejected model file move keeps the original selection and shows the backend reason", async ({ page }) => {
+test("rejected model file move keeps the draft, explains the reason, and retains backend detail", async ({ page }) => {
   await mockStudioApi(page);
   await page.route("**/api/models/catalog?*", async (route) => route.fulfill({ json: {
     root: { type: "directory", name: "models", relative_path: "", children: [
@@ -353,9 +353,15 @@ test("rejected model file move keeps the original selection and shows the backen
   await page.getByRole("textbox", { name: "新文件名（.engine）" }).fill("new");
   await page.getByRole("button", { name: "检查并确认" }).click();
   await page.getByRole("button", { name: "确认更改文件路径" }).click();
-  await expect(page.getByRole("alertdialog", { name: "确认移动或改名模型文件？" })).toContainText("model artifact 17 is registered");
+  await expect(page.getByRole("alertdialog", { name: "确认移动或改名模型文件？" })).toContainText("这个模型已登记或带有验证文件，不能直接移动");
   await expect(page.getByRole("button", { name: /model.engine，路径 model.engine/ })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "新文件名（.engine）" })).toHaveValue("new");
+  await page.getByRole("alertdialog", { name: "确认移动或改名模型文件？" }).getByRole("button", { name: "取消" }).click();
+  await page.getByRole("button", { name: /^查看异常信息/ }).click();
+  const errorCenter = page.getByRole("dialog", { name: "异常信息" });
+  const moveError = errorCenter.getByRole("article").filter({ hasText: "模型文件移动失败" });
+  await moveError.getByText("原始错误与开发者详情").click();
+  await expect(moveError.locator("pre")).toContainText("model artifact 17 is registered");
 });
 
 test("model organization saves catalog metadata without switching the runtime model", async ({ page }) => {
@@ -545,7 +551,7 @@ test("760px Studio recovery actions keep touch-safe targets", async ({ page }) =
   await page.goto("/?page=control");
 
   for (const control of [
-    page.getByRole("button", { name: "查看异常" }),
+    page.getByRole("button", { name: "查看异常", exact: true }),
     page.getByRole("button", { name: "重试" }),
     page.locator(".error-center-trigger"),
     page.locator(".theme-toggle"),
@@ -572,10 +578,10 @@ test("unavailable runtime offers concise recovery without a new popup flow", asy
   await page.goto("/?page=control");
 
   await expect(page.getByRole("heading", { level: 1, name: "控制" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "查看异常" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看异常", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
 
-  await page.getByRole("button", { name: "查看异常" }).click();
+  await page.getByRole("button", { name: "查看异常", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "异常信息" })).toBeVisible();
 });
 

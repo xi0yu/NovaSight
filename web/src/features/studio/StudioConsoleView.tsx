@@ -3964,6 +3964,7 @@ export function StudioConsoleView({
           <div className="console-group">
             <button type="button"
               className={currentErrorDetails.length > 0 ? "error-center-trigger has-errors" : "error-center-trigger"}
+              aria-label={currentErrorDetails.length > 0 ? `查看异常信息，共 ${currentErrorDetails.length} 条` : "查看异常信息"}
               onClick={() => setErrorCenterOpen(true)}
             >
               <NovaIcon name={currentErrorDetails.length > 0 ? "triangle-alert" : "shield-check"} size={15} />
