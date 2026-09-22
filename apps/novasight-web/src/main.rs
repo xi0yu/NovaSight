@@ -69,6 +69,8 @@ struct HealthResponse {
 struct ErrorResponse {
     code: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -397,10 +399,11 @@ async fn dispatch(
             Ok(response) => no_store(response),
             Err(error) => {
                 tracing::warn!(%error, request_id = request_id_text, %method, %path, "daemon IPC request failed");
-                api_error(
+                api_error_with_detail(
                     StatusCode::BAD_GATEWAY,
                     "DAEMON_UNAVAILABLE",
                     "NovaSight daemon 本地控制接口不可用",
+                    Some(error.to_string()),
                 )
             }
         };
@@ -571,12 +574,22 @@ fn auth_error_response(error: AuthError) -> Response {
 }
 
 fn api_error(status: StatusCode, code: &'static str, message: &str) -> Response {
+    api_error_with_detail(status, code, message, None)
+}
+
+fn api_error_with_detail(
+    status: StatusCode,
+    code: &'static str,
+    message: &str,
+    detail: Option<String>,
+) -> Response {
     no_store(
         (
             status,
             Json(ErrorResponse {
                 code,
                 message: message.to_owned(),
+                detail,
             }),
         )
             .into_response(),
@@ -835,6 +848,7 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["code"], "DAEMON_UNAVAILABLE");
+        assert!(body["detail"].as_str().unwrap().contains("daemon IPC"));
     }
 
     #[tokio::test]
