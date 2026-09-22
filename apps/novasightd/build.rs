@@ -13,6 +13,7 @@ fn main() {
 
     let manifest = env::var("CARGO_MANIFEST_DIR").expect("Cargo provides manifest dir");
     let repository = Path::new(&manifest).join("../..");
+    watch_git_revision(&repository);
     emit_build_identity(&repository);
 
     if env::var_os("CARGO_FEATURE_DEEPSTREAM").is_some()
@@ -20,6 +21,27 @@ fn main() {
         && env::var_os("DOCS_RS").is_none()
     {
         compile_deepstream_parser(&repository);
+    }
+}
+
+fn watch_git_revision(repository: &Path) {
+    // Cargo does not notice a new commit when only Git's ref file changes.
+    let mut names = vec!["HEAD".to_owned(), "packed-refs".to_owned()];
+    if let Some(reference) = git_output(repository, &["symbolic-ref", "-q", "HEAD"]) {
+        names.push(reference);
+    }
+    for name in names {
+        if let Some(path) = git_output(repository, &["rev-parse", "--git-path", &name]) {
+            let path = Path::new(&path);
+            let path = if path.is_absolute() {
+                path.to_owned()
+            } else {
+                repository.join(path)
+            };
+            if path.exists() || name.starts_with("refs/") {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
     }
 }
 
