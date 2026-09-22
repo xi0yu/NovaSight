@@ -118,6 +118,7 @@ describe("ModelSelectionPanel", () => {
     render(<ModelSelectionPanel {...panelProps({ onSaveMetadata })} />);
     expect(screen.getByRole("region", { name: "整理此模型" })).toBeVisible();
     await userEvent.type(screen.getByRole("textbox", { name: "新增模型标签" }), "低延迟");
+    expect(screen.getByText(/请先保存或放弃/)).toBeVisible();
     expect(screen.getByRole("button", { name: /other.engine/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "全部文件夹" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "刷新模型" })).toBeDisabled();

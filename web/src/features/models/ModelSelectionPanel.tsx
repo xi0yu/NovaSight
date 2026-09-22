@@ -256,7 +256,7 @@ export function ModelSelectionPanel({
   const pendingTagIsNew = pendingTag !== "" && !draftTags.some((tag) => tag.toLocaleLowerCase() === pendingTag.toLocaleLowerCase());
   const metadataEditable = selectedModel?.kind === "engine" && busy === null;
   const selectionHiddenByFilter = selectedModel !== null && !filteredModels.some((model) => model.relative_path === selectedModel.relative_path);
-  const selectedProject = selectedModel?.project_name ?? (selectedModel?.kind === "engine" ? "切换时自动登记" : "不适用");
+  const selectedProject = selectedModel?.project_name ?? (selectedModel?.kind === "engine" ? "首次保存整理或切换时登记" : "不适用");
   const selectedPreparation = selectedModel?.kind !== "engine"
     ? "当前主链不支持"
     : selectedModel?.artifact_status === "ready"
@@ -421,6 +421,9 @@ export function ModelSelectionPanel({
               ) : null}
             </div>
           </section> : null}
+          {metadataDirty || pendingTagIsNew ? <p className="model-selection-next-step" role="status">
+            右侧“整理此模型”有未保存修改。请先保存或放弃，再选择其他文件、切换文件夹或刷新目录。
+          </p> : null}
           {root && (models.length > 0 || currentFolders.length > 0 || folderPath) ? <div className="model-folder-toolbar">
             {filterActive ? <div className="model-folder-results">
               <strong>全部文件夹的筛选结果</strong>
@@ -601,7 +604,11 @@ export function ModelSelectionPanel({
               <div className="model-metadata-heading">
                 <div>
                   <strong id="model-metadata-title">整理此模型</strong>
-                  <small>{selectedModel?.kind === "engine" ? "推荐状态与标签只用于查找，不会切换或加载模型。" : "当前只支持整理 .engine 文件；.onnx 仅供查看。"}</small>
+                  <small>{selectedModel?.kind === "engine"
+                    ? (typeof selectedModel.project_id !== "number" || typeof selectedModel.artifact_id !== "number")
+                      ? "首次保存会先登记此 Engine；登记后不能直接移动或改名。请先整理文件路径。"
+                      : "推荐状态与标签只用于查找，不会切换或加载模型。"
+                    : "当前只支持整理 .engine 文件；.onnx 仅供查看。"}</small>
                 </div>
                 {metadataDirty ? <span>待保存</span> : null}
               </div>

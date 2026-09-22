@@ -30,6 +30,7 @@ import {
   ModelCatalogDirectory,
   ModelCatalogModel,
   ModelCatalogResponse,
+  ModelRecommendation,
   ModelProject,
   ModelVersion,
   ParserPresetId,
@@ -3931,6 +3932,22 @@ export function StudioConsoleView({
     });
   };
 
+  const requestSaveModelMetadata = (recommendation: ModelRecommendation, tags: string[]) => {
+    if (selectedCatalogModel?.kind === "engine"
+      && (typeof selectedCatalogModel.project_id !== "number" || typeof selectedCatalogModel.artifact_id !== "number")) {
+      setConfirmationRequest({
+        eyebrow: "整理模型",
+        title: "登记后保存模型标签？",
+        description: "首次保存会登记这个 Engine。登记后，模型库不能直接移动或改名该文件；如需调整路径，请先整理文件。",
+        details: [`文件：${selectedCatalogModel.relative_path}`, "只保存推荐状态与标签，不会切换或加载当前模型。"],
+        confirmLabel: "登记并保存",
+        onConfirm: () => modelSwitch.saveMetadata(recommendation, tags)
+      });
+      return;
+    }
+    void modelSwitch.saveMetadata(recommendation, tags);
+  };
+
   const realtimeStatusText = runtimeDeliveryLabel(realtimeStatus);
   const realtimeStatusDescription = runtimeDeliveryDescription(realtimeStatus);
   const realtimeStatusClass = `console-live ${runtimeDeliveryTone(realtimeStatus)}`;
@@ -4161,7 +4178,7 @@ export function StudioConsoleView({
                 onCreateFolder: createModelFolder,
                 onRequestMove: requestMoveModelEngine,
                 onSelectModel: selectModelFromCatalog,
-                onSaveMetadata: (recommendation, tags) => void modelSwitch.saveMetadata(recommendation, tags),
+                onSaveMetadata: requestSaveModelMetadata,
                 onSwitch: modelSwitch.switchModel,
               }}
             />
@@ -5979,7 +5996,7 @@ export function StudioConsoleView({
           onCreateFolder: createModelFolder,
           onRequestMove: requestMoveModelEngine,
           onSelectModel: selectModelFromCatalog,
-          onSaveMetadata: (recommendation, tags) => void modelSwitch.saveMetadata(recommendation, tags),
+          onSaveMetadata: requestSaveModelMetadata,
           onSwitch: modelSwitch.switchModel
             }}
           />

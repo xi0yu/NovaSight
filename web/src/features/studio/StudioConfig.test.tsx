@@ -170,6 +170,32 @@ it("asks before sending a physical kmNet diagnostic move", async () => {
   expect(new Headers(request[1]?.headers).get("X-NovaSight-Physical-Output-Ack")).toBe("confirmed");
 });
 
+it("asks before metadata saving registers an unregistered Engine and locks its path", async () => {
+  history.replaceState(null, "", "/?page=models");
+  const catalog = {
+    root: { type: "directory", name: "models", relative_path: "", children: [{
+      type: "model", name: "draft.engine", relative_path: "draft.engine", kind: "engine", size_bytes: 1024,
+      scan_status: "ready", scan_reason: "", recommendation: "unrated", tags: [],
+    }] },
+    directory_count: 1, model_count: 1, discovered_files: 0, updated_files: 0, cache_hits: 1, force: false,
+  };
+  vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/api/models/catalog?force=false")
+    ? Promise.resolve(new Response(JSON.stringify(catalog), { headers: { "content-type": "application/json" } }))
+    : new Promise(() => {})));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  await userEvent.click(await screen.findByRole("button", { name: /draft.engine，路径 draft.engine/ }));
+  expect(screen.getByText(/登记后不能直接移动或改名/)).toBeVisible();
+  await userEvent.click(within(screen.getByRole("group", { name: "模型推荐状态" })).getByRole("button", { name: "推荐" }));
+  await userEvent.click(screen.getByRole("button", { name: "保存整理结果" }));
+  expect(screen.getByRole("alertdialog", { name: "登记后保存模型标签？" })).toHaveTextContent("draft.engine");
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/api/models/catalog/register"))).toBe(false);
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(screen.getByRole("button", { name: "保存整理结果" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "保存整理结果" }));
+  await userEvent.click(screen.getByRole("button", { name: "登记并保存" }));
+  await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/api/models/catalog/register"))).toBe(true));
+});
+
 it("asks before starting a stopped mainline with physical output enabled", async () => {
   history.replaceState(null, "", "/?page=capture");
   const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState;
