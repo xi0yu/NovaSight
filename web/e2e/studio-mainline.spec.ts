@@ -446,6 +446,29 @@ test("discarding parameter edits asks first, including on narrow screens", async
   await expect(page.getByRole("button", { name: "放弃修改" })).toBeVisible();
 });
 
+test("saving parameters while output is enabled needs explicit consent", async ({ page }) => {
+  await mockStudioApi(page, authenticatedSession, {
+    revision: 1,
+    control: { trigger_mode: "hardware", output_enabled: true },
+    pipeline: {},
+  });
+  let commandCount = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/v1/config/commands" && request.method() === "POST") commandCount += 1;
+  });
+  await page.goto("/?page=params");
+  await page.getByRole("button", { name: "直接触发" }).click();
+  await page.getByRole("button", { name: "保存修改" }).click();
+  const confirmation = page.getByRole("alertdialog", { name: "物理输出仍开启，确认保存参数？" });
+  await expect(confirmation).toContainText("保存后不再等待按键");
+  expect(commandCount).toBe(0);
+  await confirmation.getByRole("button", { name: "取消" }).click();
+  await expect(page.getByRole("button", { name: "保存修改" })).toBeEnabled();
+  await page.getByRole("button", { name: "保存修改" }).click();
+  await confirmation.getByRole("button", { name: "确认保存并保持输出开启" }).click();
+  await expect.poll(() => commandCount).toBe(1);
+});
+
 test("narrow Studio keeps Chinese navigation and save action reachable", async ({ page }) => {
   await page.setViewportSize({ width: 620, height: 812 });
   await mockStudioApi(page);

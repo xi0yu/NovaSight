@@ -2865,6 +2865,29 @@ export function StudioConsoleView({
     }
   }, [applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, parameterPageSaving, setParameterPageDirtyState]);
 
+  const requestSaveParameterPageDraft = useCallback(() => {
+    if (!parameterPageDirtyRef.current || parameterPageSaving) return;
+    if (runtimeOutputEnabled !== true && !outputEnabled) {
+      void saveParameterPageDraft();
+      return;
+    }
+    const baseline = parameterPageBaselineRef.current ?? runtimeConfigLatestRef.current;
+    const directTrigger = asRecord(baseline?.control).trigger_mode !== "always"
+      && asRecord(configDraftRef.current?.control).trigger_mode === "always";
+    setConfirmationRequest({
+      eyebrow: "运行参数",
+      title: "物理输出仍开启，确认保存参数？",
+      description: "保存会把修改应用到当前主链；主链运行时，设备的控制量可能立即改变。取消后修改会保留为草稿。",
+      details: [
+        ...(directTrigger ? ["触发方式将改为“直接触发”，保存后不再等待按键。"] : []),
+        "若要先暂停设备，请取消并到“物理输出”区关闭输出。"
+      ],
+      confirmLabel: "确认保存并保持输出开启",
+      danger: true,
+      onConfirm: saveParameterPageDraft
+    });
+  }, [outputEnabled, parameterPageSaving, runtimeOutputEnabled, saveParameterPageDraft]);
+
   const updateConfigSection = useCallback(
     async (
       section: string,
@@ -4632,7 +4655,7 @@ export function StudioConsoleView({
                 <button
                   className="console-button primary"
                   disabled={!parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0}
-                  onClick={() => void saveParameterPageDraft()}
+                  onClick={requestSaveParameterPageDraft}
                   type="button"
                 >
                   <NovaIcon name="save" size={15} />
@@ -4679,7 +4702,7 @@ export function StudioConsoleView({
                     直接触发
                   </button>
                 </div>
-                {triggerMode === "always" ? <p className="control-chain-trigger-warning">直接触发会持续计算控制量；若物理输出已开启，设备可能立即执行。请确认适用场景。</p> : null}
+                {triggerMode === "always" ? <p className="control-chain-trigger-warning">保存后将持续计算控制量；若物理输出已开启，设备可能立即执行。请确认适用场景。</p> : null}
               </li>
 
               <li className="console-card control-chain-setting">
