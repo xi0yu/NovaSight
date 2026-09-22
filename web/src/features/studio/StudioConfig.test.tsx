@@ -181,6 +181,7 @@ it("asks before starting a stopped mainline with physical output enabled", async
   await userEvent.click(screen.getByRole("button", { name: /^运行$/ }));
   await userEvent.click(screen.getByRole("button", { name: "确认启动并允许物理输出" }));
   expect(starts()).toHaveLength(1);
+  expect(new Headers(starts()[0][1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
 });
 
 it("asks before reconnecting kmNet while physical output is enabled", async () => {
@@ -197,6 +198,7 @@ it("asks before reconnecting kmNet while physical output is enabled", async () =
   await userEvent.click(screen.getByRole("button", { name: "连接实时会话" }));
   await userEvent.click(screen.getByRole("button", { name: "确认连接并允许物理输出" }));
   expect(connects()).toHaveLength(1);
+  expect(new Headers(connects()[0][1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
 });
 
 it("shows tracking-budget losses in control diagnostics", async () => {

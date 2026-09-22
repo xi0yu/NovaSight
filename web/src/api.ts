@@ -479,10 +479,10 @@ export function getRuntimeState(
   );
 }
 
-export function startRuntimePipeline(signal?: AbortSignal): Promise<void> {
+export function startRuntimePipeline(signal?: AbortSignal, physicalOutputAcknowledged = false): Promise<void> {
   return requestJson<void>(
     API_PATHS.runtimeStart,
-    { method: "POST", signal },
+    { method: "POST", signal, headers: physicalOutputAcknowledged ? { "X-NovaSight-Physical-Output-Ack": "confirmed" } : undefined },
     undefined,
     (value) => {
       if (value !== undefined) {
@@ -579,10 +579,10 @@ export function diagnosticMoveKmNet(
   );
 }
 
-export function connectKmNet(signal?: AbortSignal): Promise<void> {
+export function connectKmNet(signal?: AbortSignal, physicalOutputAcknowledged = false): Promise<void> {
   return requestJson<void>(
     API_PATHS.kmnetConnect,
-    { method: "POST", signal },
+    { method: "POST", signal, headers: physicalOutputAcknowledged ? { "X-NovaSight-Physical-Output-Ack": "confirmed" } : undefined },
     undefined,
     discardJsonCommandResponse
   );

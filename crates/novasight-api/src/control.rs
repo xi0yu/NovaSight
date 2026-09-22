@@ -39,6 +39,7 @@ use crate::license_session::LicenseSession;
 use crate::websocket::status::send_while_receiving;
 
 const STATUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+const PHYSICAL_OUTPUT_ACK_HEADER: &str = "x-novasight-physical-output-ack";
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug)]
@@ -584,9 +585,13 @@ async fn runtime_status(State(state): State<ControlState>) -> Json<RuntimeStatus
     Json(runtime_state(&state, &snapshot).await)
 }
 
-async fn runtime_start(State(state): State<ControlState>) -> Result<StatusCode, ControlApiError> {
+async fn runtime_start(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_runtime_license(&state).await?;
+    require_physical_output_ack(&state, &headers).await?;
     prepare_config_for_start(&state).await?;
     state.runtime.start().await?;
     Ok(StatusCode::NO_CONTENT)
@@ -778,12 +783,14 @@ async fn executors(State(state): State<ControlState>) -> Json<serde_json::Value>
 
 async fn connect_device(
     State(state): State<ControlState>,
+    headers: HeaderMap,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     if !state.hardware_output_enabled {
         return Err(ControlApiError::HardwareOutputDisabled);
     }
     ensure_config_effective(&state).await?;
+    require_physical_output_ack(&state, &headers).await?;
     Ok(Json(state.runtime.connect_device().await?))
 }
 
@@ -1105,6 +1112,22 @@ async fn hardware_output_requested(state: &ControlState) -> bool {
     }
 }
 
+async fn require_physical_output_ack(
+    state: &ControlState,
+    headers: &HeaderMap,
+) -> Result<(), ControlApiError> {
+    if state.hardware_output_enabled
+        && (state.config.is_none() || hardware_output_requested(state).await)
+        && headers
+            .get(PHYSICAL_OUTPUT_ACK_HEADER)
+            .and_then(|value| value.to_str().ok())
+            != Some("confirmed")
+    {
+        return Err(ControlApiError::PhysicalOutputAcknowledgementRequired);
+    }
+    Ok(())
+}
+
 async fn config(State(state): State<ControlState>) -> Result<Json<AppConfig>, ControlApiError> {
     let service = state
         .config
@@ -1308,9 +1331,11 @@ async fn status(State(state): State<ControlState>) -> Json<RuntimeSnapshot> {
 
 async fn start(
     State(state): State<ControlState>,
+    headers: HeaderMap,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_runtime_license(&state).await?;
+    require_physical_output_ack(&state, &headers).await?;
     prepare_config_for_start(&state).await?;
     Ok(Json(state.runtime.start().await?))
 }
@@ -1322,9 +1347,11 @@ async fn stop(State(state): State<ControlState>) -> Result<Json<RuntimeSnapshot>
 
 async fn restart(
     State(state): State<ControlState>,
+    headers: HeaderMap,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
     ensure_runtime_license(&state).await?;
+    require_physical_output_ack(&state, &headers).await?;
     state.runtime.stop().await?;
     prepare_config_for_start(&state).await?;
     Ok(Json(state.runtime.start().await?))
@@ -1587,6 +1614,7 @@ enum ControlApiError {
     Config(ConfigServiceError),
     ConfigUnavailable,
     InvalidFieldUpdate(serde_json::Error),
+    PhysicalOutputAcknowledgementRequired,
     HardwareOutputDisabled,
     DeviceNotConfigured,
     UnsupportedDiagnostic(String),
@@ -1694,6 +1722,11 @@ impl IntoResponse for ControlApiError {
                 StatusCode::BAD_REQUEST,
                 "CONFIG_FIELD_UPDATE_INVALID",
                 format!("expected a field update with section, key, and value: {error}"),
+            ),
+            Self::PhysicalOutputAcknowledgementRequired => (
+                StatusCode::PRECONDITION_REQUIRED,
+                "PHYSICAL_OUTPUT_ACK_REQUIRED",
+                "物理输出已开启；本次启动或连接必须由操作者明确确认。取消操作或先关闭物理输出。".to_owned(),
             ),
             Self::HardwareOutputDisabled => (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2202,6 +2235,155 @@ mod tests {
         assert_eq!(generated.len(), 49);
         assert!(!generated.contains("untrusted-value"));
         runtime.shutdown_daemon().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn physical_output_start_and_reconnect_require_explicit_request_acknowledgement() {
+        use super::*;
+        use novasight_runtime::{RuntimeDependencies, RuntimeSupervisor};
+        use novasight_store::config::YamlConfigRepository;
+        use tower::ServiceExt;
+
+        // RecordingPointerDevice is commissioned but never moves hardware.
+        let (_supervisor, runtime) =
+            RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_output_enabled(true));
+        let app =
+            build_control_router_with_control_plane(runtime.clone(), None, None, None, true, None);
+        for endpoint in ["/api/runtime/start", "/api/v1/runtime/start"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(endpoint)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::PRECONDITION_REQUIRED,
+                "{endpoint}"
+            );
+            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            assert!(String::from_utf8_lossy(&body).contains("PHYSICAL_OUTPUT_ACK_REQUIRED"));
+            assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
+        }
+
+        let acknowledged = |endpoint| {
+            Request::builder()
+                .method("POST")
+                .uri(endpoint)
+                .header(PHYSICAL_OUTPUT_ACK_HEADER, "confirmed")
+                .body(Body::empty())
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone()
+                .oneshot(acknowledged("/api/runtime/start"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        let before_restart = runtime.snapshot().pipeline.state;
+        assert_ne!(before_restart, PipelineState::Stopped);
+        let restart = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/runtime/restart")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(restart.status(), StatusCode::PRECONDITION_REQUIRED);
+        assert_eq!(runtime.snapshot().pipeline.state, before_restart);
+        runtime.disconnect_device().await.unwrap();
+        assert!(!runtime.snapshot().pipeline_metrics.device_connected);
+        let connect = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/executors/kmnet/connect")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(connect.status(), StatusCode::PRECONDITION_REQUIRED);
+        assert!(!runtime.snapshot().pipeline_metrics.device_connected);
+        assert!(
+            app.clone()
+                .oneshot(acknowledged("/api/executors/kmnet/connect"))
+                .await
+                .unwrap()
+                .status()
+                .is_success()
+        );
+        assert!(runtime.snapshot().pipeline_metrics.device_connected);
+
+        // Safety-decreasing actions remain available without acknowledgement.
+        assert!(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/executors/kmnet/disconnect")
+                        .body(Body::empty())
+                        .unwrap()
+                )
+                .await
+                .unwrap()
+                .status()
+                .is_success()
+        );
+        assert!(
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/runtime/stop")
+                    .body(Body::empty())
+                    .unwrap()
+            )
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+        );
+        runtime.shutdown_daemon().await.unwrap();
+
+        // Persisted output intent also requires an acknowledgement when the
+        // current process has not opened its live output gate yet.
+        let root =
+            std::env::temp_dir().join(format!("ns-output-ack-{}", generate_daemon_instance_id()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("config.yaml");
+        std::fs::write(&path, "revision: 0\ncontrol:\n  output_enabled: true\nhardware:\n  auto_connect: true\n  backend: native_udp\n  host: 127.0.0.1\n  port: 8888\n  uuid: A1B2C3D4\n  monitor_port: 5001\n  connect_timeout_ms: 3000\n  send_timeout_ms: 25\n  monitor_timeout_ms: 250\n  trigger_poll_interval_ms: 4\n").unwrap();
+        let service = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+        let (_supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+        let app = build_control_router_with_capabilities(runtime.clone(), service, true, None);
+        assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/runtime/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
+        assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
+        runtime.shutdown_daemon().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

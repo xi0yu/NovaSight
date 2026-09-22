@@ -188,3 +188,21 @@ pub enum ProxyError {
     #[error("WebSocket relay failed: {0}")]
     Relay(#[source] std::io::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn physical_output_ack_survives_gateway_header_filter() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-novasight-physical-output-ack",
+            "confirmed".parse().unwrap(),
+        );
+        headers.insert("x-novasight-csrf", "session-token".parse().unwrap());
+        sanitize_request_headers(&mut headers, false);
+        assert_eq!(headers["x-novasight-physical-output-ack"], "confirmed");
+        assert!(!headers.contains_key("x-novasight-csrf"));
+    }
+}

@@ -180,6 +180,12 @@ impl ControlClient {
             .await
     }
 
+    /// Explicitly acknowledge that this start may resume physical output.
+    pub async fn start_with_physical_output_ack(&self) -> Result<RuntimeSnapshot, ClientError> {
+        self.request_with_output_ack(Method::POST, "/api/v1/runtime/start", None::<&()>, true)
+            .await
+    }
+
     pub async fn stop(&self) -> Result<RuntimeSnapshot, ClientError> {
         self.request(Method::POST, "/api/v1/runtime/stop", None::<&()>)
             .await
@@ -187,6 +193,12 @@ impl ControlClient {
 
     pub async fn restart(&self) -> Result<RuntimeSnapshot, ClientError> {
         self.request(Method::POST, "/api/v1/runtime/restart", None::<&()>)
+            .await
+    }
+
+    /// Explicitly acknowledge that this restart may resume physical output.
+    pub async fn restart_with_physical_output_ack(&self) -> Result<RuntimeSnapshot, ClientError> {
+        self.request_with_output_ack(Method::POST, "/api/v1/runtime/restart", None::<&()>, true)
             .await
     }
 
@@ -517,13 +529,31 @@ impl ControlClient {
         T: DeserializeOwned,
         B: Serialize + ?Sized,
     {
+        self.request_with_output_ack(method, path, body, false)
+            .await
+    }
+
+    async fn request_with_output_ack<T, B>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&B>,
+        physical_output_acknowledged: bool,
+    ) -> Result<T, ClientError>
+    where
+        T: DeserializeOwned,
+        B: Serialize + ?Sized,
+    {
         let body = body
             .map(serde_json::to_vec)
             .transpose()
             .map_err(ClientError::EncodeRequest)?;
-        tokio::time::timeout(self.request_timeout, self.request_inner(method, path, body))
-            .await
-            .map_err(|_| ClientError::Timeout(self.request_timeout))?
+        tokio::time::timeout(
+            self.request_timeout,
+            self.request_inner(method, path, body, physical_output_acknowledged),
+        )
+        .await
+        .map_err(|_| ClientError::Timeout(self.request_timeout))?
     }
 
     async fn request_inner<T>(
@@ -531,6 +561,7 @@ impl ControlClient {
         method: Method,
         path: &str,
         body: Option<Vec<u8>>,
+        physical_output_acknowledged: bool,
     ) -> Result<T, ClientError>
     where
         T: DeserializeOwned,
@@ -550,6 +581,9 @@ impl ControlClient {
             .uri(path)
             .header("host", "localhost")
             .header("connection", "close");
+        if physical_output_acknowledged {
+            request = request.header("x-novasight-physical-output-ack", "confirmed");
+        }
         let body = match body {
             Some(body) => {
                 request = request.header("content-type", "application/json");

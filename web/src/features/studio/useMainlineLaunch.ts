@@ -82,7 +82,7 @@ export function useMainlineLaunch({
     };
   }, [markEmergencyStopCausalityUnknown]);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (physicalOutputAcknowledged = false) => {
     if (requestControllerRef.current !== null) {
       return;
     }
@@ -94,7 +94,7 @@ export function useMainlineLaunch({
     try {
       let requestError: unknown = null;
       try {
-        await startRuntimePipeline(controller.signal);
+        await startRuntimePipeline(controller.signal, physicalOutputAcknowledged);
       } catch (error) {
         if (controller.signal.aborted) {
           return;

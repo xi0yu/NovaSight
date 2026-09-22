@@ -2572,7 +2572,7 @@ export function StudioConsoleView({
         details: [`设备：${kmnetHost || "未填写"}:${kmnetPort || "未填写"}`, "若只想预览识别和算法结果，请先到参数设置关闭物理输出。"],
         confirmLabel: "确认启动并允许物理输出",
         danger: true,
-        onConfirm: startMainlineLaunch
+        onConfirm: () => startMainlineLaunch(true)
       });
       return;
     }
@@ -3551,7 +3551,7 @@ export function StudioConsoleView({
     });
   }, [activeDetectionProfile, deleteClassProfile]);
 
-  const setKmNetConnection = useCallback(async (connect: boolean) => {
+  const setKmNetConnection = useCallback(async (connect: boolean, physicalOutputAcknowledged = false) => {
     setBusy(connect ? "kmnet.connect" : "kmnet.disconnect");
     setLocalError(null);
     setKmnetTestMessage("");
@@ -3586,7 +3586,7 @@ export function StudioConsoleView({
           "kmNet 已断开；采集、推理与目标计算继续运行，物理偏移输出已关闭。"
         );
       } else {
-        await connectKmNet(signal);
+        await connectKmNet(signal, physicalOutputAcknowledged);
         setKmnetTestMessageTone("success");
         setKmnetTestMessage("kmNet 连接成功；若偏移输出已允许，新的实时命令现在可以发送。");
       }
@@ -3621,7 +3621,7 @@ export function StudioConsoleView({
       details: [`设备：${kmnetHost || "未填写"}:${kmnetPort || "未填写"}`, "若只想验证设备连接，请先到参数设置关闭物理输出。"],
       confirmLabel: "确认连接并允许物理输出",
       danger: true,
-      onConfirm: () => setKmNetConnection(true)
+      onConfirm: () => setKmNetConnection(true, true)
     });
   }, [kmnetHost, kmnetPort, outputEnabled, runtimeOutputEnabled, setKmNetConnection]);
 

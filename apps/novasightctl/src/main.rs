@@ -31,11 +31,19 @@ enum Command {
     /// Print the current immutable runtime snapshot.
     Status,
     /// Start the runtime pipeline.
-    Start,
+    Start {
+        /// Confirm that this start may send physical output if it is enabled.
+        #[arg(long)]
+        allow_physical_output: bool,
+    },
     /// Stop the runtime pipeline.
     Stop,
     /// Restart the runtime pipeline with a new epoch.
-    Restart,
+    Restart {
+        /// Confirm that this restart may send physical output if it is enabled.
+        #[arg(long)]
+        allow_physical_output: bool,
+    },
     /// Immediately close output and stop the runtime pipeline.
     EmergencyStop,
     /// Gracefully stop the package-local NovaSight daemon.
@@ -292,21 +300,29 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
             .await
             .map(Box::new)
             .map(CommandOutput::Runtime),
-        Command::Start => client
-            .start()
-            .await
-            .map(Box::new)
-            .map(CommandOutput::Runtime),
+        Command::Start {
+            allow_physical_output,
+        } => if allow_physical_output {
+            client.start_with_physical_output_ack().await
+        } else {
+            client.start().await
+        }
+        .map(Box::new)
+        .map(CommandOutput::Runtime),
         Command::Stop => client
             .stop()
             .await
             .map(Box::new)
             .map(CommandOutput::Runtime),
-        Command::Restart => client
-            .restart()
-            .await
-            .map(Box::new)
-            .map(CommandOutput::Runtime),
+        Command::Restart {
+            allow_physical_output,
+        } => if allow_physical_output {
+            client.restart_with_physical_output_ack().await
+        } else {
+            client.restart().await
+        }
+        .map(Box::new)
+        .map(CommandOutput::Runtime),
         Command::EmergencyStop => client
             .emergency_stop()
             .await
