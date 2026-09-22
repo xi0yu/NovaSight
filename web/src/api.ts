@@ -227,7 +227,6 @@ export const API_PATHS = {
   configSchema: "/api/config/schema",
   captureCapabilities: "/api/capture/capabilities",
   captureSelect: "/api/capture/select",
-  captureStop: "/api/capture/stop",
   capturePreview: "/api/capture/preview",
   captureStream: "/api/capture/stream.mjpg",
   crosshair: "/api/crosshair",
@@ -777,22 +776,6 @@ export function selectCaptureProfile(payload: CaptureSelectPayload, signal?: Abo
       },
       body: encodeJsonBody(payload),
       signal
-    },
-    undefined,
-    decodeCaptureState
-  );
-}
-
-export function stopCapture(reason = "用户停止采集"): Promise<CaptureState> {
-  const checkedReason = requireNonBlank(reason, "reason");
-  return requestJson<CaptureState>(
-    API_PATHS.captureStop,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: encodeJsonBody({ reason: checkedReason })
     },
     undefined,
     decodeCaptureState
