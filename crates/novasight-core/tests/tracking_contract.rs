@@ -597,7 +597,41 @@ fn invalid_motion_state_is_neutral_in_target_scoring() {
     let selected = core.select_at(&moving, OBSERVATION_CENTER, 1_020_000_000);
 
     assert_eq!(selected.target_track_id, Some(locked));
-    assert!(!selected.target_state_valid);
+    assert_eq!(selected.target_aim_x, Some(280.0));
+    assert!(!selected.target_rebuilt);
+}
+
+#[test]
+fn aim_point_policy_change_rebuilds_prediction_history_without_restarting_for_other_tuning() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
+    let detection = Detection::new(1, 0, 280.0, 280.0, 80.0, 100.0, 0.9).unwrap();
+    core.select_at(&[detection], OBSERVATION_CENTER, 1_000_000_000);
+    let stable = core.select_at(
+        &[Detection::new(2, 0, 280.0, 280.0, 80.0, 100.0, 0.9).unwrap()],
+        OBSERVATION_CENTER,
+        1_010_000_000,
+    );
+    assert!(!stable.target_rebuilt);
+
+    let mut config = TargetingConfig::default();
+    config.aim_y_ratio = 0.62;
+    core.set_config(config.clone());
+    let rebuilt = core.select_at(
+        &[Detection::new(3, 0, 280.0, 280.0, 80.0, 100.0, 0.9).unwrap()],
+        OBSERVATION_CENTER,
+        1_020_000_000,
+    );
+    assert!(rebuilt.target_rebuilt);
+    assert_eq!(rebuilt.target_aim_y, Some(342.0));
+
+    config.switch_delay_ms = 75.0;
+    core.set_config(config);
+    let same_target = core.select_at(
+        &[Detection::new(4, 0, 280.0, 280.0, 80.0, 100.0, 0.9).unwrap()],
+        OBSERVATION_CENTER,
+        1_030_000_000,
+    );
+    assert!(!same_target.target_rebuilt);
 }
 
 #[test]

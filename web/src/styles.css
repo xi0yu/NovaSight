@@ -1168,6 +1168,26 @@ tbody tr:hover {
   font-size: 0.76rem;
 }
 
+.model-selection-toolbar .model-selection-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-folder-create {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.model-folder-create label { color: var(--text-primary); font-size: 0.78rem; font-weight: 700; }
+.model-folder-create > div { display: flex; gap: 8px; }
+.model-folder-create input { min-width: 0; flex: 1; padding: 8px 10px; border: 1px solid var(--border-default); border-radius: 8px; background: var(--bg-surface); color: var(--text-primary); }
+.model-folder-create small { color: var(--text-tertiary); }
+.model-folder-create p { margin: 0; color: var(--danger); font-size: 0.76rem; }
+
 .model-vault-filters {
   display: grid;
   gap: 10px;
@@ -2168,6 +2188,11 @@ tbody tr:hover {
   .model-selection-toolbar .console-button {
     width: 100%;
   }
+
+  .model-selection-toolbar .model-selection-toolbar-actions { width: 100%; }
+  .model-folder-create > div { flex-wrap: wrap; }
+  .model-folder-create input { flex: 1 1 100%; min-height: 44px; }
+  .model-folder-create .console-button { flex: 1 1 0; }
 
   .model-selection-preview-heading {
     grid-template-columns: 38px minmax(0, 1fr);

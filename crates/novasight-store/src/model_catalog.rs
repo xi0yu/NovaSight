@@ -1001,9 +1001,17 @@ impl SqliteModelCatalog {
         }
 
         let mut unique_files = HashMap::new();
+        let mut unique_directories = HashSet::new();
         for catalog_root in &self.catalog_roots {
             let mut root_files = Vec::new();
-            scan_model_files(catalog_root, catalog_root, &mut root_files)?;
+            let mut root_directories = Vec::new();
+            scan_model_files(
+                catalog_root,
+                catalog_root,
+                &mut root_files,
+                &mut root_directories,
+            )?;
+            unique_directories.extend(root_directories);
             for (relative, absolute, size_bytes) in root_files {
                 unique_files
                     .entry(relative.clone())
@@ -1018,6 +1026,11 @@ impl SqliteModelCatalog {
             relative_path: String::new(),
             children: Vec::new(),
         };
+        let mut directories = unique_directories.into_iter().collect::<Vec<_>>();
+        directories.sort();
+        for directory in directories {
+            ensure_directory_node(&mut root, &directory);
+        }
         for (relative, absolute, size_bytes) in &files {
             let kind = relative
                 .extension()
@@ -1094,6 +1107,60 @@ impl SqliteModelCatalog {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cached_response);
         Ok(response)
+    }
+
+    pub fn create_catalog_directory(
+        &self,
+        relative_path: &str,
+    ) -> Result<String, ModelCatalogError> {
+        let relative = validate_catalog_directory_path(relative_path)?;
+        let root = &self.model_root;
+        match std::fs::symlink_metadata(root) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(ModelCatalogError::InvalidCatalogDirectoryPath(
+                    relative_path.to_owned(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::create_dir_all(root).map_err(|source| {
+                    ModelCatalogError::CreateModelDirectory {
+                        path: root.clone(),
+                        source,
+                    }
+                })?;
+            }
+            Err(source) => {
+                return Err(ModelCatalogError::ReadModelDirectory {
+                    path: root.clone(),
+                    source,
+                });
+            }
+        }
+        for catalog_root in &self.catalog_roots {
+            let candidate = catalog_root.join(&relative);
+            match std::fs::symlink_metadata(&candidate) {
+                Ok(_) => {
+                    return Err(ModelCatalogError::CatalogDirectoryExists(
+                        relative_path.to_owned(),
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(ModelCatalogError::ReadModelDirectory {
+                        path: candidate,
+                        source,
+                    });
+                }
+            }
+        }
+        let destination = root.join(&relative);
+        create_directory_beneath_root(root, &relative, &destination)?;
+        *self
+            .catalog_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        Ok(relative.to_string_lossy().replace('\\', "/"))
     }
 
     /// Register one existing TensorRT engine by reference. The model body is
@@ -1721,6 +1788,84 @@ fn validate_catalog_relative_path(value: &str) -> Result<PathBuf, ModelCatalogEr
     Ok(path.to_owned())
 }
 
+fn validate_catalog_directory_path(value: &str) -> Result<PathBuf, ModelCatalogError> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || value.len() > 1024
+        || value.contains('\\')
+        || value.contains('\0')
+        || value
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || path.is_absolute()
+        || !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        || path
+            .components()
+            .any(|component| component.as_os_str().len() > 255)
+    {
+        return Err(ModelCatalogError::InvalidCatalogDirectoryPath(
+            value.to_owned(),
+        ));
+    }
+    Ok(path.to_owned())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn create_directory_beneath_root(
+    root: &Path,
+    relative: &Path,
+    destination: &Path,
+) -> Result<(), ModelCatalogError> {
+    use rustix::fs::{Mode, OFlags, mkdirat, open, openat};
+
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let mut parent = open(root, flags, Mode::empty())
+        .map_err(|_| ModelCatalogError::CatalogDirectoryParentInvalid(root.to_owned()))?;
+    let mut parent_path = root.to_owned();
+    for part in relative.parent().into_iter().flat_map(Path::components) {
+        parent_path.push(part.as_os_str());
+        parent = openat(&parent, part.as_os_str(), flags, Mode::empty())
+            .map_err(|_| ModelCatalogError::CatalogDirectoryParentInvalid(parent_path.clone()))?;
+    }
+    match mkdirat(
+        &parent,
+        relative.file_name().expect("non-empty path"),
+        Mode::from_raw_mode(0o755),
+    ) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::EXIST) => Err(ModelCatalogError::CatalogDirectoryExists(
+            relative.display().to_string(),
+        )),
+        Err(source) => Err(ModelCatalogError::CreateModelDirectory {
+            path: destination.to_owned(),
+            source: source.into(),
+        }),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn create_directory_beneath_root(
+    root: &Path,
+    relative: &Path,
+    destination: &Path,
+) -> Result<(), ModelCatalogError> {
+    let mut parent = root.to_owned();
+    for part in relative.parent().into_iter().flat_map(Path::components) {
+        parent.push(part.as_os_str());
+        let metadata = std::fs::symlink_metadata(&parent)
+            .map_err(|_| ModelCatalogError::CatalogDirectoryParentInvalid(parent.clone()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(ModelCatalogError::CatalogDirectoryParentInvalid(parent));
+        }
+    }
+    std::fs::create_dir(destination).map_err(|source| ModelCatalogError::CreateModelDirectory {
+        path: destination.to_owned(),
+        source,
+    })
+}
+
 fn safe_catalog_component(value: &str, fallback: &str) -> String {
     let normalized = value
         .trim()
@@ -1821,6 +1966,7 @@ fn scan_model_files(
     root: &Path,
     directory: &Path,
     files: &mut Vec<(PathBuf, PathBuf, u64)>,
+    directories: &mut Vec<PathBuf>,
 ) -> Result<(), ModelCatalogError> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
@@ -1851,7 +1997,14 @@ fn scan_model_files(
         }
         let path = entry.path();
         if file_type.is_dir() {
-            scan_model_files(root, &path, files)?;
+            let relative =
+                path.strip_prefix(root)
+                    .map_err(|_| ModelCatalogError::ModelPathOutsideRoot {
+                        path: path.clone(),
+                        root: root.to_owned(),
+                    })?;
+            directories.push(relative.to_owned());
+            scan_model_files(root, &path, files, directories)?;
             continue;
         }
         if !file_type.is_file() {
@@ -2022,10 +2175,18 @@ fn insert_model_node(
     relative_path: &Path,
     model: ModelCatalogModel,
 ) {
+    let parent = relative_path.parent().unwrap_or_else(|| Path::new(""));
+    ensure_directory_node(directory, parent)
+        .children
+        .push(ModelCatalogNode::Model(Box::new(model)));
+}
+
+fn ensure_directory_node<'a>(
+    directory: &'a mut ModelCatalogDirectory,
+    relative_path: &Path,
+) -> &'a mut ModelCatalogDirectory {
     let parts = relative_path
-        .parent()
-        .into_iter()
-        .flat_map(Path::components)
+        .components()
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     let mut current = directory;
@@ -2055,8 +2216,6 @@ fn insert_model_node(
         current = child;
     }
     current
-        .children
-        .push(ModelCatalogNode::Model(Box::new(model)));
 }
 
 fn sort_catalog(directory: &mut ModelCatalogDirectory) {
@@ -2250,6 +2409,17 @@ pub enum ModelCatalogError {
     ModelPathOutsideRoot { path: PathBuf, root: PathBuf },
     #[error("catalog model path must be a relative .engine path: {0}")]
     InvalidCatalogModelPath(String),
+    #[error("model directory path must be relative and stay within the model root: {0}")]
+    InvalidCatalogDirectoryPath(String),
+    #[error("model directory already exists: {0}")]
+    CatalogDirectoryExists(String),
+    #[error("model directory parent is missing, not a directory, or a symlink: {}", .0.display())]
+    CatalogDirectoryParentInvalid(PathBuf),
+    #[error("failed to create model directory {}: {source}", path.display())]
+    CreateModelDirectory {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("catalog TensorRT engine was not found under a configured model root: {}", .0.display())]
     CatalogModelNotFound(PathBuf),
     #[error("model catalog SQLite error: {0}")]

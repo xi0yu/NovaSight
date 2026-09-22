@@ -7,6 +7,7 @@ import {
 } from "./contracts/runtime";
 import {
   decodeConversionJobs,
+  decodeCatalogFolderResponse,
   decodeModelArtifactMetadata,
   decodeModelArtifacts,
   decodeModelCatalog,
@@ -227,6 +228,7 @@ export const API_PATHS = {
   kmnetDiagnosticMove: "/api/executors/kmnet/diagnostic-move",
   modelProjects: "/api/models/projects",
   modelCatalog: "/api/models/catalog",
+  modelCatalogFolders: "/api/models/catalog/folders",
   modelJobs: "/api/models/jobs",
   modelJobsList: "/api/models/jobs/list",
   license: "/api/license",
@@ -807,6 +809,19 @@ export function getModelCatalog(force = false): Promise<ModelCatalogResponse> {
     undefined,
     { timeoutMs: STANDARD_READ_TIMEOUT_MS },
     decodeModelCatalog
+  );
+}
+
+export function createCatalogFolder(relativePath: string): Promise<{ relative_path: string }> {
+  return requestJson(
+    API_PATHS.modelCatalogFolders,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: encodeJsonBody({ relative_path: requireNonBlank(relativePath, "relative_path") })
+    },
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeCatalogFolderResponse
   );
 }
 

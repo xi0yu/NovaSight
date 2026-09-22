@@ -272,6 +272,32 @@ test("model library browses nested folders and respects name and size sorting", 
   expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => document.body.clientWidth));
 });
 
+test("an empty model library creates a folder and reads it back without switching models", async ({ page }) => {
+  await mockStudioApi(page);
+  let created = false;
+  await page.route("**/api/models/catalog?*", async (route) => route.fulfill({ json: {
+    root: { type: "directory", name: "models", relative_path: "", children: created
+      ? [{ type: "directory", name: "Arena", relative_path: "Arena", children: [] }] : [] },
+    directory_count: created ? 1 : 0, model_count: 0, discovered_files: 0,
+    updated_files: 0, cache_hits: 0, force: false,
+  } }));
+  await page.route("**/api/models/catalog/folders", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().postDataJSON()).toEqual({ relative_path: "Arena" });
+    created = true;
+    await route.fulfill({ json: { relative_path: "Arena" } });
+  });
+  await page.goto("/?page=models");
+  await page.getByRole("button", { name: "新建文件夹" }).click();
+  await page.getByLabel("在 全部文件夹 中新建文件夹").fill("Arena");
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Arena", exact: true })).toHaveAttribute("aria-current", "page");
+  await page.getByRole("button", { name: "全部文件夹", exact: true }).click();
+  await expect(page.getByRole("button", { name: "打开文件夹 Arena，包含 0 个模型" })).toBeVisible();
+  await expect(page.getByText("文件夹 Arena 已创建；模型部署未改变。")).toBeVisible();
+  expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => document.body.clientWidth));
+});
+
 test("model organization saves catalog metadata without switching the runtime model", async ({ page }) => {
   await mockStudioApi(page);
   let recommendation = "unrated";

@@ -114,6 +114,10 @@ receipts.
 
 ## Product Module Areas and Seams
 
+The [workspace-bound algorithm self-check map](docs/algorithm-self-check-map.md)
+tracks current code links and explicitly open safety/fairness checks. The older
+2026-08-31 interactive visualization is a historical snapshot, not current proof.
+
 ```mermaid
 flowchart LR
     UI[Studio frontend] --> GATE[Web gateway / HTTP]

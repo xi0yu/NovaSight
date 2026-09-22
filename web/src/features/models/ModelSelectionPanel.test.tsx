@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -26,7 +26,7 @@ describe("ModelSelectionPanel", () => {
       selectedArtifact: null, selectedVersion: null, activeArtifactId: null, activeArtifactPath: "",
       runtimeBackend: "", runtimeInputShape: "", catalogMessage: "", switchMessage: "",
       busy: null, canSwitch: true, parserPreset: "auto" as const,
-      onParserPresetChange: vi.fn(), onRefresh: vi.fn(), onSelectModel: vi.fn(),
+      onParserPresetChange: vi.fn(), onRefresh: vi.fn(), onCreateFolder: vi.fn(async () => {}), onSelectModel: vi.fn(),
       onSaveMetadata: vi.fn(), onSwitch: vi.fn(), ...overrides,
     };
   }
@@ -109,6 +109,7 @@ describe("ModelSelectionPanel", () => {
         parserPreset="auto"
         onParserPresetChange={vi.fn()}
         onRefresh={vi.fn()}
+        onCreateFolder={vi.fn(async () => {})}
         onSelectModel={vi.fn()}
         onSaveMetadata={vi.fn()}
         onSwitch={vi.fn()}
@@ -161,6 +162,7 @@ describe("ModelSelectionPanel", () => {
       parserPreset: "auto" as const,
       onParserPresetChange: vi.fn(),
       onRefresh: vi.fn(),
+      onCreateFolder: vi.fn(async () => {}),
       onSelectModel: vi.fn(),
       onSaveMetadata: vi.fn(),
       onSwitch: vi.fn(),
@@ -195,7 +197,7 @@ describe("ModelSelectionPanel", () => {
       selectedPath="stable.engine" selectedModel={model} selectedArtifact={null} selectedVersion={null}
       activeArtifactId={null} activeArtifactPath="" runtimeBackend="" runtimeInputShape=""
       catalogMessage="" switchMessage="" busy={null} canSwitch
-      parserPreset="auto" onParserPresetChange={vi.fn()} onRefresh={vi.fn()}
+      parserPreset="auto" onParserPresetChange={vi.fn()} onRefresh={vi.fn()} onCreateFolder={vi.fn(async () => {})}
       onSelectModel={vi.fn()} onSaveMetadata={vi.fn()} onSwitch={onSwitch}
     />);
 
@@ -254,6 +256,30 @@ describe("ModelSelectionPanel", () => {
     expect(screen.getByRole("button", { name: /arena.engine，路径 Arena\/v2\/arena.engine/ })).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "全部文件夹" }));
     expect(screen.getByRole("button", { name: "打开文件夹 Arena，包含 1 个模型" })).toBeVisible();
+  });
+
+  it("creates a folder from an empty model catalog without changing the deployment", async () => {
+    const onCreateFolder = vi.fn(async () => {});
+    render(<ModelSelectionPanel {...panelProps({
+      root: { ...catalog, children: [] }, modelCount: 0, directoryCount: 0,
+      selectedModel: null, selectedPath: undefined, canSwitch: false, onCreateFolder,
+    })} />);
+    await userEvent.click(screen.getByRole("button", { name: "新建文件夹" }));
+    await userEvent.type(screen.getByLabelText("在 全部文件夹 中新建文件夹"), "Arena");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+    expect(onCreateFolder).toHaveBeenCalledWith("Arena");
+    await waitFor(() => expect(screen.queryByLabelText("在 全部文件夹 中新建文件夹")).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "验证并切换到所选模型" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the folder name and backend reason when creation fails", async () => {
+    const onCreateFolder = vi.fn(async () => { throw new Error("文件夹已存在"); });
+    render(<ModelSelectionPanel {...panelProps({ onCreateFolder })} />);
+    await userEvent.click(screen.getByRole("button", { name: "新建文件夹" }));
+    await userEvent.type(screen.getByLabelText("在 全部文件夹 中新建文件夹"), "Arena");
+    await userEvent.click(screen.getByRole("button", { name: "创建" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("文件夹已存在");
+    expect(screen.getByLabelText("在 全部文件夹 中新建文件夹")).toHaveValue("Arena");
   });
 
   it("remembers the operator's sorting choice for this browser session", async () => {

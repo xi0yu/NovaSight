@@ -43,6 +43,7 @@ import {
   getCaptureCapabilities,
   getModelArtifacts,
   getModelCatalog,
+  createCatalogFolder,
   getModelVersions,
   selectCaptureProfile,
   setRuntimeOutputGate,
@@ -3779,6 +3780,28 @@ export function StudioConsoleView({
     }
   };
 
+  const createModelFolder = async (relativePath: string) => {
+    setBusy("model.folder.create");
+    setLocalError(null);
+    let created = false;
+    try {
+      await createCatalogFolder(relativePath);
+      created = true;
+      const result = await getModelCatalog(true);
+      applyModelCatalogResult(result);
+      setModelCatalogMessage(`文件夹 ${relativePath} 已创建；模型部署未改变。`);
+    } catch (error) {
+      const message = created
+        ? `文件夹已创建，但列表刷新失败：${getErrorMessage(error)}。请点击“刷新模型”查看。`
+        : `新建文件夹失败：${getErrorMessage(error)}`;
+      setLocalError(message);
+      reportError(error, { source: "model-folder", title: created ? "文件夹列表刷新失败" : "新建文件夹失败", popup: false });
+      throw new Error(message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const realtimeStatusText = runtimeDeliveryLabel(realtimeStatus);
   const realtimeStatusDescription = runtimeDeliveryDescription(realtimeStatus);
   const realtimeStatusClass = `console-live ${runtimeDeliveryTone(realtimeStatus)}`;
@@ -4005,6 +4028,7 @@ export function StudioConsoleView({
                 parserPreset,
                 onParserPresetChange: setParserPreset,
                 onRefresh: () => void refreshModelCatalog(),
+                onCreateFolder: createModelFolder,
                 onSelectModel: selectModelFromCatalog,
                 onSaveMetadata: (recommendation, tags) => void modelSwitch.saveMetadata(recommendation, tags),
                 onSwitch: modelSwitch.switchModel,
@@ -5821,6 +5845,7 @@ export function StudioConsoleView({
           parserPreset,
           onParserPresetChange: setParserPreset,
           onRefresh: () => void refreshModelCatalog(),
+          onCreateFolder: createModelFolder,
           onSelectModel: selectModelFromCatalog,
           onSaveMetadata: (recommendation, tags) => void modelSwitch.saveMetadata(recommendation, tags),
           onSwitch: modelSwitch.switchModel

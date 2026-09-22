@@ -11,6 +11,7 @@ import type {
 import { StatusIndicator } from "../../components/ui";
 import { NovaIcon } from "../../components/visual";
 import { findCatalogDirectory, flattenCatalogModels, ModelCatalogTree, type ModelSortOrder } from "./ModelCatalogTree";
+import { getErrorMessage } from "../shared/format";
 import {
   artifactStatus,
   formatModelSize,
@@ -71,6 +72,7 @@ export interface ModelSelectionPanelProps {
   parserPreset: ParserPresetId;
   onParserPresetChange: (preset: ParserPresetId) => void;
   onRefresh: () => void;
+  onCreateFolder: (relativePath: string) => Promise<void>;
   onSelectModel: (model: ModelCatalogModel) => void;
   onSaveMetadata: (recommendation: ModelRecommendation, tags: string[]) => void;
   onSwitch: () => void;
@@ -97,6 +99,7 @@ export function ModelSelectionPanel({
   parserPreset,
   onParserPresetChange,
   onRefresh,
+  onCreateFolder,
   onSelectModel,
   onSaveMetadata,
   onSwitch
@@ -108,6 +111,10 @@ export function ModelSelectionPanel({
   const [tagFilters, setTagFilters] = useState<Set<string>>(() => new Set(initialFilters.tags));
   const [sortOrder, setSortOrder] = useState<ModelSortOrder>(initialFilters.sort);
   const [folderPath, setFolderPath] = useState("");
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [folderCreating, setFolderCreating] = useState(false);
+  const [folderActionError, setFolderActionError] = useState<string | null>(null);
   const folderChosenRef = useRef(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [draftRecommendation, setDraftRecommendation] = useState<ModelRecommendation>("unrated");
@@ -231,6 +238,27 @@ export function ModelSelectionPanel({
   const chooseFolder = (path: string) => {
     folderChosenRef.current = true;
     setFolderPath(path);
+    setNewFolderOpen(false);
+    setFolderActionError(null);
+  };
+  const createFolder = async () => {
+    const name = newFolderName.trim();
+    if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") {
+      setFolderActionError("请输入一个文件夹名称，不要包含路径分隔符。");
+      return;
+    }
+    const path = folderPath ? `${folderPath}/${name}` : name;
+    setFolderCreating(true);
+    setFolderActionError(null);
+    try {
+      await onCreateFolder(path);
+      setNewFolderName("");
+      chooseFolder(path);
+    } catch (error) {
+      setFolderActionError(getErrorMessage(error));
+    } finally {
+      setFolderCreating(false);
+    }
   };
   const selectModel = (model: ModelCatalogModel) => {
     chooseFolder(model.relative_path.split("/").slice(0, -1).join("/"));
@@ -243,16 +271,33 @@ export function ModelSelectionPanel({
           <strong>设备模型文件</strong>
           <span>共 {modelCount} 个模型 · {directoryCount} 个文件夹；项目与版本在首次使用时自动登记</span>
         </div>
-        <button
-          className="console-button secondary"
-          disabled={busy !== null || metadataDirty || pendingTagIsNew}
-          onClick={onRefresh}
-          type="button"
-        >
-          <NovaIcon name="refresh" size={15} />
-          {busy === "model.refresh" ? "刷新中..." : "刷新模型"}
-        </button>
+        <div className="model-selection-toolbar-actions">
+          <button className="console-button secondary"
+            disabled={busy !== null || metadataDirty || pendingTagIsNew || folderCreating}
+            onClick={() => { setNewFolderOpen((current) => !current); setFolderActionError(null); }}
+            type="button"
+          >新建文件夹</button>
+          <button
+            className="console-button secondary"
+            disabled={busy !== null || metadataDirty || pendingTagIsNew || folderCreating}
+            onClick={onRefresh}
+            type="button"
+          >
+            <NovaIcon name="refresh" size={15} />
+            {busy === "model.refresh" ? "刷新中..." : "刷新模型"}
+          </button>
+        </div>
       </header>
+
+      {newFolderOpen ? <form className="model-folder-create" onSubmit={(event) => { event.preventDefault(); void createFolder(); }}>
+        <label htmlFor="model-folder-name">在 {folderPath || "全部文件夹"} 中新建文件夹</label>
+        <div>
+          <input autoFocus id="model-folder-name" maxLength={50} onChange={(event) => { setNewFolderName(event.target.value); setFolderActionError(null); }} placeholder="文件夹名称" value={newFolderName} />
+          <button className="console-button primary" disabled={folderCreating || busy !== null} type="submit">{folderCreating ? "创建中..." : "创建"}</button>
+          <button className="console-button secondary" disabled={folderCreating} onClick={() => { setNewFolderOpen(false); setFolderActionError(null); }} type="button">取消</button>
+        </div>
+        {folderActionError ? <p role="alert">{folderActionError}</p> : <small>只创建目录，不移动模型，也不会改变当前部署。</small>}
+      </form> : null}
 
       {catalogMessage ? <div className="model-switch-note good">{catalogMessage}</div> : null}
 
@@ -307,7 +352,7 @@ export function ModelSelectionPanel({
               ) : null}
             </div>
           </section> : null}
-          {models.length > 0 ? <div className="model-folder-toolbar">
+          {root && (models.length > 0 || currentFolders.length > 0 || folderPath) ? <div className="model-folder-toolbar">
             {filterActive ? <div className="model-folder-results">
               <strong>全部文件夹的筛选结果</strong>
               <small>{filteredModels.length} 个模型 · 清除筛选后返回当前文件夹</small>
@@ -351,9 +396,11 @@ export function ModelSelectionPanel({
             />
           ) : (
             <div className="model-catalog-placeholder">
-              {models.length > 0
+              {folderPath && !filterActive
+                ? <><p>当前文件夹为空。可以在这里新建子文件夹，或将模型文件放入设备的对应目录。</p><button className="console-button" onClick={() => chooseFolder("")} type="button">返回全部文件夹</button></>
+                : models.length > 0
                 ? <><p>{filterActive ? "没有符合条件的模型文件。" : "当前文件夹没有模型文件。"}</p>{filterActive ? <button className="console-button" onClick={clearFilters} type="button">清除筛选</button> : <button className="console-button" onClick={() => chooseFolder("")} type="button">返回全部文件夹</button>}</>
-                : "暂无可选模型。将 .engine 文件放入设备的 models 目录后点击“刷新模型”；.onnx 文件不能直接切换到当前主链。"}
+                : "暂无可选模型。可先新建文件夹，或将 .engine 文件放入设备的 models 目录后点击“刷新模型”；.onnx 文件不能直接切换到当前主链。"}
             </div>
           )}
         </div>

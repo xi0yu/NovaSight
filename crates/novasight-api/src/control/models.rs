@@ -20,6 +20,7 @@ pub(super) fn routes() -> Router<ControlState> {
     Router::new()
         .route("/api/models/projects", get(model_projects))
         .route("/api/models/catalog", get(get_model_catalog))
+        .route("/api/models/catalog/folders", post(create_catalog_folder))
         .route("/api/models/catalog/register", post(register_catalog_model))
         .route(
             "/api/models/artifacts/{artifact_id}/metadata",
@@ -408,6 +409,28 @@ async fn get_model_catalog(
     Ok(Json(
         run(&state, move |catalog| catalog.catalog(query.force)).await?,
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateCatalogFolderRequest {
+    relative_path: String,
+}
+
+#[derive(Serialize)]
+struct CatalogFolderResponse {
+    relative_path: String,
+}
+
+async fn create_catalog_folder(
+    State(state): State<ControlState>,
+    Json(request): Json<CreateCatalogFolderRequest>,
+) -> Result<Json<CatalogFolderResponse>, ControlApiError> {
+    let relative_path = run(&state, move |catalog| {
+        catalog.create_catalog_directory(&request.relative_path)
+    })
+    .await?;
+    Ok(Json(CatalogFolderResponse { relative_path }))
 }
 
 #[derive(Deserialize)]

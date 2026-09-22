@@ -999,6 +999,7 @@ fn requires_geometry_fallback(reason: &str) -> bool {
             | "template_unavailable"
             | "geometry_changed"
             | "observation_unconfirmed"
+            | "observation_stale"
     )
 }
 
@@ -1154,6 +1155,12 @@ mod tests {
         let reference = hub.resolve(320.0, 320.0, 640, 640);
         assert_eq!(reference.source, "vision_verified");
         assert!((reference.x - 324.0).abs() <= 1.0);
+        lock(&hub.state).last_confirmed_at = Some(Instant::now() - Duration::from_secs(2));
+        let stale = hub.resolve(320.0, 320.0, 640, 640);
+        assert_eq!(stale.source, "geometry");
+        assert_eq!(stale.reason, "observation_stale");
+        assert_eq!((stale.x, stale.y), (320.0, 320.0));
+        assert!(!hub.snapshot().control_reference_ready);
         assert!(
             hub.template_preview_png()
                 .unwrap()

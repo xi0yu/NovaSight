@@ -13,6 +13,10 @@ Current engineering health, active risks, and verification boundaries are kept
 in [PROJECT_HEALTH_AUDIT.md](PROJECT_HEALTH_AUDIT.md), including the current
 frontend, GPU-result, algorithm, and output-delivery module map. Historical plans under
 `docs/superpowers/` are not current implementation authority.
+The workspace-bound [algorithm safety self-check map](docs/algorithm-self-check-map.md)
+separates current code ownership from unverified hardware and fairness claims.
+The [user request acceptance ledger](docs/user-request-acceptance-ledger.md) tracks
+each requested outcome separately from still-missing live proof.
 
 ## Repository layout
 

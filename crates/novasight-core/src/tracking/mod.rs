@@ -111,10 +111,6 @@ pub struct TargetSelection {
     pub target_class_id: Option<u32>,
     pub target_detection_confidence: Option<f32>,
     pub target_identity_confidence: Option<f64>,
-    /// Whether the tracker state is safe to feed into motion prediction.
-    /// Identity can remain stable while a low-confidence Kalman estimate
-    /// deliberately falls back to the latest observed aim point.
-    pub target_state_valid: bool,
     /// The selected identity was created or restored on this observation.
     pub target_rebuilt: bool,
     /// Control aim point. Association continues to use the geometric center.
@@ -145,7 +141,6 @@ impl TargetSelection {
             target_class_id: None,
             target_detection_confidence: None,
             target_identity_confidence: None,
-            target_state_valid: false,
             target_rebuilt: false,
             target_aim_x: None,
             target_aim_y: None,
@@ -290,6 +285,13 @@ impl TargetingCore {
     }
 
     pub fn set_config(&mut self, config: TargetingConfig) {
+        if self.config.aim_y_ratio != config.aim_y_ratio
+            || self.config.class_aim_y_ratios != config.class_aim_y_ratios
+        {
+            // The same box now denotes a different aim point; old samples
+            // cannot remain in a target-relative prediction history.
+            self.reset();
+        }
         self.config = config;
     }
 
@@ -380,7 +382,6 @@ impl TargetingCore {
                 target_class_id: None,
                 target_detection_confidence: None,
                 target_identity_confidence: None,
-                target_state_valid: false,
                 target_rebuilt: false,
                 target_aim_x: None,
                 target_aim_y: None,
@@ -748,7 +749,6 @@ impl TargetingCore {
             target_class_id: Some(track.class_id),
             target_detection_confidence: Some(track.confidence),
             target_identity_confidence: Some(track.identity_confidence),
-            target_state_valid: track.kalman.prediction_valid(),
             target_rebuilt: has_track_id(&rebuilt_ids, track.id),
             target_aim_x: Some(aim_x),
             target_aim_y: Some(aim_y),

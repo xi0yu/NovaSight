@@ -1763,9 +1763,20 @@ impl IntoResponse for ControlApiError {
                     "MODEL_DEPLOYMENT_INVALID",
                     error.to_string(),
                 ),
-                ModelCatalogError::InvalidCatalogModelPath(_) => (
+                ModelCatalogError::InvalidCatalogModelPath(_)
+                | ModelCatalogError::InvalidCatalogDirectoryPath(_) => (
                     StatusCode::BAD_REQUEST,
                     "MODEL_CATALOG_PATH_INVALID",
+                    error.to_string(),
+                ),
+                ModelCatalogError::CatalogDirectoryExists(_) => (
+                    StatusCode::CONFLICT,
+                    "MODEL_DIRECTORY_EXISTS",
+                    error.to_string(),
+                ),
+                ModelCatalogError::CatalogDirectoryParentInvalid(_) => (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "MODEL_DIRECTORY_PARENT_INVALID",
                     error.to_string(),
                 ),
                 ModelCatalogError::InvalidArtifactTags(_) => (
@@ -1994,6 +2005,66 @@ impl IntoResponse for ControlApiError {
 mod tests {
     use super::runtime_snapshot_confirms_safe;
     use novasight_runtime::{PipelineState, RuntimeSnapshot};
+
+    #[tokio::test]
+    async fn catalog_folder_http_create_readback_and_conflict() {
+        use super::*;
+        use novasight_runtime::RuntimeSupervisor;
+        use tower::ServiceExt;
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "novasight-catalog-http-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let catalog =
+            SqliteModelCatalog::open_with_model_root(root.join("registry.db"), root.join("models"))
+                .unwrap();
+        let (_supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+        let app = build_control_router_with_control_plane(
+            runtime,
+            None,
+            None,
+            Some(catalog),
+            false,
+            None,
+        );
+        let create = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/models/catalog/folders")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"relative_path":"Arena"}"#))
+                .unwrap()
+        };
+        let response = app.clone().oneshot(create()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let readback = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/models/catalog?force=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readback.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(readback.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["root"]["children"][0]["relative_path"], "Arena");
+        assert_eq!(
+            app.oneshot(create()).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn request_id_is_shared_by_success_and_rejection_and_exposed_to_studio() {
