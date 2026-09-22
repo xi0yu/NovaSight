@@ -146,12 +146,14 @@ configured production public key for signed activation.
 Debug temporary access includes `hardware_control` for the current daemon
 process, using the same single authorization code. It does not itself connect
 kmNet or open the output gate; those remain explicit operator actions.
-If saved physical output is enabled, each mainline start/restart, kmNet
-reconnect, or running-model publish/rollback request must also carry
-`X-NovaSight-Physical-Output-Ack: confirmed`.
+When saved physical output is enabled, mainline start/restart, kmNet reconnect,
+running-model publish/rollback/probe, and running epoch-reloading config
+requests must carry `X-NovaSight-Physical-Output-Ack: confirmed`. Enabling
+hardware output also requires it, as do risk-increasing control/pipeline hot
+updates while output is active.
 Studio sends this only after its action-specific confirmation; the local CLI
-uses `--allow-physical-output` on `start`, `restart`, `model publish`, or
-`model rollback`. Missing acknowledgement returns
+uses `--allow-physical-output` on `start`, `restart`, `model publish`,
+`model rollback`, `model probe`, or `config set`. Missing acknowledgement returns
 HTTP 428 without starting or reconnecting. This header is not another license
 code and does not prove a person is supervising the device. Stopping,
 emergency stopping and disconnecting never require it.

@@ -15,7 +15,10 @@ use novasight_store::model_catalog::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{ControlApiError, ControlState, PipelineState, require_physical_output_ack};
+use super::{
+    ControlApiError, ControlState, PipelineState, require_epoch_reload_ack,
+    require_physical_output_ack,
+};
 
 pub(super) fn routes() -> Router<ControlState> {
     Router::new()
@@ -360,8 +363,11 @@ const fn default_probe_input_mode() -> ModelProbeInputMode {
 async fn probe_model(
     Path(artifact_id): Path<i64>,
     State(state): State<ControlState>,
+    headers: HeaderMap,
     Json(request): Json<ProbeModelRequest>,
 ) -> Result<Json<ModelIngressResult>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    require_epoch_reload_ack(&state, &headers).await?;
     super::ensure_config_effective(&state).await?;
     state
         .runtime

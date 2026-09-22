@@ -954,6 +954,7 @@ async fn apply_pipeline_config_update(
 async fn apply_config_field_update(
     state: &ControlState,
     service: &ConfigService,
+    headers: &HeaderMap,
     update: ConfigFieldUpdate,
 ) -> Result<ConfigUpdate, ControlApiError> {
     let hot_output_gate = update.section == "control" && update.key == "output_enabled";
@@ -962,6 +963,12 @@ async fn apply_config_field_update(
     let hot_pipeline = hot_pipeline_config_update(&update);
     if hot_output_gate && update.value.as_bool() == Some(true) {
         ensure_hardware_control_license(state).await?;
+        if state.hardware_output_enabled {
+            require_physical_output_ack_header(headers)?;
+        }
+    }
+    if (hot_trigger_mode && update.value.as_str() == Some("always")) || hot_recoil || hot_pipeline {
+        require_physical_output_ack(state, headers).await?;
     }
     let result = if hot_output_gate {
         service.update_output_gate(&state.runtime, update).await?
@@ -972,11 +979,25 @@ async fn apply_config_field_update(
     } else if hot_pipeline {
         apply_pipeline_config_update(state, service, update).await?
     } else if runtime_reconfigurable_config_update(&update) {
+        require_epoch_reload_ack(state, headers).await?;
         service.update_runtime_field(&state.runtime, update).await?
     } else {
         service.update_field(update).await?
     };
     Ok(result)
+}
+
+async fn require_epoch_reload_ack(
+    state: &ControlState,
+    headers: &HeaderMap,
+) -> Result<(), ControlApiError> {
+    if matches!(
+        state.runtime.snapshot().pipeline.state,
+        PipelineState::Running | PipelineState::Standby
+    ) {
+        require_physical_output_ack(state, headers).await?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -999,6 +1020,7 @@ impl ConfigCommandRequest {
         self,
         state: &ControlState,
         service: &ConfigService,
+        headers: &HeaderMap,
     ) -> Result<ConfigUpdate, ControlApiError> {
         match self {
             Self::SetOutputGate {
@@ -1007,6 +1029,9 @@ impl ConfigCommandRequest {
             } => {
                 if enabled {
                     ensure_hardware_control_license(state).await?;
+                    if state.hardware_output_enabled {
+                        require_physical_output_ack_header(headers)?;
+                    }
                 }
                 Ok(service
                     .update_output_gate(
@@ -1023,17 +1048,22 @@ impl ConfigCommandRequest {
             Self::SetTriggerMode {
                 mode,
                 expected_revision,
-            } => Ok(service
-                .update_trigger_mode(
-                    &state.runtime,
-                    ConfigFieldUpdate {
-                        section: "control".to_owned(),
-                        key: "trigger_mode".to_owned(),
-                        value: serde_json::Value::String(mode),
-                        expected_revision,
-                    },
-                )
-                .await?),
+            } => {
+                if mode == "always" {
+                    require_physical_output_ack(state, headers).await?;
+                }
+                Ok(service
+                    .update_trigger_mode(
+                        &state.runtime,
+                        ConfigFieldUpdate {
+                            section: "control".to_owned(),
+                            key: "trigger_mode".to_owned(),
+                            value: serde_json::Value::String(mode),
+                            expected_revision,
+                        },
+                    )
+                    .await?)
+            }
         }
     }
 }
@@ -1118,10 +1148,17 @@ async fn require_physical_output_ack(
 ) -> Result<(), ControlApiError> {
     if state.hardware_output_enabled
         && (state.config.is_none() || hardware_output_requested(state).await)
-        && headers
-            .get(PHYSICAL_OUTPUT_ACK_HEADER)
-            .and_then(|value| value.to_str().ok())
-            != Some("confirmed")
+    {
+        require_physical_output_ack_header(headers)?;
+    }
+    Ok(())
+}
+
+fn require_physical_output_ack_header(headers: &HeaderMap) -> Result<(), ControlApiError> {
+    if headers
+        .get(PHYSICAL_OUTPUT_ACK_HEADER)
+        .and_then(|value| value.to_str().ok())
+        != Some("confirmed")
     {
         return Err(ControlApiError::PhysicalOutputAcknowledgementRequired);
     }
@@ -1279,6 +1316,7 @@ async fn probe_capture_capabilities(
 
 async fn update_config(
     State(state): State<ControlState>,
+    headers: HeaderMap,
     Json(update): Json<ConfigFieldUpdate>,
 ) -> Result<Json<ConfigUpdate>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
@@ -1286,12 +1324,13 @@ async fn update_config(
         .config
         .as_ref()
         .ok_or(ControlApiError::ConfigUnavailable)?;
-    let result = apply_config_field_update(&state, service, update).await?;
+    let result = apply_config_field_update(&state, service, &headers, update).await?;
     Ok(Json(result))
 }
 
 async fn apply_config_command(
     State(state): State<ControlState>,
+    headers: HeaderMap,
     Json(command): Json<ConfigCommandRequest>,
 ) -> Result<Json<ConfigUpdate>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
@@ -1299,12 +1338,13 @@ async fn apply_config_command(
         .config
         .as_ref()
         .ok_or(ControlApiError::ConfigUnavailable)?;
-    let result = command.apply(&state, service).await?;
+    let result = command.apply(&state, service, &headers).await?;
     Ok(Json(result))
 }
 
 async fn update_config_document(
     State(state): State<ControlState>,
+    headers: HeaderMap,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<ConfigUpdate>, ControlApiError> {
     let _lifecycle_guard = state.lifecycle_lock.lock().await;
@@ -1318,8 +1358,9 @@ async fn update_config_document(
     let update = if is_field_update {
         let field_update: ConfigFieldUpdate =
             serde_json::from_value(payload).map_err(ControlApiError::InvalidFieldUpdate)?;
-        apply_config_field_update(&state, service, field_update).await?
+        apply_config_field_update(&state, service, &headers, field_update).await?
     } else {
+        require_epoch_reload_ack(&state, &headers).await?;
         service.replace_runtime(&state.runtime, payload).await?
     };
     Ok(Json(update))
@@ -2294,9 +2335,13 @@ mod tests {
             before_restart,
             PipelineState::Running | PipelineState::Standby
         ));
-        for endpoint in [
-            "/api/models/projects/1/publish",
-            "/api/models/projects/1/rollback",
+        for (endpoint, body) in [
+            (
+                "/api/models/projects/1/publish",
+                r#"{"artifact_id":1,"parser_preset":"auto"}"#,
+            ),
+            ("/api/models/projects/1/rollback", "{}"),
+            ("/api/models/artifacts/1/probe", r#"{"input_mode":"fixed"}"#),
         ] {
             let response = app
                 .clone()
@@ -2305,7 +2350,7 @@ mod tests {
                         .method("POST")
                         .uri(endpoint)
                         .header("content-type", "application/json")
-                        .body(Body::from(r#"{"artifact_id":1,"parser_preset":"auto"}"#))
+                        .body(Body::from(body))
                         .unwrap(),
                 )
                 .await
@@ -2397,6 +2442,7 @@ mod tests {
         let app = build_control_router_with_capabilities(runtime.clone(), service, true, None);
         assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -2408,6 +2454,91 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::PRECONDITION_REQUIRED);
         assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
+        assert_eq!(
+            app.clone()
+                .oneshot(acknowledged("/api/runtime/start"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert!(matches!(
+            runtime.snapshot().pipeline.state,
+            PipelineState::Running | PipelineState::Standby
+        ));
+        let revision_before_reload = YamlConfigRepository::load(&path).unwrap().revision;
+        for (endpoint, method, body) in [
+            (
+                "/api/config",
+                "POST",
+                r#"{"section":"capture","key":"roi_left","value":0}"#,
+            ),
+            (
+                "/api/v1/config",
+                "PATCH",
+                r#"{"section":"capture","key":"roi_left","value":0}"#,
+            ),
+            ("/api/config", "POST", r#"{"revision":0}"#),
+            (
+                "/api/config",
+                "POST",
+                r#"{"section":"pipeline","key":"target_lost_grace_ms","value":99}"#,
+            ),
+            (
+                "/api/v1/config/commands",
+                "POST",
+                r#"{"command":"set_trigger_mode","mode":"always"}"#,
+            ),
+            (
+                "/api/v1/config/commands",
+                "POST",
+                r#"{"command":"set_output_gate","enabled":true}"#,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(endpoint)
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::PRECONDITION_REQUIRED,
+                "{endpoint}"
+            );
+            assert_eq!(
+                YamlConfigRepository::load(&path).unwrap().revision,
+                revision_before_reload
+            );
+        }
+        let close_output = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"command":"set_output_gate","enabled":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(close_output.status(), StatusCode::OK);
+        assert!(
+            !YamlConfigRepository::load(&path)
+                .unwrap()
+                .control
+                .output_enabled
+        );
+        runtime.stop().await.unwrap();
         runtime.shutdown_daemon().await.unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

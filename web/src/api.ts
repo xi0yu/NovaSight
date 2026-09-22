@@ -622,14 +622,15 @@ export function sanitizeRuntimeConfigForUpdate(config: RuntimeConfig): RuntimeCo
   return next;
 }
 
-export function updateRuntimeConfig(config: RuntimeConfig): Promise<ConfigUpdateResponse> {
+export function updateRuntimeConfig(config: RuntimeConfig, physicalOutputAcknowledged = false): Promise<ConfigUpdateResponse> {
   const payload = sanitizeRuntimeConfigForUpdate(config);
   return requestJson<ConfigUpdateResponse>(
     API_PATHS.config,
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        ...(physicalOutputAcknowledged ? { "X-NovaSight-Physical-Output-Ack": "confirmed" } : {})
       },
       body: encodeJsonBody(payload)
     },
@@ -642,7 +643,8 @@ export function updateRuntimeConfigField(
   section: string,
   key: string,
   value: RuntimeConfigValue,
-  expectedRevision?: number
+  expectedRevision?: number,
+  physicalOutputAcknowledged = false
 ): Promise<ConfigUpdateResponse> {
   requireNonBlank(section, "section");
   requireNonBlank(key, "key");
@@ -654,7 +656,8 @@ export function updateRuntimeConfigField(
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        ...(physicalOutputAcknowledged ? { "X-NovaSight-Physical-Output-Ack": "confirmed" } : {})
       },
       body: encodeJsonBody({ section, key, value, expected_revision: expectedRevision })
     },
@@ -664,7 +667,8 @@ export function updateRuntimeConfigField(
 }
 
 export function updateRuntimeConfigCommand(
-  command: ConfigCommandPayload
+  command: ConfigCommandPayload,
+  physicalOutputAcknowledged = false
 ): Promise<ConfigUpdateResponse> {
   if (command.expected_revision !== undefined) {
     requireUnsignedSafeInteger(command.expected_revision, "expected_revision");
@@ -674,7 +678,8 @@ export function updateRuntimeConfigCommand(
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        ...(physicalOutputAcknowledged ? { "X-NovaSight-Physical-Output-Ack": "confirmed" } : {})
       },
       body: encodeJsonBody(command)
     },
@@ -685,24 +690,26 @@ export function updateRuntimeConfigCommand(
 
 export function setRuntimeOutputGate(
   enabled: boolean,
-  expectedRevision?: number
+  expectedRevision?: number,
+  physicalOutputAcknowledged = false
 ): Promise<ConfigUpdateResponse> {
   return updateRuntimeConfigCommand({
     command: "set_output_gate",
     enabled,
     expected_revision: expectedRevision
-  });
+  }, physicalOutputAcknowledged);
 }
 
 export function setRuntimeTriggerMode(
   mode: "always" | "hardware",
-  expectedRevision?: number
+  expectedRevision?: number,
+  physicalOutputAcknowledged = false
 ): Promise<ConfigUpdateResponse> {
   return updateRuntimeConfigCommand({
     command: "set_trigger_mode",
     mode,
     expected_revision: expectedRevision
-  });
+  }, physicalOutputAcknowledged);
 }
 
 export function getCaptureCapabilities(
@@ -996,7 +1003,8 @@ export function configureModelProfile(
 
 export function probeModelArtifact(
   artifactId: number,
-  inputMode: "fixed" | "latest" = "fixed"
+  inputMode: "fixed" | "latest" = "fixed",
+  physicalOutputAcknowledged = false
 ): Promise<ModelProbeResponse> {
   const checkedArtifactId = requirePositiveSafeInteger(artifactId, "artifact_id");
   return requestJson<ModelProbeResponse>(
@@ -1004,7 +1012,8 @@ export function probeModelArtifact(
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        ...(physicalOutputAcknowledged ? { "X-NovaSight-Physical-Output-Ack": "confirmed" } : {})
       },
       body: encodeJsonBody({ input_mode: inputMode })
     },

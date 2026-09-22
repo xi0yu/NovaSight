@@ -224,14 +224,31 @@ impl ControlClient {
         value: Value,
         expected_revision: Option<u64>,
     ) -> Result<ConfigUpdate, ClientError> {
+        self.update_config_field_with_output_ack(section, key, value, expected_revision, false)
+            .await
+    }
+
+    pub async fn update_config_field_with_output_ack(
+        &self,
+        section: impl Into<String>,
+        key: impl Into<String>,
+        value: Value,
+        expected_revision: Option<u64>,
+        physical_output_acknowledged: bool,
+    ) -> Result<ConfigUpdate, ClientError> {
         let update = ConfigFieldUpdate {
             section: section.into(),
             key: key.into(),
             value,
             expected_revision,
         };
-        self.request(Method::PATCH, "/api/v1/config", Some(&update))
-            .await
+        self.request_with_output_ack(
+            Method::PATCH,
+            "/api/v1/config",
+            Some(&update),
+            physical_output_acknowledged,
+        )
+        .await
     }
 
     pub async fn license_status(&self) -> Result<LicenseStatus, ClientError> {
@@ -528,14 +545,25 @@ impl ControlClient {
         artifact_id: i64,
         input_mode: ModelProbeInputMode,
     ) -> Result<ModelIngressResult, ClientError> {
+        self.probe_model_with_output_ack(artifact_id, input_mode, false)
+            .await
+    }
+
+    pub async fn probe_model_with_output_ack(
+        &self,
+        artifact_id: i64,
+        input_mode: ModelProbeInputMode,
+        physical_output_acknowledged: bool,
+    ) -> Result<ModelIngressResult, ClientError> {
         #[derive(Serialize)]
         struct ProbeRequest {
             input_mode: ModelProbeInputMode,
         }
-        self.request(
+        self.request_with_output_ack(
             Method::POST,
             &format!("/api/models/artifacts/{artifact_id}/probe"),
             Some(&ProbeRequest { input_mode }),
+            physical_output_acknowledged,
         )
         .await
     }

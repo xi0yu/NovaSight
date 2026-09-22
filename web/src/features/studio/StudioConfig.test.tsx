@@ -50,6 +50,7 @@ it("opens the existing physical-output confirmation instead of navigating to the
   await waitFor(() => expect(screen.getByRole("alertdialog")).toHaveTextContent("output rejected by daemon"));
   const command = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes("/config/commands"))!;
   expect(JSON.parse(String(command[1]?.body))).toMatchObject({ command: "set_output_gate", enabled: true });
+  expect(new Headers(command[1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
   expect(new Headers(command[1]?.headers).get("x-request-id")).toMatch(/^[0-9a-f]{32}$/);
   await userEvent.click(screen.getByRole("button", { name: "取消" }));
   await userEvent.click(screen.getByRole("button", { name: /异常信息/ }));
@@ -201,6 +202,25 @@ it("asks before reconnecting kmNet while physical output is enabled", async () =
   expect(new Headers(connects()[0][1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
 });
 
+it("asks before reloading ROI while physical output is enabled", async () => {
+  history.replaceState(null, "", "/?page=capture");
+  vi.stubGlobal("fetch", vi.fn((_url, init) => init?.method === "POST"
+    ? Promise.resolve(new Response("blocked", { status: 428 }))
+    : new Promise(() => {})));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={{ ...props.runtimeConfig, control: { output_enabled: true } }} /></SafetyOperationProvider>);
+  const roi = screen.getByRole("region", { name: "ROI 快捷尺寸" });
+  const writes = () => vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/api/config") && init?.method === "POST");
+  await userEvent.click(within(roi).getByRole("button", { name: /320/ }));
+  expect(screen.getByRole("alertdialog", { name: "物理输出仍开启，确认调整 ROI？" })).toBeVisible();
+  expect(writes()).toHaveLength(0);
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(writes()).toHaveLength(0);
+  await userEvent.click(within(roi).getByRole("button", { name: /320/ }));
+  await userEvent.click(screen.getByRole("button", { name: "确认重载并保持输出开启" }));
+  await waitFor(() => expect(writes()).toHaveLength(1));
+  expect(new Headers(writes()[0][1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
+});
+
 it("shows tracking-budget losses in control diagnostics", async () => {
   history.replaceState(null, "", "/?page=control");
   const counts = { ...runtime.vision.target_pipeline.counts, admitted_to_tracking: 16, dropped_by_budget: 1 };
@@ -298,6 +318,8 @@ it("keeps physical output off when an imported file requests it on", async () =>
   await userEvent.click(within(confirmation).getByRole("button", { name: "确认导入配置" }));
   await waitFor(() => expect(submitted).not.toBeNull());
   expect((submitted as unknown as { control: { output_enabled: boolean } }).control.output_enabled).toBe(false);
+  const request = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url).endsWith("/api/config") && init?.method === "POST")!;
+  expect(new Headers(request[1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
 });
 
 it("confirms class-profile deletion each time instead of retaining an armed delete", async () => {
@@ -350,7 +372,7 @@ it("saves a class aim-point edit without reporting unsupported control.aim", asy
 it("saves a new class profile as one runtime configuration update", async () => {
   const configured = { ...props.runtimeConfig,
     inference: { detection_class_profile: "default", detection_class_profiles: { default: ["enemy"] } },
-    control: { ...props.runtimeConfig.control, aim: { class_roles: { default: {} } } },
+    control: { ...props.runtimeConfig.control, output_enabled: true, aim: { class_roles: { default: {} } } },
   };
   let submitted: Record<string, unknown> | null = null;
   vi.stubGlobal("fetch", vi.fn((url, init) => {
@@ -368,13 +390,21 @@ it("saves a new class profile as one runtime configuration update", async () => 
   await userEvent.click(screen.getByRole("button", { name: "复制当前" }));
   await userEvent.click(screen.getByRole("button", { name: "加入草稿并关闭" }));
   await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  expect(screen.getByRole("alertdialog", { name: "物理输出仍开启，确认保存参数？" })).toBeVisible();
+  expect(submitted).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(submitted).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
+  await userEvent.click(screen.getByRole("button", { name: "确认保存并保持输出开启" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled());
   expect(submitted).toMatchObject({
     revision: 25,
     inference: { detection_class_profile: "arena", detection_class_profiles: { default: ["enemy"], arena: ["enemy"] } },
-    control: { output_enabled: false, aim: { class_roles: expect.any(Object) } },
+    control: { output_enabled: true, aim: { class_roles: expect.any(Object) } },
   });
-  expect(vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/api/config") && init?.method === "POST")).toHaveLength(1);
+  const writes = vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/api/config") && init?.method === "POST");
+  expect(writes).toHaveLength(1);
+  expect(new Headers(writes[0][1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
 });
 
 it("retains a rejected class edit and does not claim the draft is empty", async () => {

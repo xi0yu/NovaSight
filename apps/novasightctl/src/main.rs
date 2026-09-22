@@ -145,6 +145,8 @@ enum ModelCommand {
         artifact_id: i64,
         #[arg(long, value_enum, default_value_t = CliProbeInputMode::Fixed)]
         input_mode: CliProbeInputMode,
+        #[arg(long)]
+        allow_physical_output: bool,
     },
     /// Atomically publish a validated artifact and restart the active epoch when needed.
     Publish {
@@ -252,6 +254,9 @@ enum ConfigCommand {
         /// Reject the write unless the persisted revision matches this value.
         #[arg(long)]
         expected_revision: Option<u64>,
+        /// Explicitly acknowledge possible physical output from this config change.
+        #[arg(long)]
+        allow_physical_output: bool,
     },
 }
 
@@ -349,11 +354,18 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
                     key,
                     value,
                     expected_revision,
+                    allow_physical_output,
                 },
         } => {
             let value = serde_json::from_str(&value).unwrap_or(serde_json::Value::String(value));
             client
-                .update_config_field(section, key, value, expected_revision)
+                .update_config_field_with_output_ack(
+                    section,
+                    key,
+                    value,
+                    expected_revision,
+                    allow_physical_output,
+                )
                 .await
                 .map(Box::new)
                 .map(CommandOutput::ConfigUpdate)
@@ -442,9 +454,10 @@ async fn execute(cli: Cli) -> Result<CommandOutput, CliError> {
                 ModelCommand::Probe {
                     artifact_id,
                     input_mode,
+                    allow_physical_output,
                 },
         } => client
-            .probe_model(artifact_id, input_mode.into())
+            .probe_model_with_output_ack(artifact_id, input_mode.into(), allow_physical_output)
             .await
             .map(CommandOutput::Model),
         Command::Model {

@@ -2593,7 +2593,7 @@ export function StudioConsoleView({
       section: string,
       key: string,
       value: RuntimeConfigValue,
-      options?: { immediate?: boolean; optimistic?: boolean; rethrow?: boolean }
+      options?: { immediate?: boolean; optimistic?: boolean; rethrow?: boolean; physicalOutputAcknowledged?: boolean }
     ): Promise<void> => {
       const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
       const next = base ? normalizeRuntimeConfig(base) : null;
@@ -2611,6 +2611,25 @@ export function StudioConsoleView({
       }
       if (activePage === "params" && options?.immediate !== true) {
         stageParameterPageDraft(next);
+        return;
+      }
+      if (
+        (runtimeOutputEnabled === true || outputEnabled)
+        && (
+          ["replay", "consumers", "limits", "crosshair", "capture", "inference", "hardware", "pipeline"].includes(section)
+          || (section === "control" && (key === "recoil" || (key === "trigger_mode" && value === "always")))
+        )
+        && options?.physicalOutputAcknowledged !== true
+      ) {
+        setConfirmationRequest({
+          eyebrow: "运行配置",
+          title: "物理输出仍开启，确认重载配置？",
+          description: "该修改会重载当前主链；重载完成后仍可能向设备发送控制量。取消后配置保持不变。",
+          details: [`修改字段：${section}.${key}`, "如不希望设备继续输出，请先关闭物理输出。"],
+          confirmLabel: "确认重载并保持输出开启",
+          danger: true,
+          onConfirm: () => updateConfigField(section, key, value, { ...options, physicalOutputAcknowledged: true })
+        });
         return;
       }
       const preservedParameterDraft = options?.immediate === true && parameterPageDirtyRef.current
@@ -2631,7 +2650,7 @@ export function StudioConsoleView({
       }
       try {
         const request = configWriteQueueRef.current.then(() =>
-          persistRuntimeConfigField(section, key, value)
+          persistRuntimeConfigField(section, key, value, undefined, options?.physicalOutputAcknowledged === true)
         );
         configWriteQueueRef.current = request.then(
           () => undefined,
@@ -2699,7 +2718,7 @@ export function StudioConsoleView({
         }
       }
     },
-    [activePage, applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange, runtimeConfig, setParameterPageDirtyState, stageConfigDialogDraft, stageParameterPageDraft]
+    [activePage, applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange, outputEnabled, runtimeConfig, runtimeOutputEnabled, setConfirmationRequest, setParameterPageDirtyState, stageConfigDialogDraft, stageParameterPageDraft]
   );
 
   const requestOutputGateChange = useCallback((enabled: boolean) => {
@@ -2730,13 +2749,13 @@ export function StudioConsoleView({
         "control",
         "output_enabled",
         true,
-        { immediate: true, optimistic: false, rethrow: true }
+        { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
       )
     });
     return false;
   }, [kmnetHost, kmnetPort, kmnetRuntimeConnected, outputEnableBlockedReason, updateConfigField]);
 
-  const saveParameterPageDraft = useCallback(async () => {
+  const saveParameterPageDraft = useCallback(async (physicalOutputAcknowledged = false) => {
     if (!parameterPageDirtyRef.current || parameterPageSaving) {
       return;
     }
@@ -2791,7 +2810,7 @@ export function StudioConsoleView({
               current
             );
             payload.revision = expectedRevision;
-            const result = await updateRuntimeConfig(payload);
+            const result = await updateRuntimeConfig(payload, physicalOutputAcknowledged);
             if (result.apply_mode !== "epoch_reload" || !result.applied) {
               throw new Error(`类别与推理配置未在当前进程生效，后端返回 ${result.apply_mode}`);
             }
@@ -2807,7 +2826,8 @@ export function StudioConsoleView({
             change.section,
             change.key,
             change.value,
-            expectedRevision
+            expectedRevision,
+            physicalOutputAcknowledged
           );
           if (result.apply_mode !== "hot_update" || !result.applied) {
             throw new Error(
@@ -2901,14 +2921,15 @@ export function StudioConsoleView({
       ],
       confirmLabel: "确认保存并保持输出开启",
       danger: true,
-      onConfirm: saveParameterPageDraft
+      onConfirm: () => saveParameterPageDraft(true)
     });
   }, [outputEnabled, parameterPageSaving, runtimeOutputEnabled, saveParameterPageDraft]);
 
   const updateConfigSection = useCallback(
     async (
       section: string,
-      values: Record<string, RuntimeConfigValue>
+      values: Record<string, RuntimeConfigValue>,
+      physicalOutputAcknowledged = false
     ) => {
       const persistSection = async (source: RuntimeConfig) => {
         const current = cloneRuntimeConfig(source);
@@ -2924,7 +2945,7 @@ export function StudioConsoleView({
           return null;
         }
         current[section] = nextSection as RuntimeConfig[string];
-        return updateRuntimeConfig(current);
+        return updateRuntimeConfig(current, physicalOutputAcknowledged);
       };
       beginPendingConfigWrite();
       const request = configWriteQueueRef.current.then(async () => {
@@ -2983,24 +3004,42 @@ export function StudioConsoleView({
         setLocalError(`ROI ${size}x${size} 超出当前采集画面 ${width}x${height}。`);
         return;
       }
-      setLocalError(null);
-      try {
-        await updateConfigSection("capture", {
-          roi_left: Math.floor((width - size) / 2),
-          roi_top: Math.floor((height - size) / 2),
-          roi_width: size,
-          roi_height: size
+      const applyRoi = async (physicalOutputAcknowledged = false) => {
+        setLocalError(null);
+        try {
+          await updateConfigSection("capture", {
+            roi_left: Math.floor((width - size) / 2),
+            roi_top: Math.floor((height - size) / 2),
+            roi_width: size,
+            roi_height: size
+          }, physicalOutputAcknowledged);
+        } catch (error) {
+          const message = getErrorMessage(error);
+          setLocalError(`ROI 配置同步失败：${message}`);
+          reportError(error, { source: "capture-roi", title: "ROI 配置未保存" });
+        }
+      };
+      if (runtimeOutputEnabled === true || outputEnabled) {
+        setConfirmationRequest({
+          eyebrow: "采集区域",
+          title: "物理输出仍开启，确认调整 ROI？",
+          description: "调整会重载当前运行主链；重载完成后仍可能向设备发送控制量。取消后 ROI 保持不变。",
+          details: [`新 ROI：${size} × ${size}`, "如不希望设备继续输出，请先关闭物理输出。"],
+          confirmLabel: "确认重载并保持输出开启",
+          danger: true,
+          onConfirm: () => applyRoi(true)
         });
-      } catch (error) {
-        const message = getErrorMessage(error);
-        setLocalError(`ROI 配置同步失败：${message}`);
-        reportError(error, { source: "capture-roi", title: "ROI 配置未保存" });
+        return;
       }
+      await applyRoi();
     },
     [
       configuredCaptureHeight,
       configuredCaptureWidth,
+      outputEnabled,
       rustControlPlane,
+      runtimeOutputEnabled,
+      setConfirmationRequest,
       sourceHeight,
       sourceWidth,
       updateConfigField,
@@ -3702,7 +3741,7 @@ export function StudioConsoleView({
       details: [
         `将修改：${changedSections.join("、") || "没有差异"}`,
         "运行参数会立即应用；监听地址或存储根目录等进程级配置会单独提示。",
-        "物理输出开关不会随导入文件改变，仍需在参数页单独确认。"
+        "物理输出开关不会随导入文件改变；如果当前已开启，运行中的主链重载后可能继续向设备输出。"
       ],
       confirmLabel: canonicalChanged ? "按最新配置导入" : "确认导入配置",
       danger: true,
@@ -3723,7 +3762,7 @@ export function StudioConsoleView({
             }
             const payload = preserveOutputGate(imported, canonical);
             payload.revision = canonical.revision;
-            const result = await updateRuntimeConfig(payload);
+            const result = await updateRuntimeConfig(payload, true);
             const applied = normalizeRuntimeConfig(result.config);
             finalizeRuntimeConfigWrite(applied);
             reportSuccess(
