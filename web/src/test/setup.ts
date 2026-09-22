@@ -4,6 +4,16 @@ import { afterEach } from "vitest";
 
 const hasWindow = typeof window !== "undefined";
 
+if (hasWindow) {
+  Object.defineProperty(window, "scrollTo", { configurable: true, value: () => {} });
+  Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+    configurable: true,
+    value(this: HTMLElement, options: ScrollToOptions) {
+      this.scrollTop = options.top ?? 0;
+    },
+  });
+}
+
 if (hasWindow && !window.localStorage) {
   const values = new Map<string, string>();
   const storage: Storage = {

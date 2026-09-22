@@ -613,8 +613,10 @@ fn aim_point_policy_change_rebuilds_prediction_history_without_restarting_for_ot
     );
     assert!(!stable.target_rebuilt);
 
-    let mut config = TargetingConfig::default();
-    config.aim_y_ratio = 0.62;
+    let mut config = TargetingConfig {
+        aim_y_ratio: 0.62,
+        ..TargetingConfig::default()
+    };
     core.set_config(config.clone());
     let rebuilt = core.select_at(
         &[Detection::new(3, 0, 280.0, 280.0, 80.0, 100.0, 0.9).unwrap()],
