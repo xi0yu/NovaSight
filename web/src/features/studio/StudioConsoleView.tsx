@@ -3796,7 +3796,7 @@ export function StudioConsoleView({
         ? `文件夹已创建，但列表刷新失败：${getErrorMessage(error)}。请点击“刷新模型”查看。`
         : `新建文件夹失败：${getErrorMessage(error)}`;
       setLocalError(message);
-      reportError(error, { source: "model-folder", title: created ? "文件夹列表刷新失败" : "新建文件夹失败", popup: false });
+      reportError(error, { source: "model-folder", title: created ? "文件夹列表刷新失败" : "新建文件夹失败", publicDetail: getErrorMessage(error), popup: false });
       throw new Error(message);
     } finally {
       setBusy(null);
@@ -3826,7 +3826,7 @@ export function StudioConsoleView({
             ? `文件已移动，但列表刷新失败：${getErrorMessage(error)}。请点击“刷新模型”重新读取。`
             : `模型文件移动失败：${getErrorMessage(error)}`;
           setLocalError(message);
-          reportError(error, { source: "model-file-move", title: moved ? "模型目录刷新失败" : "模型文件移动失败", popup: false });
+          reportError(error, { source: "model-file-move", title: moved ? "模型目录刷新失败" : "模型文件移动失败", publicDetail: getErrorMessage(error), popup: false });
           if (!moved) throw error;
         } finally {
           setBusy(null);

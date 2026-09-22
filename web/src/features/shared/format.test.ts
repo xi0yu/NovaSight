@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { formatRuntimeErrorMessage } from "./format";
+import { ApiError } from "../../api";
+import { formatRuntimeErrorMessage, getErrorMessage } from "./format";
+
+describe("getErrorMessage", () => {
+  it("explains catalog conflicts without hiding the original API error", () => {
+    const error = new ApiError("model directory already exists: Arena", 409, { code: "MODEL_DIRECTORY_EXISTS" });
+    expect(getErrorMessage(error)).toBe("这个文件夹已存在，请换一个名称。");
+    expect(error.message).toBe("model directory already exists: Arena");
+  });
+});
 
 describe("formatRuntimeErrorMessage", () => {
   it("explains the host-preview perception adapter boundary in Chinese", () => {

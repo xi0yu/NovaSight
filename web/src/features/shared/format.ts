@@ -26,6 +26,18 @@ export function getErrorMessage(error: unknown): string {
     if (code === "DEVICE_NOT_CONFIGURED" || code === "DEVICE_UNCOMMISSIONED" || code === "device_uncommissioned") {
       return "kmNet 尚未完成设备委任；请先保存有效的地址、端口和 UUID。";
     }
+    if (code === "MODEL_DIRECTORY_EXISTS") {
+      return "这个文件夹已存在，请换一个名称。";
+    }
+    if (code === "MODEL_DIRECTORY_PARENT_INVALID") {
+      return "上级文件夹不存在或不可用；请刷新模型目录后重试。";
+    }
+    if (code === "MODEL_FILE_EXISTS") {
+      return "目标位置已有模型文件，或有多个同名来源；请换一个位置并核对目录。";
+    }
+    if (code === "MODEL_FILE_IN_USE") {
+      return "这个模型已登记或带有验证文件，不能直接移动；请保持原路径。";
+    }
     return error.message;
   }
   if (error instanceof Error) {

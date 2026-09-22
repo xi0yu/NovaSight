@@ -236,8 +236,8 @@ export function useModelSwitchWorkflow({
     } catch (err) {
       const errorMessage = getErrorMessage(err);
       setDialogStatus("failed");
-      setDialogError(errorMessage);
-      setLocalError(`模型切换未生效：${errorMessage}`);
+      setDialogError(`${errorMessage}。请核对页面上的当前模型和运行状态；请求失败或回执解析失败时，不能假定切换未生效。`);
+      setLocalError(`模型切换结果未确认：${errorMessage}`);
       reportError(err, { source: "studio", title: "操作失败" });
       await onRefresh();
     } finally {

@@ -113,9 +113,9 @@ export interface ParserContract {
   requested_preset: ParserPresetId;
   output_family: "yolov5" | "yolov8_yolo11";
   has_objectness: boolean;
-  parser_library: "novasight_builtin";
-  parser_function: "NvDsInferParseNovaSight";
-  nms_owner: "deepstream";
+  parser_library: "novasight_builtin_cuda";
+  parser_function: "YoloGpuPostprocessor";
+  nms_owner: "cuda";
 }
 
 export interface ModelSwitchInference {
@@ -308,12 +308,12 @@ function decodeParserContract(value: unknown, path: string): ParserContract {
     ] as const),
     has_objectness: expectBoolean(record.has_objectness, `${path}.has_objectness`),
     parser_library: expectLiteral(record.parser_library, `${path}.parser_library`, [
-      "novasight_builtin"
+      "novasight_builtin_cuda"
     ] as const),
     parser_function: expectLiteral(record.parser_function, `${path}.parser_function`, [
-      "NvDsInferParseNovaSight"
+      "YoloGpuPostprocessor"
     ] as const),
-    nms_owner: expectLiteral(record.nms_owner, `${path}.nms_owner`, ["deepstream"] as const)
+    nms_owner: expectLiteral(record.nms_owner, `${path}.nms_owner`, ["cuda"] as const)
   };
 }
 
