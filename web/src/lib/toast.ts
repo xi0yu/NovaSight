@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 
-import { ApiError } from "../api";
+import { ApiError, ApiTransportError } from "../api";
 import { type ErrorSeverity, isQuietErrorsEnabled, normalizeError } from "./api-error";
 
 export type ToastTone = ErrorSeverity | "success";
@@ -195,6 +195,8 @@ export function reportError(
           (key, value: unknown) => /password|secret|token|license_key|authorization|credential|api.?key|uuid/i.test(key) ? "[redacted]" : value,
           2
         )
+        : error instanceof ApiTransportError
+          ? JSON.stringify({ source: options.source, path: error.path, browser_error: error.originalMessage }, null, 2)
         : undefined,
       requestId: error instanceof ApiError ? error.requestId : null,
       source: normalized.source,

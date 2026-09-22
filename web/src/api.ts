@@ -108,6 +108,18 @@ export class ApiError extends Error {
   }
 }
 
+export class ApiTransportError extends TypeError {
+  readonly path: string;
+  readonly originalMessage: string;
+
+  constructor(path: string, cause: TypeError) {
+    super("无法连接 NovaSight 服务：浏览器未收到响应。请检查设备网络与服务状态后重试。");
+    this.name = "ApiTransportError";
+    this.path = path;
+    this.originalMessage = cause.message;
+  }
+}
+
 function invalidRequest(field: string, expected: string, value: unknown): never {
   throw new ApiError(`请求参数无效：${field} 应为 ${expected}`, 400, {
     code: "frontend_contract_invalid",
@@ -336,6 +348,9 @@ async function requestJson<T>(
           { path, timeout_ms: timeoutMs },
           requestId
         );
+      }
+      if (error instanceof TypeError) {
+        throw new ApiTransportError(path, error);
       }
       throw error;
     }

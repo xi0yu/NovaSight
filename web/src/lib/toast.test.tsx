@@ -80,6 +80,25 @@ it("carries one safe request ID from API call into the retained error record", a
   }
 });
 
+it("explains a browser connection failure while retaining its original detail", async () => {
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("Failed to fetch"));
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const { result } = renderHook(() => ({ notices: useErrorNotices(), clear: useClearErrorNotices() }));
+  act(() => result.current.clear());
+  try {
+    const error = await getRuntimeConfig().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(TypeError);
+    act(() => reportError(error, { source: "config", popup: false }));
+    expect(result.current.notices[0].detail).toContain("无法连接 NovaSight 服务");
+    expect(result.current.notices[0].technicalDetail).toContain("Failed to fetch");
+    expect(result.current.notices[0].status).toBeNull();
+  } finally {
+    fetchMock.mockRestore();
+    consoleMock.mockRestore();
+    act(() => result.current.clear());
+  }
+});
+
 it("makes the request ID visible in a transient failure notice", () => {
   const { result } = renderHook(() => ({ toasts: useToasts(), dismiss: useDismissToast(), clear: useClearErrorNotices() }));
   const view = render(<ToastHost />);
