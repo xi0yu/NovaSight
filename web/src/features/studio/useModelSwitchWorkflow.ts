@@ -280,23 +280,25 @@ export function useModelSwitchWorkflow({
       setLocalError("请选择 TensorRT engine 产物。");
       return;
     }
-    if (!runtimeMainlineRunning) {
-      void performSwitch();
-      return;
-    }
     const candidatePath = model.relative_path;
+    const needsRegistration = typeof model.project_id !== "number" || typeof model.artifact_id !== "number";
     setConfirmationRequest({
-      eyebrow: "运行中切换模型",
-      title: "停止并重启推理主链？",
-      description: "当前主链正在运行。模型发布会停止现有管线、验证所选 Engine，并在成功后使用新模型重新启动。",
+      eyebrow: runtimeMainlineRunning ? "运行中切换模型" : "部署模型",
+      title: runtimeMainlineRunning ? "停止并重启推理主链？" : "验证并部署所选模型？",
+      description: runtimeMainlineRunning
+        ? "当前主链正在运行。模型发布会停止现有管线、验证所选 Engine，并在成功后使用新模型重新启动。"
+        : "将验证所选 Engine 并保存为当前模型；主链保持停止，下一次启动时使用它。",
       details: [
         `所选模型：${candidatePath}`,
+        ...(needsRegistration ? ["首次使用会登记此 Engine 的路径引用；登记后不能直接移动或改名文件。"] : []),
         physicalOutputEnabled
           ? "当前物理输出已开启。确认后，切换或失败回滚可能重新开启设备输出；请确保设备有人看管。"
-          : "切换期间识别结果会短暂停止；失败时会回滚原部署。"
+          : runtimeMainlineRunning
+            ? "切换期间识别结果会短暂停止；失败时会回滚原部署。"
+            : "此操作不会启动主链或打开物理输出；失败时保留原部署。"
       ],
-      confirmLabel: "确认切换模型",
-      danger: true,
+      confirmLabel: runtimeMainlineRunning ? "确认切换模型" : "确认验证并部署",
+      danger: runtimeMainlineRunning || physicalOutputEnabled,
       handoffOnConfirm: true,
       onConfirm: () => performSwitch(physicalOutputEnabled)
     });

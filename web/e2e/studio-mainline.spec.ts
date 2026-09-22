@@ -240,6 +240,31 @@ test("model search keeps selection and verification together", async ({ page }) 
   await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
 });
 
+test("stopped mainline asks before model registration and deployment", async ({ page }) => {
+  await mockStudioApi(page);
+  const mutations: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST" && (/\/api\/models\/catalog\/register$/.test(request.url()) || /\/publish$/.test(request.url()))) {
+      mutations.push(request.url());
+    }
+  });
+  await page.route("**/api/models/catalog?*", async (route) => route.fulfill({ json: {
+    root: { type: "directory", name: "models", relative_path: "", children: [
+      { type: "model", name: "candidate.engine", relative_path: "candidate.engine", kind: "engine",
+        size_bytes: 1_048_576, scan_status: "need_confirm", scan_reason: "", recommendation: "unrated", tags: [] },
+    ] },
+    directory_count: 0, model_count: 1, discovered_files: 1, updated_files: 0, cache_hits: 0, force: false,
+  } }));
+  await page.goto("/?page=models");
+  await page.getByRole("button", { name: /candidate.engine，路径 candidate.engine/ }).click();
+  await page.getByRole("button", { name: "验证并切换到所选模型" }).click();
+  const confirmation = page.getByRole("alertdialog", { name: "验证并部署所选模型？" });
+  await expect(confirmation).toContainText("登记后不能直接移动或改名文件");
+  await confirmation.getByRole("button", { name: "取消" }).click();
+  await expect(confirmation).not.toBeVisible();
+  expect(mutations).toEqual([]);
+});
+
 test("model library separates registered, unverified, and view-only files", async ({ page }) => {
   await mockStudioApi(page);
   const model = (name: string, kind: "engine" | "onnx", artifact_id?: number) => ({
