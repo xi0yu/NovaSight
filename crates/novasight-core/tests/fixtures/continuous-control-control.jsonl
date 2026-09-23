@@ -1,0 +1,1 @@
+{"label":"baseline","observation":{"generation":4,"target_id":1,"capture_ts_ns":4049999998,"control_now_ns":4057999998,"aim_x":420.0,"aim_y":380.0,"crosshair_x":320.0,"crosshair_y":320.0,"target_valid":true,"trigger_active":true},"decision":{"emit_allowed":true,"block_reason":""}}

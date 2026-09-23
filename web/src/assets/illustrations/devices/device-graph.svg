@@ -1,0 +1,26 @@
+<svg viewBox="0 0 360 210" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="360" height="210" rx="18" fill="#F8F9FB"/>
+  <g fill="#FFFFFF" stroke="#E2E6EC">
+    <rect x="34" y="70" width="72" height="58" rx="14"/>
+    <rect x="144" y="44" width="72" height="58" rx="14"/>
+    <rect x="144" y="118" width="72" height="58" rx="14"/>
+    <rect x="254" y="70" width="72" height="58" rx="14"/>
+  </g>
+  <g stroke="#18A6B8" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="3 8">
+    <path d="M106 99h38"/>
+    <path d="M216 73l38 25"/>
+    <path d="M216 147l38-48"/>
+  </g>
+  <g fill="#566074" font-family="Inter, system-ui, sans-serif" font-size="11" font-weight="650">
+    <text x="51" y="104">Capture</text>
+    <text x="161" y="78">Jetson</text>
+    <text x="166" y="152">GPU</text>
+    <text x="276" y="104">HID</text>
+  </g>
+  <g fill="#16A56A" font-family="Inter, system-ui, sans-serif" font-size="9" font-weight="700">
+    <text x="54" y="120">Online</text>
+    <text x="167" y="94">Ready</text>
+    <text x="170" y="168">Ready</text>
+    <text x="275" y="120">Connected</text>
+  </g>
+</svg>

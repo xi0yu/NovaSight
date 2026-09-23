@@ -1,0 +1,3486 @@
+//! Sole owner of the live [`PipelineRuntime`] lifecycle.
+//!
+//! Control-plane callers send typed commands through [`RuntimeHandle`].
+//! Detection producers submit caller-owned batches through the same
+//! handle; worker objects and platform adapters never escape.
+
+use std::collections::VecDeque;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use novasight_core::controller::recoil::RecoilConfig;
+use novasight_core::{
+    Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, MonotonicNanos, PointerDevice,
+    PointerDeviceMode, RecordingPointerDevice, RuntimeEpoch,
+};
+use novasight_pipeline::{
+    CrosshairHub, CrosshairHubSlot, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate,
+    PerceptionAdapter, PerceptionError, PerceptionErrorKind, PerceptionEvent, PerceptionMetrics,
+    PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession, PipelineConfig,
+    PipelineEvent, PipelineIngress, PipelineLiveConfig, PipelineMetrics, PipelineRuntime,
+    PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription, TriggerMode,
+};
+use novasight_store::config::{
+    AppConfig, RecoilConfig as ConfigRecoilConfig, TriggerMode as ConfigTriggerMode,
+};
+use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, SqliteModelCatalog};
+use tokio::sync::{Semaphore, mpsc, oneshot, watch};
+
+use crate::command::RuntimeCommand;
+use crate::config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate};
+use crate::error::{RuntimeError, RuntimeErrorKind};
+use crate::model_activation::{
+    ModelActivationError, ModelActivationRequest, ModelActivationResult,
+};
+use crate::model_ingress::{
+    ModelIngressError, ModelIngressRequest, ModelIngressResult, ModelIngressStage, ModelJobRunner,
+    ModelManifestTransaction, load_profile, validate_worker_output,
+};
+use crate::protocol::{RuntimeErrorSummary, SubsystemState};
+use crate::runtime_config::compose_pipeline_config;
+use crate::snapshot::{
+    DaemonSnapshot, DeviceMetrics, ModelSnapshot, PipelineSnapshot, RuntimeSnapshot,
+    RuntimeTelemetrySnapshot, SubsystemSnapshots,
+};
+use crate::state::{DaemonState, PipelineState};
+
+mod config_apply;
+
+pub(crate) use config_apply::RuntimeConfigApplyFailure;
+use config_apply::{apply_config_state, install_config_state};
+
+const COMMAND_CAPACITY: usize = 32;
+const URGENT_ADMISSION_CAPACITY: usize = 8;
+const PIPELINE_EVENT_CAPACITY: usize = 8;
+const PERCEPTION_EVENT_CAPACITY: usize = 4;
+
+#[derive(Debug)]
+struct UrgentStopSignal {
+    pending: Arc<AtomicUsize>,
+}
+
+impl UrgentStopSignal {
+    fn new() -> Self {
+        Self {
+            pending: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn register(self: &Arc<Self>) -> UrgentStopToken {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        UrgentStopToken {
+            signal: Arc::clone(self),
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire) != 0
+    }
+
+    /// Permanently retire output for an owner-driven process shutdown.
+    /// Unlike a command token, a dropped supervisor has no later point at
+    /// which reopening this process would be valid.
+    fn latch_shutdown(&self) {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct UrgentStopToken {
+    signal: Arc<UrgentStopSignal>,
+}
+
+impl Drop for UrgentStopToken {
+    fn drop(&mut self) {
+        self.signal.pending.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Concrete resources used to create each runtime epoch.
+pub struct RuntimeDependencies {
+    clock: Arc<dyn Clock>,
+    device: std::sync::RwLock<Arc<dyn PointerDevice>>,
+    device_factory: Option<Arc<PointerDeviceFactory>>,
+    pipeline: std::sync::RwLock<PipelineConfig>,
+    hardware_trigger_required: AtomicBool,
+    recoil_config: std::sync::RwLock<RecoilConfig>,
+    model_geometry: std::sync::RwLock<Option<ModelGeometry>>,
+    perception: Option<Arc<dyn PerceptionAdapter>>,
+    model_catalog: Option<SqliteModelCatalog>,
+    model_jobs: Option<ModelJobRunner>,
+    preview: Option<PreviewHub>,
+    crosshair: CrosshairHubSlot,
+    crosshair_factory: Option<Arc<CrosshairHubFactory>>,
+    output_enabled: bool,
+    urgent_stop: Arc<UrgentStopSignal>,
+}
+
+type PointerDeviceFactory =
+    dyn Fn(&AppConfig) -> Result<PointerDeviceInstallation, RuntimeError> + Send + Sync;
+type CrosshairHubFactory =
+    dyn Fn(&AppConfig) -> Result<Option<CrosshairHub>, RuntimeError> + Send + Sync;
+
+/// One process-local pointer adapter installation. Production composition
+/// supplies a factory so hardware parameter edits can replace the adapter
+/// between runtime epochs without restarting the daemon.
+pub struct PointerDeviceInstallation {
+    pub device: Arc<dyn PointerDevice>,
+    pub trigger_poll_interval_ms: Option<u64>,
+}
+
+impl PointerDeviceInstallation {
+    pub fn new(device: Arc<dyn PointerDevice>, trigger_poll_interval_ms: Option<u64>) -> Self {
+        Self {
+            device,
+            trigger_poll_interval_ms,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ModelGeometry {
+    source_width: u32,
+    roi_width: u32,
+    roi_height: u32,
+}
+
+impl std::fmt::Debug for RuntimeDependencies {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeDependencies")
+            .field("pipeline", &self.pipeline)
+            .field("clock", &"<dyn Clock>")
+            .field("device", &"<dyn PointerDevice>")
+            .field(
+                "perception",
+                &self.perception.as_ref().map(|_| "<dyn PerceptionAdapter>"),
+            )
+            .finish()
+    }
+}
+
+impl RuntimeDependencies {
+    pub fn new(
+        clock: Arc<dyn Clock>,
+        device: Arc<dyn PointerDevice>,
+        pipeline: PipelineConfig,
+    ) -> Self {
+        let model_geometry = ModelGeometry {
+            source_width: pipeline.control.source_width,
+            roi_width: pipeline.control.roi_width,
+            roi_height: pipeline.control.roi_height,
+        };
+        let hardware_trigger_required = pipeline.trigger_mode == TriggerMode::Hardware;
+        let recoil_config = pipeline.recoil;
+        Self {
+            clock,
+            device: std::sync::RwLock::new(device),
+            device_factory: None,
+            pipeline: std::sync::RwLock::new(pipeline),
+            hardware_trigger_required: AtomicBool::new(hardware_trigger_required),
+            recoil_config: std::sync::RwLock::new(recoil_config),
+            model_geometry: std::sync::RwLock::new(Some(model_geometry)),
+            perception: None,
+            model_catalog: None,
+            model_jobs: None,
+            preview: None,
+            crosshair: CrosshairHubSlot::default(),
+            crosshair_factory: None,
+            output_enabled: false,
+            urgent_stop: Arc::new(UrgentStopSignal::new()),
+        }
+    }
+
+    pub fn with_perception(mut self, perception: Arc<dyn PerceptionAdapter>) -> Self {
+        self.perception = Some(perception);
+        self
+    }
+
+    pub fn with_device_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(&AppConfig) -> Result<PointerDeviceInstallation, RuntimeError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.device_factory = Some(Arc::new(factory));
+        self
+    }
+
+    pub fn with_model_catalog(mut self, model_catalog: SqliteModelCatalog) -> Self {
+        self.model_catalog = Some(model_catalog);
+        self
+    }
+
+    pub fn with_model_jobs(mut self, model_jobs: impl Into<ModelJobRunner>) -> Self {
+        self.model_jobs = Some(model_jobs.into());
+        self
+    }
+
+    pub fn with_preview(mut self, preview: PreviewHub) -> Self {
+        self.preview = Some(preview);
+        self
+    }
+
+    pub fn with_crosshair(mut self, crosshair: CrosshairHub) -> Self {
+        self.pipeline
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .crosshair = Some(crosshair.clone());
+        self.crosshair.replace(Some(crosshair));
+        self
+    }
+
+    pub fn with_crosshair_slot(mut self, crosshair: CrosshairHubSlot) -> Self {
+        self.pipeline
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .crosshair = crosshair.current();
+        self.crosshair = crosshair;
+        self
+    }
+
+    pub fn with_crosshair_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn(&AppConfig) -> Result<Option<CrosshairHub>, RuntimeError> + Send + Sync + 'static,
+    {
+        self.crosshair_factory = Some(Arc::new(factory));
+        self
+    }
+
+    pub fn with_recoil(mut self, config: RecoilConfig) -> Self {
+        self.pipeline
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .recoil = config;
+        *self
+            .recoil_config
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config;
+        self
+    }
+
+    pub fn with_output_enabled(mut self, enabled: bool) -> Self {
+        self.output_enabled = enabled;
+        self
+    }
+
+    fn pipeline_config(&self, epoch: RuntimeEpoch) -> PipelineConfig {
+        let base = self
+            .pipeline
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let mut pipeline = PipelineConfig { epoch, ..base };
+        pipeline.trigger_mode = self.trigger_mode();
+        pipeline.recoil = self.recoil_config();
+        if let Some(geometry) = self.model_geometry() {
+            pipeline.control.source_width = geometry.source_width;
+            pipeline.control.roi_width = geometry.roi_width;
+            pipeline.control.roi_height = geometry.roi_height;
+            // DetectionBatch coordinates come from NvDsFrameMeta pipeline
+            // geometry (the ROI-sized inference buffer), not the TensorRT
+            // network tensor. Model resize/letterbox policy must therefore
+            // never rescale the controller a second time.
+            pipeline.control.observation_width = geometry.roi_width;
+            pipeline.control.observation_height = geometry.roi_height;
+        }
+        pipeline
+    }
+
+    fn install_app_config(
+        &self,
+        config: &AppConfig,
+        rebuild_device: bool,
+        rebuild_crosshair: bool,
+    ) -> Result<PointerDeviceMode, RuntimeError> {
+        let installation = rebuild_device
+            .then(|| self.device_factory.as_ref().map(|factory| factory(config)))
+            .flatten()
+            .transpose()?;
+        let crosshair = if rebuild_crosshair {
+            self.crosshair_factory
+                .as_ref()
+                .map(|factory| factory(config))
+                .transpose()?
+                .unwrap_or_else(|| self.crosshair.current())
+        } else {
+            self.crosshair.current()
+        };
+        let current_trigger_poll_interval_ms = {
+            let pipeline = self
+                .pipeline
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            pipeline.trigger_poll_interval_ms
+        };
+        let trigger_poll_interval_ms = installation
+            .as_ref()
+            .map(|installation| installation.trigger_poll_interval_ms)
+            .unwrap_or(current_trigger_poll_interval_ms);
+        let mut pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
+            .map_err(RuntimeError::pipeline_rejected)?;
+        pipeline.crosshair = crosshair.clone();
+        self.replace_model_geometry(Some(ModelGeometry {
+            source_width: pipeline.control.source_width,
+            roi_width: pipeline.control.roi_width,
+            roi_height: pipeline.control.roi_height,
+        }));
+        self.set_trigger_mode(pipeline.trigger_mode);
+        self.set_recoil_config(pipeline.recoil);
+        if let Some(preview) = &self.preview {
+            preview.configure(config.consumers.preview);
+        }
+        if rebuild_crosshair {
+            self.crosshair.replace(crosshair);
+        }
+        *self
+            .pipeline
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = pipeline;
+        if let Some(installation) = installation {
+            *self
+                .device
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = installation.device;
+        }
+        Ok(self.device().mode())
+    }
+
+    fn device(&self) -> Arc<dyn PointerDevice> {
+        Arc::clone(
+            &self
+                .device
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
+    fn live_pipeline_config(&self, config: &AppConfig) -> Result<PipelineLiveConfig, RuntimeError> {
+        let trigger_poll_interval_ms = self
+            .pipeline
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .trigger_poll_interval_ms;
+        let mut pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
+            .map_err(RuntimeError::pipeline_rejected)?;
+        if let Some(geometry) = self.model_geometry() {
+            pipeline.control.source_width = geometry.source_width;
+            pipeline.control.roi_width = geometry.roi_width;
+            pipeline.control.roi_height = geometry.roi_height;
+            pipeline.control.observation_width = geometry.roi_width;
+            pipeline.control.observation_height = geometry.roi_height;
+        }
+        Ok(PipelineLiveConfig::from(&pipeline))
+    }
+
+    fn install_live_pipeline_config(
+        &self,
+        config: &AppConfig,
+    ) -> Result<PipelineLiveConfig, RuntimeError> {
+        let live = self.live_pipeline_config(config)?;
+        let mut pipeline = self
+            .pipeline
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pipeline.targeting.clone_from(&live.targeting);
+        pipeline.control = live.control;
+        pipeline.output_limits = live.output_limits;
+        pipeline.trigger_hold_delay_ms = live.trigger_hold_delay_ms;
+        Ok(live)
+    }
+
+    fn trigger_mode(&self) -> TriggerMode {
+        if self.hardware_trigger_required.load(Ordering::Acquire) {
+            TriggerMode::Hardware
+        } else {
+            TriggerMode::Always
+        }
+    }
+
+    fn set_trigger_mode(&self, mode: TriggerMode) {
+        self.hardware_trigger_required
+            .store(mode == TriggerMode::Hardware, Ordering::Release);
+    }
+
+    fn recoil_config(&self) -> RecoilConfig {
+        *self
+            .recoil_config
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn set_recoil_config(&self, config: RecoilConfig) {
+        *self
+            .recoil_config
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = config;
+    }
+
+    fn model_geometry(&self) -> Option<ModelGeometry> {
+        *self
+            .model_geometry
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn replace_model_geometry(&self, geometry: Option<ModelGeometry>) -> Option<ModelGeometry> {
+        std::mem::replace(
+            &mut *self
+                .model_geometry
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            geometry,
+        )
+    }
+
+    fn install_model_contract(&self, _contract: &PerceptionModelContract) -> Option<ModelGeometry> {
+        // Tensor shape belongs to inference. Control geometry remains the
+        // capture/ROI geometry until the concrete runtime contract arrives.
+        self.model_geometry()
+    }
+
+    fn install_runtime_contract(&self, contract: &PerceptionRuntimeContract) {
+        self.replace_model_geometry(Some(ModelGeometry {
+            source_width: contract.source_width,
+            roi_width: contract.roi_width,
+            roi_height: contract.roi_height,
+        }));
+    }
+
+    /// Explicit recording adapter for tests and diagnostics. Production
+    /// composition should call [`Self::new`].
+    pub fn recording() -> Self {
+        let clock: Arc<dyn Clock> = Arc::new(ProcessMonotonicClock::default());
+        let device: Arc<dyn PointerDevice> = Arc::new(RecordingPointerDevice::default());
+        Self::new(clock, device, PipelineConfig::default())
+    }
+}
+
+#[derive(Debug)]
+struct ProcessMonotonicClock {
+    origin: Instant,
+}
+
+impl Default for ProcessMonotonicClock {
+    fn default() -> Self {
+        Self {
+            origin: Instant::now(),
+        }
+    }
+}
+
+impl Clock for ProcessMonotonicClock {
+    fn now(&self) -> MonotonicNanos {
+        MonotonicNanos(self.origin.elapsed().as_nanos().min(u64::MAX as u128) as u64)
+    }
+}
+
+#[derive(Debug)]
+struct SupervisorState {
+    snapshot_sequence: AtomicU64,
+    daemon: DaemonState,
+    pipeline: PipelineState,
+    pipeline_epoch: Option<RuntimeEpoch>,
+    next_epoch: u64,
+    next_diagnostic_generation: u64,
+    pipeline_started_at_ms: Option<u64>,
+    pipeline_error: Option<RuntimeErrorSummary>,
+    subsystems: SubsystemSnapshots,
+    perception_metrics: PerceptionMetrics,
+    pipeline_metrics: PipelineMetrics,
+    device_metrics: DeviceMetrics,
+    model: ModelSnapshot,
+    telemetry: RuntimeTelemetrySnapshot,
+    telemetry_samples: VecDeque<TelemetrySample>,
+    output_enabled: bool,
+    device_mode: PointerDeviceMode,
+    perception_adapter_present: bool,
+    started_at_unix_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TelemetrySample {
+    sampled_at_ns: u64,
+    nvinfer_inputs: u64,
+    nvinfer_outputs: u64,
+    detection_batches: u64,
+    targeting_batches: u64,
+}
+
+const TELEMETRY_RATE_WINDOW_NS: u64 = 1_000_000_000;
+const TELEMETRY_MIN_RATE_WINDOW_NS: u64 = 800_000_000;
+const TELEMETRY_SAMPLE_CAPACITY: usize = 8;
+
+impl Default for SupervisorState {
+    fn default() -> Self {
+        Self {
+            snapshot_sequence: AtomicU64::new(0),
+            daemon: DaemonState::Starting,
+            pipeline: PipelineState::Stopped,
+            pipeline_epoch: None,
+            next_epoch: 0,
+            next_diagnostic_generation: 0,
+            pipeline_started_at_ms: None,
+            pipeline_error: None,
+            subsystems: SubsystemSnapshots::default(),
+            perception_metrics: PerceptionMetrics::default(),
+            pipeline_metrics: PipelineMetrics::default(),
+            device_metrics: DeviceMetrics::default(),
+            model: ModelSnapshot::default(),
+            telemetry: RuntimeTelemetrySnapshot::default(),
+            telemetry_samples: VecDeque::with_capacity(TELEMETRY_SAMPLE_CAPACITY),
+            output_enabled: false,
+            device_mode: PointerDeviceMode::Commissioned,
+            perception_adapter_present: false,
+            started_at_unix_ms: now_ms(),
+        }
+    }
+}
+
+impl SupervisorState {
+    fn snapshot(&self, updated_at_ms: u64) -> RuntimeSnapshot {
+        let sequence = match self.snapshot_sequence.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |current| current.checked_add(1),
+        ) {
+            Ok(previous) => previous + 1,
+            Err(current) => current,
+        };
+        RuntimeSnapshot {
+            sequence,
+            daemon: DaemonSnapshot {
+                state: self.daemon,
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                uptime_ms: updated_at_ms.saturating_sub(self.started_at_unix_ms),
+            },
+            pipeline: PipelineSnapshot {
+                state: self.pipeline,
+                epoch: self.pipeline_epoch,
+                started_at_ms: self.pipeline_started_at_ms,
+                last_error: self.pipeline_error.clone(),
+            },
+            subsystems: self.subsystems.clone(),
+            perception_metrics: self.perception_metrics,
+            pipeline_metrics: self.pipeline_metrics.clone(),
+            device_metrics: self.device_metrics,
+            model: self.model.clone(),
+            telemetry: self.telemetry,
+            updated_at_ms,
+        }
+    }
+
+    fn reset_telemetry(&mut self) {
+        self.telemetry = RuntimeTelemetrySnapshot::default();
+        self.telemetry_samples.clear();
+    }
+
+    /// Derive stable, human-facing rates on the existing supervisor tick.
+    /// No producer-side lock, queue, allocation, or additional polling is
+    /// introduced by these calculations.
+    fn observe_telemetry(
+        &mut self,
+        now_ns: u64,
+        perception: PerceptionMetrics,
+        pipeline: &PipelineMetrics,
+    ) -> bool {
+        let previous = self.telemetry;
+        self.telemetry.detection_data_age_ms = perception
+            .latest_published_capture_at_ns
+            .map(|captured_at_ns| now_ns.saturating_sub(captured_at_ns) as f64 / 1_000_000.0);
+        self.telemetry.inference_latency_ms = perception
+            .latest_inference_duration_ns
+            .map(|duration_ns| duration_ns as f64 / 1_000_000.0);
+
+        let sample = TelemetrySample {
+            sampled_at_ns: now_ns,
+            nvinfer_inputs: perception.input_buffers,
+            nvinfer_outputs: perception.probed_buffers,
+            detection_batches: perception.published_batches,
+            targeting_batches: pipeline.targeting_batches,
+        };
+
+        let counters_reset = self.telemetry_samples.back().is_some_and(|last| {
+            sample.sampled_at_ns < last.sampled_at_ns
+                || sample.nvinfer_inputs < last.nvinfer_inputs
+                || sample.nvinfer_outputs < last.nvinfer_outputs
+                || sample.detection_batches < last.detection_batches
+                || sample.targeting_batches < last.targeting_batches
+        });
+        if counters_reset {
+            self.telemetry_samples.clear();
+            self.telemetry = RuntimeTelemetrySnapshot {
+                detection_data_age_ms: self.telemetry.detection_data_age_ms,
+                inference_latency_ms: self.telemetry.inference_latency_ms,
+                ..RuntimeTelemetrySnapshot::default()
+            };
+        }
+        self.telemetry_samples.push_back(sample);
+
+        while self.telemetry_samples.len() > 2
+            && self.telemetry_samples.get(1).is_some_and(|next| {
+                now_ns.saturating_sub(next.sampled_at_ns) >= TELEMETRY_RATE_WINDOW_NS
+            })
+        {
+            self.telemetry_samples.pop_front();
+        }
+        while self.telemetry_samples.len() > TELEMETRY_SAMPLE_CAPACITY {
+            self.telemetry_samples.pop_front();
+        }
+
+        let baseline = self.telemetry_samples.front().copied().unwrap_or(sample);
+        let elapsed_ns = sample.sampled_at_ns.saturating_sub(baseline.sampled_at_ns);
+        if elapsed_ns >= TELEMETRY_MIN_RATE_WINDOW_NS {
+            let elapsed_seconds = elapsed_ns as f64 / 1_000_000_000.0;
+            self.telemetry.sample_window_ms = Some(elapsed_ns / 1_000_000);
+            self.telemetry.nvinfer_input_fps = Some(
+                sample
+                    .nvinfer_inputs
+                    .saturating_sub(baseline.nvinfer_inputs) as f64
+                    / elapsed_seconds,
+            );
+            self.telemetry.nvinfer_output_fps = Some(
+                sample
+                    .nvinfer_outputs
+                    .saturating_sub(baseline.nvinfer_outputs) as f64
+                    / elapsed_seconds,
+            );
+            self.telemetry.detection_batch_fps = Some(
+                sample
+                    .detection_batches
+                    .saturating_sub(baseline.detection_batches) as f64
+                    / elapsed_seconds,
+            );
+            self.telemetry.targeting_batch_fps = Some(
+                sample
+                    .targeting_batches
+                    .saturating_sub(baseline.targeting_batches) as f64
+                    / elapsed_seconds,
+            );
+        }
+        self.telemetry != previous
+    }
+
+    fn mark_device_uncommissioned(&mut self) {
+        let mut error = RuntimeError::device_uncommissioned().summary();
+        error.subsystem = Some("device".to_owned());
+        self.subsystems.device.state = SubsystemState::Unavailable;
+        self.subsystems.device.last_error = Some(error);
+    }
+
+    fn mark_perception_unavailable(&mut self) {
+        for (subsystem, name) in [
+            (&mut self.subsystems.capture, "capture"),
+            (&mut self.subsystems.inference, "inference"),
+        ] {
+            subsystem.state = SubsystemState::Unavailable;
+            subsystem.last_error = Some(RuntimeErrorSummary {
+                code: "perception_adapter_unavailable".to_owned(),
+                message: "no perception adapter is installed for this daemon mode".to_owned(),
+                subsystem: Some(name.to_owned()),
+            });
+        }
+    }
+
+    fn begin_start(&mut self) -> Result<Option<RuntimeEpoch>, RuntimeError> {
+        match self.pipeline {
+            PipelineState::Running | PipelineState::Starting | PipelineState::Standby => {
+                return Ok(None);
+            }
+            PipelineState::Stopping => {
+                return Err(RuntimeError::invalid_pipeline_state(
+                    "start requested while the pipeline is stopping",
+                ));
+            }
+            PipelineState::Stopped | PipelineState::Faulted => {}
+        }
+
+        self.next_epoch = self
+            .next_epoch
+            .checked_add(1)
+            .ok_or_else(RuntimeError::runtime_epoch_exhausted)?;
+        let epoch = RuntimeEpoch(self.next_epoch);
+        self.pipeline_epoch = Some(epoch);
+        self.pipeline = PipelineState::Starting;
+        self.pipeline_started_at_ms = None;
+        self.pipeline_error = None;
+        self.perception_metrics = PerceptionMetrics::default();
+        self.pipeline_metrics = PipelineMetrics {
+            status: PipelineStatus::Starting,
+            ..PipelineMetrics::default()
+        };
+        self.reset_telemetry();
+        if self.perception_adapter_present {
+            self.subsystems.capture.last_error = None;
+            self.subsystems.inference.last_error = None;
+        } else {
+            self.mark_perception_unavailable();
+        }
+        self.subsystems.control.last_error = None;
+        self.subsystems.device.last_error = None;
+        self.subsystems.control.state = SubsystemState::Starting;
+        if self.device_mode == PointerDeviceMode::Commissioned {
+            self.subsystems.device.state = SubsystemState::Starting;
+        } else {
+            self.mark_device_uncommissioned();
+        }
+        Ok(Some(epoch))
+    }
+
+    fn finish_start(&mut self, started_at_ms: u64, perception_running: bool) {
+        self.pipeline = PipelineState::Running;
+        self.pipeline_started_at_ms = Some(started_at_ms);
+        if perception_running {
+            self.subsystems.capture.state = SubsystemState::Running;
+            self.subsystems.inference.state = SubsystemState::Running;
+        } else if !self.perception_adapter_present {
+            self.mark_perception_unavailable();
+        }
+        self.subsystems.control.state = SubsystemState::Running;
+        if self.device_mode == PointerDeviceMode::Commissioned {
+            self.subsystems.device.state = SubsystemState::Ready;
+        } else {
+            self.mark_device_uncommissioned();
+        }
+    }
+
+    fn begin_stop(&mut self) -> bool {
+        if self.pipeline == PipelineState::Stopped {
+            return false;
+        }
+        self.pipeline = PipelineState::Stopping;
+        self.pipeline_metrics.status = PipelineStatus::Stopping;
+        if self.perception_adapter_present {
+            self.subsystems.capture.state = SubsystemState::Stopping;
+            self.subsystems.inference.state = SubsystemState::Stopping;
+        } else {
+            self.mark_perception_unavailable();
+        }
+        self.subsystems.control.state = SubsystemState::Stopping;
+        if self.device_mode == PointerDeviceMode::Commissioned {
+            self.subsystems.device.state = SubsystemState::Stopping;
+        } else {
+            self.mark_device_uncommissioned();
+        }
+        true
+    }
+
+    fn finish_stop(&mut self) {
+        self.pipeline = PipelineState::Stopped;
+        self.pipeline_metrics.status = PipelineStatus::Stopped;
+        self.pipeline_metrics.device_connected = false;
+        self.pipeline_metrics.device_connection_enabled = false;
+        self.pipeline_metrics.buttons_available = false;
+        self.pipeline_metrics.button_left = false;
+        self.pipeline_metrics.button_right = false;
+        self.pipeline_metrics.output_gate_open = false;
+        self.pipeline_metrics.control = Default::default();
+        self.pipeline_started_at_ms = None;
+        self.reset_telemetry();
+        if self.perception_adapter_present {
+            self.subsystems.capture.state = SubsystemState::Stopped;
+            self.subsystems.inference.state = SubsystemState::Stopped;
+        } else {
+            self.mark_perception_unavailable();
+        }
+        self.subsystems.control.state = SubsystemState::Stopped;
+        if self.device_mode == PointerDeviceMode::Commissioned {
+            self.subsystems.device.state = SubsystemState::Stopped;
+        } else {
+            self.mark_device_uncommissioned();
+        }
+    }
+
+    fn finish_fault(&mut self, message: impl Into<String>) {
+        let error = RuntimeErrorSummary::new("pipeline_faulted", message);
+        self.pipeline = PipelineState::Faulted;
+        self.pipeline_metrics.status = PipelineStatus::Faulted;
+        self.pipeline_started_at_ms = None;
+        self.pipeline_error = Some(error.clone());
+        self.reset_telemetry();
+        if !self.perception_adapter_present {
+            self.mark_perception_unavailable();
+        } else {
+            if self.subsystems.capture.state != SubsystemState::Stopped {
+                self.subsystems.capture.state = SubsystemState::Failed;
+            }
+            if self.subsystems.inference.state != SubsystemState::Stopped {
+                self.subsystems.inference.state = SubsystemState::Failed;
+            }
+        }
+        self.subsystems.control.state = SubsystemState::Failed;
+        self.subsystems.device.state = SubsystemState::Unavailable;
+        self.subsystems.control.last_error = Some(error);
+    }
+
+    fn emergency_stop(&mut self, stopped_at_ms: u64) {
+        self.finish_stop();
+        self.subsystems.device.state = SubsystemState::Unavailable;
+        self.subsystems.control.last_error = Some(RuntimeErrorSummary::new(
+            "emergency_stop",
+            format!("emergency stop activated at {stopped_at_ms}"),
+        ));
+        self.subsystems.control.restart_count =
+            self.subsystems.control.restart_count.saturating_add(1);
+    }
+
+    fn reconcile_device_health(&mut self) {
+        if self.device_mode == PointerDeviceMode::Uncommissioned {
+            self.mark_device_uncommissioned();
+            return;
+        }
+        if !matches!(
+            self.pipeline,
+            PipelineState::Running | PipelineState::Standby
+        ) {
+            return;
+        }
+        if self.pipeline_metrics.device_connected {
+            self.subsystems.device.state = SubsystemState::Ready;
+            self.subsystems.device.last_error = None;
+            return;
+        }
+        if !self.pipeline_metrics.device_connection_enabled {
+            self.subsystems.device.state = SubsystemState::Stopped;
+            self.subsystems.device.last_error = None;
+            return;
+        }
+        self.subsystems.device.state = SubsystemState::Degraded;
+        self.subsystems.device.last_error =
+            self.pipeline_metrics
+                .last_device_error
+                .as_ref()
+                .map(|message| {
+                    let mut error =
+                        RuntimeErrorSummary::new("device_reconnecting", message.clone());
+                    error.subsystem = Some("device".to_owned());
+                    error
+                });
+    }
+}
+
+struct ActivePipeline {
+    epoch: RuntimeEpoch,
+    runtime: PipelineRuntime,
+    ingress: PipelineIngress,
+    perception: Option<Box<dyn PerceptionSession>>,
+    event_bridge: tokio::task::JoinHandle<()>,
+    perception_event_bridge: Option<tokio::task::JoinHandle<()>>,
+    perception_event_cancel: Option<Arc<AtomicBool>>,
+}
+
+#[derive(Debug)]
+struct PipelineNotice {
+    epoch: RuntimeEpoch,
+    event: PipelineEvent,
+}
+
+fn initial_model_snapshot(catalog: Option<&SqliteModelCatalog>) -> ModelSnapshot {
+    let Some(catalog) = catalog else {
+        return ModelSnapshot::default();
+    };
+    match catalog.active_model() {
+        Ok(active) => ModelSnapshot {
+            active,
+            catalog_error: None,
+            input_width: None,
+            input_height: None,
+        },
+        Err(error) => ModelSnapshot {
+            active: None,
+            catalog_error: Some(error.to_string()),
+            input_width: None,
+            input_height: None,
+        },
+    }
+}
+
+/// Owns the supervisor task. Runtime commands are issued through the
+/// paired [`RuntimeHandle`].
+pub struct RuntimeSupervisor {
+    join: Option<tokio::task::JoinHandle<()>>,
+    _command_tx: mpsc::Sender<RuntimeCommand>,
+    shutdown_tx: watch::Sender<bool>,
+    ingress_rx: watch::Receiver<Option<PipelineIngress>>,
+    urgent_stop: Arc<UrgentStopSignal>,
+    owner_shutdown_armed: bool,
+}
+
+impl std::fmt::Debug for RuntimeSupervisor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeSupervisor")
+            .field("running", &self.join.is_some())
+            .finish()
+    }
+}
+
+impl RuntimeSupervisor {
+    /// Spawn the sole lifecycle actor with production-selected adapters.
+    pub fn spawn(dependencies: RuntimeDependencies) -> (Self, RuntimeHandle) {
+        let model = initial_model_snapshot(dependencies.model_catalog.as_ref());
+        let device_mode = dependencies.device().mode();
+        let mut state = SupervisorState {
+            daemon: DaemonState::Ready,
+            model,
+            output_enabled: dependencies.output_enabled
+                && device_mode == PointerDeviceMode::Commissioned,
+            device_mode,
+            perception_adapter_present: dependencies.perception.is_some(),
+            ..SupervisorState::default()
+        };
+        if device_mode == PointerDeviceMode::Uncommissioned {
+            state.mark_device_uncommissioned();
+        }
+        if !state.perception_adapter_present {
+            state.mark_perception_unavailable();
+        }
+        let initial_snapshot = Arc::new(state.snapshot(now_ms()));
+        let (snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
+        let (ingress_tx, ingress_rx) = watch::channel(None::<PipelineIngress>);
+        let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
+        let (notice_tx, notice_rx) = mpsc::channel(PIPELINE_EVENT_CAPACITY);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let urgent_admission = Arc::new(Semaphore::new(URGENT_ADMISSION_CAPACITY));
+        let urgent_stop = Arc::clone(&dependencies.urgent_stop);
+        let preview = dependencies.preview.clone();
+        let crosshair = dependencies.crosshair.clone();
+        let join = tokio::spawn(supervisor_loop(
+            command_rx,
+            notice_rx,
+            notice_tx,
+            shutdown_rx,
+            snapshot_tx,
+            ingress_tx,
+            state,
+            dependencies,
+        ));
+
+        (
+            Self {
+                join: Some(join),
+                _command_tx: command_tx.clone(),
+                shutdown_tx,
+                ingress_rx: ingress_rx.clone(),
+                urgent_stop: Arc::clone(&urgent_stop),
+                owner_shutdown_armed: true,
+            },
+            RuntimeHandle {
+                command_tx,
+                snapshot_rx,
+                ingress_rx,
+                urgent_stop,
+                urgent_admission,
+                preview,
+                crosshair,
+            },
+        )
+    }
+
+    pub fn spawn_recording() -> (Self, RuntimeHandle) {
+        Self::spawn(RuntimeDependencies::recording())
+    }
+
+    pub async fn join(mut self) -> Result<(), RuntimeError> {
+        let join = self
+            .join
+            .take()
+            .ok_or_else(RuntimeError::supervisor_unavailable)?;
+        let result = join.await;
+        self.owner_shutdown_armed = false;
+        result.map_err(|error| {
+            RuntimeError::new(
+                RuntimeErrorKind::SupervisorUnavailable,
+                format!("runtime supervisor task failed: {error}"),
+            )
+        })
+    }
+}
+
+impl Drop for RuntimeSupervisor {
+    fn drop(&mut self) {
+        if self.owner_shutdown_armed {
+            self.urgent_stop.latch_shutdown();
+            if let Some(ingress) = self.ingress_rx.borrow().clone() {
+                ingress.request_output_stop();
+            }
+            self.shutdown_tx.send_replace(true);
+        }
+    }
+}
+
+/// Cheap clone of the command sender and latest immutable state.
+#[derive(Clone)]
+pub struct RuntimeHandle {
+    command_tx: mpsc::Sender<RuntimeCommand>,
+    snapshot_rx: watch::Receiver<Arc<RuntimeSnapshot>>,
+    ingress_rx: watch::Receiver<Option<PipelineIngress>>,
+    urgent_stop: Arc<UrgentStopSignal>,
+    urgent_admission: Arc<Semaphore>,
+    preview: Option<PreviewHub>,
+    crosshair: CrosshairHubSlot,
+}
+
+impl std::fmt::Debug for RuntimeHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeHandle")
+            .field("command_tx", &"<mpsc::Sender>")
+            .field("snapshot_rx", &"<watch::Receiver>")
+            .field("ingress_rx", &"<watch::Receiver>")
+            .finish()
+    }
+}
+
+impl RuntimeHandle {
+    /// Returns whether the sole runtime supervisor can still accept work.
+    ///
+    /// The immutable snapshot may outlive its producer, so callers that report
+    /// process health must check this signal instead of trusting the last
+    /// published daemon state alone.
+    pub fn is_supervisor_alive(&self) -> bool {
+        !self.command_tx.is_closed()
+    }
+
+    /// Wait until the runtime supervisor receiver disappears.
+    ///
+    /// This is the process-owner seam used to fail the daemon when its core
+    /// lifecycle actor exits unexpectedly.
+    pub async fn wait_for_supervisor_exit(&self) {
+        self.command_tx.closed().await;
+    }
+
+    #[doc(hidden)]
+    pub fn pending_urgent_stop_count(&self) -> usize {
+        self.urgent_stop.pending.load(Ordering::Acquire)
+    }
+
+    pub fn snapshot(&self) -> RuntimeSnapshot {
+        self.snapshot_rx.borrow().as_ref().clone()
+    }
+
+    pub fn subscribe(&self) -> watch::Receiver<Arc<RuntimeSnapshot>> {
+        self.snapshot_rx.clone()
+    }
+
+    pub fn submit_detection_batch(&self, batch: DetectionBatch) -> Result<(), RuntimeError> {
+        let ingress = self
+            .ingress_rx
+            .borrow()
+            .clone()
+            .ok_or_else(RuntimeError::pipeline_unavailable)?;
+        ingress
+            .submit(batch)
+            .map_err(|error| RuntimeError::pipeline_rejected(error.to_string()))
+    }
+
+    pub async fn set_trigger_active(&self, active: bool) -> Result<(), RuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::SetTriggerActive {
+                active,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    pub async fn set_trigger_mode(&self, mode: TriggerMode) -> Result<(), RuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::SetTriggerMode {
+                mode,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    pub(crate) async fn update_output_config(
+        &self,
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::UpdateOutputConfig {
+                service,
+                update,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
+    }
+
+    pub(crate) async fn update_trigger_mode_config(
+        &self,
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::UpdateTriggerModeConfig {
+                service,
+                update,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
+    }
+
+    pub(crate) async fn update_recoil_config(
+        &self,
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::UpdateRecoilConfig {
+                service,
+                update,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
+    }
+
+    pub(crate) async fn update_pipeline_config(
+        &self,
+        service: ConfigService,
+        update: ConfigFieldUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::UpdatePipelineConfig {
+                service,
+                update,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
+    }
+
+    pub fn preview_snapshot(&self) -> Option<PreviewSnapshot> {
+        self.preview.as_ref().map(PreviewHub::snapshot)
+    }
+
+    pub fn subscribe_preview(&self) -> Result<PreviewSubscription, RuntimeError> {
+        self.preview
+            .as_ref()
+            .ok_or_else(RuntimeError::pipeline_unavailable)?
+            .subscribe()
+            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
+    }
+
+    pub async fn set_preview_active(&self, active: bool) -> Result<PreviewSnapshot, RuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::SetPreviewActive {
+                active,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    pub fn crosshair_snapshot(&self) -> Option<CrosshairSnapshot> {
+        self.crosshair
+            .current()
+            .as_ref()
+            .map(CrosshairHub::snapshot)
+    }
+
+    pub fn learn_crosshair(&self) -> Result<CrosshairTemplateSummary, RuntimeError> {
+        self.crosshair
+            .current()
+            .as_ref()
+            .ok_or_else(RuntimeError::pipeline_unavailable)?
+            .learn()
+            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
+    }
+
+    pub fn clear_crosshair(&self) -> Result<CrosshairSnapshot, RuntimeError> {
+        self.crosshair
+            .current()
+            .as_ref()
+            .ok_or_else(RuntimeError::pipeline_unavailable)?
+            .clear_template()
+            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
+    }
+
+    pub fn crosshair_template_preview(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
+        self.crosshair
+            .current()
+            .as_ref()
+            .ok_or_else(RuntimeError::pipeline_unavailable)?
+            .template_preview_png()
+            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
+    }
+
+    pub async fn diagnose_device_move(
+        &self,
+        delta_x_counts: i32,
+        delta_y_counts: i32,
+    ) -> Result<DeviceReceipt, RuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::DiagnoseDeviceMove {
+                delta_x_counts,
+                delta_y_counts,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    pub async fn connect_device(&self) -> Result<RuntimeSnapshot, RuntimeError> {
+        self.send_command(|reply| RuntimeCommand::ConnectDevice { reply })
+            .await
+    }
+
+    pub async fn disconnect_device(&self) -> Result<RuntimeSnapshot, RuntimeError> {
+        self.send_command(|reply| RuntimeCommand::DisconnectDevice { reply })
+            .await
+    }
+
+    pub async fn start(&self) -> Result<RuntimeSnapshot, RuntimeError> {
+        self.send_command(|reply| RuntimeCommand::Start { reply })
+            .await
+    }
+
+    pub async fn stop(&self) -> Result<RuntimeSnapshot, RuntimeError> {
+        self.send_urgent_command(|urgent, reply| RuntimeCommand::Stop { urgent, reply })
+            .await
+    }
+
+    pub async fn restart(&self) -> Result<RuntimeSnapshot, RuntimeError> {
+        self.send_command(|reply| RuntimeCommand::Restart { reply })
+            .await
+    }
+
+    pub(crate) async fn install_stopped_config(
+        &self,
+        config: AppConfig,
+        rebuild_device: bool,
+        rebuild_crosshair: bool,
+    ) -> Result<(), RuntimeError> {
+        self.send_command(|reply| RuntimeCommand::InstallStoppedConfig {
+            config: Box::new(config),
+            rebuild_device,
+            rebuild_crosshair,
+            reply,
+        })
+        .await
+    }
+
+    pub(crate) async fn apply_config(
+        &self,
+        service: ConfigService,
+        config: AppConfig,
+        rollback_config: AppConfig,
+        rebuild_device: bool,
+        rebuild_crosshair: bool,
+    ) -> Result<RuntimeSnapshot, RuntimeConfigApplyFailure> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::ApplyConfig {
+                service,
+                config: Box::new(config),
+                rollback_config: Box::new(rollback_config),
+                rebuild_device,
+                rebuild_crosshair,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| {
+                RuntimeConfigApplyFailure::before_install(RuntimeError::supervisor_closed())
+            })?;
+        reply_rx.await.map_err(|_| {
+            RuntimeConfigApplyFailure::before_install(RuntimeError::supervisor_reply_lost())
+        })?
+    }
+
+    pub async fn preflight_perception(&self) -> Result<(), RuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::PreflightPerception { reply: reply_tx })
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    pub async fn activate_model(
+        &self,
+        request: ModelActivationRequest,
+    ) -> Result<ModelActivationResult, ModelActivationError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::ActivateModel {
+                request,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ModelActivationError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ModelActivationError::Runtime(RuntimeError::supervisor_reply_lost()))?
+    }
+
+    pub async fn model_ingress(
+        &self,
+        request: ModelIngressRequest,
+    ) -> Result<ModelIngressResult, ModelIngressError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::ModelIngress {
+                request,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ModelIngressError::Failed("runtime supervisor is closed".to_owned()))?;
+        reply_rx.await.map_err(|_| {
+            ModelIngressError::Failed("runtime supervisor reply was lost".to_owned())
+        })?
+    }
+
+    pub async fn emergency_stop(&self) -> Result<RuntimeSnapshot, RuntimeError> {
+        self.send_urgent_command(|urgent, reply| RuntimeCommand::EmergencyStop { urgent, reply })
+            .await
+    }
+
+    pub async fn shutdown_daemon(&self) -> Result<(), RuntimeError> {
+        self.send_urgent_command(|urgent, reply| RuntimeCommand::ShutdownDaemon { urgent, reply })
+            .await
+    }
+
+    async fn send_urgent_command<T, F>(&self, build: F) -> Result<T, RuntimeError>
+    where
+        F: FnOnce(UrgentStopToken, oneshot::Sender<Result<T, RuntimeError>>) -> RuntimeCommand,
+    {
+        let admission_permit = Arc::clone(&self.urgent_admission)
+            .try_acquire_owned()
+            .map_err(|_| RuntimeError::supervisor_busy())?;
+        // Register before touching the gate so another actor transaction can
+        // never reopen it between the physical effect and publication of the
+        // stop intent. The token remains owned by the detached admission task
+        // if the initiating HTTP/task future is cancelled.
+        let urgent = self.urgent_stop.register();
+        if let Some(ingress) = self.ingress_rx.borrow().clone() {
+            ingress.request_output_stop();
+        }
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let command = build(urgent, reply_tx);
+        let command_tx = self.command_tx.clone();
+        let (admission_tx, admission_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let _admission_permit = admission_permit;
+            let admitted = command_tx
+                .send(command)
+                .await
+                .map_err(|_| RuntimeError::supervisor_closed());
+            let _ = admission_tx.send(admitted);
+        });
+
+        admission_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())??;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
+    async fn send_command<T, F>(&self, build: F) -> Result<T, RuntimeError>
+    where
+        F: FnOnce(oneshot::Sender<Result<T, RuntimeError>>) -> RuntimeCommand,
+    {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(build(reply_tx))
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn supervisor_loop(
+    mut command_rx: mpsc::Receiver<RuntimeCommand>,
+    mut notice_rx: mpsc::Receiver<PipelineNotice>,
+    notice_tx: mpsc::Sender<PipelineNotice>,
+    mut shutdown_rx: watch::Receiver<bool>,
+    snapshot_tx: watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: watch::Sender<Option<PipelineIngress>>,
+    mut state: SupervisorState,
+    dependencies: RuntimeDependencies,
+) {
+    let mut active: Option<ActivePipeline> = None;
+    let mut metrics_tick = tokio::time::interval(Duration::from_millis(200));
+    metrics_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() {
+                    shutdown_for_exit(
+                        &snapshot_tx,
+                        &ingress_tx,
+                        &mut state,
+                        &mut active,
+                    ).await;
+                    break;
+                }
+            }
+            Some(notice) = notice_rx.recv() => {
+                handle_pipeline_notice(
+                    notice,
+                    &snapshot_tx,
+                    &ingress_tx,
+                    &mut state,
+                    &mut active,
+                ).await;
+            }
+            _ = metrics_tick.tick(), if active.is_some() => {
+                let perception_fault = active.as_mut().and_then(|pipeline| {
+                    let epoch = pipeline.epoch;
+                    pipeline
+                        .perception
+                        .as_mut()
+                        .and_then(|perception| perception.poll_health().err())
+                        .map(|error| PipelineNotice {
+                            epoch,
+                            event: PipelineEvent::Faulted {
+                                message: format!("perception health check failed: {error}"),
+                            },
+                        })
+                });
+                if let Some(notice) = perception_fault {
+                    handle_pipeline_notice(
+                        notice,
+                        &snapshot_tx,
+                        &ingress_tx,
+                        &mut state,
+                        &mut active,
+                    ).await;
+                    continue;
+                }
+                let perception_metrics = active
+                    .as_ref()
+                    .and_then(|pipeline| pipeline.perception.as_ref())
+                    .map(|perception| perception.metrics())
+                    .unwrap_or_default();
+                let pipeline_metrics = active
+                    .as_ref()
+                    .map(|pipeline| pipeline.runtime.metrics())
+                    .unwrap_or_default();
+                let metrics_changed = perception_metrics != state.perception_metrics
+                    || pipeline_metrics != state.pipeline_metrics;
+                let telemetry_changed = state.observe_telemetry(
+                    dependencies.clock.now().0,
+                    perception_metrics,
+                    &pipeline_metrics,
+                );
+                if metrics_changed || telemetry_changed {
+                    state.perception_metrics = perception_metrics;
+                    state.pipeline_metrics = pipeline_metrics;
+                    state.reconcile_device_health();
+                    publish(&snapshot_tx, &state, now_ms());
+                }
+            }
+            command = command_rx.recv() => {
+                let Some(command) = command else { break };
+                if handle_command(
+                    command,
+                    &snapshot_tx,
+                    &ingress_tx,
+                    &notice_tx,
+                    &mut state,
+                    &mut active,
+                    &dependencies,
+                ).await {
+                    break;
+                }
+            }
+        }
+    }
+    if active.is_some() {
+        shutdown_for_exit(&snapshot_tx, &ingress_tx, &mut state, &mut active).await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_command(
+    command: RuntimeCommand,
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    notice_tx: &mpsc::Sender<PipelineNotice>,
+    state: &mut SupervisorState,
+    active: &mut Option<ActivePipeline>,
+    dependencies: &RuntimeDependencies,
+) -> bool {
+    match command {
+        RuntimeCommand::Start { reply } => {
+            let result = if dependencies.urgent_stop.is_pending() {
+                Err(RuntimeError::invalid_pipeline_state(
+                    "start cancelled by a pending stop request",
+                ))
+            } else {
+                start_state(
+                    snapshot_tx,
+                    ingress_tx,
+                    notice_tx,
+                    state,
+                    active,
+                    dependencies,
+                )
+                .await
+            };
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::Stop { urgent, reply } => {
+            let result = stop_state(snapshot_tx, ingress_tx, state, active).await;
+            let _ = reply.send(result);
+            drop(urgent);
+        }
+        RuntimeCommand::Restart { reply } => {
+            let result = async {
+                stop_state(snapshot_tx, ingress_tx, state, active).await?;
+                start_state(
+                    snapshot_tx,
+                    ingress_tx,
+                    notice_tx,
+                    state,
+                    active,
+                    dependencies,
+                )
+                .await
+            }
+            .await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::InstallStoppedConfig {
+            config,
+            rebuild_device,
+            rebuild_crosshair,
+            reply,
+        } => {
+            let result = if active.is_some()
+                || !matches!(
+                    state.pipeline,
+                    PipelineState::Stopped | PipelineState::Faulted
+                ) {
+                Err(RuntimeError::invalid_pipeline_state(
+                    "configuration reload requires a stopped runtime",
+                ))
+            } else {
+                install_config_state(
+                    snapshot_tx,
+                    state,
+                    dependencies,
+                    &config,
+                    rebuild_device,
+                    rebuild_crosshair,
+                )
+            };
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::ApplyConfig {
+            service,
+            config,
+            rollback_config,
+            rebuild_device,
+            rebuild_crosshair,
+            reply,
+        } => {
+            let result = apply_config_state(
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active,
+                dependencies,
+                &service,
+                &config,
+                &rollback_config,
+                rebuild_device,
+                rebuild_crosshair,
+            )
+            .await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::PreflightPerception { reply } => {
+            let result = preflight_perception(state, dependencies).await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::ActivateModel { request, reply } => {
+            let result = activate_model_state(
+                request,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active,
+                dependencies,
+            )
+            .await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::ModelIngress { request, reply } => {
+            let result = model_ingress_state(
+                request,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active,
+                dependencies,
+            )
+            .await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::EmergencyStop { urgent, reply } => {
+            ingress_tx.send_replace(None);
+            refresh_pipeline_metrics(state, active);
+            if state.begin_stop() {
+                publish(snapshot_tx, state, now_ms());
+            }
+            let result = shutdown_active(active).await;
+            match result {
+                Ok(()) => {
+                    let timestamp = now_ms();
+                    state.emergency_stop(timestamp);
+                    let snapshot = publish_with_result(snapshot_tx, state, timestamp);
+                    let _ = reply.send(Ok(snapshot));
+                }
+                Err(error) => {
+                    state.finish_fault(error.to_string());
+                    publish(snapshot_tx, state, now_ms());
+                    let _ = reply.send(Err(error));
+                }
+            }
+            drop(urgent);
+        }
+        RuntimeCommand::SetTriggerActive {
+            active: requested,
+            reply,
+        } => {
+            let result = match live_ingress(active) {
+                Ok(ingress) => set_trigger_state(ingress, requested).await,
+                Err(error) => Err(error),
+            };
+            if result.is_ok() {
+                refresh_pipeline_metrics(state, active);
+                publish(snapshot_tx, state, now_ms());
+            }
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::SetTriggerMode { mode, reply } => {
+            let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
+            let result = install_trigger_mode(ingress, dependencies, mode).await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::UpdatePipelineConfig {
+            service,
+            update,
+            reply,
+        } => {
+            let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
+            let result = update_pipeline_config_state(service, update, ingress, dependencies).await;
+            if result.is_ok() {
+                refresh_pipeline_metrics(state, active);
+                publish(snapshot_tx, state, now_ms());
+            }
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::UpdateOutputConfig {
+            service,
+            update,
+            reply,
+        } => {
+            let result = match ConfigService::output_gate_value(&update) {
+                Ok(true) if state.device_mode == PointerDeviceMode::Uncommissioned => Err(
+                    ConfigServiceError::Runtime(RuntimeError::device_uncommissioned()),
+                ),
+                Ok(false) => {
+                    // Closing is safety-monotonic: retire physical output
+                    // before any filesystem wait, and never compensate by
+                    // reopening when persistence fails.
+                    let changed_live_output = state.output_enabled;
+                    state.output_enabled = false;
+                    if let Some(active_pipeline) = active.as_ref() {
+                        active_pipeline.runtime.pause_output_gate();
+                    }
+                    refresh_pipeline_metrics(state, active);
+                    publish(snapshot_tx, state, now_ms());
+                    match service.persist_output_gate(update, false).await {
+                        Ok(transaction) => {
+                            let update = transaction.commit();
+                            refresh_pipeline_metrics(state, active);
+                            publish(snapshot_tx, state, now_ms());
+                            #[cfg(test)]
+                            service.notify_output_gate_applied();
+                            Ok(update)
+                        }
+                        Err(source)
+                            if changed_live_output || !service.output_gate_is_consistent() =>
+                        {
+                            service.mark_output_gate_diverged();
+                            Err(ConfigServiceError::OutputGateDisabledButNotPersisted {
+                                source: Box::new(source),
+                            })
+                        }
+                        Err(source) => Err(source),
+                    }
+                }
+                Ok(true) => match service.persist_output_gate(update, true).await {
+                    Ok(transaction) => {
+                        // Commit the in-memory revision before exposing the
+                        // physical gate. No await is allowed between them.
+                        let update = transaction.commit();
+                        state.output_enabled = true;
+                        if let Some(active_pipeline) = active.as_ref() {
+                            active_pipeline.runtime.open_output_gate();
+                        }
+                        refresh_pipeline_metrics(state, active);
+                        publish(snapshot_tx, state, now_ms());
+                        #[cfg(test)]
+                        service.notify_output_gate_applied();
+                        Ok(update)
+                    }
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            };
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::UpdateTriggerModeConfig {
+            service,
+            update,
+            reply,
+        } => {
+            let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
+            let result =
+                update_trigger_mode_config_state(service, update, ingress, dependencies).await;
+            if result.is_ok() {
+                refresh_pipeline_metrics(state, active);
+                publish(snapshot_tx, state, now_ms());
+            }
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::UpdateRecoilConfig {
+            service,
+            update,
+            reply,
+        } => {
+            let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
+            let result = update_recoil_config_state(service, update, ingress, dependencies).await;
+            if result.is_ok() {
+                refresh_pipeline_metrics(state, active);
+                publish(snapshot_tx, state, now_ms());
+            }
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::SetPreviewActive {
+            active: requested,
+            reply,
+        } => {
+            let result = dependencies
+                .preview
+                .as_ref()
+                .ok_or_else(RuntimeError::pipeline_unavailable)
+                .and_then(|preview| {
+                    preview
+                        .set_active(requested)
+                        .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
+                });
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::DiagnoseDeviceMove {
+            delta_x_counts,
+            delta_y_counts,
+            reply,
+        } => {
+            let result = diagnose_device_move(
+                snapshot_tx,
+                state,
+                dependencies,
+                delta_x_counts,
+                delta_y_counts,
+            )
+            .await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::ConnectDevice { reply } => {
+            let result = set_device_connection(snapshot_tx, state, active, true).await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::DisconnectDevice { reply } => {
+            let result = set_device_connection(snapshot_tx, state, active, false).await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::ShutdownDaemon { urgent, reply } => {
+            state.daemon = DaemonState::ShuttingDown;
+            ingress_tx.send_replace(None);
+            refresh_pipeline_metrics(state, active);
+            if state.begin_stop() {
+                publish(snapshot_tx, state, now_ms());
+            }
+            let result = shutdown_active(active).await;
+            if result.is_ok() {
+                state.finish_stop();
+            } else if let Err(error) = &result {
+                state.finish_fault(error.to_string());
+            }
+            publish(snapshot_tx, state, now_ms());
+            let _ = reply.send(result);
+            drop(urgent);
+            return true;
+        }
+    }
+    false
+}
+
+async fn preflight_perception(
+    state: &SupervisorState,
+    dependencies: &RuntimeDependencies,
+) -> Result<(), RuntimeError> {
+    if !matches!(
+        state.pipeline,
+        PipelineState::Stopped | PipelineState::Faulted
+    ) {
+        return Err(RuntimeError::invalid_pipeline_state(
+            "perception preflight requires a stopped pipeline",
+        ));
+    }
+    let Some(adapter) = dependencies.perception.clone() else {
+        return Ok(());
+    };
+    tokio::task::spawn_blocking(move || adapter.preflight())
+        .await
+        .map_err(|error| {
+            RuntimeError::pipeline_rejected(format!("perception preflight task failed: {error}"))
+        })?
+        .map_err(|error| RuntimeError::pipeline_rejected(error.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn generate_candidate_model_manifest(
+    action: &'static str,
+    artifact_id: i64,
+    parser_preset: &str,
+    catalog_labels: &[String],
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    notice_tx: &mpsc::Sender<PipelineNotice>,
+    state: &mut SupervisorState,
+    active_pipeline: &mut Option<ActivePipeline>,
+    dependencies: &RuntimeDependencies,
+) -> Result<(), ModelActivationError> {
+    model_ingress_state(
+        ModelIngressRequest::Admit {
+            artifact_id,
+            parser_preset: parser_preset.to_owned(),
+            catalog_labels: catalog_labels.to_vec(),
+        },
+        snapshot_tx,
+        ingress_tx,
+        notice_tx,
+        state,
+        active_pipeline,
+        dependencies,
+    )
+    .await
+    .map_err(|error| ModelActivationError::Failed {
+        action,
+        message: format!("automatic TensorRT Engine admission failed: {error}"),
+    })?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn activate_model_state(
+    request: ModelActivationRequest,
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    notice_tx: &mpsc::Sender<PipelineNotice>,
+    state: &mut SupervisorState,
+    active_pipeline: &mut Option<ActivePipeline>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ModelActivationResult, ModelActivationError> {
+    let catalog = dependencies
+        .model_catalog
+        .clone()
+        .ok_or(ModelActivationError::Unavailable)?;
+    let action = request.label();
+    let project_id = request.project_id();
+    let plan_catalog = catalog.clone();
+    let plan_request = request.clone();
+    let (candidate, parser_preset, no_op) =
+        tokio::task::spawn_blocking(move || -> Result<_, ModelCatalogError> {
+            match plan_request {
+                ModelActivationRequest::Publish {
+                    artifact_id,
+                    parser_preset,
+                    ..
+                } => Ok((
+                    plan_catalog.runtime_artifact(project_id, artifact_id)?,
+                    parser_preset,
+                    None,
+                )),
+                ModelActivationRequest::Rollback { .. } => {
+                    let current = plan_catalog.deployment(project_id)?;
+                    let artifact_id = current.previous_artifact_id.unwrap_or(current.artifact_id);
+                    let candidate = plan_catalog.runtime_artifact(project_id, artifact_id)?;
+                    let no_op = (artifact_id == current.artifact_id).then_some(current);
+                    Ok((candidate, "auto".to_owned(), no_op))
+                }
+            }
+        })
+        .await
+        .map_err(|error| ModelActivationError::Failed {
+            action,
+            message: format!("catalog planning task failed: {error}"),
+        })??;
+
+    if let Some(deployment) = no_op {
+        let active = novasight_store::model_catalog::ActiveModelDeployment {
+            deployment: deployment.clone(),
+            project: candidate.project.clone(),
+            version: candidate.version.clone(),
+            artifact: candidate.artifact.clone(),
+            artifact_path: candidate.artifact_path.clone(),
+        };
+        state.model = ModelSnapshot {
+            active: Some(active.clone()),
+            catalog_error: None,
+            input_width: state.model.input_width,
+            input_height: state.model.input_height,
+        };
+        let runtime = publish_with_result(snapshot_tx, state, now_ms());
+        return Ok(ModelActivationResult {
+            action,
+            deployment,
+            active,
+            candidate,
+            contract: None,
+            runtime,
+            restarted: false,
+            changed: false,
+            manifest_generated: false,
+        });
+    }
+
+    let receipt_catalog = catalog.clone();
+    let receipt_artifact_id = candidate.artifact.id;
+    let receipt = tokio::task::spawn_blocking(move || {
+        receipt_catalog.validate_ingress_receipt(receipt_artifact_id)
+    })
+    .await
+    .map_err(|error| ModelActivationError::Failed {
+        action,
+        message: format!("model validation receipt task failed: {error}"),
+    })?;
+    let receipt_is_current = match receipt {
+        Ok(_) => match dependencies.model_jobs.as_ref() {
+            Some(jobs) => jobs
+                .validation_receipt_is_current(&candidate.artifact_path)
+                .await
+                .map_err(|error| ModelActivationError::Failed {
+                    action,
+                    message: format!("model validation environment check failed: {error}"),
+                })?,
+            // Builds without native TensorRT admission retain the structural
+            // manifest contract. Production Jetson wiring always attaches the
+            // native runner and therefore performs the environment check.
+            None => true,
+        },
+        Err(ModelCatalogError::IngressManifestInvalid { .. }) => false,
+        Err(error) => return Err(ModelActivationError::Catalog(error)),
+    };
+    let manifest_generated = if receipt_is_current {
+        false
+    } else {
+        generate_candidate_model_manifest(
+            action,
+            candidate.artifact.id,
+            &parser_preset,
+            &candidate.version.classes,
+            snapshot_tx,
+            ingress_tx,
+            notice_tx,
+            state,
+            active_pipeline,
+            dependencies,
+        )
+        .await?;
+        let receipt_catalog = catalog.clone();
+        let receipt_artifact_id = candidate.artifact.id;
+        tokio::task::spawn_blocking(move || {
+            receipt_catalog.validate_ingress_receipt(receipt_artifact_id)
+        })
+        .await
+        .map_err(|error| ModelActivationError::Failed {
+            action,
+            message: format!("generated model manifest validation task failed: {error}"),
+        })?
+        .map_err(ModelActivationError::Catalog)?;
+        true
+    };
+
+    let adapter = dependencies
+        .perception
+        .clone()
+        .ok_or(ModelActivationError::PerceptionUnavailable)?;
+    let model = ModelCandidate {
+        project_id,
+        artifact_id: candidate.artifact.id,
+        parser_preset,
+    };
+    let contract = tokio::task::spawn_blocking(move || adapter.preflight_model(&model))
+        .await
+        .map_err(|error| ModelActivationError::Failed {
+            action,
+            message: format!("candidate validation task failed: {error}"),
+        })?
+        .map_err(|error| ModelActivationError::Failed {
+            action,
+            message: format!("candidate validation failed: {error}"),
+        })?;
+
+    if dependencies.urgent_stop.is_pending() {
+        return Err(ModelActivationError::Failed {
+            action,
+            message: "candidate activation cancelled by a pending stop request".to_owned(),
+        });
+    }
+
+    let was_running = matches!(
+        state.pipeline,
+        PipelineState::Running | PipelineState::Standby
+    );
+    if was_running {
+        stop_state(snapshot_tx, ingress_tx, state, active_pipeline).await?;
+    }
+    if dependencies.urgent_stop.is_pending() {
+        return Err(ModelActivationError::Failed {
+            action,
+            message: "candidate activation cancelled before catalog mutation".to_owned(),
+        });
+    }
+
+    let change_catalog = catalog.clone();
+    let change = tokio::task::spawn_blocking(move || match request {
+        ModelActivationRequest::Publish { artifact_id, .. } => {
+            change_catalog.publish_change(project_id, artifact_id)
+        }
+        ModelActivationRequest::Rollback { .. } => change_catalog.rollback_change(project_id),
+    })
+    .await
+    .map_err(|error| ModelActivationError::Failed {
+        action,
+        message: format!("catalog mutation task failed: {error}"),
+    });
+    let change = match change {
+        Ok(Ok(change)) => change,
+        Ok(Err(error)) => {
+            if was_running
+                && let Err(recovery) = start_state(
+                    snapshot_tx,
+                    ingress_tx,
+                    notice_tx,
+                    state,
+                    active_pipeline,
+                    dependencies,
+                )
+                .await
+            {
+                return Err(ModelActivationError::Failed {
+                    action,
+                    message: format!(
+                        "catalog mutation failed: {error}; previous runtime recovery failed: {recovery}"
+                    ),
+                });
+            }
+            return Err(ModelActivationError::Catalog(error));
+        }
+        Err(error) => {
+            if was_running {
+                let recovery = start_state(
+                    snapshot_tx,
+                    ingress_tx,
+                    notice_tx,
+                    state,
+                    active_pipeline,
+                    dependencies,
+                )
+                .await;
+                if let Err(recovery) = recovery {
+                    return Err(ModelActivationError::Failed {
+                        action,
+                        message: format!("{error}; previous runtime recovery failed: {recovery}"),
+                    });
+                }
+            }
+            return Err(error);
+        }
+    };
+
+    let resolved_catalog = catalog.clone();
+    let resolved = tokio::task::spawn_blocking(move || resolved_catalog.active_model())
+        .await
+        .map_err(|error| ModelActivationError::Failed {
+            action,
+            message: format!("active model read task failed: {error}"),
+        })?;
+    let active_model = match resolved {
+        Ok(Some(active))
+            if active.deployment == change.after && active.artifact.id == candidate.artifact.id =>
+        {
+            active
+        }
+        Ok(Some(active)) => {
+            return Err(compensate_model_activation(
+                action,
+                format!(
+                    "catalog resolved artifact {} instead of candidate {}",
+                    active.artifact.id, candidate.artifact.id
+                ),
+                change,
+                was_running,
+                &catalog,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active_pipeline,
+                dependencies,
+            )
+            .await);
+        }
+        Ok(None) => {
+            return Err(compensate_model_activation(
+                action,
+                "catalog committed a deployment but resolved no active model".to_owned(),
+                change,
+                was_running,
+                &catalog,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active_pipeline,
+                dependencies,
+            )
+            .await);
+        }
+        Err(error) => {
+            return Err(compensate_model_activation(
+                action,
+                format!("active model read failed: {error}"),
+                change,
+                was_running,
+                &catalog,
+                snapshot_tx,
+                ingress_tx,
+                notice_tx,
+                state,
+                active_pipeline,
+                dependencies,
+            )
+            .await);
+        }
+    };
+
+    if dependencies.urgent_stop.is_pending() {
+        return Err(compensate_model_activation(
+            action,
+            "candidate activation cancelled after catalog mutation".to_owned(),
+            change,
+            was_running,
+            &catalog,
+            snapshot_tx,
+            ingress_tx,
+            notice_tx,
+            state,
+            active_pipeline,
+            dependencies,
+        )
+        .await);
+    }
+
+    let previous_model_geometry = contract
+        .as_ref()
+        .map(|contract| dependencies.install_model_contract(contract));
+
+    if was_running {
+        match start_state(
+            snapshot_tx,
+            ingress_tx,
+            notice_tx,
+            state,
+            active_pipeline,
+            dependencies,
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(error) => {
+                if let Some(previous) = previous_model_geometry {
+                    dependencies.replace_model_geometry(previous);
+                }
+                return Err(compensate_model_activation(
+                    action,
+                    error.to_string(),
+                    change,
+                    was_running,
+                    &catalog,
+                    snapshot_tx,
+                    ingress_tx,
+                    notice_tx,
+                    state,
+                    active_pipeline,
+                    dependencies,
+                )
+                .await);
+            }
+        }
+    }
+
+    state.model = ModelSnapshot {
+        active: Some(active_model.clone()),
+        catalog_error: None,
+        input_width: contract.as_ref().map(|contract| contract.input_width),
+        input_height: contract.as_ref().map(|contract| contract.input_height),
+    };
+    let runtime = publish_with_result(snapshot_tx, state, now_ms());
+
+    Ok(ModelActivationResult {
+        action,
+        deployment: change.after,
+        active: active_model,
+        candidate,
+        contract,
+        runtime,
+        restarted: was_running,
+        changed: true,
+        manifest_generated,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn model_ingress_state(
+    request: ModelIngressRequest,
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    notice_tx: &mpsc::Sender<PipelineNotice>,
+    state: &mut SupervisorState,
+    active_pipeline: &mut Option<ActivePipeline>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ModelIngressResult, ModelIngressError> {
+    let catalog = dependencies
+        .model_catalog
+        .clone()
+        .ok_or(ModelIngressError::Unavailable)?;
+    let artifact_id = request.artifact_id();
+    let artifact_catalog = catalog.clone();
+    let artifact =
+        tokio::task::spawn_blocking(move || artifact_catalog.runtime_artifact_by_id(artifact_id))
+            .await
+            .map_err(|error| {
+                ModelIngressError::Failed(format!("artifact lookup task failed: {error}"))
+            })??;
+    if artifact.artifact.kind != "engine" {
+        return Err(ModelIngressError::Catalog(
+            ModelCatalogError::IngressRequiresEngine(artifact_id),
+        ));
+    }
+    let display_root = catalog
+        .path()
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .to_owned();
+
+    if matches!(request, ModelIngressRequest::GetProfile { .. }) {
+        return tokio::task::spawn_blocking(move || {
+            load_profile(&artifact, &display_root, 1024 * 1024)
+        })
+        .await
+        .map_err(|error| {
+            ModelIngressError::Failed(format!("profile read task failed: {error}"))
+        })?;
+    }
+
+    let active_catalog = catalog.clone();
+    let active =
+        tokio::task::spawn_blocking(move || active_catalog.artifact_is_active(artifact_id))
+            .await
+            .map_err(|error| {
+                ModelIngressError::Failed(format!("active model lookup task failed: {error}"))
+            })??;
+    if active {
+        return Err(ModelIngressError::Catalog(
+            ModelCatalogError::ArtifactCurrentlyActive(artifact_id),
+        ));
+    }
+    let jobs = dependencies
+        .model_jobs
+        .clone()
+        .ok_or(ModelIngressError::Unavailable)?;
+    let cancellation = Arc::clone(&dependencies.urgent_stop.pending);
+    let was_running = matches!(
+        state.pipeline,
+        PipelineState::Running | PipelineState::Standby
+    );
+    let stage = match &request {
+        ModelIngressRequest::Admit { .. } => ModelIngressStage::Probe,
+        ModelIngressRequest::Inspect { .. } => ModelIngressStage::Inspect,
+        ModelIngressRequest::Configure { .. } => ModelIngressStage::Configure,
+        ModelIngressRequest::Probe { .. } => ModelIngressStage::Probe,
+        ModelIngressRequest::GetProfile { .. } => unreachable!("handled above"),
+    };
+    let manifest_engine = artifact.artifact_path.clone();
+    let manifest_transaction = tokio::task::spawn_blocking(move || {
+        ModelManifestTransaction::begin(&manifest_engine, 1024 * 1024)
+    })
+    .await
+    .map_err(|error| {
+        ModelIngressError::Failed(format!("manifest snapshot task failed: {error}"))
+    })??;
+    if stage == ModelIngressStage::Probe && was_running {
+        stop_state(snapshot_tx, ingress_tx, state, active_pipeline).await?;
+    }
+    let worker = match &request {
+        ModelIngressRequest::Admit {
+            parser_preset,
+            catalog_labels,
+            ..
+        } => {
+            jobs.admit(
+                &artifact.artifact_path,
+                &artifact.project.name,
+                parser_preset,
+                catalog_labels,
+                cancellation,
+            )
+            .await
+        }
+        ModelIngressRequest::Inspect { .. } => {
+            jobs.inspect(
+                &artifact.artifact_path,
+                &artifact.project.name,
+                cancellation,
+            )
+            .await
+        }
+        ModelIngressRequest::Configure { profile, .. } => {
+            jobs.configure(&artifact.artifact_path, profile, cancellation)
+                .await
+        }
+        ModelIngressRequest::Probe { input_mode, .. } => {
+            jobs.probe(&artifact.artifact_path, *input_mode, cancellation)
+                .await
+        }
+        ModelIngressRequest::GetProfile { .. } => unreachable!("handled above"),
+    };
+    let result = match worker {
+        Ok(worker) => {
+            let artifact_for_validation = artifact.clone();
+            let validation_root = display_root.clone();
+            let catalog_for_commit = catalog.clone();
+            tokio::task::spawn_blocking(move || {
+                let operation = (|| {
+                    let (result, update) = validate_worker_output(
+                        &artifact_for_validation,
+                        &validation_root,
+                        stage,
+                        worker,
+                    )?;
+                    catalog_for_commit.commit_model_ingress(update)?;
+                    Ok::<_, ModelIngressError>(result)
+                })();
+                match operation {
+                    Ok(result) => {
+                        manifest_transaction.commit();
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        manifest_transaction.rollback().map_err(|rollback| {
+                            ModelIngressError::Failed(format!(
+                                "{error}; manifest rollback also failed: {rollback}"
+                            ))
+                        })?;
+                        Err(error)
+                    }
+                }
+            })
+            .await
+            .map_err(|error| {
+                ModelIngressError::Failed(format!("model-ingress commit task failed: {error}"))
+            })?
+        }
+        Err(error) => {
+            tokio::task::spawn_blocking(move || manifest_transaction.rollback())
+                .await
+                .map_err(|join| {
+                    ModelIngressError::Failed(format!("manifest rollback task failed: {join}"))
+                })?
+                .map_err(|rollback| {
+                    ModelIngressError::Failed(format!(
+                        "{error}; manifest rollback also failed: {rollback}"
+                    ))
+                })?;
+            Err(error)
+        }
+    };
+
+    if stage == ModelIngressStage::Probe
+        && was_running
+        && !dependencies.urgent_stop.is_pending()
+        && let Err(recovery) = start_state(
+            snapshot_tx,
+            ingress_tx,
+            notice_tx,
+            state,
+            active_pipeline,
+            dependencies,
+        )
+        .await
+    {
+        return Err(ModelIngressError::Failed(format!(
+            "model probe completed but previous runtime recovery failed: {recovery}"
+        )));
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn compensate_model_activation(
+    action: &'static str,
+    failure: String,
+    change: DeploymentChange,
+    was_running: bool,
+    catalog: &SqliteModelCatalog,
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    notice_tx: &mpsc::Sender<PipelineNotice>,
+    state: &mut SupervisorState,
+    active_pipeline: &mut Option<ActivePipeline>,
+    dependencies: &RuntimeDependencies,
+) -> ModelActivationError {
+    let compensation_catalog = catalog.clone();
+    let compensation =
+        tokio::task::spawn_blocking(move || compensation_catalog.compensate(change)).await;
+    let (compensated, compensation_message) = match compensation {
+        Ok(Ok(_)) => (true, "deployment was restored".to_owned()),
+        Ok(Err(error)) => (false, format!("deployment compensation failed: {error}")),
+        Err(error) => (
+            false,
+            format!("deployment compensation task failed: {error}"),
+        ),
+    };
+    let recovery = if compensated && was_running && !dependencies.urgent_stop.is_pending() {
+        start_state(
+            snapshot_tx,
+            ingress_tx,
+            notice_tx,
+            state,
+            active_pipeline,
+            dependencies,
+        )
+        .await
+        .err()
+    } else {
+        None
+    };
+    let recovery_message = recovery
+        .map(|error| format!("; previous runtime recovery failed: {error}"))
+        .unwrap_or_default();
+    ModelActivationError::Failed {
+        action,
+        message: format!(
+            "candidate activation failed: {failure}; {compensation_message}{recovery_message}"
+        ),
+    }
+}
+
+async fn diagnose_device_move(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    state: &mut SupervisorState,
+    dependencies: &RuntimeDependencies,
+    delta_x_counts: i32,
+    delta_y_counts: i32,
+) -> Result<DeviceReceipt, RuntimeError> {
+    if state.pipeline != PipelineState::Stopped {
+        return Err(RuntimeError::invalid_pipeline_state(
+            "device diagnostics require a stopped pipeline",
+        ));
+    }
+    if state.device_mode == PointerDeviceMode::Uncommissioned {
+        return Err(RuntimeError::device_uncommissioned());
+    }
+    if state.subsystems.device.state == SubsystemState::Unavailable {
+        return Err(RuntimeError::device_unavailable(
+            "device diagnostics remain disabled after emergency stop or device fault",
+        ));
+    }
+    if delta_x_counts == 0 && delta_y_counts == 0 {
+        return Err(RuntimeError::invalid_device_command(
+            "device diagnostic move must change at least one axis",
+        ));
+    }
+    if i16::try_from(delta_x_counts).is_err() || i16::try_from(delta_y_counts).is_err() {
+        return Err(RuntimeError::invalid_device_command(
+            "device diagnostic counts must fit the kmNet signed 16-bit contract",
+        ));
+    }
+    if !state.output_enabled {
+        return Err(RuntimeError::output_gate_closed());
+    }
+    state.next_diagnostic_generation = state
+        .next_diagnostic_generation
+        .checked_add(1)
+        .ok_or_else(|| RuntimeError::device_unavailable("diagnostic generation is exhausted"))?;
+    let issued_at = dependencies.clock.now();
+    let command = DeviceCommand {
+        epoch: RuntimeEpoch(0),
+        generation: Generation(state.next_diagnostic_generation),
+        source_captured_at: issued_at,
+        issued_at,
+        target_object_id: 0,
+        delta_x_counts,
+        delta_y_counts,
+    };
+    state.subsystems.device.state = SubsystemState::Starting;
+    publish(snapshot_tx, state, now_ms());
+    let device = dependencies.device();
+    let result = tokio::task::spawn_blocking(move || {
+        device.connect()?;
+        let send = device.send(command);
+        let disconnect = device.disconnect();
+        match send {
+            Ok(receipt) => disconnect.map(|()| receipt),
+            Err(error) => Err(error),
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok(receipt)) => {
+            state.device_metrics.diagnostic_move_count =
+                state.device_metrics.diagnostic_move_count.saturating_add(1);
+            state.device_metrics.last_diagnostic_dx = Some(receipt.delta_x_counts);
+            state.device_metrics.last_diagnostic_dy = Some(receipt.delta_y_counts);
+            state.subsystems.device.state = SubsystemState::Ready;
+            state.subsystems.device.last_error = None;
+            publish(snapshot_tx, state, now_ms());
+            Ok(receipt)
+        }
+        Ok(Err(error)) => {
+            let error = RuntimeError::device_unavailable(error.to_string());
+            state.subsystems.device.state = SubsystemState::Unavailable;
+            state.subsystems.device.last_error = Some(error.summary());
+            publish(snapshot_tx, state, now_ms());
+            Err(error)
+        }
+        Err(error) => {
+            let error =
+                RuntimeError::device_unavailable(format!("device diagnostic task failed: {error}"));
+            state.subsystems.device.state = SubsystemState::Unavailable;
+            state.subsystems.device.last_error = Some(error.summary());
+            publish(snapshot_tx, state, now_ms());
+            Err(error)
+        }
+    }
+}
+
+async fn start_state(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    notice_tx: &mpsc::Sender<PipelineNotice>,
+    state: &mut SupervisorState,
+    active: &mut Option<ActivePipeline>,
+    dependencies: &RuntimeDependencies,
+) -> Result<RuntimeSnapshot, RuntimeError> {
+    if dependencies.urgent_stop.is_pending() {
+        return Err(RuntimeError::invalid_pipeline_state(
+            "runtime start cancelled by a pending stop request",
+        ));
+    }
+    let perception_ready = if let Some(adapter) = dependencies.perception.clone() {
+        let runtime_contract = tokio::task::spawn_blocking(move || adapter.runtime_contract())
+            .await
+            .map_err(|error| {
+                RuntimeError::pipeline_rejected(format!(
+                    "perception runtime-contract task failed: {error}"
+                ))
+            })?;
+        match runtime_contract {
+            Ok(Some(runtime_contract)) => {
+                dependencies.install_runtime_contract(&runtime_contract);
+                state.model.input_width = Some(runtime_contract.model.input_width);
+                state.model.input_height = Some(runtime_contract.model.input_height);
+                true
+            }
+            Ok(None) => false,
+            Err(error) if error.kind() == PerceptionErrorKind::ActiveModelMissing => {
+                // A model is an input to perception, not a prerequisite for
+                // owning the runtime lifecycle. Keep the control mainline
+                // alive in a model-waiting state; publishing a model already
+                // performs an epoch-scoped stop/start and attaches perception.
+                state.model.input_width = None;
+                state.model.input_height = None;
+                false
+            }
+            Err(error) => return Err(runtime_contract_error(error)),
+        }
+    } else {
+        false
+    };
+    let Some(epoch) = state.begin_start()? else {
+        return Ok(publish_with_result(snapshot_tx, state, now_ms()));
+    };
+    let has_perception = perception_ready;
+    if has_perception {
+        state.subsystems.capture.state = SubsystemState::Starting;
+        state.subsystems.inference.state = SubsystemState::Starting;
+    } else if state.perception_adapter_present {
+        state.subsystems.capture.state = SubsystemState::Stopped;
+        state.subsystems.inference.state = SubsystemState::Stopped;
+    } else {
+        state.mark_perception_unavailable();
+    }
+    publish(snapshot_tx, state, now_ms());
+
+    let config = dependencies.pipeline_config(epoch);
+    let clock = Arc::clone(&dependencies.clock);
+    let perception_clock = Arc::clone(&clock);
+    let device = dependencies.device();
+    let urgent_stop = Arc::clone(&dependencies.urgent_stop.pending);
+    let perception_adapter = perception_ready
+        .then(|| dependencies.perception.clone())
+        .flatten();
+    let started = tokio::task::spawn_blocking(move || {
+        PipelineRuntime::start_suspended_with_cancel(config, clock, device, urgent_stop)
+    })
+    .await;
+    let (mut pipeline, ingress) = match started {
+        Ok(Ok(started)) => started,
+        Ok(Err(error)) => {
+            let error = RuntimeError::pipeline_rejected(error.to_string());
+            state.finish_fault(error.to_string());
+            publish(snapshot_tx, state, now_ms());
+            return Err(error);
+        }
+        Err(error) => {
+            let error =
+                RuntimeError::pipeline_rejected(format!("pipeline startup task failed: {error}"));
+            state.finish_fault(error.to_string());
+            publish(snapshot_tx, state, now_ms());
+            return Err(error);
+        }
+    };
+    let Some(events) = pipeline.take_event_receiver() else {
+        let error = RuntimeError::pipeline_rejected("pipeline event receiver unavailable");
+        let cleanup = tokio::task::spawn_blocking(move || pipeline.shutdown()).await;
+        let shutdown_error = match cleanup {
+            Ok(Ok(_)) => None,
+            Ok(Err(cleanup_error)) => Some(format!("; cleanup failed: {cleanup_error}")),
+            Err(join_error) => Some(format!("; cleanup task failed: {join_error}")),
+        };
+        let message = format!(
+            "{}{cleanup}",
+            error,
+            cleanup = shutdown_error.unwrap_or_default()
+        );
+        state.finish_fault(message);
+        publish(snapshot_tx, state, now_ms());
+        return Err(error);
+    };
+    let (perception, perception_event_bridge, perception_event_cancel) =
+        if let Some(adapter) = perception_adapter {
+            let (perception_event_tx, perception_event_rx) =
+                std::sync::mpsc::sync_channel(PERCEPTION_EVENT_CAPACITY);
+            let perception_ingress = ingress.clone();
+            let started = tokio::task::spawn_blocking(move || {
+                adapter.start(
+                    epoch,
+                    perception_ingress,
+                    perception_clock,
+                    perception_event_tx,
+                )
+            })
+            .await;
+            let perception = match started {
+                Ok(Ok(perception)) => perception,
+                Ok(Err(error)) => {
+                    let cleanup = tokio::task::spawn_blocking(move || pipeline.shutdown()).await;
+                    let cleanup = cleanup_error("pipeline", cleanup);
+                    let error = RuntimeError::pipeline_rejected(format!(
+                        "perception startup failed: {error}{cleanup}"
+                    ));
+                    state.finish_fault(error.to_string());
+                    publish(snapshot_tx, state, now_ms());
+                    return Err(error);
+                }
+                Err(error) => {
+                    let cleanup = tokio::task::spawn_blocking(move || pipeline.shutdown()).await;
+                    let cleanup = cleanup_error("pipeline", cleanup);
+                    let error = RuntimeError::pipeline_rejected(format!(
+                        "perception startup task failed: {error}{cleanup}"
+                    ));
+                    state.finish_fault(error.to_string());
+                    publish(snapshot_tx, state, now_ms());
+                    return Err(error);
+                }
+            };
+            let event_tx = notice_tx.clone();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let bridge_cancel = Arc::clone(&cancel);
+            let bridge = tokio::task::spawn_blocking(move || {
+                loop {
+                    match perception_event_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(event) => {
+                            let event = match event {
+                                PerceptionEvent::Faulted { message } => {
+                                    PipelineEvent::Faulted { message }
+                                }
+                                PerceptionEvent::Stopped => PipelineEvent::Stopped,
+                            };
+                            let _ = event_tx.blocking_send(PipelineNotice { epoch, event });
+                            break;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                            if bridge_cancel.load(Ordering::Acquire) =>
+                        {
+                            break;
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            });
+            (Some(perception), Some(bridge), Some(cancel))
+        } else {
+            (None, None, None)
+        };
+    if dependencies.urgent_stop.is_pending() {
+        let cleanup = tokio::task::spawn_blocking(move || {
+            let mut failures = Vec::new();
+            if let Some(mut perception) = perception
+                && let Err(error) = perception.shutdown()
+            {
+                failures.push(format!("perception shutdown failed: {error}"));
+            }
+            if let Err(error) = pipeline.shutdown() {
+                failures.push(format!("pipeline shutdown failed: {error}"));
+            }
+            failures
+        })
+        .await;
+        if let Some(cancel) = &perception_event_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Some(bridge) = perception_event_bridge {
+            let _ = bridge.await;
+        }
+        state.finish_stop();
+        publish(snapshot_tx, state, now_ms());
+        let cleanup = cleanup
+            .map_err(|error| format!("cleanup task failed: {error}"))
+            .and_then(|failures| {
+                if failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(failures.join("; "))
+                }
+            })
+            .err()
+            .map(|message| format!("; {message}"))
+            .unwrap_or_default();
+        return Err(RuntimeError::invalid_pipeline_state(format!(
+            "runtime start cancelled by a pending stop request{cleanup}"
+        )));
+    }
+    // Start the blocking receiver only after every epoch-scoped producer has
+    // reached its readiness gate. If perception startup fails, shutting down
+    // the pipeline closes this receiver without leaving an unjoinable blocking
+    // task behind.
+    let event_tx = notice_tx.clone();
+    let event_bridge = tokio::task::spawn_blocking(move || {
+        if let Ok(event) = events.recv() {
+            let _ = event_tx.blocking_send(PipelineNotice { epoch, event });
+        }
+    });
+    if state.output_enabled && state.device_mode == PointerDeviceMode::Commissioned {
+        pipeline.open_output_gate();
+    }
+    ingress_tx.send_replace(Some(ingress.clone()));
+    *active = Some(ActivePipeline {
+        epoch,
+        runtime: pipeline,
+        ingress,
+        perception,
+        event_bridge,
+        perception_event_bridge,
+        perception_event_cancel,
+    });
+    state.pipeline_metrics = active
+        .as_ref()
+        .map(|active| active.runtime.metrics())
+        .unwrap_or_default();
+    state.finish_start(now_ms(), has_perception);
+    state.reconcile_device_health();
+    Ok(publish_with_result(snapshot_tx, state, now_ms()))
+}
+
+async fn stop_state(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    state: &mut SupervisorState,
+    active: &mut Option<ActivePipeline>,
+) -> Result<RuntimeSnapshot, RuntimeError> {
+    refresh_pipeline_metrics(state, active);
+    if state.begin_stop() {
+        publish(snapshot_tx, state, now_ms());
+        ingress_tx.send_replace(None);
+        if let Err(error) = shutdown_active(active).await {
+            state.finish_fault(error.to_string());
+            publish(snapshot_tx, state, now_ms());
+            return Err(error);
+        }
+        state.finish_stop();
+    }
+    Ok(publish_with_result(snapshot_tx, state, now_ms()))
+}
+
+async fn handle_pipeline_notice(
+    notice: PipelineNotice,
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    state: &mut SupervisorState,
+    active: &mut Option<ActivePipeline>,
+) {
+    let is_live_state = matches!(
+        state.pipeline,
+        PipelineState::Starting | PipelineState::Running | PipelineState::Standby
+    );
+    let is_active_epoch = active
+        .as_ref()
+        .map(|pipeline| pipeline.epoch == notice.epoch)
+        .unwrap_or(false);
+    if !is_live_state || !is_active_epoch {
+        return;
+    }
+    let message = match notice.event {
+        PipelineEvent::Faulted { message } => message,
+        PipelineEvent::Stopped => "perception stopped unexpectedly".to_owned(),
+    };
+    ingress_tx.send_replace(None);
+    refresh_pipeline_metrics(state, active);
+    let cleanup = shutdown_active(active).await.err();
+    let message = match cleanup {
+        Some(error) => format!("{message}; pipeline cleanup failed: {error}"),
+        None => message,
+    };
+    state.finish_fault(message);
+    publish(snapshot_tx, state, now_ms());
+}
+
+async fn shutdown_active(active: &mut Option<ActivePipeline>) -> Result<(), RuntimeError> {
+    let Some(active) = active.take() else {
+        return Ok(());
+    };
+    let ActivePipeline {
+        epoch: _,
+        mut runtime,
+        ingress: _,
+        mut perception,
+        event_bridge,
+        perception_event_bridge,
+        perception_event_cancel,
+    } = active;
+    let shutdown = tokio::task::spawn_blocking(move || {
+        let mut failures = Vec::new();
+        runtime.close_output_gate();
+        if let Some(perception) = &mut perception
+            && let Err(error) = perception.shutdown()
+        {
+            failures.push(format!("perception shutdown failed: {error}"));
+        }
+        if let Some(cancel) = &perception_event_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Err(error) = runtime.shutdown() {
+            failures.push(format!("pipeline shutdown failed: {error}"));
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    })
+    .await;
+    let bridge = event_bridge.await;
+    let perception_bridge = match perception_event_bridge {
+        Some(bridge) => bridge.await.err(),
+        None => None,
+    };
+    let shutdown_error = match shutdown {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(error),
+        Err(error) => Some(format!("pipeline shutdown task failed: {error}")),
+    };
+    let mut failures = Vec::new();
+    if let Some(error) = shutdown_error {
+        failures.push(error);
+    }
+    if let Err(error) = bridge {
+        failures.push(format!("pipeline event bridge failed: {error}"));
+    }
+    if let Some(error) = perception_bridge {
+        failures.push(format!("perception event bridge failed: {error}"));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(RuntimeError::pipeline_rejected(failures.join("; ")))
+    }
+}
+
+fn refresh_pipeline_metrics(state: &mut SupervisorState, active: &Option<ActivePipeline>) {
+    if let Some(active) = active {
+        state.pipeline_metrics = active.runtime.metrics();
+        state.reconcile_device_health();
+    }
+}
+
+fn cleanup_error<T, E>(label: &str, cleanup: Result<Result<T, E>, tokio::task::JoinError>) -> String
+where
+    E: std::fmt::Display,
+{
+    match cleanup {
+        Ok(Ok(_)) => String::new(),
+        Ok(Err(error)) => format!("; {label} cleanup failed: {error}"),
+        Err(error) => format!("; {label} cleanup task failed: {error}"),
+    }
+}
+
+fn live_ingress(active: &Option<ActivePipeline>) -> Result<PipelineIngress, RuntimeError> {
+    active
+        .as_ref()
+        .filter(|pipeline| {
+            matches!(
+                pipeline.runtime.status(),
+                PipelineStatus::Running | PipelineStatus::Standby
+            )
+        })
+        .map(|pipeline| pipeline.ingress.clone())
+        .ok_or_else(RuntimeError::pipeline_unavailable)
+}
+
+async fn set_trigger_state(ingress: PipelineIngress, requested: bool) -> Result<(), RuntimeError> {
+    tokio::task::spawn_blocking(move || ingress.set_trigger_active(requested))
+        .await
+        .map_err(|error| {
+            RuntimeError::pipeline_rejected(format!("trigger transition task failed: {error}"))
+        })
+}
+
+async fn install_trigger_mode(
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+    mode: TriggerMode,
+) -> Result<(), RuntimeError> {
+    if let Some(ingress) = ingress {
+        tokio::task::spawn_blocking(move || ingress.set_trigger_mode(mode))
+            .await
+            .map_err(|error| {
+                RuntimeError::pipeline_rejected(format!(
+                    "trigger mode transition task failed: {error}"
+                ))
+            })?;
+    }
+    dependencies.set_trigger_mode(mode);
+    Ok(())
+}
+
+async fn install_pipeline_live_config(
+    ingress: Option<PipelineIngress>,
+    config: PipelineLiveConfig,
+) -> Result<bool, RuntimeError> {
+    let Some(ingress) = ingress else {
+        return Ok(false);
+    };
+    tokio::task::spawn_blocking(move || ingress.set_live_config(config))
+        .await
+        .map_err(|error| {
+            RuntimeError::pipeline_rejected(format!(
+                "pipeline configuration transition task failed: {error}"
+            ))
+        })?
+        .map_err(|error| RuntimeError::pipeline_rejected(error.to_string()))?;
+    Ok(true)
+}
+
+async fn update_pipeline_config_state(
+    service: ConfigService,
+    update: ConfigFieldUpdate,
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ConfigUpdate, ConfigServiceError> {
+    let transaction = service.persist_pipeline(update).await?;
+    let config = dependencies
+        .install_live_pipeline_config(transaction.config())
+        .map_err(ConfigServiceError::Runtime)?;
+    let live_pipeline = install_pipeline_live_config(ingress, config)
+        .await
+        .map_err(ConfigServiceError::Runtime)?;
+    Ok(transaction.commit(live_pipeline))
+}
+
+async fn update_trigger_mode_config_state(
+    service: ConfigService,
+    update: ConfigFieldUpdate,
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ConfigUpdate, ConfigServiceError> {
+    let config_mode = ConfigService::trigger_mode_value(&update)?;
+    let mode = match config_mode {
+        ConfigTriggerMode::Always => TriggerMode::Always,
+        ConfigTriggerMode::Hardware => TriggerMode::Hardware,
+    };
+    let previous = dependencies.trigger_mode();
+
+    // Moving into hardware-gated mode is safety-monotonic: close the live
+    // path before waiting on disk. Moving back to always is enabled only after
+    // the matching configuration has been persisted.
+    if mode == TriggerMode::Hardware {
+        install_trigger_mode(ingress.clone(), dependencies, mode)
+            .await
+            .map_err(ConfigServiceError::Runtime)?;
+    }
+    let transaction = match service.persist_trigger_mode(update, config_mode).await {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            if mode == TriggerMode::Hardware
+                && let Err(revert) =
+                    install_trigger_mode(ingress.clone(), dependencies, previous).await
+            {
+                return Err(ConfigServiceError::Runtime(revert));
+            }
+            return Err(error);
+        }
+    };
+    if mode == TriggerMode::Always {
+        install_trigger_mode(ingress, dependencies, mode)
+            .await
+            .map_err(ConfigServiceError::Runtime)?;
+    }
+    Ok(transaction.commit())
+}
+
+fn runtime_recoil_config(config: &ConfigRecoilConfig) -> RecoilConfig {
+    RecoilConfig {
+        enabled: config.enabled,
+        require_target: config.require_target,
+        interval_ms: config.interval_ms,
+        y_counts: config.y_counts,
+    }
+}
+
+async fn install_recoil_config(
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+    config: RecoilConfig,
+) -> Result<(), RuntimeError> {
+    if let Some(ingress) = ingress {
+        tokio::task::spawn_blocking(move || ingress.set_recoil_config(config))
+            .await
+            .map_err(|error| {
+                RuntimeError::pipeline_rejected(format!("recoil transition task failed: {error}"))
+            })?
+            .map_err(|error| RuntimeError::pipeline_rejected(error.to_string()))?;
+    }
+    dependencies.set_recoil_config(config);
+    Ok(())
+}
+
+async fn update_recoil_config_state(
+    service: ConfigService,
+    update: ConfigFieldUpdate,
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ConfigUpdate, ConfigServiceError> {
+    let stored = ConfigService::recoil_value(&update)?;
+    let requested = runtime_recoil_config(&stored);
+    let previous = dependencies.recoil_config();
+
+    // Disabling output is safety-monotonic and takes effect before disk I/O.
+    // Enabling or changing rates is published only after persistence succeeds.
+    if previous.enabled && !requested.enabled {
+        install_recoil_config(ingress.clone(), dependencies, requested)
+            .await
+            .map_err(ConfigServiceError::Runtime)?;
+    }
+    let transaction = match service.persist_recoil(update, stored).await {
+        Ok(transaction) => transaction,
+        Err(error) => {
+            if previous.enabled
+                && !requested.enabled
+                && let Err(revert) =
+                    install_recoil_config(ingress.clone(), dependencies, previous).await
+            {
+                return Err(ConfigServiceError::Runtime(revert));
+            }
+            return Err(error);
+        }
+    };
+    if previous.enabled && !requested.enabled {
+        // The live controller was already disabled before persistence.
+    } else if previous.enabled || requested.enabled {
+        install_recoil_config(ingress, dependencies, requested)
+            .await
+            .map_err(ConfigServiceError::Runtime)?;
+    } else {
+        dependencies.set_recoil_config(requested);
+    }
+    Ok(transaction.commit())
+}
+
+async fn set_device_connection(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    state: &mut SupervisorState,
+    active: &mut Option<ActivePipeline>,
+    connect: bool,
+) -> Result<RuntimeSnapshot, RuntimeError> {
+    if state.device_mode == PointerDeviceMode::Uncommissioned {
+        return Err(RuntimeError::device_uncommissioned());
+    }
+    let pipeline = active
+        .take()
+        .ok_or_else(RuntimeError::pipeline_unavailable)?;
+    state.subsystems.device.state = if connect {
+        SubsystemState::Starting
+    } else {
+        SubsystemState::Stopping
+    };
+    publish(snapshot_tx, state, now_ms());
+    let operation = tokio::task::spawn_blocking(move || {
+        let result = if connect {
+            pipeline.runtime.connect_device()
+        } else {
+            pipeline.runtime.disconnect_device()
+        };
+        (pipeline, result)
+    })
+    .await;
+    let operation = match operation {
+        Ok(operation) => operation,
+        Err(error) => {
+            let error = RuntimeError::device_unavailable(format!("device task failed: {error}"));
+            state.subsystems.device.state = SubsystemState::Failed;
+            state.subsystems.device.last_error = Some(error.summary());
+            publish(snapshot_tx, state, now_ms());
+            return Err(error);
+        }
+    };
+    let (pipeline, result) = operation;
+    *active = Some(pipeline);
+    refresh_pipeline_metrics(state, active);
+    if let Err(error) = result {
+        let error = RuntimeError::device_unavailable(error.to_string());
+        publish(snapshot_tx, state, now_ms());
+        return Err(error);
+    }
+    if connect
+        && state.output_enabled
+        && let Some(active_pipeline) = active.as_ref()
+    {
+        active_pipeline.runtime.open_output_gate();
+        refresh_pipeline_metrics(state, active);
+    }
+    Ok(publish_with_result(snapshot_tx, state, now_ms()))
+}
+
+fn runtime_contract_error(error: PerceptionError) -> RuntimeError {
+    match error.kind() {
+        PerceptionErrorKind::ActiveModelMissing => {
+            RuntimeError::model_unavailable(error.message().to_owned())
+        }
+        PerceptionErrorKind::Other => RuntimeError::pipeline_rejected(error.to_string()),
+    }
+}
+
+async fn shutdown_for_exit(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    ingress_tx: &watch::Sender<Option<PipelineIngress>>,
+    state: &mut SupervisorState,
+    active: &mut Option<ActivePipeline>,
+) {
+    state.daemon = DaemonState::ShuttingDown;
+    ingress_tx.send_replace(None);
+    refresh_pipeline_metrics(state, active);
+    if state.begin_stop() {
+        publish(snapshot_tx, state, now_ms());
+    }
+    match shutdown_active(active).await {
+        Ok(()) => state.finish_stop(),
+        Err(error) => state.finish_fault(error.to_string()),
+    }
+    publish(snapshot_tx, state, now_ms());
+}
+
+fn publish(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    state: &SupervisorState,
+    timestamp: u64,
+) {
+    snapshot_tx.send_replace(Arc::new(state.snapshot(timestamp)));
+}
+
+fn publish_with_result(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    state: &SupervisorState,
+    timestamp: u64,
+) -> RuntimeSnapshot {
+    let snapshot = state.snapshot(timestamp);
+    snapshot_tx.send_replace(Arc::new(snapshot.clone()));
+    snapshot
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopped_state_clears_safety_critical_output_metrics() {
+        let mut state = SupervisorState {
+            pipeline: PipelineState::Running,
+            ..SupervisorState::default()
+        };
+        state.pipeline_metrics.device_connected = true;
+        state.pipeline_metrics.device_connection_enabled = true;
+        state.pipeline_metrics.buttons_available = true;
+        state.pipeline_metrics.button_left = true;
+        state.pipeline_metrics.button_right = true;
+        state.pipeline_metrics.output_gate_open = true;
+        state.pipeline_metrics.control.emit_allowed = true;
+
+        state.finish_stop();
+
+        assert_eq!(state.pipeline, PipelineState::Stopped);
+        assert!(!state.pipeline_metrics.device_connected);
+        assert!(!state.pipeline_metrics.device_connection_enabled);
+        assert!(!state.pipeline_metrics.buttons_available);
+        assert!(!state.pipeline_metrics.button_left);
+        assert!(!state.pipeline_metrics.button_right);
+        assert!(!state.pipeline_metrics.output_gate_open);
+        assert!(!state.pipeline_metrics.control.emit_allowed);
+    }
+
+    struct MissingActiveModelAdapter;
+
+    impl PerceptionAdapter for MissingActiveModelAdapter {
+        fn runtime_contract(&self) -> Result<Option<PerceptionRuntimeContract>, PerceptionError> {
+            Err(PerceptionError::active_model_missing(
+                "no active model deployment; perception is waiting for a ready engine",
+            ))
+        }
+
+        fn start(
+            &self,
+            _epoch: RuntimeEpoch,
+            _ingress: PipelineIngress,
+            _clock: Arc<dyn Clock>,
+            _events: std::sync::mpsc::SyncSender<PerceptionEvent>,
+        ) -> Result<Box<dyn PerceptionSession>, PerceptionError> {
+            unreachable!("runtime_contract should block startup before perception starts")
+        }
+    }
+
+    fn handle_with_saturated_command_queue() -> (RuntimeHandle, mpsc::Receiver<RuntimeCommand>) {
+        let initial_snapshot = Arc::new(SupervisorState::default().snapshot(now_ms()));
+        let (_snapshot_tx, snapshot_rx) = watch::channel(initial_snapshot);
+        let (_ingress_tx, ingress_rx) = watch::channel(None::<PipelineIngress>);
+        let (command_tx, command_rx) = mpsc::channel(1);
+        let handle = RuntimeHandle {
+            command_tx: command_tx.clone(),
+            snapshot_rx,
+            ingress_rx,
+            urgent_stop: Arc::new(UrgentStopSignal::new()),
+            urgent_admission: Arc::new(Semaphore::new(URGENT_ADMISSION_CAPACITY)),
+            preview: None,
+            crosshair: CrosshairHubSlot::default(),
+        };
+        let (occupied_reply, _occupied_reply_rx) = oneshot::channel();
+        command_tx
+            .try_send(RuntimeCommand::Start {
+                reply: occupied_reply,
+            })
+            .expect("test command queue should accept its first command");
+        (handle, command_rx)
+    }
+
+    async fn wait_for_pending_urgent_stops(handle: &RuntimeHandle, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while handle.pending_urgent_stop_count() != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("urgent stop registrations should reach the expected count");
+    }
+
+    #[tokio::test]
+    async fn missing_active_model_keeps_the_control_mainline_running() {
+        let dependencies =
+            RuntimeDependencies::recording().with_perception(Arc::new(MissingActiveModelAdapter));
+        let (supervisor, runtime) = RuntimeSupervisor::spawn(dependencies);
+
+        let snapshot = runtime
+            .start()
+            .await
+            .expect("missing active model must enter the waiting state");
+        assert_eq!(snapshot.pipeline.state, PipelineState::Running);
+        assert_eq!(snapshot.subsystems.capture.state, SubsystemState::Stopped);
+        assert_eq!(snapshot.subsystems.inference.state, SubsystemState::Stopped);
+        assert_eq!(snapshot.subsystems.control.state, SubsystemState::Running);
+
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn absent_perception_adapter_runs_without_claiming_capture_or_inference() {
+        let (supervisor, runtime) = RuntimeSupervisor::spawn(RuntimeDependencies::recording());
+
+        let initial = runtime.snapshot();
+        assert_eq!(
+            initial.subsystems.capture.state,
+            SubsystemState::Unavailable
+        );
+        assert_eq!(
+            initial.subsystems.inference.state,
+            SubsystemState::Unavailable
+        );
+
+        let running = runtime
+            .start()
+            .await
+            .expect("adapter-free runtime must still own the control lifecycle");
+        assert_eq!(running.pipeline.state, PipelineState::Running);
+        assert_eq!(
+            running.subsystems.capture.state,
+            SubsystemState::Unavailable
+        );
+        assert_eq!(
+            running.subsystems.inference.state,
+            SubsystemState::Unavailable
+        );
+        assert_eq!(running.perception_metrics, PerceptionMetrics::default());
+
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_urgent_caller_cannot_orphan_a_stop_behind_a_full_queue() {
+        let (handle, mut command_rx) = handle_with_saturated_command_queue();
+
+        let stop_handle = handle.clone();
+        let caller = tokio::spawn(async move { stop_handle.stop().await });
+        wait_for_pending_urgent_stops(&handle, 1).await;
+        assert_eq!(handle.pending_urgent_stop_count(), 1);
+
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            handle.pending_urgent_stop_count(),
+            1,
+            "caller cancellation must not withdraw the accepted stop request"
+        );
+
+        let occupied = command_rx.recv().await.expect("occupied command");
+        assert!(matches!(occupied, RuntimeCommand::Start { .. }));
+        drop(occupied);
+        let queued_stop = tokio::time::timeout(Duration::from_secs(1), command_rx.recv())
+            .await
+            .expect("detached admission should make progress")
+            .expect("queued stop command");
+        assert!(matches!(queued_stop, RuntimeCommand::Stop { .. }));
+        assert_eq!(handle.pending_urgent_stop_count(), 1);
+
+        drop(queued_stop);
+        assert_eq!(handle.pending_urgent_stop_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn urgent_admission_is_bounded_when_the_command_queue_stalls() {
+        let (handle, mut command_rx) = handle_with_saturated_command_queue();
+        let callers: Vec<_> = (0..URGENT_ADMISSION_CAPACITY)
+            .map(|_| {
+                let stop_handle = handle.clone();
+                tokio::spawn(async move { stop_handle.stop().await })
+            })
+            .collect();
+        wait_for_pending_urgent_stops(&handle, URGENT_ADMISSION_CAPACITY).await;
+
+        let overflow = handle.stop().await.expect_err("admission must be bounded");
+        assert_eq!(overflow.kind, RuntimeErrorKind::SupervisorBusy);
+        assert_eq!(
+            handle.pending_urgent_stop_count(),
+            URGENT_ADMISSION_CAPACITY
+        );
+        for caller in callers {
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+        }
+
+        let occupied = command_rx.recv().await.expect("occupied command");
+        assert!(matches!(occupied, RuntimeCommand::Start { .. }));
+        drop(occupied);
+        for _ in 0..URGENT_ADMISSION_CAPACITY {
+            let queued_stop = tokio::time::timeout(Duration::from_secs(1), command_rx.recv())
+                .await
+                .expect("bounded detached admissions should make progress")
+                .expect("queued stop command");
+            assert!(matches!(queued_stop, RuntimeCommand::Stop { .. }));
+            drop(queued_stop);
+        }
+        assert_eq!(handle.pending_urgent_stop_count(), 0);
+    }
+}

@@ -1,0 +1,38 @@
+<svg viewBox="0 0 520 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="520" height="180" rx="18" fill="#F8F9FB"/>
+  <path d="M42 90H478" stroke="#CFD7FF" stroke-width="2" stroke-dasharray="4 10"/>
+  <g fill="#FFFFFF" stroke="#E2E6EC">
+    <rect x="30" y="55" width="60" height="70" rx="12"/>
+    <rect x="110" y="55" width="60" height="70" rx="12"/>
+    <rect x="190" y="55" width="60" height="70" rx="12"/>
+    <rect x="270" y="55" width="60" height="70" rx="12"/>
+    <rect x="350" y="55" width="60" height="70" rx="12"/>
+    <rect x="430" y="55" width="60" height="70" rx="12"/>
+  </g>
+  <g stroke="#556FF6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M45 82h30v20H45z"/>
+    <path d="M126 77h28v26h-28zM133 84h14"/>
+    <path d="M206 80h28v22h-28zM212 86v-4h4M228 96v4h-4"/>
+    <path d="M289 78h22v24h-22zM285 84h4M311 84h4M285 96h4M311 96h4"/>
+    <path d="M366 78h28v24h-28M373 85h14M373 95h9"/>
+    <path d="M448 95c7-18 15-18 22-2"/>
+  </g>
+  <g fill="#16A56A">
+    <circle cx="80" cy="62" r="5"/>
+    <circle cx="160" cy="62" r="5"/>
+  </g>
+  <circle cx="240" cy="62" r="5" fill="#3478F6"/>
+  <g fill="#7A8499">
+    <circle cx="320" cy="62" r="5"/>
+    <circle cx="400" cy="62" r="5"/>
+    <circle cx="480" cy="62" r="5"/>
+  </g>
+  <g fill="#566074" font-family="Inter, system-ui, sans-serif" font-size="10" font-weight="600">
+    <text x="40" y="142">Capture</text>
+    <text x="126" y="142">Frame</text>
+    <text x="208" y="142">ROI</text>
+    <text x="286" y="142">GPU</text>
+    <text x="362" y="142">Detect</text>
+    <text x="444" y="142">Control</text>
+  </g>
+</svg>
