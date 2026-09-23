@@ -24,9 +24,11 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("anonymous LAN browser only sees the compact authentication entry", async ({ page }) => {
+test("anonymous LAN browser sees the welcome journey and single-code entry", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "授权后进入" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "让视觉系统 准备好工作" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
+  await expect(page.getByRole("list", { name: "开始使用的三个步骤" })).toBeVisible();
   await expect(page.locator("#web-access-code")).toHaveAttribute("type", "password");
   await expect(page.getByRole("navigation", { name: "NovaSight Studio 导航" })).toHaveCount(0);
   await expect(page.getByText("授权不会自动启动主链或开启物理输出")).toBeVisible();
@@ -45,6 +47,6 @@ for (const [savedTheme, appliedTheme] of [["rose-white", "rose-white"], ["graphi
     await page.addInitScript((selectedTheme) => localStorage.setItem("novasight.theme", selectedTheme), savedTheme);
     await page.goto("/");
     await expect(page.locator("html")).toHaveAttribute("data-theme", appliedTheme);
-    await expect(page.getByRole("heading", { name: "授权后进入" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
   });
 }

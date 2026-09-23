@@ -14,12 +14,12 @@ describe("StudioNavigation", () => {
     expect(onNavigate).toHaveBeenCalledWith("models");
   });
 
-  it("lets an authenticated operator open license management from Studio", async () => {
+  it("keeps authorization and onboarding under one management entry", async () => {
     const onNavigate = vi.fn();
     render(<StudioNavigation activePage="capture" onNavigate={onNavigate} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "授权" }));
-    expect(onNavigate).toHaveBeenCalledWith("license");
+    await userEvent.click(screen.getByRole("button", { name: "管理" }));
+    expect(onNavigate).toHaveBeenCalledWith("management");
   });
 
   it("keeps professional device tools one level deeper", () => {

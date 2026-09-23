@@ -112,6 +112,13 @@ import { useConfigApplyPresentation } from "./useConfigApplyPresentation";
 import { useModelSwitchWorkflow } from "./useModelSwitchWorkflow";
 import { RuntimeOverviewView } from "./RuntimeOverviewView";
 import {
+  DeviceStatusView,
+  HomeSetupPrompt,
+  ManagementView,
+  OnboardingView,
+  type SetupState
+} from "./ProductJourneyViews";
+import {
   projectRuntimeState,
   type RuntimeRecoveryAction,
   type RuntimeTransportConfidence,
@@ -743,7 +750,7 @@ export function StudioConsoleView({
       if (activePage === "infer") void loadModelManagerDialog();
       return;
     }
-    if (activePage === "models") {
+    if (activePage === "models" || activePage === "management") {
       void import("../models/ModelWorkspace");
       void onEnsureProjects(false).catch(() => undefined);
     }
@@ -3995,6 +4002,16 @@ export function StudioConsoleView({
     () => projectRuntimeState(runtime, runtimeTransportConfidence),
     [runtime, runtimeTransportConfidence]
   );
+  const setupState: SetupState = {
+    captureReady: configuredCaptureProfile !== null && configuredCaptureDevice.length > 0,
+    modelReady: artifact !== undefined,
+    configReady: runtime !== null
+      && runtimeTransportConfidence === "current"
+      && runtimeConfig !== null
+      && desiredConfigRevision === effectiveConfigRevision
+      && runtime?.config.restart_required !== true,
+    runtimeReady: runtime?.running === true
+  };
   const handleLaunchReadinessAction = useCallback((action: LaunchReadinessAction) => {
     if (action === "open-model-manager") {
       navigatePage("models");
@@ -4152,20 +4169,43 @@ export function StudioConsoleView({
         />
 
         {activePage === "overview" ? (
-          <RuntimeOverviewView
+          <>
+            <HomeSetupPrompt state={setupState} onNavigate={navigatePage} />
+            <RuntimeOverviewView
+              runtime={runtime}
+              projection={runtimeProjection}
+              readiness={launchReadiness}
+              lastUpdated={lastUpdated}
+              onAction={handleRuntimeRecoveryAction}
+              controlBusy={busy !== null}
+              emergencyStopping={emergencyStopping}
+              launchPending={mainlineLaunchPending}
+              runtimeStopping={runtimeStopping}
+              runtimeControlUnavailable={runtimeControlUnavailable}
+              onOpenErrors={() => setErrorCenterOpen(true)}
+              onToggle={() => void toggleCapture()}
+              onEmergencyStop={() => void emergencyStopMainline()}
+            />
+          </>
+        ) : null}
+
+        {activePage === "onboarding" ? (
+          <OnboardingView state={setupState} onNavigate={navigatePage} />
+        ) : null}
+
+        {activePage === "device" ? (
+          <DeviceStatusView
             runtime={runtime}
             projection={runtimeProjection}
-            readiness={launchReadiness}
+            captureProfile={configuredCaptureProfile ? choiceLabel(configuredCaptureProfile) : ""}
+            activeModelName={activeModelName}
+            modelLoaded={runtimeInference?.loaded === true}
             lastUpdated={lastUpdated}
-            onAction={handleRuntimeRecoveryAction}
-            controlBusy={busy !== null}
-            emergencyStopping={emergencyStopping}
-            launchPending={mainlineLaunchPending}
-            runtimeStopping={runtimeStopping}
-            runtimeControlUnavailable={runtimeControlUnavailable}
+            desiredRevision={desiredConfigRevision}
+            effectiveRevision={effectiveConfigRevision}
+            errorCount={currentErrorDetails.length}
+            onNavigate={navigatePage}
             onOpenErrors={() => setErrorCenterOpen(true)}
-            onToggle={() => void toggleCapture()}
-            onEmergencyStop={() => void emergencyStopMainline()}
           />
         ) : null}
 
@@ -4207,6 +4247,18 @@ export function StudioConsoleView({
               }}
             />
           </Suspense>
+        ) : null}
+
+        {activePage === "management" ? (
+          <ManagementView
+            license={license}
+            deviceLabel={configuredCaptureDevice || runtime?.capture.device || ""}
+            runtimeAvailable={runtime !== null && runtimeTransportConfidence === "current"}
+            projectCount={projects.length}
+            errorCount={currentErrorDetails.length}
+            setupState={setupState}
+            onNavigate={navigatePage}
+          />
         ) : null}
 
         {activePage === "license" ? (

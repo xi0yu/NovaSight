@@ -181,18 +181,38 @@ export function AuthGate({ children }: AuthGateProps) {
   }
 
   return (
-    <main className="auth-shell">
-      <section className="auth-card" aria-labelledby="auth-title">
-        <header className="auth-card-heading">
+    <main className="auth-shell welcome-shell">
+      <section className="welcome-story" aria-labelledby="welcome-title">
+        <header className="welcome-brand">
           <span className="auth-brand-mark" aria-hidden="true">
             <NovaIcon name="prediction-line" size={22} strokeWidth={1.8} />
           </span>
+          <strong>NovaSight</strong>
+          <span>Edge AI Vision</span>
+        </header>
+        <div className="welcome-copy">
+          <span className="auth-eyebrow">专业 AI 视觉，简单开始</span>
+          <h1 id="welcome-title">让视觉系统<br />准备好工作</h1>
+          <p>连接画面、选择模型、安全运行。技术细节会在你需要时出现，不会挡在第一步前面。</p>
+        </div>
+        <ol className="welcome-sequence" aria-label="开始使用的三个步骤">
+          <li><span>01</span><NovaIcon name="capture" size={18} /><strong>连接画面</strong></li>
+          <li><span>02</span><NovaIcon name="models" size={18} /><strong>选择模型</strong></li>
+          <li><span>03</span><NovaIcon name="play-circle" size={18} /><strong>安全运行</strong></li>
+        </ol>
+        <div className="welcome-live-note">
+          <span><i aria-hidden="true" />实时状态</span>
+          <p>授权后读取这台设备的真实运行状态。</p>
+        </div>
+      </section>
+      <section className="auth-card" aria-labelledby="auth-title">
+        <header className="auth-card-heading">
           <div>
-            <span className="auth-eyebrow">NovaSight Studio</span>
-            <h1 id="auth-title">授权后进入</h1>
+            <span className="auth-eyebrow">开始使用</span>
+            <h2 id="auth-title">输入授权码</h2>
           </div>
         </header>
-        <p className="auth-intro">只需输入一次授权码，即可进入工作台。</p>
+        <p className="auth-intro">只需一次授权。进入后会先带你核对画面、模型与运行状态。</p>
         <form onSubmit={submit}>
           <label htmlFor="web-access-code">授权码</label>
           <div className="auth-input-wrap">
@@ -200,7 +220,6 @@ export function AuthGate({ children }: AuthGateProps) {
               id="web-access-code"
               type={showAccessCode ? "text" : "password"}
               autoComplete="one-time-code"
-              autoFocus
               spellCheck={false}
               value={accessCode}
               onChange={(event) => {

@@ -48,7 +48,7 @@ describe("single authorization entry", () => {
     await userEvent.click(await screen.findByRole("button", { name: "退出会话" }));
     await waitFor(() => expect(api.logoutAuthSession).toHaveBeenCalledTimes(1));
     expect(screen.getByText("识别工作台")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "授权后进入" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "输入授权码" })).not.toBeInTheDocument();
   });
 
   it("clears an old input error once a new authorization code is entered", async () => {

@@ -116,7 +116,7 @@ test("obsolete access links are cleared and cannot bypass license login", async 
   await mockStudioApi(page, unauthenticatedSession);
   await page.goto("/#access=one-time-access-code");
 
-  await expect(page.getByRole("heading", { name: "授权后进入" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
   expect(new URL(page.url()).hash).toBe("");
   await expect(page.locator("body")).not.toContainText("one-time-access-code");
 });
@@ -669,7 +669,8 @@ test("authenticated operator can manage and safely exit the current license", as
 
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
   await expect(navigation).toBeVisible();
-  await navigation.getByRole("button", { name: "授权" }).click();
+  await navigation.getByRole("button", { name: "管理" }).click();
+  await page.getByRole("button", { name: /授权.*当前权限有效/ }).click();
 
   await expect(page).toHaveURL(/\?page=license$/);
   await expect(page.getByRole("heading", { level: 1, name: "授权" })).toBeVisible();
@@ -702,14 +703,29 @@ test("Studio exposes object-first navigation and reveals device tools progressiv
   await mockStudioApi(page);
   await page.goto("/?page=overview");
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
-  for (const label of ["首页", "设备", "模型", "活动", "授权"]) {
+  for (const label of ["首页", "设备", "模型", "活动", "管理"]) {
     await expect(navigation.getByRole("button", { name: label })).toBeVisible();
   }
   await expect(navigation.getByRole("button", { name: "参数" })).toHaveCount(0);
   await navigation.getByRole("button", { name: "设备" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "设备状态" })).toBeFocused();
+  await expect(page.getByText("等待当前状态")).toBeVisible();
   await expect(navigation.getByRole("region", { name: "当前设备的深入功能" })).toBeVisible();
   await expect(navigation.getByRole("button", { name: "参数" })).toBeVisible();
   await navigation.getByRole("button", { name: "活动" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "活动" })).toBeFocused();
   await expect(page.getByText(/件事需要注意/)).toBeVisible();
+});
+
+test("management exposes onboarding and real object pages without fake cloud controls", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.goto("/?page=management");
+
+  await expect(page.getByRole("heading", { level: 1, name: "管理" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "管理真实对象，不管理后台术语" })).toBeVisible();
+  await expect(page.getByText(/团队、账单和多设备云端编排没有后端数据时不会伪装成可用功能/)).toBeVisible();
+  await page.getByRole("button", { name: "继续新手引导" }).click();
+  await expect(page).toHaveURL(/\?page=onboarding$/);
+  await expect(page.getByRole("heading", { level: 1, name: "新手引导" })).toBeFocused();
+  await expect(page.getByRole("status", { name: /已完成 \d 步，共 4 步/ })).toBeVisible();
 });
