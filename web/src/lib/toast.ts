@@ -23,13 +23,16 @@ type Listener = () => void;
 
 const DEFAULT_DURATION_MS = 4500;
 const MAX_TOASTS = 4;
+const MAX_ACTIVITY_NOTICES = 20;
 const DUPLICATE_WINDOW_MS = 1500;
 
 let nextId = 1;
 let toasts: Toast[] = [];
 let errorNotices: Toast[] = [];
+let activityNotices: Toast[] = [];
 const listeners = new Set<Listener>();
 const errorListeners = new Set<Listener>();
+const activityListeners = new Set<Listener>();
 const lastToastAtBySignature = new Map<string, number>();
 
 function emit(): void {
@@ -42,6 +45,10 @@ function emitErrors(): void {
   for (const listener of errorListeners) {
     listener();
   }
+}
+
+function emitActivities(): void {
+  for (const listener of activityListeners) listener();
 }
 
 function setToasts(next: Toast[]): void {
@@ -72,6 +79,17 @@ export function useErrorNotices(): Toast[] {
     },
     () => errorNotices,
     () => errorNotices
+  );
+}
+
+export function useActivityNotices(): Toast[] {
+  return useSyncExternalStore(
+    (listener) => {
+      activityListeners.add(listener);
+      return () => activityListeners.delete(listener);
+    },
+    () => activityNotices,
+    () => activityNotices
   );
 }
 
@@ -123,6 +141,10 @@ function pushToast(toast: Toast, popup = true): void {
     }
   }
   const signature = `${toast.source}\u0000${toast.title}\u0000${toast.detail ?? ""}`;
+  if (toast.tone === "info" || toast.tone === "success") {
+    activityNotices = [...activityNotices, toast].slice(-MAX_ACTIVITY_NOTICES);
+    emitActivities();
+  }
   if (toast.tone === "warn" || toast.tone === "error") {
     const existingIndex = errorNotices.findIndex((notice) => (
       notice.source === toast.source

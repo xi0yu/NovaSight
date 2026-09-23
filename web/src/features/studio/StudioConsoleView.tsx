@@ -53,7 +53,7 @@ import {
   streamUrl,
   updateRuntimeConfig,
 } from "../../api";
-import { pushToastRaw, reportError, reportInfo, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
+import { pushToastRaw, reportError, reportInfo, reportSuccess, useActivityNotices, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { formatRuntimeErrorMessage, getErrorMessage } from "../shared/format";
 import { LicenseView } from "../license/LicenseView";
 import { ActivityView } from "../activity/ActivityView";
@@ -777,6 +777,7 @@ export function StudioConsoleView({
   const [captureActionError, setCaptureActionError] = useState<string | null>(null);
   const [errorCenterOpen, setErrorCenterOpen] = useState(false);
   const errorNotices = useErrorNotices();
+  const activityNotices = useActivityNotices();
   const clearErrorNotices = useClearErrorNotices();
   const lastRuntimeFaultRef = useRef("");
   const [modelManagerDialogOpen, setModelManagerDialogOpen] = useState(false);
@@ -2209,6 +2210,17 @@ export function StudioConsoleView({
       all.findIndex((candidate) => candidate.title === item.title && candidate.detail === item.detail && candidate.technicalDetail === item.technicalDetail) === index
     ));
   }, [capture?.last_error, errorNotices, errors, localError, runtimeFaultDetail, runtimeFaultEvidence]);
+  const activityItems = useMemo(() => [
+    ...currentErrorDetails.map((item) => ({ ...item, tone: "error" as const })),
+    ...activityNotices.map((notice) => ({
+      key: `activity-${notice.id}`,
+      title: notice.title,
+      detail: notice.detail ?? "操作已完成。",
+      time: notice.createdAt,
+      count: notice.count,
+      tone: notice.tone,
+    })),
+  ].sort((left, right) => (right.time ?? Number.MAX_SAFE_INTEGER) - (left.time ?? Number.MAX_SAFE_INTEGER)), [activityNotices, currentErrorDetails]);
 
   useEffect(() => {
     if (configuredCaptureDevice) {
@@ -4158,7 +4170,7 @@ export function StudioConsoleView({
         ) : null}
 
         {activePage === "activity" ? (
-          <ActivityView items={currentErrorDetails} onOpenDetails={() => setErrorCenterOpen(true)} />
+          <ActivityView items={activityItems} onOpenDetails={() => setErrorCenterOpen(true)} />
         ) : null}
 
         {activePage === "models" ? (

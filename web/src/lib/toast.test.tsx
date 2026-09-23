@@ -2,7 +2,23 @@ import { act, render, renderHook } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { ApiError, getRuntimeConfig } from "../api";
 import { ToastHost } from "../components/ToastHost";
-import { pushToastRaw, reportError, useClearErrorNotices, useDismissToast, useErrorNotices, useToasts } from "./toast";
+import { pushToastRaw, reportError, reportSuccess, useActivityNotices, useClearErrorNotices, useDismissToast, useErrorNotices, useToasts } from "./toast";
+
+it("retains completed operations for the Activity page", () => {
+  const { result } = renderHook(() => ({
+    activity: useActivityNotices(),
+    toasts: useToasts(),
+    dismiss: useDismissToast(),
+  }));
+  act(() => {
+    for (const toast of result.current.toasts) result.current.dismiss(toast.id);
+  });
+  act(() => reportSuccess("模型已更新", "新模型已经部署。", "model-switch"));
+  expect(result.current.activity[result.current.activity.length - 1]).toMatchObject({ tone: "success", title: "模型已更新", detail: "新模型已经部署。" });
+  act(() => {
+    for (const toast of result.current.toasts) result.current.dismiss(toast.id);
+  });
+});
 
 it("keeps diagnostic records even when popup notifications are quiet", () => {
   const { result } = renderHook(() => ({ notices: useErrorNotices(), toasts: useToasts(), clear: useClearErrorNotices() }));

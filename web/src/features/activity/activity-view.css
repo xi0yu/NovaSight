@@ -84,6 +84,21 @@
   box-shadow: 0 0 0 4px var(--status-error-bg);
 }
 
+.activity-feed-item[data-tone="success"] .activity-feed-marker {
+  background: var(--status-success-icon);
+  box-shadow: 0 0 0 4px var(--status-success-bg);
+}
+
+.activity-feed-item[data-tone="info"] .activity-feed-marker {
+  background: var(--signal-info);
+  box-shadow: 0 0 0 4px var(--brand-soft);
+}
+
+.activity-feed-item[data-tone="warn"] .activity-feed-marker {
+  background: var(--status-warning-icon);
+  box-shadow: 0 0 0 4px var(--status-warning-bg);
+}
+
 .activity-feed-item strong {
   color: var(--text-primary);
   font-size: 14px;
