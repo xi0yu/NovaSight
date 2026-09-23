@@ -134,6 +134,7 @@ describe("RuntimeOverviewView", () => {
     );
 
     const metrics = screen.getByLabelText("核心运行数据");
+    expect(metrics).toHaveClass("is-live");
     expect(metrics).toHaveTextContent("推理输入 FPS240");
     expect(metrics).toHaveTextContent("检测结果 FPS238");
     expect(metrics).toHaveTextContent("推理耗时8.2 ms");
@@ -169,6 +170,7 @@ describe("RuntimeOverviewView", () => {
     );
 
     const metrics = screen.getByLabelText("核心运行数据");
+    expect(metrics).not.toHaveClass("is-live");
     expect(metrics).not.toHaveTextContent(/FPS0/);
     expect(screen.getAllByText("等待样本")).toHaveLength(3);
   });

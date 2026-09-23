@@ -54,9 +54,7 @@
 .runtime-overview-evidence small {
   color: var(--text-tertiary);
   font-size: 10px;
-  font-weight: 750;
-  letter-spacing: .08em;
-  text-transform: uppercase;
+  font-weight: 700;
 }
 
 .runtime-overview-conclusion h2,
@@ -73,25 +71,55 @@
 }
 
 .runtime-overview-metrics {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0;
+  padding: 22px 0 24px;
   overflow: hidden;
   border-bottom: 1px solid var(--border-default);
 }
 
-.runtime-overview-metrics > div {
-  min-width: 0;
-  padding: 22px clamp(12px, 2.5vw, 28px);
+.runtime-overview-metrics::before {
+  content: "";
+  position: absolute;
+  top: 53px;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--border-strong);
 }
+
+.runtime-overview-metrics.is-live::before { background: var(--signal-info); }
+
+.runtime-overview-metrics > div {
+  position: relative;
+  min-width: 0;
+  padding: 0 clamp(12px, 2.5vw, 28px);
+}
+
+.runtime-overview-metrics > div::before {
+  content: "";
+  position: absolute;
+  top: 27px;
+  left: clamp(12px, 2.5vw, 28px);
+  z-index: 1;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--bg-app);
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+.runtime-overview-metrics.is-live > div::before { background: var(--signal-info); }
+.runtime-overview-metrics > div:first-child::before { left: 0; }
 
 .runtime-overview-metrics > div:first-child { padding-left: 0; }
 .runtime-overview-metrics > div:last-child { padding-right: 0; }
 
-.runtime-overview-metrics > div + div { border-left: 1px solid var(--border-default); }
 .runtime-overview-metrics dt { color: var(--text-tertiary); font-size: 11px; font-weight: 700; }
 .runtime-overview-metrics dd {
-  margin: 5px 0 0;
+  margin: 26px 0 0;
   overflow: hidden;
   color: var(--text-primary);
   font-family: var(--font-mono);
@@ -188,7 +216,12 @@
   .runtime-overview-actions { grid-column: 1 / -1; width: 100%; }
   .runtime-overview-actions .console-button { flex: 1 1 auto; }
   .runtime-overview-metrics { grid-template-columns: minmax(0, 1fr); }
-  .runtime-overview-metrics > div + div { border-top: 1px solid var(--border-default); border-left: 0; }
+  .runtime-overview-metrics::before { top: 22px; bottom: 24px; left: 4px; width: 1px; height: auto; }
+  .runtime-overview-metrics > div { padding: 0 0 18px 24px; }
+  .runtime-overview-metrics > div:last-child { padding-bottom: 0; }
+  .runtime-overview-metrics > div::before,
+  .runtime-overview-metrics > div:first-child::before { top: 4px; left: 0; }
+  .runtime-overview-metrics dd { margin-top: 4px; }
   .runtime-overview-chain ol { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .runtime-overview-chain li:not(:last-child)::after { top: 25px; right: auto; bottom: -13px; left: 13px; width: 1px; height: auto; }
 }

@@ -147,7 +147,7 @@ export function RuntimeOverviewView({
         </div>
       </article>
 
-      <dl className="runtime-overview-metrics" aria-label="核心运行数据">
+      <dl className={`runtime-overview-metrics${metricsAvailable ? " is-live" : ""}`} aria-label="核心运行数据">
         <div>
           <dt>推理输入 FPS</dt>
           <dd>{metricsAvailable
@@ -208,7 +208,7 @@ export function RuntimeOverviewView({
               <small>诊断</small>
               <strong>运行诊断证据</strong>
             </span>
-            <span>快照与输出门控 · 5 项</span>
+            <span>快照与输出门控，共 5 项</span>
           </summary>
           <dl>
             <div><dt>Daemon</dt><dd title={runtime.semantic.daemon_instance_id}>{runtime.semantic.daemon_instance_id.slice(0, 12)}</dd></div>

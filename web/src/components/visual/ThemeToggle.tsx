@@ -71,7 +71,6 @@ export function ThemeToggle() {
           <strong>主题</strong>
           <small>{activeTheme.label}</small>
         </span>
-        <NovaIcon className="theme-toggle-chevron" name="expand" size={14} />
       </button>
       {pickerOpen ? <div className="theme-menu" id="novasight-theme-menu" role="group" aria-label="网站主题">
         <div className="theme-menu-heading">
@@ -89,7 +88,7 @@ export function ThemeToggle() {
               <span className={`theme-option-art theme-option-art-${option.id}`} aria-hidden="true" />
               <span className="theme-option-copy">
                 <strong>{option.label}</strong>
-                <small>{option.character} · {option.palette}</small>
+                <small>{option.character}；{option.palette}</small>
               </span>
               {selected ? <span className="theme-option-state"><NovaIcon name="check-circle" size={15} />当前</span> : null}
             </button>

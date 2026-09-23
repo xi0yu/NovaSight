@@ -685,7 +685,7 @@ test("configuration pages explain the next action without horizontal overflow", 
   await mockStudioApi(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
   for (const [route, text] of [
-    ["models", "模型舱"],
+    ["models", "当前模型与设备文件"],
     ["license", "需要更换授权？"],
     ["params", "先调好控制，再决定是否输出"],
   ] as const) {

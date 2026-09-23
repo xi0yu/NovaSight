@@ -16,7 +16,7 @@ export function StudioPageHeader({ page }: { page: ConsolePage }) {
   return (
     <header className="console-page-header">
       <div className="console-page-heading">
-        <span>{metadata.group}</span>
+        {metadata.group === "NovaSight" ? null : <span>{metadata.group}</span>}
         <h1 ref={headingRef} tabIndex={-1}>{metadata.title}</h1>
         <p>{metadata.description}</p>
       </div>

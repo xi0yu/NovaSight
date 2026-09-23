@@ -11,9 +11,9 @@ export const THEME_STORAGE_KEY = "novasight.theme";
 export const DEFAULT_THEME: ThemeMode = "studio";
 
 export const THEME_OPTIONS: ThemeOption[] = [
-  { id: "studio", label: "专业工作台", character: "NovaSight · 标准界面", palette: "冰川灰 · 深海蓝 · 信号青" },
-  { id: "rose-white", label: "粉白清昼", character: "Product · 明亮界面", palette: "柔粉 · 雾白 · 石墨" },
-  { id: "graphite-red", label: "黑灰红", character: "NovaSight · 深色界面", palette: "曜黑 · 石墨灰 · 安全红" }
+  { id: "studio", label: "专业工作台", character: "克制、明亮、清晰", palette: "冰川灰，深海蓝，信号青" },
+  { id: "rose-white", label: "粉白清昼", character: "柔和的明亮界面", palette: "柔粉，雾白，石墨" },
+  { id: "graphite-red", label: "黑灰红", character: "专注的深色界面", palette: "曜黑，石墨灰，安全红" }
 ];
 
 export function isThemeMode(value: string | null): value is ThemeMode {

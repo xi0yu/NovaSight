@@ -25,15 +25,14 @@ export function ModelWorkspace({
             <NovaIcon name="models" size={22} strokeWidth={1.7} />
           </span>
           <div>
-            <span className="class-config-eyebrow">选择与部署</span>
-            <h2 id="model-workspace-title">模型舱</h2>
-            <p>从文件资产中选择候选模型，完成资格验证后再进入当前生产槽。</p>
+            <h2 id="model-workspace-title">当前模型与设备文件</h2>
+            <p>选择模型文件，系统会先检查是否可用，再允许部署到当前设备。</p>
           </div>
         </div>
         <div className={`model-production-slot ${deploymentState}`}>
           <div className="model-production-slot-heading">
             <span><i aria-hidden="true" /> 当前生产槽</span>
-            <strong>{activeFile ? panelProps.activeLoaded ? "运行已装载" : "已部署 · 待装载" : "空槽"}</strong>
+            <strong>{activeFile ? panelProps.activeLoaded ? "运行已装载" : "已部署，待装载" : "空槽"}</strong>
           </div>
           <b title={panelProps.activeArtifactPath}>{activeFile || "尚未部署模型"}</b>
           <div className="model-production-slot-facts">
