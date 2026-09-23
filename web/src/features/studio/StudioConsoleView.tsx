@@ -4239,8 +4239,8 @@ export function StudioConsoleView({
           <section className="console-card capture-profile-check" data-state={captureProfileState} aria-labelledby="capture-profile-check-title">
             <div className="capture-profile-check-header">
               <div>
-                <span className="class-config-eyebrow">采集核对</span>
-                <h2 id="capture-profile-check-title">保存配置与运行状态</h2>
+                <span className="class-config-eyebrow">画面核对</span>
+                <h2 id="capture-profile-check-title">当前画面规格</h2>
               </div>
               <span className="capture-profile-check-state" role="status">
                 <NovaIcon name={captureProfileState === "matched" ? "check-circle" : captureProfileState === "mismatch" ? "triangle-alert" : "clock"} size={16} />
@@ -4266,10 +4266,10 @@ export function StudioConsoleView({
           </section>
           <div className="console-grid2 capture-config-grid compact-content-grid">
               <div className="console-card">
-                <SectionTitle title="采集设备" />
+                <SectionTitle title="选择画面来源" />
                 <TextControl
-                  label="视频设备"
-                  detail="更换设备路径后先检测能力，再明确保存采集配置。"
+                  label="摄像头设备"
+                  detail="更换设备后先读取它支持的规格，再选择实际要使用的一项。"
                   value={device}
                   applyMode="launch"
                   onCommit={(value) => {
@@ -4281,7 +4281,7 @@ export function StudioConsoleView({
                 />
                 <div className="capture-format-control">
                   <SelectControl
-                    label="采集格式"
+                    label="画面规格"
                     detail={caps ? "从设备实际返回的格式中选择，然后保存为运行配置。" : "未检测前使用已保存格式；更换采集卡后建议重新检测。"}
                     value={selectedChoice ? choiceId(selectedChoice) : ""}
                     applyMode="launch"
@@ -4298,7 +4298,7 @@ export function StudioConsoleView({
                   />
                   <button className="console-button secondary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
                     <NovaIcon name="refresh" size={15} />
-                    {busy === "caps" ? "检测中..." : "检测设备能力"}
+                    {busy === "caps" ? "正在读取..." : "读取可用规格"}
                   </button>
                   <button
                     className="console-button primary"
@@ -4306,7 +4306,7 @@ export function StudioConsoleView({
                     onClick={() => void applyCapture()}
                     type="button"
                   >
-                    {busy === "capture" ? "正在保存并核对..." : "保存采集配置"}
+                    {busy === "capture" ? "正在应用并核对..." : "使用这个画面规格"}
                   </button>
                 </div>
                 <p className="console-section-note">
@@ -4330,10 +4330,10 @@ export function StudioConsoleView({
               </div>
 
               <div className="console-card">
-                <SectionTitle title="ROI 裁剪" />
+                <SectionTitle title="识别区域" />
                 <ParameterNumberControl
-                  label="ROI 尺寸"
-                  detail="主链按 ROI 正中心裁剪后送入推理；尺寸越大覆盖越广，越小目标细节越密。"
+                  label="识别范围大小"
+                  detail="系统从画面中心截取这一区域交给模型；范围越大覆盖越广，越小则细节越集中。"
                   value={roiSize}
                   min={256}
                   max={640}
@@ -4343,8 +4343,8 @@ export function StudioConsoleView({
                   onEditingChange={handleParameterEditingChange}
                 />
                 <ParameterPresetControl
-                  label="ROI 快捷尺寸"
-                  detail="只改中心裁剪尺寸；采集源分辨率不变。"
+                  label="常用识别范围"
+                  detail="只改变模型看到的中心区域，不改变摄像头本身的分辨率。"
                   options={ROI_SIZE_CHOICES.map((size) => ({
                     id: `roi-${size}`,
                     label: `${size}`,
@@ -4412,18 +4412,18 @@ export function StudioConsoleView({
             />
           </div>
           {runtime !== null ? (
-            <div className="console-metrics">
+            <div className="console-metrics consumer-signal-metrics">
               <Metric title="推理 FPS" value={formatOptionalNumber(nvinferOutputFps)} small="模型实际完成" />
               <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果有效产出" />
-              <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
-              <Metric title="最近检测" value={formatOptionalInteger(detectionCount)} small="最近遥测 · 最多 5Hz" />
+              <Metric title="结果新鲜度" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness}，单位 ms`} />
+              <Metric title="最近检测" value={formatOptionalInteger(detectionCount)} small="最近一次状态更新" />
             </div>
           ) : null}
           <div className="console-grid2 inference-config-grid">
             <div className="console-card">
-              <SectionTitle title="推理参数" />
+              <SectionTitle title="识别灵敏度" />
               <ParameterNumberControl
-                label="配置置信度"
+                label="最低可信度"
                 detail="低于该分数的检测框会被过滤；调低更敏感，调高更干净。"
                 value={confidence}
                 min={0}
@@ -4435,8 +4435,8 @@ export function StudioConsoleView({
                 onEditingChange={handleParameterEditingChange}
               />
               <ParameterNumberControl
-                label="配置 NMS"
-                detail="同一目标附近的重叠框会按该阈值合并；过低容易误删，过高容易重复。"
+                label="重复目标合并"
+                detail="NMS 使用这个阈值合并同一目标附近的重叠框；过低容易误删，过高容易重复。"
                 value={nms}
                 min={0}
                 max={1}
@@ -4467,7 +4467,7 @@ export function StudioConsoleView({
               </details>
             </div>
             <div className="console-card">
-              <SectionTitle title="ROI 输入预览" />
+              <SectionTitle title="识别画面" />
               <PreviewFrame
                 supported={activePage === "infer" && previewEnabled && previewRuntimePresentation.streamReady}
                 active={previewActive}
@@ -4722,9 +4722,8 @@ export function StudioConsoleView({
           <>
             <div className="parameter-page-intro" role="note">
               <div>
-                <span className="class-config-eyebrow">控制设置</span>
-                <h2>先调好控制，再决定是否输出</h2>
-                <p>按下面三组设置即可。保存参数只更新配置，不会替你打开物理输出。</p>
+                <h2>按使用顺序设置控制</h2>
+                <p>先决定什么时候响应，再调整移动方式，最后单独确认是否发送到设备。保存参数不会替你打开物理输出。</p>
               </div>
               <span className={outputEnabled ? "parameter-output-state enabled" : "parameter-output-state"}>
                 {outputEnabled ? "物理输出已开启" : "物理输出保持暂停"}
@@ -4739,23 +4738,28 @@ export function StudioConsoleView({
                 <small>{parameterPageDirty ? "导入前先保存或放弃草稿；导出不包含草稿，保存后请核对生效状态" : "修改普通参数后点击“保存修改”；输出开关单独确认"}</small>
               </div>
               <div className="parameter-save-bar-actions">
-                <button className="console-button" onClick={exportConfig} type="button" title="仅导出已保存配置，不包含本页草稿">
-                  <NovaIcon name="export" size={15} />
-                  导出已保存
-                </button>
-                <button className="console-button" disabled={parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0} onClick={() => fileInputRef.current?.click()} title={parameterPageDirty ? "请先保存或放弃当前参数草稿，再导入配置" : ""} type="button">
-                  <NovaIcon name="import" size={15} />
-                  导入
-                </button>
-                <input
-                  ref={fileInputRef}
-                  aria-hidden="true"
-                  className="visually-hidden"
-                  tabIndex={-1}
-                  type="file"
-                  accept="application/json,.json"
-                  onChange={importConfig}
-                />
+                <details className="parameter-file-actions">
+                  <summary>配置文件</summary>
+                  <div>
+                    <button className="console-button" onClick={exportConfig} type="button" title="仅导出已保存配置，不包含本页草稿">
+                      <NovaIcon name="export" size={15} />
+                      导出已保存
+                    </button>
+                    <button className="console-button" disabled={parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0} onClick={() => fileInputRef.current?.click()} title={parameterPageDirty ? "请先保存或放弃当前参数草稿，再导入配置" : ""} type="button">
+                      <NovaIcon name="import" size={15} />
+                      导入配置
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      aria-hidden="true"
+                      className="visually-hidden"
+                      tabIndex={-1}
+                      type="file"
+                      accept="application/json,.json"
+                      onChange={importConfig}
+                    />
+                  </div>
+                </details>
                 {parameterPageDirty ? (
                   <button
                     className="console-button"
@@ -4779,17 +4783,17 @@ export function StudioConsoleView({
             </div>
             {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
             <nav className="parameter-quick-nav" aria-label="参数分区">
-              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-trigger")}><span>01</span>触发与算法</button>
-              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-safety")}><span>02</span>补偿与限幅</button>
-              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-output")}><span>03</span>物理输出</button>
+              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-trigger")}><span>1</span>什么时候响应</button>
+              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-safety")}><span>2</span>怎么移动</button>
+              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-output")}><span>3</span>是否发送到设备</button>
             </nav>
             <div className="parameter-stage-list">
             <section className="parameter-stage" id="parameter-stage-trigger" aria-labelledby="parameter-stage-trigger-title">
               <header className="parameter-stage-heading">
-                <span>开始</span>
-                <div><h3 id="parameter-stage-trigger-title">触发与算法</h3><p>决定何时开始计算，以及如何把目标偏移换成控制量。</p></div>
+                <span>第 1 步</span>
+                <div><h3 id="parameter-stage-trigger-title">什么时候响应</h3><p>决定在什么条件下开始，以及如何把目标偏移换成移动量。</p></div>
               </header>
-            <ol className="control-chain-settings" aria-label="触发与算法设置">
+            <ol className="control-chain-settings" aria-label="什么时候响应设置">
               <li className="console-card control-chain-setting">
                 <span className="control-chain-step" aria-hidden="true">01</span>
                 <div className="control-chain-setting-title">
@@ -4875,10 +4879,10 @@ export function StudioConsoleView({
             </section>
             <section className="parameter-stage" id="parameter-stage-safety" aria-labelledby="parameter-stage-safety-title">
               <header className="parameter-stage-heading">
-                <span>调整</span>
-                <div><h3 id="parameter-stage-safety-title">补偿与限幅</h3><p>补偿按需启用；限幅负责约束每次发送的最大偏移。</p></div>
+                <span>第 2 步</span>
+                <div><h3 id="parameter-stage-safety-title">怎么移动</h3><p>按需加入补偿，并限制每次移动的最大幅度。</p></div>
               </header>
-            <ol className="control-chain-settings" aria-label="补偿与限幅设置">
+            <ol className="control-chain-settings" aria-label="怎么移动设置">
               <li className="console-card control-chain-setting">
                 <span className="control-chain-step" aria-hidden="true">04</span>
                 <div className="control-chain-setting-title">
@@ -4945,8 +4949,8 @@ export function StudioConsoleView({
             </section>
             <section className="parameter-stage parameter-stage-output" id="parameter-stage-output" aria-labelledby="parameter-stage-output-title">
               <header className="parameter-stage-heading">
-                <span>确认</span>
-                <div><h3 id="parameter-stage-output-title">物理输出</h3><p>这是独立的设备发送开关；保存上面的参数不会改变它。</p></div>
+                <span>第 3 步</span>
+                <div><h3 id="parameter-stage-output-title">是否发送到设备</h3><p>这是独立的物理输出开关；保存上面的参数不会改变它。</p></div>
               </header>
             <ol className="control-chain-settings" aria-label="物理输出设置">
               <li className={outputEnabled ? "console-card control-chain-setting output-enabled" : "console-card control-chain-setting output-paused"}>
@@ -4971,7 +4975,7 @@ export function StudioConsoleView({
             <details className="studio-diagnostic-details parameter-support-details">
               <summary>
                 <span>
-                  <b>目标与识别设置</b>
+                  <b>目标识别与跟踪（进阶）</b>
                 </span>
                 <i>展开</i>
               </summary>
@@ -4982,7 +4986,7 @@ export function StudioConsoleView({
                       <NovaIcon name="target" size={20} strokeWidth={1.8} />
                     </div>
                     <div>
-                      <span className="class-config-eyebrow">类别配置</span>
+                      <span className="class-config-eyebrow">当前方案</span>
                       <h3>{activeDetectionProfile}</h3>
                     </div>
                   </div>
@@ -5026,7 +5030,7 @@ export function StudioConsoleView({
                     onClick={() => void handleLearnCrosshair()}
                   >
                     <NovaIcon name="target" size={15} />
-                    {busy === "crosshair.learn" ? "正在学习…" : "学习当前准星 · F8"}
+                    {busy === "crosshair.learn" ? "正在学习…" : "学习当前准星（F8）"}
                   </button>
                   <button
                     className="console-button"
@@ -5130,7 +5134,7 @@ export function StudioConsoleView({
                     <span>六项综合评分</span>
                     <strong>
                       {dominantTargetSelectionWeight.label}
-                      <i>·</i>
+                      <i>占</i>
                       {(dominantTargetSelectionWeight.share * 100).toFixed(0)}%
                     </strong>
                   </div>
@@ -5159,7 +5163,7 @@ export function StudioConsoleView({
             <details className="studio-diagnostic-details parameter-support-details">
               <summary>
                 <span>
-                  <b>配置生效状态</b>
+                  <b>保存后是否生效</b>
                 </span>
                 <i>{productConfigProfile!.attentionCount > 0 ? `${productConfigProfile!.attentionCount} 项需处理` : "正常"}</i>
               </summary>
@@ -5388,9 +5392,9 @@ export function StudioConsoleView({
             />
           ) : (
           <>
-            <div className="console-metrics">
+            <div className="console-metrics consumer-signal-metrics">
               <Metric title="推理链耗时" value={formatOptionalNumber(inferenceTotalMs)} small="预处理 + 推理 + 解析 · ms" />
-              <Metric title="结果帧龄" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness} · ms`} />
+              <Metric title="结果帧龄" value={formatOptionalNumber(detectionDataAgeMs)} small={`${detectionFreshness}，单位 ms`} />
               <Metric title="结果 FPS" value={formatOptionalNumber(detectionBatchFps)} small="识别结果/s" />
               <Metric title="统计窗口" value={formatOptionalNumber(telemetryWindowMs, 0)} small="ms" />
             </div>

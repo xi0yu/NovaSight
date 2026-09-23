@@ -5,9 +5,9 @@ import { SectionTitle } from "./StudioPresentation";
 
 describe("SectionTitle", () => {
   it("keeps the Chinese section name concise for heading navigation", () => {
-    render(<SectionTitle title="采集设备" />);
+    render(<SectionTitle title="选择画面来源" />);
 
-    expect(screen.getByRole("heading", { name: "采集设备" })).toBeInTheDocument();
-    expect(screen.getByText("视频源、画面通路与最新帧策略")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "选择画面来源" })).toBeInTheDocument();
+    expect(screen.getByText("选择摄像头和它实际支持的画面规格")).toBeInTheDocument();
   });
 });

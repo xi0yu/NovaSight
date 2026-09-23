@@ -107,13 +107,16 @@ export function LicensePanel({
         </StatusIndicator>
       </div>
       <p className="license-help-copy">{license?.valid
-        ? "需要更换授权？在下方输入新授权码并验证。退出授权会先停止设备输出，且需要再次确认。"
+        ? "你可以查看当前可用能力，或在需要时更换授权。退出授权前，系统会先停止设备输出并再次确认。"
         : "授权码由本机服务验证；页面不会保存或回显完整凭证。"}</p>
-      <LicenseActivationForm
-        active={license?.valid === true}
-        temporarySupported={temporarySupported}
-        onLicenseChange={onLicenseChange}
-      />
+      <details className="license-change-disclosure" open={!license?.valid || undefined}>
+        <summary>{license?.valid ? "更换授权码" : "输入授权码"}</summary>
+        <LicenseActivationForm
+          active={license?.valid === true}
+          temporarySupported={temporarySupported}
+          onLicenseChange={onLicenseChange}
+        />
+      </details>
       {backendMessage ? (
         <div className="license-provenance-note">
           <strong>授权说明</strong>
@@ -140,7 +143,7 @@ export function LicensePanel({
             : formatDuration(license?.duration_value, license?.duration_unit)} />
         </div>
         <details className="compact-settings-details">
-          <summary>开发者诊断 · 凭证追踪码</summary>
+          <summary>开发者诊断与凭证追踪码</summary>
           <dl className="license-status-trace">
             <div>
               <dt>状态追踪码</dt>
@@ -318,7 +321,7 @@ function formatDuration(value: number | null | undefined, unit: string | undefin
 
 function formatCredentialFormat(format: string | null | undefined): string {
   const labels: Record<string, string> = {
-    jwt_rs256: "JWT · RS256",
+    jwt_rs256: "JWT（RS256）",
     legacy_ns1: "旧版 NS1",
     ephemeral_code: "本次启动临时码",
     legacy_document: "旧版授权文件"

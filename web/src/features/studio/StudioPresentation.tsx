@@ -36,8 +36,9 @@ function cardIconForTitle(title: string): NovaIconName {
 }
 
 function sectionIconForTitle(title: string): NovaIconName {
-  if (title.includes("采集设备")) return "capture-card";
-  if (title.includes("ROI")) return "roi";
+  if (title.includes("画面来源")) return "capture-card";
+  if (title.includes("识别区域") || title.includes("识别画面")) return "roi";
+  if (title.includes("识别灵敏度")) return "inference";
   if (title.includes("模型")) return "models";
   if (title.includes("推理输出")) return "output-tensor";
   if (title.includes("算法")) return "pid";
@@ -49,8 +50,10 @@ function sectionIconForTitle(title: string): NovaIconName {
 }
 
 function sectionDescriptionForTitle(title: string): string {
-  if (title.includes("采集设备")) return "视频源、画面通路与最新帧策略";
-  if (title.includes("ROI")) return "裁剪区域决定推理、预览和控制坐标基准";
+  if (title.includes("画面来源")) return "选择摄像头和它实际支持的画面规格";
+  if (title.includes("识别区域")) return "只把需要识别的画面区域交给模型";
+  if (title.includes("识别灵敏度")) return "控制保留目标和合并重复结果的方式";
+  if (title.includes("识别画面")) return "确认模型实际收到的画面范围和缩放比例";
   if (title.includes("模型设置")) return "绑定当前运行模型和 Engine 文件";
   if (title.includes("推理输出")) return "查看识别结果、目标框和新鲜度";
   if (title.includes("鼠标移动算法")) return "目标选择、速度预测、控制、限幅和输出";

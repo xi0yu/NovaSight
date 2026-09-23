@@ -149,9 +149,9 @@ test("capture page keeps saved and running specifications visible without horizo
   const check = page.locator(".capture-profile-check");
   await expect(check).toContainText("等待运行验证");
   await expect(check.getByText("MJPEG (MJPG) / 1920x1080 / 240 FPS", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "保存采集配置" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "使用这个画面规格" })).toBeVisible();
   if ((page.viewportSize()?.width ?? 0) >= 1200) {
-    await expect(page.getByRole("heading", { name: "采集设备" })).toBeInViewport();
+    await expect(page.getByRole("heading", { name: "选择画面来源" })).toBeInViewport();
   }
   expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(
     await page.evaluate(() => document.documentElement.clientWidth),
@@ -455,9 +455,9 @@ test("model organization saves catalog metadata without switching the runtime mo
 test("parameter sections navigate without changing physical output", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "hardware", output_enabled: false }, pipeline: {} });
   await page.goto("/?page=params");
-  const outputShortcut = page.getByRole("navigation", { name: "参数分区" }).getByRole("button", { name: /物理输出/ });
+  const outputShortcut = page.getByRole("navigation", { name: "参数分区" }).getByRole("button", { name: /是否发送到设备/ });
   await outputShortcut.click();
-  await expect(page.getByRole("heading", { name: "物理输出", exact: true })).toBeInViewport();
+  await expect(page.getByRole("heading", { name: "是否发送到设备", exact: true })).toBeInViewport();
   expect(page.url()).not.toContain("#parameter-stage-output");
 });
 
@@ -686,8 +686,8 @@ test("configuration pages explain the next action without horizontal overflow", 
   await page.emulateMedia({ reducedMotion: "reduce" });
   for (const [route, text] of [
     ["models", "当前模型与设备文件"],
-    ["license", "需要更换授权？"],
-    ["params", "先调好控制，再决定是否输出"],
+    ["license", "更换授权码"],
+    ["params", "按使用顺序设置控制"],
   ] as const) {
     await page.goto(`/?page=${route}`);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();

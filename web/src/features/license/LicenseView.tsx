@@ -1,6 +1,5 @@
 import { type LicenseStatus } from "../../api";
 import { NovaIcon } from "../../components/visual";
-import { Panel } from "../../components/ui";
 import { LicenseActivationForm, LicensePanel } from "./LicensePanel";
 import { type LicenseConnectionIssue } from "./connectionIssue";
 
@@ -82,11 +81,9 @@ export function LicenseGate({
 
 export function LicenseView({ license, onLicenseChange }: LicenseProps) {
   return (
-    <div className="view-grid">
-      <Panel title="当前授权" eyebrow="本机授权">
-        <LicensePanel license={license} onLicenseChange={onLicenseChange} />
-      </Panel>
-    </div>
+    <section className="license-workspace" aria-label="当前授权">
+      <LicensePanel license={license} onLicenseChange={onLicenseChange} />
+    </section>
   );
 }
 

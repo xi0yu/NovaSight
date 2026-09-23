@@ -77,12 +77,12 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
   capture: {
     group: "当前设备",
     title: "实时画面",
-    description: "选择输入设备和采集规格，确认 ROI 与最新帧链路处于可用状态。"
+    description: "选择画面来源和清晰度，设置识别区域，并确认当前运行已经采用这些选择。"
   },
   infer: {
     group: "当前设备",
     title: "推理",
-    description: "管理当前模型、推理预览和识别结果。"
+    description: "查看模型正在识别的画面，调整识别灵敏度，并确认结果保持新鲜。"
   },
   control: {
     group: "当前设备",
@@ -102,7 +102,7 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
   params: {
     group: "当前设备",
     title: "参数",
-    description: "沿控制因果链调整参数，并区分草稿、已保存配置与运行态生效结果。"
+    description: "按使用顺序设置何时响应、如何移动，以及是否把结果发送到设备。"
   },
   "control-test": {
     group: "当前设备",
