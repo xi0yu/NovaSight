@@ -103,7 +103,7 @@ it("opens control parameters from the live control chain", async () => {
   history.replaceState(null, "", "/?page=control");
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByRole("button", { name: "前往控制参数" }));
-  expect(screen.getByRole("heading", { level: 1, name: "参数设置" })).toBeVisible();
+  expect(screen.getByRole("heading", { level: 1, name: "参数" })).toBeVisible();
 });
 
 it("asks before discarding unsaved parameter edits", async () => {

@@ -234,6 +234,8 @@ export function ModelSelectionPanel({
   const selectedKind = selectedModel?.kind ?? selectedArtifact?.kind;
   const selectedIsActive = typeof activeArtifactId === "number"
     && selectedModel?.artifact_id === activeArtifactId;
+  const selectedRegistered = typeof selectedModel?.artifact_id === "number";
+  const selectedVerified = selectedModel?.artifact_status === "ready";
   const previewBackend = selectedKind === "engine"
     ? "DeepStream 推理"
     : selectedKind === "onnx"
@@ -494,6 +496,14 @@ export function ModelSelectionPanel({
               {modelStatusLabel(selectedStatus)}
             </StatusIndicator> : null}
           </div>
+
+          <ol className="model-promotion-track" aria-label="所选模型资格与部署进度">
+            <li className={selectedModel ? "complete" : "current"}><span>1</span><b>发现</b><small>模型文件</small></li>
+            <li className={selectedRegistered ? "complete" : selectedModel ? "current" : "pending"}><span>2</span><b>登记</b><small>资产身份</small></li>
+            <li className={selectedVerified ? "complete" : selectedRegistered ? "current" : "pending"}><span>3</span><b>验证</b><small>输入与解析</small></li>
+            <li className={selectedIsActive ? "complete" : selectedVerified ? "current" : "pending"}><span>4</span><b>部署</b><small>运行配置</small></li>
+            <li className={selectedIsActive && activeLoaded ? "complete" : selectedIsActive ? "current" : "pending"}><span>5</span><b>装载</b><small>运行态读回</small></li>
+          </ol>
 
           <p className="model-selection-next-step">
             {selectionHiddenByFilter

@@ -259,18 +259,18 @@ function SessionBar({
     : "—";
   return (
     <div className="auth-session-bar" role="status">
-      <div className="auth-session-identity">
+      <div className="auth-session-identity" title={`授权有效至 ${expiresAt}`}>
         <NovaIcon name="shield-check" size={15} />
         <strong>operator</strong>
-        <span>受保护会话至 {expiresAt}</span>
+        <span>已授权</span>
       </div>
-      <div className="auth-session-route" aria-label="认证链路状态">
-        <span className="is-ready">浏览器</span><i />
-        <span className="is-ready">Web/API</span><i />
-        <span className={daemonState === "reachable" ? "is-ready" : daemonState === "unreachable" ? "is-error" : "is-checking"}>
-          novasightd {daemonState === "reachable" ? "已连接" : daemonState === "unreachable" ? "不可达" : "检查中"}
-        </span>
-      </div>
+      {daemonState === "reachable" ? null : (
+        <div className="auth-session-route" aria-label="服务连接状态">
+          <span className={daemonState === "unreachable" ? "is-error" : "is-checking"}>
+            {daemonState === "unreachable" ? "服务不可达" : "正在检查服务"}
+          </span>
+        </div>
+      )}
       <Button variant="ghost" size="compact" onClick={onLogout} loading={loggingOut} leadingIcon="lock">
         退出会话
       </Button>

@@ -1,0 +1,138 @@
+.activity-view {
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.activity-summary {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 22px 0 26px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.activity-summary-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+}
+
+.activity-summary.is-clear .activity-summary-icon {
+  background: var(--status-success-bg);
+  color: var(--status-success-fg);
+}
+
+.activity-summary.needs-attention .activity-summary-icon {
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+}
+
+.activity-summary > div > span {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.activity-summary h2 {
+  margin: 2px 0 4px;
+  color: var(--text-primary);
+  font-size: 24px;
+  line-height: 30px;
+  letter-spacing: -0.02em;
+}
+
+.activity-summary p,
+.activity-feed-item p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.activity-feed {
+  position: relative;
+  padding: 20px 0;
+}
+
+.activity-feed-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 12px;
+  padding: 14px 0;
+}
+
+.activity-feed-item:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: 30px;
+  bottom: -14px;
+  left: 4px;
+  width: 1px;
+  background: var(--border-subtle);
+}
+
+.activity-feed-marker {
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--status-error-icon);
+  box-shadow: 0 0 0 4px var(--status-error-bg);
+}
+
+.activity-feed-item strong {
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.activity-feed-item small,
+.activity-feed-item time {
+  margin-left: 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.activity-feed-item details {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.activity-feed-item pre {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.activity-empty {
+  min-height: 220px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.activity-empty span {
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.activity-empty small {
+  color: var(--text-tertiary);
+}
+
+@media (max-width: 620px) {
+  .activity-summary {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .activity-summary .console-button {
+    grid-column: 1 / -1;
+  }
+}

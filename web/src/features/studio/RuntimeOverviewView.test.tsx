@@ -73,9 +73,9 @@ describe("RuntimeOverviewView", () => {
       />
     );
     expect(screen.getByRole("heading", { name: projection.conclusion })).toBeInTheDocument();
-    expect(screen.getByText("运行生命周期")).toBeInTheDocument();
-    expect(screen.getByText("感知数据", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
-    expect(screen.getByText("硬件输出", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
+    expect(screen.getByText("运行", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
+    expect(screen.getByText("识别", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
+    expect(screen.getByText("输出", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
     expect(screen.queryByText(/已发送|正在交付|delivering/i)).not.toBeInTheDocument();
   });
 

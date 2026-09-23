@@ -56,6 +56,7 @@ import {
 import { pushToastRaw, reportError, reportInfo, reportSuccess, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { formatRuntimeErrorMessage, getErrorMessage } from "../shared/format";
 import { LicenseView } from "../license/LicenseView";
+import { ActivityView } from "../activity/ActivityView";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { useStableSemanticValue } from "../shared/useStableSemanticValue";
 import { NovaIcon, ThemeToggle } from "../../components/visual";
@@ -4050,7 +4051,6 @@ export function StudioConsoleView({
       behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"
     });
   };
-
   return (
     <section className="console-app">
       <header className="console-top">
@@ -4061,27 +4061,43 @@ export function StudioConsoleView({
           <span className="console-brand-name">NovaSight<span> Studio</span></span>
         </div>
         <div className="console-toolbar">
-          <div className="console-group">
-            <div className="console-toolbar-item" title={projects[0]?.name ?? "默认项目"}>
-              <NovaIcon name="models" size={15} />
-              <span><small>项目</small>{projects[0]?.name ?? "默认项目"}</span>
-            </div>
-            <div
-              className="console-toolbar-item"
-              title={configuredCaptureDevice || capture?.device || "尚未配置采集设备"}
+          <div className="console-context-deck" aria-label="当前生产上下文">
+            <button
+              className="console-context-entry"
+              onClick={() => navigatePage("models")}
+              title={activeModelName}
+              type="button"
             >
-              <NovaIcon name="jetson" size={15} />
-              <span><small>采集设备</small>{configuredCaptureDevice || capture?.device || "未配置"}</span>
-            </div>
+              <NovaIcon name="models" size={16} />
+              <span><small>当前模型</small><b>{activeModelName}</b></span>
+            </button>
+            <button
+              className="console-context-entry"
+              onClick={() => navigatePage("capture")}
+              title={configuredCaptureDevice || capture?.device || "尚未配置采集设备"}
+              type="button"
+            >
+              <NovaIcon name="capture" size={16} />
+              <span><small>信号输入</small><b>{configuredCaptureDevice || capture?.device || "未配置"}</b></span>
+            </button>
           </div>
-          <div className="console-group">
+          <div className="console-safety-deck" aria-label="运行与安全控制">
+            <div
+              aria-label={`${realtimeStatusText}。${realtimeStatusDescription}运行态 ${formatDate(lastUpdated)}`}
+              className={realtimeStatusClass}
+              role="status"
+              title={`${realtimeStatusDescription} 最近更新 ${formatDate(lastUpdated)}`}
+            >
+              <span>{realtimeStatusText}</span>
+              <small>{formatDate(lastUpdated)}</small>
+            </div>
             <button type="button"
               className={currentErrorDetails.length > 0 ? "error-center-trigger has-errors" : "error-center-trigger"}
               aria-label={currentErrorDetails.length > 0 ? `查看异常信息，共 ${currentErrorDetails.length} 条` : "查看异常信息"}
               onClick={() => setErrorCenterOpen(true)}
             >
               <NovaIcon name={currentErrorDetails.length > 0 ? "triangle-alert" : "shield-check"} size={15} />
-              <span>异常信息</span>
+              <span>{currentErrorDetails.length > 0 ? "查看故障" : "异常"}</span>
               {currentErrorDetails.length > 0 ? <b>{currentErrorDetails.length}</b> : null}
             </button>
             <ThemeToggle />
@@ -4096,22 +4112,13 @@ export function StudioConsoleView({
                 <span>保存并应用中…</span>
               </div>
             ) : null}
-            <div
-              aria-label={`${realtimeStatusText}。${realtimeStatusDescription}运行态 ${formatDate(lastUpdated)}`}
-              className={realtimeStatusClass}
-              role="status"
-              title={`${realtimeStatusDescription} 最近更新 ${formatDate(lastUpdated)}`}
-            >
-              <span>{realtimeStatusText}</span>
-              <small>{formatDate(lastUpdated)}</small>
-            </div>
           </div>
         </div>
       </header>
 
-      <aside className="console-sidebar">
+      <div className="console-sidebar">
         <StudioNavigation activePage={activePage} onNavigate={navigatePage} />
-      </aside>
+      </div>
 
       <main className="console-main" data-page={activePage} ref={mainRef}>
         <StudioPageHeader page={activePage} />
@@ -4150,10 +4157,15 @@ export function StudioConsoleView({
           />
         ) : null}
 
+        {activePage === "activity" ? (
+          <ActivityView items={currentErrorDetails} onOpenDetails={() => setErrorCenterOpen(true)} />
+        ) : null}
+
         {activePage === "models" ? (
           <Suspense fallback={<div className="console-info" role="status">正在加载模型管理工作区…</div>}>
             <ModelWorkspace
               activeModelName={activeModelName}
+              onOpenInference={() => navigatePage("infer")}
               panelProps={{
                 root: modelCatalog,
                 loading: modelCatalogLoading,
@@ -4191,7 +4203,7 @@ export function StudioConsoleView({
           </section>
         ) : null}
 
-        {activePage !== "overview" && activePage !== "models" && activePage !== "params" && activePage !== "control-test" && runtimeLifecycleActive && runtimeMainlinePresentation.readinessCode !== "ready" ? (
+        {(["capture", "infer", "control", "latency"] as ConsolePage[]).includes(activePage) && runtimeLifecycleActive && runtimeMainlinePresentation.readinessCode !== "ready" ? (
           <div className="console-info console-info-recovery" role="status">
             <span>{runtimeMainlinePresentation.readinessLabel}：{runtimeMainlinePresentation.readinessDetail}</span>
             {runtimeMainlinePresentation.readinessCode === "no_video" && activePage !== "capture" ? (

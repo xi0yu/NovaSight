@@ -5,12 +5,12 @@ import { describe, expect, it, vi } from "vitest";
 import { CONSOLE_PAGES, StudioNavigation } from "./StudioNavigation";
 
 describe("StudioNavigation", () => {
-  it("exposes model management as a deep-link workspace", async () => {
+  it("exposes models as an object-first workspace", async () => {
     const onNavigate = vi.fn();
     render(<StudioNavigation activePage="capture" onNavigate={onNavigate} />);
 
     expect(CONSOLE_PAGES.has("models")).toBe(true);
-    await userEvent.click(screen.getByRole("button", { name: "模型管理" }));
+    await userEvent.click(screen.getByRole("button", { name: "模型" }));
     expect(onNavigate).toHaveBeenCalledWith("models");
   });
 
@@ -18,14 +18,15 @@ describe("StudioNavigation", () => {
     const onNavigate = vi.fn();
     render(<StudioNavigation activePage="capture" onNavigate={onNavigate} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "授权管理" }));
+    await userEvent.click(screen.getByRole("button", { name: "授权" }));
     expect(onNavigate).toHaveBeenCalledWith("license");
   });
 
-  it("keeps navigation groups out of the page heading hierarchy", () => {
+  it("keeps professional device tools one level deeper", () => {
     render(<StudioNavigation activePage="capture" onNavigate={vi.fn()} />);
 
-    expect(screen.queryByRole("heading", { name: "运行工作台" })).not.toBeInTheDocument();
-    expect(screen.getByText("运行工作台")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "设备" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("region", { name: "当前设备的深入功能" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "参数" })).toBeInTheDocument();
   });
 });

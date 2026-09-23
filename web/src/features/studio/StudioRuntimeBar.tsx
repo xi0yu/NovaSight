@@ -34,7 +34,7 @@ export function StudioRuntimeBar({
   onToggle,
   onEmergencyStop
 }: StudioRuntimeBarProps) {
-  if (page === "overview" || page === "params") return null;
+  if (!(["capture", "infer", "control", "latency", "control-test"] as ConsolePage[]).includes(page)) return null;
 
   if (page === "control-test") {
     const title = !runtimeAvailable

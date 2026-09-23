@@ -1,49 +1,113 @@
-# NovaSight Studio Interface System
+# NovaSight Product Interface System
 
-## Direction
+## Product promise
 
-NovaSight Studio is a realtime vision-control workbench for an operator who wants to start the system, confirm the current state, tune a small number of meaningful parameters, and diagnose failures only when needed.
+NovaSight is a consumer-grade product that controls professional Edge AI systems.
 
-The interface should feel quiet, dense, precise, and production-grade. It should not feel like a marketing dashboard, a generic admin template, or a developer log viewer.
+The visible experience is light, fast, natural, alive, reliable, and easy to understand. CUDA, TensorRT, NVMM, V4L2, tracking, control, and deployment remain available, but appear only when the user asks to go deeper.
 
-## Reference Lenses
+> Professional capability stays inside. Consumer-grade experience stays outside.
 
-- Karri Saarinen / Linear: high-density product tools need speed, restraint, and strong hierarchy before decoration.
-- Brian Lovin: design quality must survive implementation; controls, states, keyboard behavior, and text fit are part of the design.
-- Rauno Freiberg / Vercel: prioritize scannability, layout stability, performance, and information honesty over visual tricks.
-- Diana Mounter / GitHub Primer: repeated UI decisions become system rules; avoid one-off styles that drift across themes.
+## Product split
 
-## Information Hierarchy
+- **NovaSight Cloud** is object-first and remote: Home, Devices, Models, Activity, Me.
+- **NovaSight Studio** is a professional workstation: Home, Device, Models, Activity, License. Capture, inference, tracking, control, parameters, performance, and hardware tests live one level deeper inside the current device.
+- Cloud must not mirror every Studio setting. Both products share typography, status language, motion, and progressive disclosure.
 
-- Default Studio pages show current status, current FPS/freshness, recent result, and user-operable controls.
-- Cumulative counters, protocol receipts, generation numbers, raw trace fields, and backend proof belong in collapsed diagnostics.
-- One fact should have one owner. Other pages may reference it as a short status, not repeat full details.
-- Control pages should explain the live chain as prediction -> control -> limit -> output. Detailed numbers are evidence, not the main story.
+## Human and task
 
-## Visual System
+The human is an operator who wants to know, without learning backend architecture:
 
-- Density: workbench-tight. Use 10-16px internal spacing for cards and 12px grid gaps unless a section is a major page-level transition.
-- Depth: borders-first with subtle surface shifts. Avoid heavy shadows, decorative gradients, and multiple accent colors.
-- Radius: keep operational panels at 8-12px. Small controls use smaller radii; do not introduce large soft cards inside dense tools.
-- Typography: weight and color carry hierarchy more than size. Values use tabular mono only when they are metrics, IDs, counts, dimensions, or timings.
-- Color: dominant cool white / glacier gray surfaces, blue-violet for primary actions, cyan-blue for realtime signals, semantic colors only for actual status.
-- Available themes: 专业工作台, 粉白清昼, 黑灰红. Preserve any of these saved choices; map retired light/dark themes to the closest available appearance.
+1. Which device or model am I looking at?
+2. Is it running and safe?
+3. What just happened?
+4. What needs my attention?
+5. What is the next useful action?
 
-## Component Patterns
+The first screen answers those questions. It does not begin with analytics, registries, telemetry, or infrastructure.
 
-- Browser access gate: use one centered task card with product identity, one access-code field, one primary action, contextual errors, and a quiet connection/status footer. Keep transport, CSRF, IPC, and trust-chain details out of the default view.
-- License activation gate: keep caller authentication separate from product licensing. Temporary and formal credentials share one activation form and one submit path; explain the resulting tier after validation instead of presenting separate pre-validation actions.
-- Configuration onboarding: explain the next action next to the real control, separate staged configuration from immediate physical output, and collapse expert-only model and license metadata by default.
-- Diagnostic disclosure: summary row with title, short reason, and item count; content is collapsed by default and uses the same dense card grid when opened.
-- Output gate: primary user-facing safety control. Keep it visible in the parameter page and avoid duplicating it as a separate summary metric.
-- Prediction switch: user-facing algorithm switch. Keep it visible before advanced algorithm parameters.
-- Configuration pages: the configuration profile, output gate, prediction switch, class configuration, and algorithm entry points are the page body; do not add a duplicate metric strip above them.
-- Narrow-screen navigation: keep the active page visible within the horizontal navigation strip without moving document scroll or taking focus from the page heading.
-- Missing runtime snapshot: state that the conclusion is unconfirmed, keep output locked, and provide a direct route to error details instead of an indefinite loading claim.
+## Information architecture
 
-## Checks Before Shipping
+- Organize around real objects: my device, my model, what happened, my account or license.
+- Prefer `首页 / 设备 / 模型 / 活动 / 我的` in Cloud.
+- In Studio, expose device-specific depth only after entering the device: `画面 / 推理 / 目标与控制 / 参数 / 性能 / 控制测试`.
+- A core object or task must be visible as text on the first relevant layer. Do not require users to guess a tab, hover target, right-click menu, or collapsed section.
+- Low-frequency actions may move behind `···`; the current state and primary action may not.
 
-- Squint check: the page should still reveal the main action and live state when details are visually blurred.
-- Duplicate check: if the same runtime fact appears twice on the same page, one instance should become a diagnostic detail or be removed.
-- Theme check: new controls must use semantic tokens, not raw colors.
-- Runtime honesty check: a displayed value must say whether it is current runtime state, saved config, or diagnostic evidence.
+## Progressive disclosure
+
+Use three levels:
+
+1. **Human conclusion** — `正在运行 · 198 FPS · 21 ms · 一切正常`.
+2. **Operational detail** — capture, inference, tracking, control, GPU, temperature, current model.
+3. **Engineering evidence** — V4L2, NVMM, TensorRT, FP16, revisions, generations, request IDs, and raw errors.
+
+Professional information is not removed. It is revealed in response to user intent.
+
+## Layout and hierarchy
+
+- One focal point per view: the current object, conclusion, or task.
+- Prefer open compositions, inline metrics, lists, and timelines over grids of equal cards.
+- Use whitespace, type weight, alignment, and quiet separators before containers.
+- Do not create a card for every number. `198 FPS · 21 ms · 74% GPU` should read as one natural status line when they belong together.
+- Avoid dense tables and filter walls on the first layer. Dense comparison belongs in professional depth, such as the Studio model asset view.
+- Pages should feel like an everyday product, not an IT department console.
+
+## Visual direction
+
+- Platform typography first: SF Pro / system UI / Noto Sans SC / PingFang SC.
+- Large headings use tighter tracking; body copy uses comfortable leading.
+- Dominant surfaces are quiet white, glacier gray, or restrained graphite.
+- Color communicates state. Cyan may mean live signal, green healthy, amber attention, red fault or physical risk. No decorative purple-blue AI gradients.
+- Depth is subtle surface separation. Avoid stacked glass, large shadows, excessive radius, or decorative glow.
+- Preserve only the three approved appearances: 专业工作台, 粉白清昼, 黑灰红.
+
+## Interaction and state
+
+- Feedback begins immediately and remains visible through connecting, validating, applying, deploying, and reconciling.
+- Motion explains state change; it never decorates idle pages.
+- Only dangerous or externally consequential actions require confirmation: opening physical output, live model switching when impact is real, hardware test movement, and safe license exit.
+- Stop, pause output, ordinary save, retry, and navigation do not ask repeatedly.
+- Interrupted tasks retain the user’s intent and return path. Reconnect reads back authoritative state before retrying.
+- A saved value, requested value, and effective runtime value are different states and must be labeled honestly.
+
+## Error and activity language
+
+- Default user message: what happened, what it affects, whether the system is safe, and what to do next.
+- Keep `原始错误与开发者详情` one level deeper with source, HTTP status, request ID, and backend text.
+- Activity is a human timeline — `模型已更新`, `设备已上线`, `检测到异常` — not an event-management table.
+- Toasts confirm brief completion. Persistent faults and uncertain results remain in Activity until resolved or cleared.
+
+## Studio-specific professional depth
+
+- Use the real chain `采集 → 推理 → 目标 → 控制 → 输出` as the device-level mental model.
+- No-target and waiting-for-trigger are normal waiting states, not faults.
+- Unknown or stale runtime state locks physical output and says `未确认`; frontend configuration must never impersonate runtime proof.
+- The model workspace distinguishes discovered file, registered artifact, validated Engine, deployed model, and runtime-loaded model.
+- Model metadata, tags, paths, parser settings, revisions, and raw performance counters belong below the current model and deployment task.
+
+## Accessibility and motion
+
+- Interactive targets are at least 40px on desktop and 44px for touch layouts.
+- Every control has visible hover, active, focus, disabled, loading, success, and error states as applicable.
+- Use semantic HTML and keep visible labels aligned with accessible names.
+- Respect reduced motion, reduced transparency, and increased contrast.
+- Animate only transform and opacity; no ornamental loops. Live pulses are allowed only when they encode genuinely fresh data.
+
+## Rejected defaults
+
+- Enterprise SaaS navigation and admin dashboards.
+- Dashboard / Analytics / Device Management / Model Registry / Observability as the product’s first impression.
+- Equal card walls, giant KPI numbers, dense filters, and database-first model views.
+- AI-template gradients, stars, glassmorphism, oversized shadows, and decorative animation.
+- Hiding primary actions inside tabs, hover-only controls, or unexplained icon menus.
+- Marketing copy where a direct status is clearer.
+
+## Shipping checks
+
+- **Daily-use check:** does this feel like a product someone would choose to open every day?
+- **First-glance check:** can a new user identify the object, state, attention item, and next action in five seconds?
+- **Depth check:** can an expert still reach the real pipeline evidence without the beginner seeing it first?
+- **Runtime honesty check:** is every displayed fact labeled as runtime, saved configuration, requested state, or diagnostic evidence?
+- **Discoverability check:** are first-layer tasks visible without guessing a sub-tab or menu?
+- **Browser check:** verify desktop and narrow layouts, keyboard focus, real state transitions, errors, and zero horizontal overflow.

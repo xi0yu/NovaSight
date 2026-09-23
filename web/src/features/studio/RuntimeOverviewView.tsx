@@ -101,14 +101,20 @@ export function RuntimeOverviewView({
   return (
     <section className="runtime-overview" aria-label="运行总览">
       <article className={`runtime-overview-conclusion ${tone}`}>
-        <span className="runtime-overview-conclusion-icon" aria-hidden="true">
-          <NovaIcon
-            name={tone === "safe" ? "shield-check" : tone === "danger" ? "triangle-alert" : "activity-pulse"}
-            size={24}
-          />
-        </span>
-        <div>
-          <small>当前结论</small>
+        <div className="runtime-overview-identity">
+          <span className="runtime-overview-conclusion-icon" aria-hidden="true">
+            <NovaIcon
+              name={tone === "safe" ? "shield-check" : tone === "danger" ? "triangle-alert" : "activity-pulse"}
+              size={24}
+            />
+          </span>
+          <div>
+            <small>当前设备</small>
+            <strong>{runtime.capture.device || "已连接设备"}</strong>
+          </div>
+        </div>
+        <div className="runtime-overview-conclusion-copy">
+          <small>现在</small>
           <h2>{projection.conclusion}</h2>
           <p>{readiness.detail}</p>
         </div>
@@ -163,20 +169,17 @@ export function RuntimeOverviewView({
       </dl>
 
       <div className="runtime-overview-axes">
-        <article data-state={projection.lifecycle.state}>
-          <span><NovaIcon name="daemon" size={17} />运行生命周期</span>
-          <strong>{projection.lifecycle.label}</strong>
-          <p>{projection.lifecycle.detail}</p>
+        <article>
+          <span><NovaIcon name="daemon" size={17} />运行</span>
+          <div><strong>{projection.lifecycle.label}</strong><p>{projection.lifecycle.detail}</p></div>
         </article>
-        <article data-state={projection.perception.state}>
-          <span><NovaIcon name="inference" size={17} />感知数据</span>
-          <strong>{projection.perception.label}</strong>
-          <p>{projection.perception.detail}</p>
+        <article>
+          <span><NovaIcon name="inference" size={17} />识别</span>
+          <div><strong>{projection.perception.label}</strong><p>{projection.perception.detail}</p></div>
         </article>
-        <article data-state={projection.output.state}>
-          <span><NovaIcon name="device-send" size={17} />硬件输出</span>
-          <strong>{projection.output.label}</strong>
-          <p>{projection.output.detail}</p>
+        <article>
+          <span><NovaIcon name="device-send" size={17} />输出</span>
+          <div><strong>{projection.output.label}</strong><p>{projection.output.detail}</p></div>
         </article>
       </div>
 
