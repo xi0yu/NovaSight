@@ -186,7 +186,10 @@ test("capture page keeps saved and running specifications visible without horizo
   const check = page.locator(".capture-command-header");
   await expect(check).toContainText("等待运行验证");
   await expect(check.getByText("MJPEG (MJPG) / 1920x1080 / 240 FPS", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "应用画面设置" })).toBeVisible();
+  const applyBar = page.locator(".capture-apply-bar");
+  await expect(applyBar.getByRole("button", { name: "应用画面设置" })).toBeVisible();
+  await expect(applyBar).toHaveCSS("position", "static");
+  expect(await applyBar.evaluate((element) => element.closest(".capture-source-setup") !== null)).toBe(true);
   if ((page.viewportSize()?.width ?? 0) >= 1200) {
     await expect(page.getByRole("heading", { name: "选择设备和画质" })).toBeInViewport();
   }
@@ -255,6 +258,8 @@ test("algorithm parameters are grouped directly without the obsolete dialog", as
   await expect(page.getByRole("heading", { name: "启动条件", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "移动响应", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "目标锁定", exact: true })).toBeVisible();
+  await expect(page.locator(".parameter-save-bar")).toHaveCount(0);
+  await expect(page.getByText("完整配置文件", { exact: true })).toBeVisible();
   await expect(page.locator("main.console-main").getByRole("button", { name: "算法参数", exact: true })).toHaveCount(0);
   await expect(page.getByRole("dialog", { name: "控制参数" })).toHaveCount(0);
 });
@@ -535,7 +540,7 @@ test("saving parameters while output is enabled needs explicit consent", async (
 
 test("narrow Studio keeps Chinese navigation and save action reachable", async ({ page }) => {
   await page.setViewportSize({ width: 620, height: 812 });
-  await mockStudioApi(page);
+  await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "always" }, pipeline: {} });
   await page.goto("/?page=params");
 
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
@@ -545,6 +550,7 @@ test("narrow Studio keeps Chinese navigation and save action reachable", async (
   const shellHeader = page.locator(".console-top");
   expect((await shellHeader.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(76);
 
+  await page.getByRole("button", { name: "按键触发" }).click();
   const saveBar = page.locator(".parameter-save-bar");
   await expect(saveBar).toHaveCSS("position", "sticky");
   await page.locator("main.console-main").evaluate((main) => { main.scrollTop = 900; });

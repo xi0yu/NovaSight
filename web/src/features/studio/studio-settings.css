@@ -231,19 +231,13 @@
 .capture-optional-settings[open] > summary { margin-bottom: 14px; color: var(--text-primary); }
 
 .capture-apply-bar {
-  position: sticky;
-  bottom: 12px;
-  z-index: 5;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 13px 14px 13px 18px;
-  border: 1px solid var(--border-default);
-  border-left: 3px solid var(--brand-primary);
-  border-radius: var(--radius-4);
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-floating);
+  gap: var(--space-4);
+  margin-top: 2px;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-default);
 }
 
 .capture-apply-bar > div { min-width: 0; display: grid; gap: 3px; }
@@ -1429,6 +1423,34 @@
   box-shadow: var(--shadow-dialog);
 }
 
+.parameter-config-footer {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4) 2px 0;
+  border-top: 1px solid var(--border-default);
+}
+
+.parameter-config-footer > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.parameter-config-footer > div b {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.parameter-config-footer > div small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .parameter-workspace {
   display: grid;
   gap: 0;
@@ -1651,6 +1673,9 @@
   .parameter-file-actions { flex: 1 1 0; }
   .parameter-file-actions > summary { justify-content: center; width: 100%; min-height: 44px; }
   .parameter-file-actions > div { right: auto; left: 0; }
+  .parameter-config-footer { align-items: stretch; flex-direction: column; }
+  .parameter-config-footer .parameter-file-actions,
+  .parameter-config-footer .parameter-file-actions > summary { width: 100%; }
   .control-chain-setting { grid-template-columns: 36px minmax(0, 1fr); }
   .control-chain-setting-title { min-height: 32px; align-content: center; }
   .trigger-mode-options,

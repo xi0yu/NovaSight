@@ -324,7 +324,7 @@ it("does not let a pending parameter draft get overwritten by config import", as
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByRole("button", { name: "按键触发" }));
   expect(screen.getByRole("button", { name: "导入配置" })).not.toBeVisible();
-  await userEvent.click(screen.getByText("配置文件"));
+  await userEvent.click(screen.getByText("导入或导出"));
   expect(screen.getByRole("button", { name: "导入配置" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "导出已保存" })).toBeEnabled();
   expect(screen.getByText("有未应用的修改")).toBeVisible();
@@ -500,7 +500,7 @@ it("applies trigger and target preference edits from the same page save", async 
     pipeline: expect.objectContaining({ target_selection_distance_weight: 0.7 }),
   });
   expect(screen.getByRole("button", { name: "按键触发" })).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("button", { name: "保存并应用" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "保存并应用" })).not.toBeInTheDocument();
 });
 
 it("keeps the whole parameter draft when the atomic save is rejected", async () => {

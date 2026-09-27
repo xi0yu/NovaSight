@@ -4066,6 +4066,20 @@ export function StudioConsoleView({
                     }))}
                   />
                 </details>
+                <footer className="capture-apply-bar">
+                  <div>
+                    <strong>{runtimeLifecycleActive ? "需先停止运行" : selectedChoice ? "应用所选画面" : "等待选择画面规格"}</strong>
+                    <small>{selectedChoice ? `${device} · ${choiceLabel(selectedChoice)}` : "读取设备后选择一项真实支持的规格。"}</small>
+                  </div>
+                  <button
+                    className="console-button primary"
+                    disabled={busy !== null || runtimeLifecycleActive || runtimeControlUnavailable || !selectedChoice || !device.trim() || caps?.available === false}
+                    onClick={() => void applyCapture()}
+                    type="button"
+                  >
+                    {busy === "capture" ? "正在应用并核对…" : "应用画面设置"}
+                  </button>
+                </footer>
               </section>
               );
 
@@ -4114,23 +4128,6 @@ export function StudioConsoleView({
                 return null;
               })}
           </div>
-
-          {captureModules.has("source") ? (
-          <footer className="capture-apply-bar">
-            <div>
-              <strong>{runtimeLifecycleActive ? "停止运行后才能更换画面" : selectedChoice ? "已准备好应用" : "先读取设备并选择规格"}</strong>
-              <small>{selectedChoice ? `${device} · ${choiceLabel(selectedChoice)}` : "不会自动猜测采集卡能力。"}</small>
-            </div>
-            <button
-              className="console-button primary"
-              disabled={busy !== null || runtimeLifecycleActive || runtimeControlUnavailable || !selectedChoice || !device.trim() || caps?.available === false}
-              onClick={() => void applyCapture()}
-              type="button"
-            >
-              {busy === "capture" ? "正在应用并核对…" : "应用画面设置"}
-            </button>
-          </footer>
-          ) : null}
 
           {captureModules.has("diagnostics") ? (
           <details className="studio-diagnostic-details">
@@ -4493,50 +4490,26 @@ export function StudioConsoleView({
           <section className="console-page">
           {activePage === "params" ? (
           <>
-            <div className={parameterPageDirty ? "parameter-save-bar dirty" : "parameter-save-bar"}>
+            {parameterPageDirty ? <div className="parameter-save-bar dirty">
               <span className="parameter-save-bar-icon" aria-hidden="true">
-                <NovaIcon name={parameterPageDirty ? "save" : "check-circle"} size={18} />
+                <NovaIcon name="save" size={18} />
               </span>
               <div aria-live="polite" role="status">
-                <b>{parameterPageDirty ? "有未应用的修改" : "参数已保存"}</b>
-                <small>{parameterPageDirty ? "修改保留在当前页面，应用后才会写入运行配置。" : "调整参数后可在这里一次应用；控制总开关独立生效。"}</small>
+                <b>有未应用的修改</b>
+                <small>保存后整组参数立即生效；控制总开关保持不变。</small>
               </div>
               <div className="parameter-save-bar-actions">
-                <details className="parameter-file-actions">
-                  <summary>配置文件</summary>
-                  <div>
-                    <button className="console-button" onClick={exportConfig} type="button" title="仅导出已保存配置，不包含本页未保存修改">
-                      <NovaIcon name="export" size={15} />
-                      导出已保存
-                    </button>
-                    <button className="console-button" disabled={parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0} onClick={() => fileInputRef.current?.click()} title={parameterPageDirty ? "请先保存或放弃当前修改，再导入配置" : ""} type="button">
-                      <NovaIcon name="import" size={15} />
-                      导入配置
-                    </button>
-                    <input
-                      ref={fileInputRef}
-                      aria-hidden="true"
-                      className="visually-hidden"
-                      tabIndex={-1}
-                      type="file"
-                      accept="application/json,.json"
-                      onChange={importConfig}
-                    />
-                  </div>
-                </details>
-                {parameterPageDirty ? (
-                  <button
-                    className="console-button"
-                    disabled={parameterPageSaving || pendingConfigWriteCount > 0}
-                    onClick={requestDiscardParameterPageDraft}
-                    type="button"
-                  >
-                    放弃修改
-                  </button>
-                ) : null}
+                <button
+                  className="console-button"
+                  disabled={parameterPageSaving || pendingConfigWriteCount > 0}
+                  onClick={requestDiscardParameterPageDraft}
+                  type="button"
+                >
+                  放弃修改
+                </button>
                 <button
                   className="console-button primary"
-                  disabled={!parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0}
+                  disabled={parameterPageSaving || pendingConfigWriteCount > 0}
                   onClick={requestSaveParameterPageDraft}
                   type="button"
                 >
@@ -4544,7 +4517,7 @@ export function StudioConsoleView({
                   {parameterPageSaving ? "正在保存并应用…" : "保存并应用"}
                 </button>
               </div>
-            </div>
+            </div> : null}
             {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
             <div className="parameter-workspace">
             {parameterModuleOrder.map((moduleId) => {
@@ -4837,6 +4810,34 @@ export function StudioConsoleView({
               return null;
             })}
             </div>
+            <footer className="parameter-config-footer">
+              <div>
+                <b>完整配置文件</b>
+                <small>用于备份或迁移高级设置，不影响日常参数调整。</small>
+              </div>
+              <details className="parameter-file-actions">
+                <summary>导入或导出</summary>
+                <div>
+                  <button className="console-button" onClick={exportConfig} type="button" title="仅导出已保存配置，不包含本页未保存修改">
+                    <NovaIcon name="export" size={15} />
+                    导出已保存
+                  </button>
+                  <button className="console-button" disabled={parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0} onClick={() => fileInputRef.current?.click()} title={parameterPageDirty ? "请先保存或放弃当前修改，再导入配置" : ""} type="button">
+                    <NovaIcon name="import" size={15} />
+                    导入配置
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    aria-hidden="true"
+                    className="visually-hidden"
+                    tabIndex={-1}
+                    type="file"
+                    accept="application/json,.json"
+                    onChange={importConfig}
+                  />
+                </div>
+              </details>
+            </footer>
           </>
           ) : (
           <>
