@@ -3,27 +3,27 @@
 
   /* Primitive colors */
   --ns-white: #ffffff;
-  --ns-gray-25: #fffdfd;
-  --ns-gray-50: #faf7f8;
-  --ns-gray-100: #f6f1f3;
-  --ns-gray-150: #eee7ea;
-  --ns-gray-200: #e2d8dd;
-  --ns-gray-300: #cabcc3;
-  --ns-gray-400: #a997a0;
-  --ns-gray-500: #7d6d75;
-  --ns-gray-600: #5c4c54;
-  --ns-gray-700: #41333a;
-  --ns-gray-800: #2c2026;
-  --ns-gray-900: #1a1116;
+  --ns-gray-25: #fff;
+  --ns-gray-50: #f8f7f4;
+  --ns-gray-100: #f0efeb;
+  --ns-gray-150: #e7e4df;
+  --ns-gray-200: #d9d5cf;
+  --ns-gray-300: #c3bdb5;
+  --ns-gray-400: #9d958c;
+  --ns-gray-500: #736c65;
+  --ns-gray-600: #544d47;
+  --ns-gray-700: #39332f;
+  --ns-gray-800: #27211e;
+  --ns-gray-900: #171311;
   --ns-blue-50: #ebf3ff;
   --ns-blue-100: #c9dcff;
   --ns-blue-500: #3478f6;
   --ns-blue-700: #245fc8;
-  --ns-brand-50: #fff1f4;
-  --ns-brand-100: #ffd3dc;
-  --ns-brand-500: #cf1f42;
-  --ns-brand-600: #b71838;
-  --ns-brand-700: #94102c;
+  --ns-brand-50: #fff0f2;
+  --ns-brand-100: #ffc8d0;
+  --ns-brand-500: #e21d42;
+  --ns-brand-600: #c91436;
+  --ns-brand-700: #a20e2b;
   --ns-cyan-50: #e9f9fb;
   --ns-cyan-100: #bdebf0;
   --ns-cyan-500: #18a6b8;
@@ -41,13 +41,13 @@
   --ns-red-700: #b52e3d;
 
   /* Semantic backgrounds */
-  --bg-app: #fbf6f8;
+  --bg-app: #f5f4f1;
   --bg-surface: var(--ns-white);
-  --bg-subtle: #fff8fa;
-  --bg-elevated: #fffdfd;
+  --bg-subtle: #faf9f6;
+  --bg-elevated: #fff;
   --bg-sidebar: var(--bg-app);
-  --bg-hover: #fff0f3;
-  --bg-active: #ffe5eb;
+  --bg-hover: #fff1f3;
+  --bg-active: #ffe3e8;
 
   /* Semantic text */
   --text-primary: var(--ns-gray-900);
@@ -69,18 +69,18 @@
   --realtime-border: #c8dcff;
 
   /* Product-native signal palette. These colors encode meaning, not decoration. */
-  --signal-target: #e83b57;
+  --signal-target: #e21d42;
   --signal-compute: #5f9300;
   --signal-info: #1a73e8;
-  --signal-attention: #b66a00;
-  --signal-ink: #171217;
+  --signal-attention: #b97800;
+  --signal-ink: #171311;
   --role-head: var(--signal-target);
   --role-head-fg: color-mix(in srgb, var(--role-head) 82%, var(--text-primary));
   --role-body: var(--signal-compute);
   --role-body-fg: color-mix(in srgb, var(--role-body) 82%, var(--text-primary));
   --role-other: var(--signal-info);
   --role-other-fg: color-mix(in srgb, var(--role-other) 82%, var(--text-primary));
-  --selection-strong-bg: #171217;
+  --selection-strong-bg: #171311;
   --selection-strong-fg: #fff8fa;
   --selection-strong-muted: #d9cbd1;
 
@@ -115,12 +115,12 @@
     "PingFang SC",
     sans-serif;
   --font-mono: "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
-  --text-page-title: 28px;
-  --leading-page-title: 36px;
+  --text-page-title: 42px;
+  --leading-page-title: 44px;
   --text-section-title: 18px;
   --leading-section-title: 26px;
-  --text-body: 14px;
-  --leading-body: 22px;
+  --text-body: 15px;
+  --leading-body: 23px;
   --text-helper: 12px;
   --leading-helper: 18px;
   --text-label: 12px;
