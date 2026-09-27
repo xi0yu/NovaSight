@@ -202,7 +202,6 @@ function schemaBackedNumberParameter<Field extends string>(
   const max = isFiniteNumber(field.max) ? field.max : parameter.max;
   return {
     ...parameter,
-    label: field.label || parameter.label,
     min,
     max,
     unit: field.unit ?? parameter.unit,
@@ -278,9 +277,8 @@ export function buildAlgorithmParameterGroups(
     responseParameters: [
       {
         key: "p_response_scale",
-        label: "基础响应 K_base",
-        formula: "K_base / p_response_scale",
-        detail: "写入 pipeline.p_response_scale，直接乘在 Atan 输出前。觉得整体慢但轨迹稳定时先小幅提高它；过高会让所有误差区间一起变冲。",
+        label: "基础移动速度",
+        detail: "整体移动偏慢但轨迹稳定时小幅提高；过高会让近距离和远距离都变得过冲。",
         value: values.pResponseScale,
         min: 0,
         max: 100,
@@ -291,9 +289,8 @@ export function buildAlgorithmParameterGroups(
       },
       {
         key: "p_response_boost",
-        label: "动态增强 B",
-        formula: "B / p_response_boost",
-        detail: "写入 pipeline.p_response_boost，控制 R(r) 随误差距离最多额外放大多少。远距离响应不足时小幅提高；过高会让中远距离变冲。",
+        label: "远距离追赶力度",
+        detail: "目标离准星较远、追赶不及时才小幅提高；过高会让中远距离移动变冲。",
         value: values.pResponseBoost,
         min: 0,
         max: 100,
@@ -304,9 +301,8 @@ export function buildAlgorithmParameterGroups(
       },
       {
         key: "p_response_curve_shape",
-        label: "过渡形状 gamma",
-        formula: "gamma / p_response_curve_shape",
-        detail: "写入 pipeline.p_response_curve_shape，只改变增强随误差半径 r 进入的早晚。低于 1 更早变强，高于 1 更晚变强；它不是整体速度旋钮。",
+        label: "加速介入时机",
+        detail: "低于 1 会更早加速，高于 1 会更晚加速；它不会直接改变整体移动速度。",
         value: values.pResponseCurveShape,
         min: 0.5,
         max: 4,
@@ -320,8 +316,7 @@ export function buildAlgorithmParameterGroups(
       {
         key: "prediction_lead_ms",
         label: "预测提前量",
-        formula: "T_extra",
-        detail: "在观测帧龄和执行反馈延迟之外，沿 aim 点速度额外提前的时间。跟不上移动目标时小幅增加；急停或过度预判时降低。",
+        detail: "跟不上移动目标时小幅增加；目标急停时容易越过目标，则应降低。",
         value: values.controlPredictionLeadMs,
         min: 0,
         max: 1000,
@@ -334,8 +329,7 @@ export function buildAlgorithmParameterGroups(
       {
         key: "velocity_history_reset_gap_ms",
         label: "断流历史重置",
-        formula: "history",
-        detail: "相邻有效画面超过该时间后清空 4 点 / 3 段速度历史，避免断流后继续沿上次方向预测。",
+        detail: "画面中断超过该时间后忘记旧运动方向，避免恢复时继续沿上次方向预测。",
         value: values.controlPredictionHistoryResetGapMs,
         min: 0.000001,
         max: 10000,
@@ -350,8 +344,7 @@ export function buildAlgorithmParameterGroups(
       {
         key: "prediction_cap_px",
         label: "预测位移上限",
-        formula: "cap_pred",
-        detail: "目标速度预测最多把 aim 点向未来推进多少像素。这是预测位移 cap，不是鼠标输出上限。",
+        detail: "限制预测最多向未来推进多少像素，防止快速目标或抖动造成过度提前。",
         value: values.controlPredictionCapPx,
         min: 0,
         max: 100000,
@@ -364,8 +357,7 @@ export function buildAlgorithmParameterGroups(
     calibrationParameters: [
       {
         key: "prediction_actuation_delay_ms",
-        label: "预测执行延迟",
-        formula: "T_delay",
+        label: "设备响应延迟",
         detail: "命令发出到画面可观察到响应的系统延迟，只参与目标速度预测时域。",
         value: values.predictionActuationDelayMs,
         min: 0,
@@ -379,8 +371,7 @@ export function buildAlgorithmParameterGroups(
       },
       {
         key: "projection_fov_x_deg",
-        label: "水平视场角 FOVX",
-        formula: "proj_fov",
+        label: "画面水平视场角",
         detail: "当前游戏水平视场角，用于把像素误差换算成角度误差。",
         value: values.controlFovX,
         min: 0.000001,
@@ -393,8 +384,7 @@ export function buildAlgorithmParameterGroups(
       },
       {
         key: "projection_counts_per_360",
-        label: "设备每圈 counts",
-        formula: "proj_counts",
+        label: "设备转一圈的计数",
         detail: "鼠标完成 360°转向所需的真实设备计数，用于把角度需求换算成输出 counts。",
         value: values.controlCountsPer360,
         min: 0.000001,
@@ -409,8 +399,7 @@ export function buildAlgorithmParameterGroups(
       },
       {
         key: "freshness_threshold_ms",
-        label: "可用观测最大帧龄",
-        formula: "freshness",
+        label: "识别结果有效时间",
         detail: "超过该帧龄的识别结果不会进入控制器；它是安全时效门，不是固定推理时长。",
         value: values.freshnessThresholdMs,
         min: 1,
@@ -515,7 +504,7 @@ export function buildTargetingParameterGroups(
       {
         key: "target_switch_min_continuity_score",
         label: "切换最小连续性",
-        detail: "新候选 Track 的身份连续性至少达到此值，才允许进入切换确认。",
+        detail: "新候选的轨迹连续性至少达到此值，才允许进入切换确认。",
         value: values.targetSwitchContinuityScore,
         min: 0,
         max: 1,
@@ -525,7 +514,7 @@ export function buildTargetingParameterGroups(
       {
         key: "tracker_max_match_distance",
         label: "归一化匹配距离",
-        detail: "已有 Track 与新检测框允许关联的最大归一化距离。过大容易误关联，过小会断轨。",
+        detail: "已有轨迹与新检测框允许关联的最大距离。过大容易误关联，过小会断轨。",
         value: values.trackerMaxMatchDistance,
         min: 0.000001,
         max: 100,
@@ -548,7 +537,7 @@ export function buildTargetingParameterGroups(
       },
       {
         key: "tracker_iou_cost_weight",
-        label: "IoU 代价权重",
+        label: "检测框重叠权重",
         detail: "候选框重叠程度在身份匹配中的权重。",
         value: values.trackerIouCostWeight,
         min: 0,
@@ -573,7 +562,7 @@ export function buildTargetingParameterGroups(
       {
         key: "tracker_class_cost_weight",
         label: "跨类别关联代价",
-        detail: "raw cls 变化时增加软代价，但不禁止关联；位置、重叠和尺度仍可证明它是同一目标。",
+        detail: "模型原始类别变化时增加软代价，但不禁止关联；位置、重叠和大小仍可证明它是同一目标。",
         value: values.trackerClassCostWeight,
         min: 0,
         max: 100,
@@ -696,8 +685,8 @@ export function buildTargetingParameterGroups(
       },
       {
         key: "tracker_kalman_nis_threshold",
-        label: "NIS 可信阈值",
-        detail: "创新量低于该值时卡尔曼状态可作为可信关联预测；必须不高于硬拒绝阈值。",
+        label: "轨迹可信阈值",
+        detail: "偏差低于该值时，滤波轨迹可作为可信关联预测；必须不高于异常跳变拒绝阈值。",
         value: values.trackerKalmanNisThreshold,
         min: 0.000001,
         max: values.trackerKalmanNisHardReject,
@@ -708,8 +697,8 @@ export function buildTargetingParameterGroups(
       },
       {
         key: "tracker_kalman_nis_hard_reject",
-        label: "NIS 硬拒绝阈值",
-        detail: "创新量超过该值时，该检测与已有 Track 不允许关联。降低会减少误关联，过低会造成频繁断轨。",
+        label: "异常跳变拒绝阈值",
+        detail: "偏差超过该值时，该检测不允许与已有轨迹关联。降低会减少误关联，过低会造成频繁断轨。",
         value: values.trackerKalmanNisHardReject,
         min: Math.max(0.000001, values.trackerKalmanNisThreshold),
         max: 1000000,

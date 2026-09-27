@@ -2600,16 +2600,6 @@ tbody tr:hover {
   text-wrap: balance;
 }
 
-.product-config-profile-header p {
-  max-width: 780px;
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 760;
-  line-height: 1.5;
-  text-wrap: pretty;
-}
-
 .control-trace-count {
   min-width: 82px;
   min-height: 44px;
@@ -2636,14 +2626,6 @@ tbody tr:hover {
   color: var(--text-tertiary);
   font-size: 13px;
   font-weight: 900;
-}
-
-.product-config-profile-score small {
-  grid-column: 1 / -1;
-  color: var(--text-tertiary);
-  font-size: 10px;
-  font-weight: 850;
-  text-align: center;
 }
 
 .control-trace-steps {
@@ -2764,129 +2746,6 @@ tbody tr:hover {
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.product-config-profile-items {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.product-config-profile-details {
-  overflow: hidden;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-4);
-  background: var(--bg-subtle);
-}
-
-.product-config-profile-details > summary {
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: 9px 12px;
-  color: var(--text-primary);
-  cursor: pointer;
-  list-style: none;
-}
-
-.product-config-profile-details > summary::-webkit-details-marker {
-  display: none;
-}
-
-.product-config-profile-details > summary:hover {
-  background: color-mix(in srgb, var(--brand-primary) 5%, transparent);
-}
-
-.product-config-profile-details > summary:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: -2px;
-}
-
-.product-config-profile-details > summary span {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.product-config-profile-details > summary b {
-  font-size: 12px;
-  font-weight: 750;
-}
-
-.product-config-profile-details > summary small {
-  color: var(--text-tertiary);
-  font-size: 10px;
-  line-height: 1.45;
-}
-
-.product-config-profile-details > summary i {
-  flex: 0 0 auto;
-  padding: 3px 7px;
-  border-radius: var(--radius-pill);
-  background: var(--bg-surface);
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-style: normal;
-}
-
-.product-config-profile-details[open] > summary {
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.product-config-profile-details > .product-config-profile-items {
-  padding: var(--space-3);
-}
-
-.product-config-profile-item {
-  min-height: 156px;
-  grid-template-columns: 30px minmax(0, 1fr);
-  gap: 9px;
-}
-
-.product-config-profile-item-heading {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.product-config-profile-item .control-trace-step-copy p,
-.product-config-profile-item .control-trace-step-copy small {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 760;
-  line-height: 1.45;
-  text-wrap: pretty;
-}
-
-.product-config-profile-item .control-trace-step-copy small {
-  color: var(--text-tertiary);
-  overflow-wrap: anywhere;
-}
-
-.product-config-profile-state {
-  flex: 0 0 auto;
-}
-
-.product-config-profile-action {
-  grid-column: 2;
-  width: fit-content;
-  min-height: 30px;
-  align-self: end;
-  padding: 0 9px;
-  border: 1px solid var(--button-secondary-border);
-  border-radius: 7px;
-  background: var(--button-secondary-bg);
-  color: var(--button-secondary-fg);
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.product-config-profile-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
 }
 
 .console-metrics {
@@ -4704,7 +4563,6 @@ body::after {
   .console-grid2,
   .console-grid3 { grid-template-columns: minmax(0, 1fr); }
   .console-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .product-config-profile-items { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .control-trace-steps { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .current-model-summary { grid-template-columns: minmax(0, 1fr) auto; }
   .current-model-runtime-facts { grid-column: 1 / -1; grid-row: 2; }
@@ -4728,23 +4586,6 @@ body::after {
   .launch-readiness-header { grid-template-columns: minmax(0, 1fr); }
   .launch-readiness-header .console-button {
     width: 100%;
-  }
-  .product-config-profile-header { grid-template-columns: minmax(0, 1fr); }
-  .product-config-profile-score {
-    width: 100%;
-    min-height: 52px;
-    grid-template-columns: auto auto minmax(0, 1fr);
-    justify-content: start;
-    padding: 0 12px;
-  }
-  .product-config-profile-score small {
-    grid-column: auto;
-    align-self: end;
-    padding-bottom: 2px;
-    text-align: left;
-  }
-  .product-config-profile-items {
-    grid-template-columns: minmax(0, 1fr);
   }
   .control-trace-header { grid-template-columns: minmax(0, 1fr); }
   .control-trace-count {

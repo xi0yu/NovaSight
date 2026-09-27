@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 import { CONSOLE_PAGE_METADATA, type ConsolePage } from "./StudioNavigation";
 
-export function StudioPageHeader({ page }: { page: ConsolePage }) {
+export function StudioPageHeader({ page, action }: { page: ConsolePage; action?: ReactNode }) {
   const metadata = CONSOLE_PAGE_METADATA[page];
   const headingRef = useRef<HTMLHeadingElement>(null);
   const previousPageRef = useRef(page);
@@ -20,6 +20,7 @@ export function StudioPageHeader({ page }: { page: ConsolePage }) {
         <h1 ref={headingRef} tabIndex={-1}>{metadata.title}</h1>
         <p>{metadata.description}</p>
       </div>
+      {action ? <div className="console-page-action">{action}</div> : null}
     </header>
   );
 }

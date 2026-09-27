@@ -121,58 +121,6 @@ impl ConfigSchemaResponse {
                         Some("Hz"),
                     )],
                 ),
-                runtime_section(
-                    "crosshair",
-                    "视觉准星",
-                    vec![
-                        boolean("crosshair.enabled", "启用视觉准星观察"),
-                        boolean("crosshair.use_for_control", "使用视觉准星作为控制原点"),
-                        integer(
-                            "crosshair.search_size",
-                            "中心搜索区域",
-                            32.0,
-                            640.0,
-                            Some("px"),
-                        ),
-                        integer("crosshair.sample_hz", "观察采样率", 1.0, 60.0, Some("Hz")),
-                        integer(
-                            "crosshair.sample_frames",
-                            "学习样本帧数",
-                            3.0,
-                            31.0,
-                            Some("frame"),
-                        ),
-                        float(
-                            "crosshair.confirm_duration_ms",
-                            "稳定确认时长",
-                            0.0,
-                            10_000.0,
-                            Some("ms"),
-                        ),
-                        float(
-                            "crosshair.max_age_ms",
-                            "观察新鲜度上限",
-                            1.0,
-                            10_000.0,
-                            Some("ms"),
-                        ),
-                        float(
-                            "crosshair.max_offset_px",
-                            "最大搜索偏移",
-                            0.0,
-                            320.0,
-                            Some("px"),
-                        ),
-                        float("crosshair.min_similarity", "最低模板相似度", 0.0, 1.0, None),
-                        float(
-                            "crosshair.max_step_px",
-                            "确认点单帧最大变化",
-                            0.0,
-                            320.0,
-                            Some("px"),
-                        ),
-                    ],
-                ),
                 section(
                     "control",
                     "控制输出",
@@ -953,13 +901,12 @@ mod tests {
                 .flat_map(|section| section["fields"].as_array().unwrap())
                 .all(|field| field["path"] != "pipeline.atan_scale_counts")
         );
-        assert!(value["sections"].as_array().unwrap().iter().any(|section| {
-            section["id"] == "crosshair"
-                && section["fields"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|field| field["path"] == "crosshair.use_for_control")
-        }));
+        assert!(
+            value["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|section| section["id"] != "crosshair")
+        );
     }
 }

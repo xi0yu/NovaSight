@@ -15,17 +15,16 @@ use novasight_core::{
     RuntimeEpoch, select_capture_profile_for_formats,
 };
 use novasight_pipeline::{
-    CrosshairConfig as PipelineCrosshairConfig, CrosshairHub, CrosshairHubSlot, ModelCandidate,
-    ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
-    PerceptionEvent, PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession,
-    PipelineIngress, PreviewHub, validate_parser_preset,
+    CrosshairHub, CrosshairHubSlot, ModelCandidate, ParserContract as PerceptionParserContract,
+    PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionModelContract,
+    PerceptionRuntimeContract, PerceptionSession, PipelineIngress, PreviewHub,
+    validate_parser_preset,
 };
 use novasight_platform_jetson::SystemMonotonicClock;
 use novasight_platform_jetson::deepstream::{
-    CaptureFormat, CaptureProfile, CrosshairPipelineConfig, DeepStreamAdapter,
-    DeepStreamPipelineSpec, DeepStreamSessionConfig, GpuModelConfig, InferenceStage,
-    LatestFrameExchange, ModelInput, PreviewPipelineConfig, Roi, SessionError, gpu_model_config,
-    preflight_deepstream_runtime,
+    CaptureFormat, CaptureProfile, DeepStreamAdapter, DeepStreamPipelineSpec,
+    DeepStreamSessionConfig, GpuModelConfig, InferenceStage, LatestFrameExchange, ModelInput,
+    PreviewPipelineConfig, Roi, SessionError, gpu_model_config, preflight_deepstream_runtime,
 };
 use novasight_platform_jetson::kmnet::{KmNetNativeConfig, KmNetNativeDevice, KmNetNativeError};
 use novasight_platform_jetson::v4l2::V4l2CapabilityProbe;
@@ -458,10 +457,7 @@ fn build_deepstream_session_config(
         preview: adapters.consumers.preview.then_some(PreviewPipelineConfig {
             fps: adapters.limits.stream_fps,
         }),
-        crosshair: config.crosshair.enabled.then_some(CrosshairPipelineConfig {
-            size: config.crosshair.search_size,
-            fps: config.crosshair.sample_hz,
-        }),
+        crosshair: None,
     };
     pipeline
         .build()
@@ -480,45 +476,8 @@ fn build_deepstream_session_config(
     })
 }
 
-fn build_crosshair_hub(config: &AppConfig) -> Result<Option<CrosshairHub>, LivePerceptionError> {
-    if !config.crosshair.enabled {
-        return Ok(None);
-    }
-    let template_path = resolve_data_artifact(
-        &config.paths.data_dir,
-        Path::new("runtime/crosshair/template.json"),
-    )?;
-    Ok(Some(CrosshairHub::new(
-        PipelineCrosshairConfig {
-            enabled: config.crosshair.enabled,
-            use_for_control: config.crosshair.use_for_control,
-            search_size: config.crosshair.search_size,
-            sample_frames: config.crosshair.sample_frames,
-            confirm_duration: Duration::from_secs_f64(
-                config.crosshair.confirm_duration_ms / 1_000.0,
-            ),
-            max_age: Duration::from_secs_f64(config.crosshair.max_age_ms / 1_000.0),
-            max_offset_px: config.crosshair.max_offset_px,
-            min_similarity: config.crosshair.min_similarity,
-            max_step_px: config.crosshair.max_step_px,
-        },
-        template_path,
-    )))
-}
-
-fn resolve_data_artifact(data_dir: &Path, artifact: &Path) -> Result<PathBuf, LivePerceptionError> {
-    if artifact.is_absolute() {
-        Ok(artifact.to_owned())
-    } else {
-        let data_dir = if data_dir.is_absolute() {
-            data_dir.to_owned()
-        } else {
-            std::env::current_dir()
-                .map_err(LivePerceptionError::CurrentDirectory)?
-                .join(data_dir)
-        };
-        Ok(data_dir.join(artifact))
-    }
+fn build_crosshair_hub(_config: &AppConfig) -> Result<Option<CrosshairHub>, LivePerceptionError> {
+    Ok(None)
 }
 
 fn resolve_active_gpu_config(
@@ -953,8 +912,6 @@ pub(super) enum LivePerceptionError {
     UnsupportedCaptureFormat(String),
     #[error("invalid DeepStream I/O mode: {0}")]
     InvalidIoMode(i32),
-    #[error("failed to read current working directory: {0}")]
-    CurrentDirectory(std::io::Error),
     #[error("TensorRT engine does not exist: {}", .0.display())]
     EngineMissing(PathBuf),
     #[error("TensorRT engine path has no file name: {}", .0.display())]

@@ -1151,6 +1151,12 @@ impl PipelineIngress {
             });
         }
         self.observe_generation(stamp.generation)?;
+        if !self.shared.output_gate.load(Ordering::Acquire) {
+            self.shared
+                .metrics
+                .record_received_generation(stamp.generation);
+            return Ok(());
+        }
         match self.batches.publish_monotonic(stamp.generation.0, batch) {
             Ok(_) => {}
             Err(MonotonicPublishError::Closed) => return Err(PipelineError::NotRunning),
@@ -1181,6 +1187,12 @@ impl PipelineIngress {
             });
         }
         self.try_observe_generation(stamp.generation)?;
+        if !self.shared.output_gate.load(Ordering::Acquire) {
+            self.shared
+                .metrics
+                .record_received_generation(stamp.generation);
+            return Ok(());
+        }
         match self
             .batches
             .try_publish_monotonic(stamp.generation.0, batch)
@@ -1464,17 +1476,17 @@ impl PipelineRuntime {
         }
     }
 
-    /// Prevent every future device side effect without tearing down ingress.
-    /// The supervisor calls this before stopping an upstream perception owner,
-    /// so reverse-order cleanup cannot leak one last command.
+    /// Stop post-inference targeting, control, and device delivery without
+    /// tearing down capture or inference.
     pub fn close_output_gate(&self) {
         self.shared.close_output_gate();
+        let _ = self.batch_slot.try_take();
+        let _ = self.target_slot.try_take();
         let _ = self.command_slot.try_take();
     }
 
-    /// Pause device delivery while keeping trigger observation and all
-    /// upstream calculation lanes alive. Reopening requires a newer source
-    /// generation, so a command calculated during the pause cannot leak.
+    /// Pause post-inference targeting, control, and device delivery. Reopening
+    /// requires a newer source generation, so paused work cannot leak later.
     pub fn pause_output_gate(&self) {
         let _lane = self
             .shared
@@ -1484,6 +1496,8 @@ impl PipelineRuntime {
         self.shared.output_gate.store(false, Ordering::Release);
         self.shared
             .set_output_delivery_state(OutputDeliveryState::GateClosed);
+        let _ = self.batch_slot.try_take();
+        let _ = self.target_slot.try_take();
         let _ = self.command_slot.try_take();
     }
 

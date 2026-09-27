@@ -17,8 +17,8 @@ use novasight_core::{
     PointerDeviceMode, RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
-    CrosshairHub, CrosshairHubSlot, CrosshairSnapshot, CrosshairTemplateSummary, ModelCandidate,
-    PerceptionAdapter, PerceptionError, PerceptionErrorKind, PerceptionEvent, PerceptionMetrics,
+    CrosshairHub, CrosshairHubSlot, CrosshairSnapshot, ModelCandidate, PerceptionAdapter,
+    PerceptionError, PerceptionErrorKind, PerceptionEvent, PerceptionMetrics,
     PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession, PipelineConfig,
     PipelineEvent, PipelineIngress, PipelineLiveConfig, PipelineMetrics, PipelineRuntime,
     PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription, TriggerMode,
@@ -1210,33 +1210,6 @@ impl RuntimeHandle {
             .current()
             .as_ref()
             .map(CrosshairHub::snapshot)
-    }
-
-    pub fn learn_crosshair(&self) -> Result<CrosshairTemplateSummary, RuntimeError> {
-        self.crosshair
-            .current()
-            .as_ref()
-            .ok_or_else(RuntimeError::pipeline_unavailable)?
-            .learn()
-            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
-    }
-
-    pub fn clear_crosshair(&self) -> Result<CrosshairSnapshot, RuntimeError> {
-        self.crosshair
-            .current()
-            .as_ref()
-            .ok_or_else(RuntimeError::pipeline_unavailable)?
-            .clear_template()
-            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
-    }
-
-    pub fn crosshair_template_preview(&self) -> Result<Option<Vec<u8>>, RuntimeError> {
-        self.crosshair
-            .current()
-            .as_ref()
-            .ok_or_else(RuntimeError::pipeline_unavailable)?
-            .template_preview_png()
-            .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
     }
 
     pub async fn diagnose_device_move(

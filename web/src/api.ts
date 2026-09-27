@@ -1,7 +1,5 @@
 import {
   decodeCaptureState,
-  decodeCrosshairLearnResponse,
-  decodeCrosshairSnapshot,
   decodePreviewSnapshot,
   decodeRuntimeState
 } from "./contracts/runtime";
@@ -39,8 +37,6 @@ import type {
 } from "./contracts/config";
 import type {
   CaptureState,
-  CrosshairLearnResponse,
-  CrosshairSnapshot,
   PreviewSnapshotState,
   RuntimeState,
   RuntimeStatusTopic
@@ -229,10 +225,6 @@ export const API_PATHS = {
   captureSelect: "/api/capture/select",
   capturePreview: "/api/capture/preview",
   captureStream: "/api/capture/stream.mjpg",
-  crosshair: "/api/crosshair",
-  crosshairLearn: "/api/crosshair/learn",
-  crosshairTemplate: "/api/crosshair/template",
-  crosshairTemplatePreview: "/api/crosshair/template.png",
   executors: "/api/executors",
   kmnetConnect: "/api/executors/kmnet/connect",
   kmnetDisconnect: "/api/executors/kmnet/disconnect",
@@ -531,37 +523,6 @@ export function emergencyStopRuntimePipeline(signal?: AbortSignal): Promise<void
       }
     }
   );
-}
-
-export function getCrosshairStatus(): Promise<CrosshairSnapshot> {
-  return requestJson<CrosshairSnapshot>(
-    API_PATHS.crosshair,
-    undefined,
-    undefined,
-    decodeCrosshairSnapshot
-  );
-}
-
-export function learnCrosshair(): Promise<CrosshairLearnResponse> {
-  return requestJson<CrosshairLearnResponse>(
-    API_PATHS.crosshairLearn,
-    { method: "POST" },
-    undefined,
-    decodeCrosshairLearnResponse
-  );
-}
-
-export function clearCrosshairTemplate(): Promise<CrosshairSnapshot> {
-  return requestJson<CrosshairSnapshot>(
-    API_PATHS.crosshairTemplate,
-    { method: "DELETE" },
-    undefined,
-    decodeCrosshairSnapshot
-  );
-}
-
-export function crosshairTemplatePreviewUrl(cacheKey: number): string {
-  return apiUrl(`${API_PATHS.crosshairTemplatePreview}?ts=${cacheKey}`);
 }
 
 export function diagnosticMoveKmNet(

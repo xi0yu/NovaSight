@@ -254,15 +254,15 @@ NVMM 采集和完整 CUDA 后处理。本轮选择直接 TensorRT 为实施路�
 | P0 完整基线与计时 | 部分完成，尚未通过 | [实机报告](pipeline-gpu-baseline-20260908.md)；补齐有目标输入、采集时间关联和控制计算，使用可比 release 构建后再选型 |
 | P1 数据流设计与可比实验 | 选择直接 TensorRT / CUDA 实施，产品验证未完成 | 当前 fixture 的 GPU 契约、真实采集及吞吐证据见报告；修精确帧率并开始正式产品接入，补齐非空质量/完整功能/帧龄。DS Other 仍回传 raw；Graph 按实际负载验证 |
 | P2 GPU 计算与产品接入 | 当前 raw 模型的正式 GPU 会话已实跑，完整功能未验收 | 见正式接入收据；其余模型、非空结果质量与控制仍需完成 |
-| P3 图像路径与准星 | 当前 MJPG 硬件图像路径已正式接入；准星待迁移 | 采集时间元数据关联通过；准星启用时严格拒绝 CPU observer，不能据此称功能完成；预览订阅负载仍待测 |
+| P3 图像路径 | 当前 MJPG 硬件图像路径已正式接入 | 采集时间元数据关联通过；预览订阅负载仍待测 |
 | P4 硬件执行与停止约束 | 当前 GPU 路径的显式拒绝及运行中故障关闭已验证 | 第 501 次 GPU 导入故障注入通过；其余输入/模型、资源及压力故障待覆盖 |
 | P5 产品性能和稳定性验收 | 未开始 | 必须同时满足关键计算硬件执行与整链不弱于 RK3588；对照程序和实测待补，物理输出另需明确授权 |
 
 ## 7. 代码与接口依据
 
-- [主线与责任边界](../PROJECT_HEALTH_AUDIT.md)、[模型接入](model-ingress.md)、[准星功能](control/crosshair_control_reference.md)。历史 Python/CPU 主线文档不能覆盖当前 Rust 实现。
+- [主线与责任边界](../PROJECT_HEALTH_AUDIT.md)、[模型接入](model-ingress.md)。历史 Python/CPU 主线文档不能覆盖当前 Rust 实现。
 - [管线构造](../crates/novasight-platform-jetson/src/deepstream/pipeline.rs)、[会话和计时](../crates/novasight-platform-jetson/src/deepstream/session.rs)、[模型解析契约](../crates/novasight-platform-jetson/src/deepstream/model_contract.rs)。
-- [旧 CPU parser／隔离参考](../native/deepstream-parser/src/novasight_parser.cpp)、[准星系统](../crates/novasight-pipeline/src/crosshair.rs)、[supervisor](../crates/novasight-runtime/src/supervisor.rs)。
+- [旧 CPU parser／隔离参考](../native/deepstream-parser/src/novasight_parser.cpp)、[supervisor](../crates/novasight-runtime/src/supervisor.rs)。
 - NVIDIA [DeepStream 7.1 nvdspostprocess](https://docs.nvidia.com/metropolis/deepstream/7.1/text/DS_plugin_gst-nvdspostprocess.html)：自定义后处理库、tensor meta、关闭 nvinfer 内部解析的接口及 Alpha 状态。
 - NVIDIA [NvDsInferContextInitParams](https://docs.nvidia.com/metropolis/deepstream/dev-guide/sdk-api/struct__NvDsInferContextInitParams.html)：`disableOutputHostCopy`；本次同时核对了目标机 7.1 安装头文件，后续以目标 SDK 为准。
 - NVIDIA [Jetson 图像加速](https://docs.nvidia.com/jetson/archives/r36.4.3/DeveloperGuide/SD/Multimedia/AcceleratedGstreamer.html)：VIC/CUDA 图像转换路径；文档版本不能替代目标机 R36.5 的实测。

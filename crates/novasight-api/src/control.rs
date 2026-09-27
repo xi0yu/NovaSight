@@ -165,16 +165,6 @@ pub fn build_control_router_with_platform_queries(
             get(preview_status).post(set_preview),
         )
         .route("/api/capture/stream.mjpg", get(preview_stream))
-        .route("/api/crosshair", get(crosshair_status))
-        .route("/api/crosshair/learn", post(learn_crosshair))
-        .route(
-            "/api/crosshair/template",
-            axum::routing::delete(clear_crosshair),
-        )
-        .route(
-            "/api/crosshair/template.png",
-            get(crosshair_template_preview),
-        )
         .route(
             "/api/capture/capabilities",
             get(capture_capabilities).post(post_capture_capabilities),
@@ -718,59 +708,6 @@ async fn preview_stream(
             (axum::http::header::CACHE_CONTROL, "no-store, no-cache"),
         ],
         Body::from_stream(stream),
-    )
-        .into_response())
-}
-
-async fn crosshair_status(
-    State(state): State<ControlState>,
-) -> Result<Json<novasight_runtime::CrosshairSnapshot>, ControlApiError> {
-    state
-        .runtime
-        .crosshair_snapshot()
-        .map(Json)
-        .ok_or_else(|| ControlApiError::Runtime(RuntimeError::pipeline_unavailable()))
-}
-
-async fn learn_crosshair(
-    State(state): State<ControlState>,
-) -> Result<Json<serde_json::Value>, ControlApiError> {
-    let template = state.runtime.learn_crosshair()?;
-    let status = state
-        .runtime
-        .crosshair_snapshot()
-        .ok_or_else(|| ControlApiError::Runtime(RuntimeError::pipeline_unavailable()))?;
-    Ok(Json(serde_json::json!({
-        "learned": true,
-        "template": template,
-        "status": status,
-    })))
-}
-
-async fn clear_crosshair(
-    State(state): State<ControlState>,
-) -> Result<Json<novasight_runtime::CrosshairSnapshot>, ControlApiError> {
-    state
-        .runtime
-        .clear_crosshair()
-        .map(Json)
-        .map_err(Into::into)
-}
-
-async fn crosshair_template_preview(
-    State(state): State<ControlState>,
-) -> Result<Response, ControlApiError> {
-    let payload = state.runtime.crosshair_template_preview()?.ok_or_else(|| {
-        ControlApiError::Runtime(RuntimeError::invalid_pipeline_state(
-            "crosshair template unavailable",
-        ))
-    })?;
-    Ok((
-        [
-            (axum::http::header::CONTENT_TYPE, "image/png"),
-            (axum::http::header::CACHE_CONTROL, "no-store"),
-        ],
-        payload,
     )
         .into_response())
 }

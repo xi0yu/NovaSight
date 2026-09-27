@@ -74,12 +74,7 @@ available target state, not a replay of old frames.
 
 The targeting worker consumes the newest `DetectionBatch`.
 
-It first resolves the control reference point:
-
-```text
-configured / learned crosshair
-or geometric center fallback
-```
+It uses the observation geometry center as the control reference point.
 
 Then it selects and tracks targets:
 

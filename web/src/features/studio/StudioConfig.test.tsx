@@ -29,24 +29,18 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
 });
 afterEach(() => { vi.unstubAllGlobals(); history.replaceState(null, "", "/"); });
-async function openProfile() {
-  await userEvent.click(screen.getByText("保存后是否生效", { selector: "b" }));
-  await userEvent.click(screen.getByText("查看配置来源与生效状态"));
-}
-
-it("opens the existing physical-output confirmation instead of navigating to the same page", async () => {
+it("opens the target-control confirmation from the page-level master switch", async () => {
   vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/config/commands")
     ? Promise.resolve(new Response(JSON.stringify({ code: "TEST_OUTPUT_REJECTED", message: "output rejected by daemon" }), { status: 409, headers: { "content-type": "application/json", "x-request-id": "0123456789abcdef0123456789abcdef" } }))
     : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
-  expect(screen.getByRole("heading", { name: "按使用顺序设置控制" })).toBeVisible();
-  expect(screen.getByRole("navigation", { name: "参数分区" })).toHaveTextContent("什么时候响应");
-  expect(screen.getByText(/保存上面的参数不会改变它/)).toBeVisible();
-  await openProfile();
-  await userEvent.click(screen.getByRole("button", { name: "打开输出" }));
-  expect(screen.getByRole("alertdialog", { name: "允许发送鼠标偏移？" })).toBeVisible();
+  expect(screen.getByRole("heading", { level: 1, name: "算法参数" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "启动条件" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "目标锁定" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "控制总开关" }));
+  expect(screen.getByRole("alertdialog", { name: "开启目标控制？" })).toBeVisible();
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/config/commands"))).toBe(false);
-  await userEvent.click(screen.getByRole("button", { name: "确认开启输出" }));
+  await userEvent.click(screen.getByRole("button", { name: "确认开启控制" }));
   await waitFor(() => expect(screen.getByRole("alertdialog")).toHaveTextContent("output rejected by daemon"));
   const command = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes("/config/commands"))!;
   expect(JSON.parse(String(command[1]?.body))).toMatchObject({ command: "set_output_gate", enabled: true });
@@ -59,41 +53,40 @@ it("opens the existing physical-output confirmation instead of navigating to the
 
 it("explains missing hardware authorization instead of offering a no-op output action", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} license={{ ...props.license, features: [] }} /></SafetyOperationProvider>);
-  await openProfile();
-  const card = screen.getByText("物理输出", { selector: ".product-config-profile-item strong" }).closest("li")!;
-  expect(card).toHaveTextContent("当前授权不包含硬件控制");
-  expect(within(card).queryByRole("button", { name: "打开输出" })).not.toBeInTheDocument();
-  expect(within(card).getByRole("button", { name: "查看授权" })).toBeVisible();
+  const control = screen.getByRole("button", { name: /控制总开关/ });
+  expect(control).toBeDisabled();
+  expect(control).toHaveTextContent("当前授权不包含硬件控制");
+  expect(screen.queryByRole("button", { name: "打开输出" })).not.toBeInTheDocument();
 });
 
 it.each([{ pixel_format: "NV12" }, { width: 1280 }, { fps: 120 }, { device: "/dev/video1" }])("does not claim capture is effective just because ROI matches (%j)", (changed) => {
+  history.replaceState(null, "", "/?page=capture");
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={{ ...props.runtimeConfig, capture: { ...props.runtimeConfig.capture, ...changed } }} /></SafetyOperationProvider>);
-  const card = screen.getByText("采集规格", { selector: ".product-config-profile-item strong" }).closest("li")!;
-  expect(card).not.toHaveTextContent("已生效");
-  expect(card).toHaveTextContent("尚未与当前运行规格一致");
+  const check = screen.getByText("当前画面输入").closest("header")!;
+  expect(check).toHaveTextContent("保存与运行不一致");
 });
 
 it("treats MJPEG and MJPG as the same format and shows the exact selected tuple", () => {
+  history.replaceState(null, "", "/?page=capture");
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={{ ...props.runtimeConfig, capture: { ...props.runtimeConfig.capture, pixel_format: "MJPEG" } }} /></SafetyOperationProvider>);
-  const card = screen.getByText("采集规格", { selector: ".product-config-profile-item strong" }).closest("li")!;
-  expect(card).toHaveTextContent("已生效");
-  expect(card).toHaveTextContent("MJPEG (MJPG) / 1920x1080 / 240 FPS");
+  const check = screen.getByText("当前画面输入").closest("header")!;
+  expect(check).toHaveTextContent("运行规格一致");
+  expect(check).toHaveTextContent("MJPEG (MJPG) / 1920x1080 / 240 FPS");
 });
 
 it("compares saved and running capture tuples on the capture page", () => {
   history.replaceState(null, "", "/?page=capture");
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={{ ...props.runtimeConfig, capture: { ...props.runtimeConfig.capture, pixel_format: "MJPEG", fps: 120 } }} /></SafetyOperationProvider>);
-  const check = screen.getByRole("heading", { name: "当前画面规格" }).closest("section")!;
+  const check = screen.getByText("当前画面输入").closest("header")!;
   expect(check).toHaveTextContent("保存与运行不一致");
   expect(check).toHaveTextContent("MJPEG (MJPG) / 1920x1080 / 120 FPS");
   expect(check).toHaveTextContent("MJPEG (MJPG) / 1920x1080 / 240 FPS");
-  expect(check).toHaveTextContent("有效输入 FPS 不是采集卡原始帧率");
 });
 
 it("does not claim capture is applied before runtime verification", () => {
   history.replaceState(null, "", "/?page=capture");
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={{ ...runtime, running: false, capture: { ...runtime.capture, running: false } }} /></SafetyOperationProvider>);
-  const check = screen.getByRole("heading", { name: "当前画面规格" }).closest("section")!;
+  const check = screen.getByText("当前画面输入").closest("header")!;
   expect(check).toHaveTextContent("等待运行验证");
   expect(check).toHaveTextContent("主链未运行");
   expect(check).not.toHaveTextContent("运行规格一致");
@@ -108,10 +101,10 @@ it("opens control parameters from the live control chain", async () => {
 
 it("asks before discarding unsaved parameter edits", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: /目标速度预测/ }));
+  await userEvent.click(screen.getByRole("button", { name: /预测移动目标/ }));
   await userEvent.click(screen.getByRole("button", { name: "放弃修改" }));
   expect(screen.getByRole("alertdialog", { name: "放弃未保存的修改？" })).toBeVisible();
-  expect(screen.getByText("修改尚未保存")).toBeVisible();
+  expect(screen.getByText("有未应用的修改")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "取消" }));
   expect(screen.getByRole("button", { name: "放弃修改" })).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "放弃修改" }));
@@ -119,39 +112,32 @@ it("asks before discarding unsaved parameter edits", async () => {
   expect(screen.queryByRole("button", { name: "放弃修改" })).not.toBeInTheDocument();
 });
 
-it("keeps unsaved dialog edits when the user cancels closing it", async () => {
+it("keeps a selection-weight edit on the page until the user applies it", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "权重" }));
+  await userEvent.click(screen.getByText("目标偏好", { selector: "b" }));
   const value = screen.getByRole("slider", { name: "距离权重 滑块" });
   fireEvent.change(value, { target: { value: "0.7" } });
   fireEvent.blur(value);
-  await waitFor(() => expect(screen.getByRole("button", { name: "关闭权重调整" })).toHaveAttribute("title", "关闭并放弃本弹窗修改"));
-  await userEvent.click(screen.getByRole("button", { name: "关闭权重调整" }));
-  expect(screen.getByRole("alertdialog", { name: "关闭并放弃本次修改？" })).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "取消" }));
-  expect(screen.getByRole("dialog", { name: "选择权重" })).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "关闭权重调整" }));
-  await userEvent.click(screen.getByRole("button", { name: "放弃弹窗修改" }));
-  expect(screen.queryByRole("dialog", { name: "选择权重" })).not.toBeInTheDocument();
+  await waitFor(() => expect(screen.getByText("有未应用的修改")).toBeVisible());
+  expect(screen.getByRole("button", { name: "保存并应用" })).toBeEnabled();
 });
 
-it("keeps a typed selection weight in the dialog until it is applied", async () => {
+it("keeps a typed selection weight visible while editing the page", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "权重" }));
+  await userEvent.click(screen.getByText("目标偏好", { selector: "b" }));
   const value = screen.getByRole("textbox", { name: "距离权重 数值" });
   fireEvent.change(value, { target: { value: "0.7" } });
   expect(value).toHaveValue("0.7");
   fireEvent.blur(value);
-  await waitFor(() => expect(screen.getByRole("button", { name: "关闭权重调整" })).toHaveAttribute("title", "关闭并放弃本弹窗修改"));
+  await waitFor(() => expect(screen.getByText("有未应用的修改")).toBeVisible());
 });
 
-it("asks before deleting the learned crosshair template", async () => {
+it("does not expose the removed visual-crosshair learning workflow", async () => {
   const withTemplate = { ...runtime, vision: { ...runtime.vision, crosshair: { template: { id: "template-1" } } } } as RuntimeState;
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={withTemplate} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "清除模板" }));
-  expect(screen.getByRole("alertdialog", { name: "清除已学习的准星模板？" })).toHaveTextContent("template-1");
+  expect(screen.queryByText("视觉准星基准")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /学习当前准星|清除模板/ })).not.toBeInTheDocument();
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("crosshair"))).toBe(false);
-  await userEvent.click(screen.getByRole("button", { name: "取消" }));
 });
 
 it("asks before sending a physical kmNet diagnostic move", async () => {
@@ -235,7 +221,7 @@ it("asks before reloading ROI while physical output is enabled", async () => {
     ? Promise.resolve(new Response("blocked", { status: 428 }))
     : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={{ ...props.runtimeConfig, control: { output_enabled: true } }} /></SafetyOperationProvider>);
-  const roi = screen.getByRole("region", { name: "常用识别范围" });
+  const roi = screen.getByRole("region", { name: "识别范围" });
   const writes = () => vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/api/config") && init?.method === "POST");
   await userEvent.click(within(roi).getByRole("button", { name: /320/ }));
   expect(screen.getByRole("alertdialog", { name: "物理输出仍开启，确认调整 ROI？" })).toBeVisible();
@@ -263,7 +249,7 @@ it("shows capture selection rejection beside the save control", async () => {
     ? Promise.resolve(new Response(JSON.stringify({ code: "CAPTURE_PROFILE_UNSUPPORTED", message: "device rejected 240 FPS" }), { status: 422, headers: { "content-type": "application/json" } }))
     : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={{ ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } }} /></SafetyOperationProvider>);
-  const save = screen.getByRole("button", { name: "使用这个画面规格" });
+  const save = screen.getByRole("button", { name: "应用画面设置" });
   expect(save).toBeEnabled();
   await userEvent.click(save);
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(true);
@@ -277,12 +263,12 @@ it("requires an explicit capture choice when the saved format is absent from det
     ? Promise.resolve(new Response(JSON.stringify({ available: true, device: "/dev/video0", capabilities: [{ pixel_format: "NV12", width: 1280, height: 720, fps_list: [120] }], reason: "" }), { status: 200, headers: { "content-type": "application/json" } }))
     : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "读取可用规格" }));
-  const format = await screen.findByRole("combobox", { name: "画面规格" });
+  await userEvent.click(screen.getByRole("button", { name: "读取设备" }));
+  const format = await screen.findByRole("combobox", { name: "分辨率与帧率" });
   expect(format).toHaveValue("");
-  expect(screen.getByRole("button", { name: "使用这个画面规格" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "应用画面设置" })).toBeDisabled();
   await userEvent.selectOptions(format, "NV12:1280x720@120");
-  await waitFor(() => expect(screen.getByRole("button", { name: "使用这个画面规格" })).toBeEnabled());
+  await waitFor(() => expect(screen.getByRole("button", { name: "应用画面设置" })).toBeEnabled());
 });
 
 it("does not silently save an auto-high-fps capture profile with no chosen format", () => {
@@ -290,8 +276,8 @@ it("does not silently save an auto-high-fps capture profile with no chosen forma
   const stopped = { ...runtime, running: false, capture: { ...runtime.capture, running: false, profile: null }, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
   const unconfigured = { ...props.runtimeConfig, capture: { device: "/dev/video0" } };
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} runtimeConfig={unconfigured} /></SafetyOperationProvider>);
-  expect(screen.getByRole("combobox", { name: "画面规格" })).toHaveValue("");
-  expect(screen.getByRole("button", { name: "使用这个画面规格" })).toBeDisabled();
+  expect(screen.getByRole("combobox", { name: "分辨率与帧率" })).toHaveValue("");
+  expect(screen.getByRole("button", { name: "应用画面设置" })).toBeDisabled();
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(false);
 });
 
@@ -299,11 +285,11 @@ it("does not reuse a previous device format when the operator changes capture de
   history.replaceState(null, "", "/?page=capture");
   const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
-  const device = screen.getByRole("textbox", { name: "摄像头设备" });
+  const device = screen.getByRole("textbox", { name: "设备路径" });
   await userEvent.clear(device);
   await userEvent.type(device, "/dev/video1");
   await userEvent.tab();
-  expect(screen.getByRole("button", { name: "使用这个画面规格" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "应用画面设置" })).toBeDisabled();
 });
 
 it("keeps failed capability detection visible beside capture controls", async () => {
@@ -312,7 +298,7 @@ it("keeps failed capability detection visible beside capture controls", async ()
   vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/capabilities")
     ? Promise.reject(new Error("camera unplugged")) : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "读取可用规格" }));
+  await userEvent.click(screen.getByRole("button", { name: "读取设备" }));
   expect(await screen.findByText(/设备能力检测失败：camera unplugged/)).toBeVisible();
 });
 
@@ -323,7 +309,7 @@ it("does not let a pending parameter draft get overwritten by config import", as
   await userEvent.click(screen.getByText("配置文件"));
   expect(screen.getByRole("button", { name: "导入配置" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "导出已保存" })).toBeEnabled();
-  expect(screen.getByText(/导出不包含未保存内容/)).toBeVisible();
+  expect(screen.getByText("有未应用的修改")).toBeVisible();
 });
 
 it("keeps physical output off when an imported file requests it on", async () => {
@@ -357,8 +343,7 @@ it("confirms class-profile deletion each time instead of retaining an armed dele
     detection_class_profiles: { default: ["enemy"], secondary: ["enemy"] },
   } };
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByText("目标识别与跟踪（进阶）"));
-  await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
+  await userEvent.click(screen.getByRole("button", { name: "编辑类别方案" }));
   await userEvent.click(screen.getByRole("button", { name: "删除类别配置 default" }));
   expect(screen.getByRole("alertdialog", { name: "删除类别配置“default”？" })).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "取消" }));
@@ -388,8 +373,7 @@ it("saves a class aim-point edit without reporting unsupported control.aim", asy
     return Promise.resolve(new Response(JSON.stringify({ config: current, apply_mode: payload.section ? "hot_update" : "epoch_reload", restart_required: false, applied: true, rolled_back: false, message: "ok" }), { status: 200, headers: { "content-type": "application/json" } }));
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByText("目标识别与跟踪（进阶）"));
-  await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
+  await userEvent.click(screen.getByRole("button", { name: "编辑类别方案" }));
   const dialog = screen.getByRole("dialog", { name: "管理类别配置" });
   await userEvent.click(within(within(dialog).getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
@@ -413,8 +397,7 @@ it("saves a new class profile as one runtime configuration update", async () => 
     return Promise.resolve(new Response(JSON.stringify({ config: { ...submitted, revision: 26 }, apply_mode: "epoch_reload", restart_required: false, applied: true, rolled_back: false, message: "ok" }), { status: 200, headers: { "content-type": "application/json" } }));
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByText("目标识别与跟踪（进阶）"));
-  await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
+  await userEvent.click(screen.getByRole("button", { name: "编辑类别方案" }));
   const dialog = screen.getByRole("dialog", { name: "管理类别配置" });
   await userEvent.type(within(dialog).getByRole("textbox", { name: "新建配置" }), "arena");
   await userEvent.click(within(dialog).getByRole("button", { name: "复制当前" }));
@@ -448,8 +431,7 @@ it("retains a rejected class edit inside the dialog", async () => {
       : new Response(JSON.stringify({ code: "CLASS_CONFIG_REJECTED", message: "invalid class role" }), { status: 422, headers: { "content-type": "application/json" } }));
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByText("目标识别与跟踪（进阶）"));
-  await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
+  await userEvent.click(screen.getByRole("button", { name: "编辑类别方案" }));
   const dialog = screen.getByRole("dialog", { name: "管理类别配置" });
   await userEvent.click(within(within(dialog).getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
@@ -458,22 +440,41 @@ it("retains a rejected class edit inside the dialog", async () => {
   expect(within(dialog).getByRole("button", { name: "保存并应用" })).toBeEnabled();
 });
 
-it("saves only dialog changes and keeps earlier page edits unsaved", async () => {
+it("applies trigger and target preference edits from the same page save", async () => {
   const configured = {
     ...props.runtimeConfig,
     control: { ...props.runtimeConfig.control, trigger_mode: "always" },
     pipeline: { ...props.runtimeConfig.pipeline, target_selection_distance_weight: 0.2 },
   };
-  let submitted: Record<string, unknown> | null = null;
+  let current = structuredClone(configured) as Record<string, unknown>;
+  const submitted: Array<Record<string, unknown>> = [];
   vi.stubGlobal("fetch", vi.fn((url, init) => {
+    if (String(url).endsWith("/api/v1/config/commands")) {
+      const payload = JSON.parse(String(init?.body)) as { command: string; mode: string };
+      current = {
+        ...current,
+        revision: Number(current.revision) + 1,
+        control: { ...(current.control as Record<string, unknown>), trigger_mode: payload.mode },
+      };
+      submitted.push(payload as unknown as Record<string, unknown>);
+      return Promise.resolve(new Response(JSON.stringify({
+        config: current, apply_mode: "hot_update", restart_required: false, applied: true, rolled_back: false, message: "ok",
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+    }
     if (!String(url).endsWith("/api/config")) return new Promise(() => {});
     if ((init?.method ?? "GET") === "GET") {
-      return Promise.resolve(new Response(JSON.stringify(configured), { status: 200, headers: { "content-type": "application/json" } }));
+      return Promise.resolve(new Response(JSON.stringify(current), { status: 200, headers: { "content-type": "application/json" } }));
     }
-    submitted = JSON.parse(String(init?.body));
+    const payload = JSON.parse(String(init?.body)) as { section: string; key: string; value: unknown };
+    submitted.push(payload as unknown as Record<string, unknown>);
+    current = {
+      ...current,
+      revision: Number(current.revision) + 1,
+      [payload.section]: { ...(current[payload.section] as Record<string, unknown>), [payload.key]: payload.value },
+    };
     return Promise.resolve(new Response(JSON.stringify({
-      config: { ...submitted, revision: 26 },
-      apply_mode: "epoch_reload",
+      config: current,
+      apply_mode: "hot_update",
       restart_required: false,
       applied: true,
       rolled_back: false,
@@ -483,19 +484,19 @@ it("saves only dialog changes and keeps earlier page edits unsaved", async () =>
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
 
   await userEvent.click(screen.getByRole("button", { name: "按键触发" }));
-  await userEvent.click(screen.getByText("目标识别与跟踪（进阶）"));
-  await userEvent.click(screen.getByRole("button", { name: "权重" }));
-  const dialog = screen.getByRole("dialog", { name: "选择权重" });
-  const distanceWeight = within(dialog).getByRole("textbox", { name: "距离权重 数值" });
+  await userEvent.click(screen.getByText("目标偏好", { selector: "b" }));
+  const distanceWeight = screen.getByRole("textbox", { name: "距离权重 数值" });
   fireEvent.change(distanceWeight, { target: { value: "0.7" } });
   fireEvent.blur(distanceWeight);
-  await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
+  const save = screen.getByRole("button", { name: "保存并应用" });
+  await waitFor(() => expect(save).toBeEnabled());
+  await userEvent.click(save);
 
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "选择权重" })).not.toBeInTheDocument());
-  expect(submitted).toMatchObject({
-    control: { trigger_mode: "always" },
-    pipeline: { target_selection_distance_weight: 0.7 },
-  });
+  await waitFor(() => expect(submitted).toHaveLength(2));
+  expect(submitted).toEqual([
+    expect.objectContaining({ command: "set_trigger_mode", mode: "hardware" }),
+    expect.objectContaining({ section: "pipeline", key: "target_selection_distance_weight", value: 0.7 }),
+  ]);
   expect(screen.getByRole("button", { name: "按键触发" })).toHaveAttribute("aria-pressed", "true");
-  expect(screen.getByRole("button", { name: "保存并应用" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "保存并应用" })).toBeDisabled();
 });

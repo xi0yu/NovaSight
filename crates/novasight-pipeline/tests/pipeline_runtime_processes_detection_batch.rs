@@ -81,6 +81,56 @@ fn perception_failure_retires_pending_control_before_supervisor_cleanup() {
 }
 
 #[test]
+fn suspended_control_gate_skips_targeting_until_reopened() {
+    let epoch = RuntimeEpoch(8);
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(RecordingPointerDevice::default());
+    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
+    let (mut runtime, ingress) = PipelineRuntime::start_suspended(
+        PipelineConfig {
+            epoch,
+            ..PipelineConfig::default()
+        },
+        clock,
+        pointer,
+    )
+    .unwrap();
+
+    let batch = |generation| {
+        DetectionBatch::new(
+            FrameStamp::new(epoch, generation, 1_000_000_000),
+            640,
+            640,
+            vec![Detection::new(generation, 0, 380.0, 330.0, 40.0, 40.0, 0.95).unwrap()],
+        )
+        .unwrap()
+    };
+    ingress.submit(batch(1)).unwrap();
+    thread::sleep(Duration::from_millis(20));
+    let paused = runtime.metrics();
+    assert_eq!(paused.received_batches, 1);
+    assert_eq!(paused.targeting_batches, 0);
+    assert_eq!(paused.control_decisions, 0);
+
+    runtime.open_output_gate();
+    ingress.submit(batch(2)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while device.receipts().last().map(|receipt| receipt.generation.0) != Some(2)
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(1));
+    }
+    let active = runtime.metrics();
+    assert_eq!(active.targeting_batches, 1);
+    assert_eq!(active.control_decisions, 1);
+    assert_eq!(
+        device.receipts().last().map(|receipt| receipt.generation.0),
+        Some(2)
+    );
+    runtime.shutdown().unwrap();
+}
+
+#[test]
 fn pipeline_runtime_drives_current_algorithms_and_device_on_owned_threads() {
     let epoch = RuntimeEpoch(7);
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));
@@ -228,7 +278,6 @@ fn live_prediction_config_update_reaches_running_control_worker() {
     config.control.prediction_lead_ms = 0.0;
     let (mut runtime, ingress) =
         PipelineRuntime::start(config.clone(), daemon_clock, pointer).expect("pipeline starts");
-    ingress.close_output_gate();
     ingress.set_trigger_active(true);
 
     for (generation, x) in [(1, 340.0), (2, 350.0), (3, 360.0), (4, 370.0)] {
@@ -819,7 +868,7 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
     let daemon_clock: Arc<dyn Clock> = clock.clone();
     let device = Arc::new(RecordingPointerDevice::default());
     let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
-    let (mut runtime, ingress) = PipelineRuntime::start_suspended(
+    let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
             control: novasight_core::controller::AimAlgorithmConfig {
@@ -856,7 +905,7 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
         .unwrap()
     };
 
-    // Warm the real X/Y predictor while physical output is safely suspended.
+    // Warm the real X/Y predictor before checking the composed final command.
     for generation in 1..=4_u64 {
         clock.0.store(
             1_008_000_000 + generation.saturating_sub(1) * 20_000_000,
@@ -868,9 +917,6 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
             thread::sleep(Duration::from_millis(1));
         }
     }
-    assert!(device.receipts().is_empty());
-    runtime.open_output_gate();
-
     for generation in 5..=7_u64 {
         clock.0.store(
             1_008_000_000 + generation.saturating_sub(1) * 20_000_000,

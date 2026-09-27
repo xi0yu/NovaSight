@@ -4,8 +4,8 @@ export type StudioLayoutPageId = typeof STUDIO_LAYOUT_PAGE_IDS[number];
 
 export const STUDIO_LAYOUT_MODULE_IDS = {
   overview: ["setup", "runtime", "metrics", "pipeline", "diagnostics"],
-  capture: ["source", "roi", "model", "diagnostics"],
-  params: ["response", "targeting", "motion", "output", "advanced"],
+  capture: ["source", "roi", "diagnostics"],
+  params: ["response", "targeting", "motion", "output"],
   activity: ["summary", "filters", "feed"],
   about: ["identity", "version", "capabilities", "support"],
 } as const satisfies Record<StudioLayoutPageId, readonly string[]>;

@@ -10,7 +10,7 @@ describe("studio layout contract", () => {
       pages: [
         { id: "activity", label: "实时日志", modules: ["feed", "summary", "filters"] },
         { id: "overview", label: "首页", modules: ["metrics", "runtime"] },
-        { id: "capture", label: "设备管理", modules: ["source", "model"] },
+        { id: "capture", label: "设备管理", modules: ["roi", "source"] },
         { id: "params", label: "算法参数", modules: ["output", "targeting", "motion", "response"] },
         { id: "about", label: "关于", modules: ["identity", "version"] },
       ],

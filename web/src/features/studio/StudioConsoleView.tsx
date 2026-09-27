@@ -7,8 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent
+  type CSSProperties
 } from "react";
 
 import {
@@ -19,11 +18,8 @@ import {
   connectKmNet,
   diagnosticMoveKmNet,
   disconnectKmNet,
-  clearCrosshairTemplate,
-  crosshairTemplatePreviewUrl,
   getConfigSchema,
   getRuntimeConfig,
-  learnCrosshair,
   HealthResponse,
   LicenseStatus,
   ModelArtifact,
@@ -53,7 +49,7 @@ import {
   streamUrl,
   updateRuntimeConfig,
 } from "../../api";
-import { pushToastRaw, reportError, reportInfo, reportSuccess, useActivityNotices, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
+import { pushToastRaw, reportError, reportSuccess, useActivityNotices, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { formatRuntimeErrorMessage, getErrorMessage } from "../shared/format";
 import { LicenseView } from "../license/LicenseView";
 import { ActivityView } from "../activity/ActivityView";
@@ -69,7 +65,6 @@ import {
   runtimeDeliveryTone,
   type RuntimeDeliveryStatus
 } from "../shared/runtimeDelivery";
-import { AdvancedSettingsDialog } from "./AdvancedSettingsDialog";
 import {
   ActionConfirmationDialog,
   type ActionConfirmationRequest
@@ -78,8 +73,6 @@ import { AimTargetRange } from "./AimTargetRange";
 import { activateClassPolicy, serializeClassAimRatios } from "../targeting/targetClassPolicy";
 import type { AimRole, AimRoleRatios } from "../targeting/types";
 import { ControlTracePanel } from "./ControlTracePanel";
-import { LaunchReadinessPanel } from "./LaunchReadinessPanel";
-import { ProductConfigProfilePanel } from "./ProductConfigProfilePanel";
 import {
   InlineNumberControl,
   InlineTextControl,
@@ -93,7 +86,6 @@ import {
   buildConfigFieldIndex,
   buildTargetingParameterGroups,
   validateStudioConfigSchema,
-  type AlgorithmSettingsSection,
   type AlgorithmNumberParameter,
   type ControlPipelineField,
   type TargetingNumberParameter,
@@ -127,14 +119,9 @@ import {
   type RuntimeTransportConfidence,
 } from "../runtime/runtimeProjection";
 import { buildControlTrace } from "./controlTrace";
-import {
-  buildProductConfigProfile,
-  type ProductConfigAction
-} from "./productConfigProfile";
 import { persistRuntimeConfigField } from "./runtimeConfigPersistence";
 import "./studio-settings.css";
 
-const DEFAULT_CONTROL_ALGORITHM = "continuous_atan_medoid_v2";
 const CONTROL_ALGORITHM_LABEL = "连续 Atan 控制";
 const CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX = "配置 schema 与 Studio 参数不一致";
 type KmnetTestMessageTone = "success" | "warning";
@@ -235,28 +222,7 @@ type CapabilityChoice = {
   fps: number;
 };
 
-type ConfigDialogId = "class-config" | "target-weights" | "algorithm" | "target-advanced" | "tracker";
-const ALGORITHM_SETTINGS_SECTIONS: Array<{
-  id: AlgorithmSettingsSection;
-  label: string;
-  panelId: string;
-}> = [
-  {
-    id: "response",
-    label: "控制响应",
-    panelId: "algorithm-settings-response"
-  },
-  {
-    id: "prediction",
-    label: "目标速度预测",
-    panelId: "algorithm-settings-prediction"
-  },
-  {
-    id: "calibration",
-    label: "控制标定",
-    panelId: "algorithm-settings-calibration"
-  }
-];
+type ConfigDialogId = "class-config";
 
 function pageFromUrl(): ConsolePage {
   const raw = new URLSearchParams(window.location.search).get("page");
@@ -399,24 +365,6 @@ function formatRecoilState(stateValue: unknown, reasonValue: unknown): string {
     return formatRecoilBlockReason(reason);
   }
   return state === "IDLE" ? "待机" : state || NO_SAMPLE;
-}
-
-function crosshairStateLabel(value: string): string {
-  return {
-    idle: "尚未运行",
-    disabled: "已关闭",
-    searching: "等待模板或匹配",
-    candidate: "正在确认",
-    confirmed: "已确认",
-    uncertain: "短时丢失，保持已确认中心"
-  }[value] ?? value;
-}
-
-function triggerModeLabel(value: string): string {
-  if (value === "always") {
-    return "直接触发";
-  }
-  return "按键触发";
 }
 
 const NO_SAMPLE = "—";
@@ -714,7 +662,6 @@ const CONFIG_SECTION_LABELS: Record<string, string> = {
   pipeline: "目标选择与控制算法",
   control: "控制输出",
   hardware: "kmNet 硬件",
-  crosshair: "准星学习",
   limits: "安全限制",
   consumers: "数据消费",
   server: "NovaSight 服务"
@@ -801,18 +748,11 @@ export function StudioConsoleView({
   const [modelManagerDialogOpen, setModelManagerDialogOpen] = useState(false);
   const [modelCatalogMessage, setModelCatalogMessage] = useState("");
   const [classConfigDialogOpen, setClassConfigDialogOpen] = useState(false);
-  const [targetWeightsDialogOpen, setTargetWeightsDialogOpen] = useState(false);
-  const [algorithmSettingsDialogOpen, setAlgorithmSettingsDialogOpen] = useState(false);
-  const [algorithmSettingsSection, setAlgorithmSettingsSection] = useState<AlgorithmSettingsSection>("response");
-  const [targetAdvancedDialogOpen, setTargetAdvancedDialogOpen] = useState(false);
-  const [trackerSettingsDialogOpen, setTrackerSettingsDialogOpen] = useState(false);
   const [confirmationRequest, setConfirmationRequest] = useState<ActionConfirmationRequest | null>(null);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [confirmationError, setConfirmationError] = useState<string | null>(null);
   const [newClassProfileName, setNewClassProfileName] = useState("");
   const [renamedClassProfileName, setRenamedClassProfileName] = useState("");
-  const [crosshairMessage, setCrosshairMessage] = useState("");
-  const [crosshairPreviewKey, setCrosshairPreviewKey] = useState(0);
   const [previewActiveOverride, setPreviewActiveOverride] = useState<boolean | null>(null);
   const [previewTogglePending, setPreviewTogglePending] = useState(false);
   const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtimeConfig));
@@ -885,16 +825,11 @@ export function StudioConsoleView({
     [onRuntimeConfigChange]
   );
   const classConfigDialogRef = useRef<HTMLElement | null>(null);
-  const targetWeightsDialogRef = useRef<HTMLElement | null>(null);
   const errorCenterDialogRef = useRef<HTMLElement | null>(null);
   const dialogSavingRef = useRef(false);
 
   const setConfigDialogVisibility = useCallback((dialog: ConfigDialogId, open: boolean) => {
     if (dialog === "class-config") setClassConfigDialogOpen(open);
-    else if (dialog === "target-weights") setTargetWeightsDialogOpen(open);
-    else if (dialog === "algorithm") setAlgorithmSettingsDialogOpen(open);
-    else if (dialog === "target-advanced") setTargetAdvancedDialogOpen(open);
-    else setTrackerSettingsDialogOpen(open);
   }, []);
 
   const finishConfigDialog = useCallback((dialog: ConfigDialogId) => {
@@ -942,35 +877,6 @@ export function StudioConsoleView({
       onConfirm: discardParameterPageDraft
     });
   }, [discardParameterPageDraft]);
-
-  const focusAlgorithmSettingsSection = useCallback((section: AlgorithmSettingsSection) => {
-    setAlgorithmSettingsSection(section);
-    window.requestAnimationFrame(() => {
-      document.getElementById(`algorithm-settings-${section}-tab`)?.focus();
-    });
-  }, []);
-
-  const handleAlgorithmSettingsTabKeyDown = useCallback((event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    const currentIndex = ALGORITHM_SETTINGS_SECTIONS.findIndex((section) => section.id === algorithmSettingsSection);
-    if (currentIndex < 0) {
-      return;
-    }
-    const lastIndex = ALGORITHM_SETTINGS_SECTIONS.length - 1;
-    let nextIndex = currentIndex;
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-      nextIndex = currentIndex === lastIndex ? 0 : currentIndex + 1;
-    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-      nextIndex = currentIndex === 0 ? lastIndex : currentIndex - 1;
-    } else if (event.key === "Home") {
-      nextIndex = 0;
-    } else if (event.key === "End") {
-      nextIndex = lastIndex;
-    } else {
-      return;
-    }
-    event.preventDefault();
-    focusAlgorithmSettingsSection(ALGORITHM_SETTINGS_SECTIONS[nextIndex].id);
-  }, [algorithmSettingsSection, focusAlgorithmSettingsSection]);
 
   const applyConfigSchema = useCallback((schema: ConfigSchemaResponse) => {
     const issues = validateStudioConfigSchema(schema);
@@ -1024,9 +930,6 @@ export function StudioConsoleView({
     setConfigDraft(baseline);
     setConfigDialogDirty(false);
     setDialogSaveError(null);
-    if (dialog === "algorithm") {
-      setAlgorithmSettingsSection("response");
-    }
     setConfigDialogVisibility(dialog, true);
   }, [setConfigDialogVisibility]);
 
@@ -1233,22 +1136,10 @@ export function StudioConsoleView({
   }, []);
 
   useEffect(() => {
-    const anyConfigDialogOpen =
-      classConfigDialogOpen ||
-      targetWeightsDialogOpen ||
-      algorithmSettingsDialogOpen ||
-      targetAdvancedDialogOpen ||
-      trackerSettingsDialogOpen;
-    if (!anyConfigDialogOpen) {
+    if (!classConfigDialogOpen) {
       setDialogSaveError(null);
     }
-  }, [
-    algorithmSettingsDialogOpen,
-    classConfigDialogOpen,
-    targetAdvancedDialogOpen,
-    targetWeightsDialogOpen,
-    trackerSettingsDialogOpen
-  ]);
+  }, [classConfigDialogOpen]);
 
   useEffect(() => {
     writePageToUrl(activePage, "replace");
@@ -1346,38 +1237,12 @@ export function StudioConsoleView({
     };
   }, []);
 
-  useEffect(() => {
-    if (!targetWeightsDialogOpen) {
-      return undefined;
-    }
-    acquireBodyScrollLock();
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const focusFrame = window.requestAnimationFrame(() => targetWeightsDialogRef.current?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        if (!dialogSavingRef.current) {
-          void requestDismissConfigDialog("target-weights");
-        }
-      } else {
-        trapDialogTabKey(event, targetWeightsDialogRef.current);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.cancelAnimationFrame(focusFrame);
-      releaseBodyScrollLock();
-      document.removeEventListener("keydown", onKeyDown);
-      previousFocus?.focus();
-    };
-  }, [requestDismissConfigDialog, targetWeightsDialogOpen]);
-
   const capture = runtime?.capture;
   const statistics = runtime?.statistics;
   const config = configDraft ?? runtimeConfig;
   const {
     captureConfig,
     roiConfig,
-    crosshairConfig,
     limitsConfig,
     inferenceConfig,
     controlConfig,
@@ -1387,7 +1252,6 @@ export function StudioConsoleView({
   } = useMemo(() => ({
     captureConfig: nestedRecord(config, "capture"),
     roiConfig: nestedRecord(config, "roi"),
-    crosshairConfig: nestedRecord(config, "crosshair"),
     limitsConfig: nestedRecord(config, "limits"),
     inferenceConfig: nestedRecord(config, "inference"),
     controlConfig: nestedRecord(config, "control"),
@@ -1409,12 +1273,8 @@ export function StudioConsoleView({
     "projection_fov_x_deg"
   );
   const vision = runtime?.vision;
-  const crosshairStatus = vision?.crosshair;
-  const crosshairObservation = crosshairStatus?.observation;
-  const crosshairTemplate = crosshairStatus?.template;
   const inferenceTrace = vision?.inference;
   const runtimeInference = runtime?.inference;
-  const deepstreamStatus = runtime?.pipeline.deepstream;
   const configuredInferenceBackend = readString(inferenceConfig.backend, "deepstream_nvinfer");
   const selectedRuntimeBackend = runtimeInference?.selected ?? configuredInferenceBackend;
   const deepstreamNvinferSelected = selectedRuntimeBackend === "deepstream_nvinfer";
@@ -1491,23 +1351,6 @@ export function StudioConsoleView({
       ? Math.min(configuredRoiWidth, configuredRoiHeight)
       : 640
     : readNumber(roiConfig.size, 640);
-  const crosshairEnabled = readBoolean(crosshairConfig.enabled, false);
-  const crosshairUseForControl = readBoolean(crosshairConfig.use_for_control, false);
-  const crosshairSearchSize = readNumber(crosshairConfig.search_size, 96);
-  const crosshairSampleHz = readNumber(crosshairConfig.sample_hz, 10);
-  const crosshairSampleFrames = readNumber(crosshairConfig.sample_frames, 5);
-  const crosshairState = crosshairStatus?.state ?? "idle";
-  const stableCrosshairState = useStableSemanticValue(crosshairState, crosshairState, 280);
-  const crosshairTemplateId = crosshairTemplate?.id ?? "";
-  const crosshairRecentSamples = crosshairStatus?.recent_samples ?? 0;
-  const crosshairRequiredSamples = crosshairStatus?.required_samples ?? crosshairSampleFrames;
-  const crosshairConfidence = crosshairObservation?.confidence ?? 0;
-  const crosshairOffsetX = crosshairObservation?.offset_x ?? 0;
-  const crosshairOffsetY = crosshairObservation?.offset_y ?? 0;
-  const crosshairReferenceReady = crosshairStatus?.control_reference_ready === true;
-  const crosshairBranchActive = deepstreamStatus?.crosshair_active === true;
-  const crosshairBranchReason = deepstreamStatus?.crosshair_reason ?? "";
-  const crosshairProcessingError = crosshairStatus?.last_error ?? "";
   const previewFps = readNumber(limitsConfig.stream_fps, 30);
   const sourceWidth = selectedProfile?.width ?? inferenceTrace?.source_width ?? 0;
   const sourceHeight = selectedProfile?.height ?? inferenceTrace?.source_height ?? 0;
@@ -1652,7 +1495,6 @@ export function StudioConsoleView({
   const fireDelayMs = readNumber(rustPipelineConfig.fire_delay_ms, 0);
   const recoilYCounts = readNumber(recoilConfig.y_counts, 1);
   const triggerMode = readString(controlConfig.trigger_mode, "always");
-  const controlAlgorithmId = readString(configSchema?.algorithm?.id, DEFAULT_CONTROL_ALGORITHM);
   const controlAlgorithmLabel = readString(configSchema?.algorithm?.label, CONTROL_ALGORITHM_LABEL);
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
@@ -1714,7 +1556,6 @@ export function StudioConsoleView({
     effectiveRevision: reportedEffectiveConfigRevision
   });
   const configApplyPending = configApplyPresentation.state === "applying";
-  const configRestartRequired = configApplyPresentation.state === "pending_process";
   const desiredConfigRevision = configApplyPresentation.desiredRevision;
   const effectiveConfigRevision = configApplyPresentation.effectiveRevision;
   const kmnetRestartRequired = kmnetStatus?.restart_required === true;
@@ -2129,110 +1970,6 @@ export function StudioConsoleView({
     roiInputWidth > 0 && roiInputHeight > 0 && modelInputWidth > 0 && modelInputHeight > 0
       ? (modelInputWidth * modelInputHeight) / (roiInputWidth * roiInputHeight)
       : null;
-  // Split `artifact` (rebuilt wholesale on every supervisor publish — see
-  // crates/novasight-runtime/src/supervisor.rs:2037-2043) into its identity
-  // fields so the memo can stay stable across partial frames that don't
-  // actually change the active deployment. Authoritative schema:
-  // web/src/contracts/model.ts + crates/novasight-store/src/model_catalog.rs.
-  const activeArtifact = activeModelPublished ? artifact ?? null : null;
-  const activeArtifactId = activeArtifact?.id ?? null;
-  const activeArtifactVersionId = activeArtifact?.version_id ?? null;
-  const activeArtifactKind = activeArtifact?.kind ?? null;
-  const activeArtifactPath = activeArtifact?.path ?? null;
-  const activeArtifactStatus = activeArtifact?.status ?? null;
-  const productConfigProfile = useMemo(
-    () => activePage === "params" ? buildProductConfigProfile({
-      runtimeRunning: runtimeMainlineRunning,
-      configRestartRequired,
-      configApplyPending,
-      desiredRevision: desiredConfigRevision,
-      effectiveRevision: effectiveConfigRevision,
-      captureConfigured: displayCaptureProfile !== null
-        && (configuredCaptureDevice.trim().length > 0 || (capture?.device ?? "").trim().length > 0),
-      captureDevice: configuredCaptureDevice || capture?.device || NO_SAMPLE,
-      captureProfile: displayCaptureProfile
-        ? choiceLabel(displayCaptureProfile)
-        : NO_SAMPLE,
-      captureProfileApplied: captureProfileMatches,
-      runtimeCaptureProfile: selectedProfile ? choiceLabel(selectedProfile) : NO_SAMPLE,
-      captureSource: displayCaptureProfileSource,
-      roiLabel: roiApplyLabel,
-      roiApplied: roiSettingsApplied,
-      modelPublished: activeModelPublished,
-      modelRuntimeLoaded: runtimeInference?.loaded === true,
-      modelName: activeModelName,
-      artifactLabel: activeArtifact ? `${activeArtifact.kind} · ${activeArtifact.status}` : "",
-      backendLabel: selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream 推理" : selectedRuntimeBackend,
-      configuredBackendLabel: configuredInferenceBackend === "deepstream_nvinfer" ? "DeepStream 推理" : configuredInferenceBackend,
-      modelInputLabel: modelInputWidth > 0 && modelInputHeight > 0
-        ? `${modelInputWidth}x${modelInputHeight}`
-        : displayedInputShape || NO_SAMPLE,
-      postprocessLabel: postprocessApplyLabel,
-      postprocessApplied: postprocessSettingsApplied,
-      controlModeLabel,
-      triggerModeLabel: triggerModeLabel(triggerMode),
-      predictionEnabled: controlPredictionEnabled,
-      freshnessThresholdLabel: formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms"),
-      outputEnabled,
-      outputEnableBlockedReason,
-      hardwareControlLicensed,
-      outputRuntimeConnected: kmnetRuntimeConnected,
-      kmnetAutoConnect,
-      kmnetRuntimeConnected,
-      kmnetRestartRequired,
-      kmnetConnectionLabel: kmnetRuntimeConnectionLabel,
-      kmnetHost,
-      kmnetPort: String(kmnetPort),
-      kmnetUuid
-    }) : null,
-    [
-      activePage,
-      activeModelName,
-      activeModelPublished,
-      activeArtifactId,
-      activeArtifactVersionId,
-      activeArtifactKind,
-      activeArtifactPath,
-      activeArtifactStatus,
-      capture?.device,
-      capture?.running,
-      captureConfig,
-      captureProfileMatches,
-      selectedProfile,
-      configApplyPending,
-      configRestartRequired,
-      configuredCaptureDevice,
-      configuredInferenceBackend,
-      controlModeLabel,
-      desiredConfigRevision,
-      detectionFreshnessThresholdMs,
-      displayCaptureProfile,
-      displayCaptureProfileSource,
-      displayedInputShape,
-      controlPredictionEnabled,
-      effectiveConfigRevision,
-      kmnetAutoConnect,
-      kmnetHost,
-      kmnetPort,
-      kmnetRestartRequired,
-      kmnetRuntimeConnected,
-      kmnetRuntimeConnectionLabel,
-      kmnetUuid,
-      modelInputHeight,
-      modelInputWidth,
-      outputEnabled,
-      outputEnableBlockedReason,
-      hardwareControlLicensed,
-      postprocessApplyLabel,
-      postprocessSettingsApplied,
-      roiApplyLabel,
-      roiSettingsApplied,
-      runtimeInference?.loaded,
-      runtimeMainlineRunning,
-      selectedRuntimeBackend,
-      triggerMode
-    ]
-  );
   const inputDensityWarning = inputDownscaleFactor !== null && inputDownscaleFactor > 1;
   const sampledDetectionGeneration = inferenceTrace?.generation
     ?? runtimeInference?.sampled_detection_generation
@@ -2847,7 +2584,7 @@ export function StudioConsoleView({
   const requestOutputGateChange = useCallback((enabled: boolean) => {
     if (enabled && outputEnableBlockedReason) {
       setLocalError(outputEnableBlockedReason);
-      reportError(new Error(outputEnableBlockedReason), { source: "output-gate", title: "无法开启物理输出" });
+      reportError(new Error(outputEnableBlockedReason), { source: "output-gate", title: "无法开启目标控制" });
       return false;
     }
     if (!enabled) {
@@ -2859,14 +2596,14 @@ export function StudioConsoleView({
       );
     }
     setConfirmationRequest({
-      eyebrow: "物理输出",
-      title: "允许发送鼠标偏移？",
-      description: "开启后，Rust 控制链产生的新鲜控制量可以通过当前 kmNet 会话发送到物理设备。",
+      eyebrow: "控制总开关",
+      title: "开启目标控制？",
+      description: "开启后，目标选择、跟踪和移动算法会开始处理新的识别结果；满足触发条件时，控制量可通过当前 kmNet 会话发送到设备。",
       details: [
         `设备：${kmnetHost || "未填写"}:${kmnetPort || "未填写"} · ${kmnetRuntimeConnected ? "当前已连接" : "当前未连接"}`,
         "被取代命令不会补发；暂停输出或断开 kmNet 会立即清空待发送命令。"
       ],
-      confirmLabel: "确认开启输出",
+      confirmLabel: "确认开启控制",
       danger: true,
       onConfirm: () => updateConfigField(
         "control",
@@ -3211,7 +2948,7 @@ export function StudioConsoleView({
     [updateConfigField]
   );
 
-  const algorithmParameterGroups = algorithmSettingsDialogOpen
+  const algorithmParameterGroups = activePage === "params"
     ? buildAlgorithmParameterGroups({
       pResponseScale,
       pResponseBoost,
@@ -3252,9 +2989,9 @@ export function StudioConsoleView({
     />
   );
   const renderAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) =>
-    buildAlgorithmNumberParameterControl(parameter, true);
+    buildAlgorithmNumberParameterControl(parameter);
 
-  const targetingParameterGroups = targetAdvancedDialogOpen || trackerSettingsDialogOpen
+  const targetingParameterGroups = activePage === "params"
     ? buildTargetingParameterGroups({
       targetMinConfidence,
       candidateRatioMaxAspect,
@@ -3297,102 +3034,12 @@ export function StudioConsoleView({
       step={parameter.step}
       unit={parameter.unit}
       kind={parameter.kind}
-      compact
       applyMode={parameter.applyMode ?? "live"}
       riskLevel={parameter.riskLevel}
       onCommit={(value) => updatePipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
       onEditingChange={handleParameterEditingChange}
     />
   );
-
-  const handleLearnCrosshair = useCallback(async () => {
-    setBusy("crosshair.learn");
-    setCrosshairMessage("");
-    setLocalError(null);
-    try {
-      const result = await learnCrosshair();
-      setCrosshairPreviewKey(Date.now());
-      setCrosshairMessage(`准星模板 ${result.template.id} 已生成，等待连续观测确认。`);
-      await onRefresh();
-    } catch (error) {
-      const message = getErrorMessage(error);
-      setLocalError(`准星学习失败：${message}`);
-      reportError(error, { source: "crosshair", title: "准星学习失败" });
-    } finally {
-      setBusy(null);
-    }
-  }, [onRefresh]);
-
-  const performClearCrosshair = useCallback(async () => {
-    setBusy("crosshair.clear");
-    setCrosshairMessage("");
-    setLocalError(null);
-    try {
-      await clearCrosshairTemplate();
-      setCrosshairPreviewKey(Date.now());
-      setCrosshairMessage("准星模板已清除，控制基准已回退到几何中心。");
-      reportInfo(
-        "准星模板已清除",
-        "按 F8 重新采样并学习模板，可恢复固定 HUD 准星控制。",
-        "crosshair"
-      );
-      await onRefresh();
-    } catch (error) {
-      const message = getErrorMessage(error);
-      setLocalError(`清除准星模板失败：${message}`);
-      reportError(error, { source: "crosshair", title: "清除准星模板失败" });
-    } finally {
-      setBusy(null);
-    }
-  }, [onRefresh]);
-
-  const requestClearCrosshair = useCallback(() => {
-    setConfirmationRequest({
-      eyebrow: "视觉准星基准",
-      title: "清除已学习的准星模板？",
-      description: "当前模板会被删除，控制基准回退到几何中心。重新学习需要新的有效画面，不能直接撤销。",
-      details: [`当前模板：${crosshairTemplateId}`],
-      confirmLabel: "确认清除模板",
-      danger: true,
-      onConfirm: performClearCrosshair
-    });
-  }, [crosshairTemplateId, performClearCrosshair]);
-
-  useEffect(() => {
-    const onCrosshairShortcut = (event: KeyboardEvent) => {
-      if (
-        event.key !== "F8"
-        || activePage !== "params"
-        || !crosshairEnabled
-        || event.repeat
-      ) {
-        return;
-      }
-      const target = event.target as HTMLElement | null;
-      if (target?.closest("input, select, textarea, button, [role='dialog']")) {
-        return;
-      }
-      event.preventDefault();
-      if (!runtimeMainlineRunning) {
-        setCrosshairMessage("请先启动主链，再使用 F8 学习当前准星。");
-        return;
-      }
-      if (crosshairRecentSamples < crosshairRequiredSamples) {
-        setCrosshairMessage(`正在积累学习帧：${crosshairRecentSamples}/${crosshairRequiredSamples}`);
-        return;
-      }
-      void handleLearnCrosshair();
-    };
-    document.addEventListener("keydown", onCrosshairShortcut);
-    return () => document.removeEventListener("keydown", onCrosshairShortcut);
-  }, [
-    activePage,
-    crosshairEnabled,
-    crosshairRecentSamples,
-    crosshairRequiredSamples,
-    handleLearnCrosshair,
-    runtimeMainlineRunning
-  ]);
 
   const updateDetectionClassName = useCallback(
     async (classId: number, name: string) => {
@@ -4146,44 +3793,6 @@ export function StudioConsoleView({
   const handleRuntimeRecoveryAction = useCallback((action: RuntimeRecoveryAction) => {
     handleLaunchReadinessAction(action);
   }, [handleLaunchReadinessAction]);
-  const handleProductConfigAction = useCallback((action: ProductConfigAction) => {
-    if (action === "output") {
-      void requestOutputGateChange(true);
-      return;
-    }
-    if (action === "license") {
-      navigatePage("license");
-      return;
-    }
-    if (action === "capture") {
-      navigatePage("capture");
-      return;
-    }
-    if (action === "models") {
-      navigatePage("models");
-      return;
-    }
-    if (action === "control") {
-      navigatePage("params");
-      return;
-    }
-    if (action === "kmnet") {
-      navigatePage("control-test");
-      return;
-    }
-    if (action === "advanced") {
-      openConfigDialog("target-advanced");
-      return;
-    }
-    openConfigDialog("algorithm");
-  }, [navigatePage, openConfigDialog, requestOutputGateChange]);
-
-  const jumpToParameterStage = (id: string) => {
-    document.getElementById(id)?.scrollIntoView({
-      block: "start",
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"
-    });
-  };
   return (
     <section className="console-app">
       <header className="console-top">
@@ -4253,7 +3862,26 @@ export function StudioConsoleView({
       </div>
 
       <main className="console-main" data-page={activePage} ref={mainRef}>
-        <StudioPageHeader page={activePage} />
+        <StudioPageHeader
+          page={activePage}
+          action={activePage === "params" && parameterModules.has("output") ? (
+            <div className={outputEnabled ? "parameter-master-control enabled" : "parameter-master-control"}>
+              <span>
+                <small>目标控制</small>
+                <b>{outputEnabled ? "正在运行" : "已停止"}</b>
+              </span>
+              <ModuleSwitch
+                compact
+                label="控制总开关"
+                detail={!outputEnabled ? outputEnableBlockedReason || undefined : undefined}
+                disabled={busy !== null || (!outputEnabled && outputEnableBlockedReason !== "")}
+                enabled={outputEnabled}
+                optimistic={false}
+                onToggle={requestOutputGateChange}
+              />
+            </div>
+          ) : undefined}
+        />
         <StudioRuntimeBar
           page={activePage}
           runtimeAvailable={runtime !== null}
@@ -4390,72 +4018,57 @@ export function StudioConsoleView({
           </div>
         ) : null}
 
-        {activePage === "capture" && runtime !== null ? (
-          <LaunchReadinessPanel
-            busy={busy !== null || runtimeStopping || runtimeControlUnavailable}
-            onAction={handleLaunchReadinessAction}
-            readiness={launchReadiness}
-          />
-        ) : null}
-
         {activePage === "capture" ? (
-          <section className="console-page">
+          <section className="console-page capture-workspace">
           {captureModules.has("source") ? (
-          <section className="console-card capture-profile-check" data-state={captureProfileState} aria-labelledby="capture-profile-check-title">
-            <div className="capture-profile-check-header">
+          <header className="capture-command-header" data-state={captureProfileState} aria-labelledby="capture-profile-check-title">
+            <div className="capture-command-copy">
+              <span className="class-config-eyebrow">当前画面输入</span>
+              <h2 id="capture-profile-check-title">{configuredCaptureDevice || device || "连接一个采集设备"}</h2>
+              <p>{configuredCaptureProfile ? choiceLabel(configuredCaptureProfile) : "尚未选择画面规格"}</p>
+            </div>
+            <div className="capture-runtime-proof">
               <div>
-                <span className="class-config-eyebrow">画面核对</span>
-                <h2 id="capture-profile-check-title">当前画面规格</h2>
+                <span>运行中的画面</span>
+                <strong>{capture?.running === true && selectedProfile ? choiceLabel(selectedProfile) : capture?.running === true ? "规格未上报" : "主链未运行"}</strong>
+                <small>{capture?.running === true ? capture.device || "设备未上报" : "启动后自动核对"}</small>
               </div>
               <span className="capture-profile-check-state" role="status">
                 <NovaIcon name={captureProfileState === "matched" ? "check-circle" : captureProfileState === "mismatch" ? "triangle-alert" : "clock"} size={16} />
                 {captureProfileState === "matched" ? "运行规格一致" : captureProfileState === "mismatch" ? "保存与运行不一致" : captureProfileState === "unknown" ? "运行规格未确认" : "等待运行验证"}
               </span>
             </div>
-            <div className="capture-profile-check-grid">
-              <div>
-                <span>已保存配置</span>
-                <strong>{configuredCaptureProfile ? choiceLabel(configuredCaptureProfile) : "尚未保存采集规格"}</strong>
-                <small>{configuredCaptureDevice || "未设置设备"}</small>
-              </div>
-              <div>
-                <span>运行态上报</span>
-                <strong>{capture?.running === true && selectedProfile ? choiceLabel(selectedProfile) : capture?.running === true ? "未上报运行规格" : "主链未运行"}</strong>
-                <small>{capture?.running === true ? capture.device || "未上报设备" : "启动主链后核对"}</small>
-              </div>
-            </div>
-            <p className="capture-profile-check-footnote">
-              {`采集 ${captureStatusText} · 推理有效输入 ${formatOptionalNumber(nvinferInputFps, STANDARD_DECIMAL_DIGITS, "FPS")} · ROI ${roiApplyLabel}`}
-              <span>有效输入 FPS 不是采集卡原始帧率。</span>
-            </p>
-          </section>
+          </header>
           ) : null}
-          {captureModules.has("model") ? (
-            <section className="capture-model-bridge" aria-label="当前模型">
-              <div><span>当前模型</span><strong>{activeModelName}</strong><small>{runtimeInference?.loaded === true ? "运行态已装载" : "等待运行态装载"}</small></div>
-              <button className="console-button" onClick={() => navigatePage("models")} type="button"><NovaIcon name="models" size={15} />管理模型</button>
-            </section>
-          ) : null}
-          <div className="console-grid2 capture-config-grid compact-content-grid">
+          <div className="capture-workbench">
               {captureModules.has("source") ? (
-              <div className="console-card">
-                <SectionTitle title="选择画面来源" />
-                <TextControl
-                  label="摄像头设备"
-                  detail="更换设备后先读取它支持的规格，再选择实际要使用的一项。"
-                  value={device}
-                  applyMode="launch"
-                  onCommit={(value) => {
-                    setDevice(value);
-                    setCaps(null);
-                    setSelectedChoiceId("");
-                    setCaptureActionError(null);
-                  }}
-                />
-                <div className="capture-format-control">
+              <section className="capture-source-setup" aria-labelledby="capture-source-title">
+                <header className="capture-workbench-heading">
+                  <span aria-hidden="true"><NovaIcon name="capture-card" size={20} /></span>
+                  <div><small>画面来源</small><h3 id="capture-source-title">选择设备和画质</h3><p>先读取设备真正支持的规格，再选择一项应用。</p></div>
+                </header>
+                <div className="capture-device-row">
+                  <TextControl
+                    label="设备路径"
+                    detail="通常是 /dev/video0；更换采集卡后重新读取。"
+                    value={device}
+                    applyMode="launch"
+                    onCommit={(value) => {
+                      setDevice(value);
+                      setCaps(null);
+                      setSelectedChoiceId("");
+                      setCaptureActionError(null);
+                    }}
+                  />
+                  <button className="console-button secondary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
+                    <NovaIcon name="refresh" size={15} />
+                    {busy === "caps" ? "正在读取…" : "读取设备"}
+                  </button>
+                </div>
+                <div className="capture-quality-field">
                   <SelectControl
-                    label="画面规格"
-                    detail={caps ? "从设备实际返回的格式中选择，然后保存为运行配置。" : "未检测前使用已保存格式；更换采集卡后建议重新检测。"}
+                    label="分辨率与帧率"
+                    detail={caps ? `设备返回 ${choices.length} 个可用组合。` : "读取设备后，这里只显示它实际支持的组合。"}
                     value={selectedChoice ? choiceId(selectedChoice) : ""}
                     applyMode="launch"
                     options={choices.length > 0
@@ -4469,57 +4082,39 @@ export function StudioConsoleView({
                       setCaptureActionError(null);
                     }}
                   />
-                  <button className="console-button secondary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
-                    <NovaIcon name="refresh" size={15} />
-                    {busy === "caps" ? "正在读取..." : "读取可用规格"}
-                  </button>
-                  <button
-                    className="console-button primary"
-                    disabled={busy !== null || runtimeLifecycleActive || runtimeControlUnavailable || !selectedChoice || !device.trim() || caps?.available === false}
-                    onClick={() => void applyCapture()}
-                    type="button"
-                  >
-                    {busy === "capture" ? "正在应用并核对..." : "使用这个画面规格"}
-                  </button>
                 </div>
-                <p className="console-section-note">
-                  {caps
-                    ? `已读取 ${choices.length} 组设备格式；更换采集卡或设备路径后请重新检测。`
-                    : "当前使用已保存的采集格式，不会在打开页面时自动探测设备。"}
-                </p>
                 {captureActionError ? <p className="operation-inline-error" role="alert">{captureActionError}</p> : null}
-                <ParameterPresetControl
-                  label="推理画面预览"
-                  detail="远程预览最高帧率；远程观看时还可以在画面上选择省流档。"
-                  options={[15, 30].map((fps) => ({
-                    id: `preview-${fps}`,
-                    label: `${fps}fps`,
-                    detail: fps === 15 ? "省带宽" : "更顺滑",
-                    active: previewFps === fps,
-                    disabled: busy === "limits.stream_fps",
-                    onSelect: () => updateConfigField("limits", "stream_fps", fps)
-                  }))}
-                />
-              </div>
+                <details className="capture-optional-settings">
+                  <summary>远程预览画质</summary>
+                  <ParameterPresetControl
+                    label="预览帧率"
+                    detail="只影响浏览器预览流量，不改变采集和推理帧率。"
+                    options={[15, 30].map((fps) => ({
+                      id: `preview-${fps}`,
+                      label: `${fps} FPS`,
+                      detail: fps === 15 ? "节省带宽" : "画面更顺滑",
+                      active: previewFps === fps,
+                      disabled: busy === "limits.stream_fps",
+                      onSelect: () => updateConfigField("limits", "stream_fps", fps)
+                    }))}
+                  />
+                </details>
+              </section>
               ) : null}
 
               {captureModules.has("roi") ? (
-              <div className="console-card">
-                <SectionTitle title="识别区域" />
-                <ParameterNumberControl
-                  label="识别范围大小"
-                  detail="系统从画面中心截取这一区域交给模型；范围越大覆盖越广，越小则细节越集中。"
-                  value={roiSize}
-                  min={256}
-                  max={640}
-                  step={16}
-                  unit="px"
-                  onCommit={handleCenteredRoiSizeChange}
-                  onEditingChange={handleParameterEditingChange}
-                />
+              <section className="capture-roi-stage" aria-labelledby="capture-roi-title">
+                <header className="capture-workbench-heading">
+                  <span aria-hidden="true"><NovaIcon name="roi" size={20} /></span>
+                  <div><small>模型视野</small><h3 id="capture-roi-title">模型看见画面中央</h3><p>只改变送入模型的中心区域，不改变采集卡分辨率。</p></div>
+                </header>
+                <div className="capture-roi-visual" aria-label={`源画面中间的 ${roiSize} x ${roiSize} 识别区域`}>
+                  <span>源画面 {sourceWidth > 0 ? `${sourceWidth} × ${sourceHeight}` : "待读取"}</span>
+                  <div><i /><b>{roiSize} × {roiSize}</b><small>模型识别区域</small></div>
+                </div>
                 <ParameterPresetControl
-                  label="常用识别范围"
-                  detail="只改变模型看到的中心区域，不改变摄像头本身的分辨率。"
+                  label="识别范围"
+                  detail="近距细节更集中，大视野更容易覆盖快速目标。"
                   options={ROI_SIZE_CHOICES.map((size) => ({
                     id: `roi-${size}`,
                     label: `${size}`,
@@ -4529,13 +4124,44 @@ export function StudioConsoleView({
                     onSelect: () => handleCenteredRoiSizeChange(size)
                   }))}
                 />
-                <div className="console-kv compact-kv">
-                  <span>源画面</span><b>{sourceWidth > 0 ? `${sourceWidth}x${sourceHeight}` : NO_SAMPLE}</b>
-                  <span>配置 ROI</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}, ${rustControlPlane ? `${configuredRoiWidth}x${configuredRoiHeight}` : `${roiSize}x${roiSize}`}` : NO_SAMPLE}</b>
-                </div>
-              </div>
+                <details className="capture-optional-settings">
+                  <summary>自定义识别范围</summary>
+                  <ParameterNumberControl
+                    label="边长"
+                    detail="以 16 像素为一步调整中心正方形区域。"
+                    value={roiSize}
+                    min={256}
+                    max={640}
+                    step={16}
+                    unit="px"
+                    onCommit={handleCenteredRoiSizeChange}
+                    onEditingChange={handleParameterEditingChange}
+                  />
+                  <div className="console-kv compact-kv">
+                    <span>位置</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}` : NO_SAMPLE}</b>
+                    <span>保存值</span><b>{sourceWidth > 0 ? rustControlPlane ? `${configuredRoiWidth}x${configuredRoiHeight}` : `${roiSize}x${roiSize}` : NO_SAMPLE}</b>
+                  </div>
+                </details>
+              </section>
               ) : null}
           </div>
+
+          {captureModules.has("source") ? (
+          <footer className="capture-apply-bar">
+            <div>
+              <strong>{runtimeLifecycleActive ? "停止运行后才能更换画面" : selectedChoice ? "已准备好应用" : "先读取设备并选择规格"}</strong>
+              <small>{selectedChoice ? `${device} · ${choiceLabel(selectedChoice)}` : "不会自动猜测采集卡能力。"}</small>
+            </div>
+            <button
+              className="console-button primary"
+              disabled={busy !== null || runtimeLifecycleActive || runtimeControlUnavailable || !selectedChoice || !device.trim() || caps?.available === false}
+              onClick={() => void applyCapture()}
+              type="button"
+            >
+              {busy === "capture" ? "正在应用并核对…" : "应用画面设置"}
+            </button>
+          </footer>
+          ) : null}
 
           {captureModules.has("diagnostics") ? (
           <details className="studio-diagnostic-details">
@@ -4898,22 +4524,13 @@ export function StudioConsoleView({
           <section className="console-page">
           {activePage === "params" ? (
           <>
-            <div className="parameter-page-intro" role="note">
-              <div>
-                <h2>按使用顺序设置控制</h2>
-                <p>先决定什么时候响应，再调整移动方式，最后单独确认是否发送到设备。保存参数不会替你打开物理输出。</p>
-              </div>
-              <span className={outputEnabled ? "parameter-output-state enabled" : "parameter-output-state"}>
-                {outputEnabled ? "物理输出已开启" : "物理输出保持暂停"}
-              </span>
-            </div>
             <div className={parameterPageDirty ? "parameter-save-bar dirty" : "parameter-save-bar"}>
               <span className="parameter-save-bar-icon" aria-hidden="true">
                 <NovaIcon name={parameterPageDirty ? "save" : "check-circle"} size={18} />
               </span>
               <div aria-live="polite" role="status">
-                <b>{parameterPageDirty ? "修改尚未保存" : "没有待保存的参数"}</b>
-                <small>{parameterPageDirty ? "导入前先保存或放弃当前修改；导出不包含未保存内容，保存后请核对生效状态" : "页面参数统一保存并应用；输出开关单独确认"}</small>
+                <b>{parameterPageDirty ? "有未应用的修改" : "参数已保存"}</b>
+                <small>{parameterPageDirty ? "修改保留在当前页面，应用后才会写入运行配置。" : "调整参数后可在这里一次应用；控制总开关独立生效。"}</small>
               </div>
               <div className="parameter-save-bar-actions">
                 <details className="parameter-file-actions">
@@ -4960,24 +4577,19 @@ export function StudioConsoleView({
               </div>
             </div>
             {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
-            <nav className="parameter-quick-nav" aria-label="参数分区">
-              {parameterModules.has("response") ? <button type="button" onClick={() => jumpToParameterStage("parameter-stage-trigger")}><span>1</span>什么时候响应</button> : null}
-              {parameterModules.has("motion") ? <button type="button" onClick={() => jumpToParameterStage("parameter-stage-safety")}><span>2</span>怎么移动</button> : null}
-              {parameterModules.has("output") ? <button type="button" onClick={() => jumpToParameterStage("parameter-stage-output")}><span>3</span>是否发送到设备</button> : null}
-            </nav>
-            <div className="parameter-stage-list">
+            <div className="parameter-workspace">
             {parameterModules.has("response") ? (
-            <section className="parameter-stage" id="parameter-stage-trigger" aria-labelledby="parameter-stage-trigger-title">
-              <header className="parameter-stage-heading">
-                <span>第 1 步</span>
-                <div><h3 id="parameter-stage-trigger-title">什么时候响应</h3><p>决定在什么条件下开始，以及如何把目标偏移换成移动量。</p></div>
+            <section className="parameter-group" id="parameter-start-conditions" aria-labelledby="parameter-start-conditions-title">
+              <header className="parameter-group-heading">
+                <span>开始</span>
+                <div><h2 id="parameter-start-conditions-title">启动条件</h2><p>设置控制在何时进入工作状态，以及是否过滤过短的按键动作。</p></div>
               </header>
-            <ol className="control-chain-settings" aria-label="什么时候响应设置">
+            <ol className="control-chain-settings" aria-label="启动条件设置">
               <li className="console-card control-chain-setting">
-                <span className="control-chain-step" aria-hidden="true">01</span>
+                <span className="control-chain-step" aria-hidden="true"><NovaIcon name="control" size={16} /></span>
                 <div className="control-chain-setting-title">
                   <b>触发方式</b>
-                  <small>决定控制链在什么条件下开始计算与输出。</small>
+                  <small>按键触发适合手动控制；持续运行会在总开关开启后一直处理目标。</small>
                 </div>
                 <div className="trigger-mode-options" role="group" aria-label="触发方式">
                   <button
@@ -4999,14 +4611,14 @@ export function StudioConsoleView({
                     直接触发
                   </button>
                 </div>
-                {triggerMode === "always" ? <p className="control-chain-trigger-warning">保存后将持续计算控制量；若物理输出已开启，设备可能立即执行。请确认适用场景。</p> : null}
+                {triggerMode === "always" ? <p className="control-chain-trigger-warning">持续运行已选择。开启页面右上角总开关后，系统会持续处理新的识别结果。</p> : null}
               </li>
 
               <li className="console-card control-chain-setting">
-                <span className="control-chain-step" aria-hidden="true">02</span>
+                <span className="control-chain-step" aria-hidden="true"><NovaIcon name="clock" size={16} /></span>
                 <div className="control-chain-setting-title">
-                  <b>开火延迟</b>
-                  <small>过滤短按，避免刚触发时立即进入持续控制。</small>
+                  <b>按键确认时间</b>
+                  <small>忽略过短的触发，避免误碰后立刻进入控制。</small>
                 </div>
                 <div className="control-chain-setting-controls">
                   <ModuleSwitch
@@ -5029,43 +4641,53 @@ export function StudioConsoleView({
                 </div>
               </li>
 
-              <li className="console-card control-chain-setting">
-                <span className="control-chain-step" aria-hidden="true">03</span>
-                <div className="control-chain-setting-title">
-                  <b>算法配置</b>
-                  <small>设置预测与连续响应，决定偏移如何被换算。</small>
-                </div>
-                <div className="control-chain-setting-controls split">
-                  <ModuleSwitch
-                    compact
-                    label="目标速度预测"
-                    enabled={controlPredictionEnabled}
-                    onToggle={(enabled) => updateControlPipelineField("prediction_enabled", enabled)}
-                  />
-                  <button
-                    className="console-button"
-                    disabled={configDialogSaving}
-                    onClick={() => openConfigDialog("algorithm")}
-                    type="button"
-                  >
-                    <NovaIcon name="settings" size={15} />
-                    算法参数
-                  </button>
-                </div>
-              </li>
-
             </ol>
             </section>
             ) : null}
             {parameterModules.has("motion") ? (
-            <section className="parameter-stage" id="parameter-stage-safety" aria-labelledby="parameter-stage-safety-title">
-              <header className="parameter-stage-heading">
-                <span>第 2 步</span>
-                <div><h3 id="parameter-stage-safety-title">怎么移动</h3><p>按需加入补偿，并限制每次移动的最大幅度。</p></div>
+            <section className="parameter-group" id="parameter-motion-response" aria-labelledby="parameter-motion-response-title">
+              <header className="parameter-group-heading">
+                <span>移动</span>
+                <div><h2 id="parameter-motion-response-title">移动响应</h2><p>调整移动速度、提前量、补偿和单次输出边界。</p></div>
               </header>
-            <ol className="control-chain-settings" aria-label="怎么移动设置">
+            <ol className="control-chain-settings" aria-label="移动响应设置">
+              <li className="console-card control-chain-setting parameter-expanded-setting">
+                <span className="control-chain-step" aria-hidden="true"><NovaIcon name="prediction-line" size={16} /></span>
+                <div className="control-chain-setting-title">
+                  <b>移动手感</b>
+                  <small>基础响应决定整体速度；远距增强决定偏差较大时的追赶力度。</small>
+                </div>
+                <div className="parameter-inline-grid">
+                  {responseParameters.map(renderAlgorithmNumberParameter)}
+                </div>
+              </li>
+
+              <li className="console-card control-chain-setting parameter-expanded-setting">
+                <span className="control-chain-step" aria-hidden="true"><NovaIcon name="activity-pulse" size={16} /></span>
+                <div className="control-chain-setting-title">
+                  <b>移动预测</b>
+                  <small>根据近期运动趋势提前移动；快速横移跟不上时再逐步增加。</small>
+                </div>
+                <div className="parameter-expanded-controls">
+                  <ModuleSwitch
+                    compact
+                    label="预测移动目标"
+                    enabled={controlPredictionEnabled}
+                    onToggle={(enabled) => updateControlPipelineField("prediction_enabled", enabled)}
+                  />
+                  {controlPredictionEnabled ? (
+                    <div className="parameter-inline-grid">
+                      {predictionCoreParameters
+                        .filter((parameter) => parameter.key === "prediction_lead_ms")
+                        .map(renderAlgorithmNumberParameter)}
+                      {predictionCapParameters.map(renderAlgorithmNumberParameter)}
+                    </div>
+                  ) : null}
+                </div>
+              </li>
+
               <li className="console-card control-chain-setting">
-                <span className="control-chain-step" aria-hidden="true">04</span>
+                <span className="control-chain-step" aria-hidden="true"><NovaIcon name="auto-tune" size={16} /></span>
                 <div className="control-chain-setting-title">
                   <b>压枪</b>
                   <small>在主控制量之外独立叠加向下补偿。</small>
@@ -5099,7 +4721,7 @@ export function StudioConsoleView({
               </li>
 
               <li className="console-card control-chain-setting">
-                <span className="control-chain-step" aria-hidden="true">05</span>
+                <span className="control-chain-step" aria-hidden="true"><NovaIcon name="shield-check" size={16} /></span>
                 <div className="control-chain-setting-title">
                   <b>限幅</b>
                   <small>约束每次发送的最大 X/Y 输出，防止突变。</small>
@@ -5129,240 +4751,121 @@ export function StudioConsoleView({
             </ol>
             </section>
             ) : null}
-            {parameterModules.has("output") ? (
-            <section className="parameter-stage parameter-stage-output" id="parameter-stage-output" aria-labelledby="parameter-stage-output-title">
-              <header className="parameter-stage-heading">
-                <span>第 3 步</span>
-                <div><h3 id="parameter-stage-output-title">是否发送到设备</h3><p>这是独立的物理输出开关；保存上面的参数不会改变它。</p></div>
-              </header>
-            <ol className="control-chain-settings" aria-label="物理输出设置">
-              <li className={outputEnabled ? "console-card control-chain-setting output-enabled" : "console-card control-chain-setting output-paused"}>
-                <span className="control-chain-step" aria-hidden="true">06</span>
-                <div className="control-chain-setting-title">
-                  <b>输出</b>
-                  <small>物理设备的最终发送门。保存参数不会自动打开；关闭时算法仍可计算。</small>
-                </div>
-                <ModuleSwitch
-                  compact
-                  label="发送鼠标偏移"
-                  detail={!outputEnabled ? outputEnableBlockedReason || undefined : undefined}
-                  disabled={busy !== null || (!outputEnabled && outputEnableBlockedReason !== "")}
-                  enabled={outputEnabled}
-                  optimistic={false}
-                  onToggle={requestOutputGateChange}
-                />
-              </li>
-            </ol>
-            </section>
-            ) : null}
-            </div>
             {parameterModules.has("targeting") ? (
-            <details className="studio-diagnostic-details parameter-support-details">
-              <summary>
-                <span>
-                  <b>目标识别与跟踪（进阶）</b>
-                </span>
-                <i>展开</i>
-              </summary>
-              <div className="parameter-support-content">
-                <div className="console-card class-config-summary-card">
+            <section className="parameter-group" id="parameter-target-lock" aria-labelledby="parameter-target-lock-title">
+              <header className="parameter-group-heading">
+                <span>目标</span>
+                <div><h2 id="parameter-target-lock-title">目标锁定</h2><p>决定哪些目标可以被选中，以及短暂遮挡或更优目标出现时如何处理。</p></div>
+              </header>
+              <div className="parameter-group-body">
+                <div className="class-config-summary-card">
                   <div className="class-config-summary-main">
                     <div className="class-config-summary-icon" aria-hidden="true">
                       <NovaIcon name="target" size={20} strokeWidth={1.8} />
                     </div>
                     <div>
-                      <span className="class-config-eyebrow">当前方案</span>
+                      <span className="class-config-eyebrow">类别方案</span>
                       <h3>{activeDetectionProfile}</h3>
+                      <small>设置可选类别、优先级和各类别瞄准位置。</small>
                     </div>
                   </div>
-                  <button type="button"
-                    className="console-button primary"
+                  <button
+                    type="button"
+                    className="console-button"
                     disabled={configDialogSaving}
                     onClick={() => openConfigDialog("class-config")}
                   >
                     <NovaIcon name="settings" size={16} />
-                    管理类别配置
+                    编辑类别方案
                   </button>
                 </div>
-                <div className="console-grid2 params-control-grid compact-content-grid" data-algorithm-page={controlAlgorithmId}>
-              <div className="console-card crosshair-reference-card">
-                <SectionTitle title="视觉准星基准" />
-                <ModuleSwitch
-                  label="启用低频准星观测"
-                  enabled={crosshairEnabled}
-                  onToggle={(enabled) => updateConfigField("crosshair", "enabled", enabled)}
-                />
-                <div className="crosshair-reference-panel">
-                  <div className="crosshair-template-preview" data-empty={!crosshairTemplateId}>
-                    {crosshairTemplateId ? (
-                      <img
-                        alt="已学习的准星结构模板"
-                        src={crosshairTemplatePreviewUrl(crosshairPreviewKey)}
-                      />
-                    ) : (
-                      <span><NovaIcon name="target" size={30} /><b>等待学习</b></span>
-                    )}
-                  </div>
-                  <div className="crosshair-reference-status">
-                    <span>当前状态</span>
-                    <b data-state={stableCrosshairState}>{crosshairStateLabel(stableCrosshairState)}</b>
-                  </div>
-                </div>
-                <div className="crosshair-learn-actions">
-                  <button type="button"
-                    className="console-button primary"
-                    disabled={!crosshairEnabled || !runtimeMainlineRunning || crosshairRecentSamples < crosshairRequiredSamples || busy === "crosshair.learn"}
-                    onClick={() => void handleLearnCrosshair()}
-                  >
-                    <NovaIcon name="target" size={15} />
-                    {busy === "crosshair.learn" ? "正在学习…" : "学习当前准星（F8）"}
-                  </button>
-                  <button
-                    className="console-button"
-                    disabled={!crosshairTemplateId || busy === "crosshair.clear"}
-                    onClick={requestClearCrosshair}
-                    type="button"
-                  >
-                    清除模板
-                  </button>
-                </div>
-                {crosshairProcessingError ? (
-                  <p className="crosshair-inline-message warning">准星处理失败：{crosshairProcessingError}</p>
-                ) : runtimeMainlineRunning && crosshairEnabled && !crosshairBranchActive ? (
-                  <p className="crosshair-inline-message warning">准星采样支路不可用：{crosshairBranchReason || "请查看 DeepStream 状态"}</p>
-                ) : !runtimeMainlineRunning && crosshairEnabled ? (
-                  <p className="crosshair-inline-message warning">需要先启动主链，独立中心采样支路才会提供学习帧。</p>
-                ) : crosshairMessage ? (
-                  <p className="crosshair-inline-message">{crosshairMessage}</p>
-                ) : null}
-                <details className="crosshair-advanced-settings">
-                  <summary>高级控制原点</summary>
-                  <ModuleSwitch
-                    compact
-                    label="使用视觉准星作为控制原点"
-                    enabled={crosshairUseForControl}
-                    disabled={!crosshairEnabled || !crosshairTemplateId}
-                    onToggle={(enabled) => updateConfigField("crosshair", "use_for_control", enabled)}
+
+                <div className="parameter-inline-grid parameter-target-basics">
+                  <ParameterNumberControl
+                    label="可选目标范围"
+                    detail="只在准星周围这个半径内选择目标；调小更专注，调大覆盖更多候选。"
+                    value={targetFovRadiusPx}
+                    min={0.000001}
+                    max={100000}
+                    recommendedMin={1}
+                    recommendedMax={640}
+                    step={1}
+                    unit="px"
+                    onCommit={(value) => updatePipelineField("target_fov_radius_px", value)}
+                    onEditingChange={handleParameterEditingChange}
                   />
-                </details>
-                <details className="crosshair-advanced-settings">
-                  <summary>观测信息</summary>
-                  <div className="console-kv compact-kv crosshair-reference-kv">
-                    <span>采样支路</span><b>{crosshairBranchActive ? "运行中" : crosshairEnabled ? "不可用" : "关闭"}</b>
-                    <span>控制可用</span><b>{crosshairReferenceReady ? "是" : "否，使用几何中心"}</b>
-                    <span>模板</span><b>{crosshairTemplateId || "尚未生成"}</b>
-                    <span>中心偏移</span><b>{crosshairReferenceReady ? `${crosshairOffsetX.toFixed(STANDARD_DECIMAL_DIGITS)}, ${crosshairOffsetY.toFixed(STANDARD_DECIMAL_DIGITS)} px` : "—"}</b>
-                    <span>匹配置信度</span><b>{crosshairConfidence > 0 ? `${(crosshairConfidence * 100).toFixed(STANDARD_DECIMAL_DIGITS)}%` : "—"}</b>
-                    <span>学习帧</span><b>{crosshairRecentSamples}/{crosshairRequiredSamples}</b>
-                  </div>
-                </details>
-                <details className="crosshair-advanced-settings">
-                  <summary>采样参数</summary>
-                  <div className="advanced-settings-grid">
-                    <ParameterNumberControl
-                      label="中心搜索区"
-                      detail="只截取 ROI 正中心的小区域，不扫描整幅画面。"
-                      value={crosshairSearchSize}
-                      min={32}
-                      max={Math.max(32, roiSize)}
-                      step={2}
-                      unit="px"
-                      kind="stepper"
-                      riskLevel="advanced"
-                      onCommit={(value) => updateConfigField("crosshair", "search_size", Math.round(value / 2) * 2)}
-                    />
-                    <ParameterNumberControl
-                      label="观测频率"
-                      detail="已与推理支路隔离；10 Hz 通常足够验证固定 HUD 准星。"
-                      value={crosshairSampleHz}
-                      min={1}
-                      max={30}
-                      step={1}
-                      unit="Hz"
-                      kind="stepper"
-                      riskLevel="advanced"
-                      onCommit={(value) => updateConfigField("crosshair", "sample_hz", Math.round(value))}
-                    />
-                    <ParameterNumberControl
-                      label="学习采样帧数"
-                      detail="使用多帧中位图减少动态背景对模板的污染。"
-                      value={crosshairSampleFrames}
-                      min={3}
-                      max={15}
-                      step={1}
-                      unit="帧"
-                      kind="stepper"
-                      riskLevel="advanced"
-                      onCommit={(value) => updateConfigField("crosshair", "sample_frames", Math.round(value))}
-                    />
-                  </div>
-                </details>
-              </div>
-
-              <div className="console-card">
-                <SectionTitle title="目标选择" />
-                <ParameterNumberControl
-                  compact
-                  label="选择半径"
-                  value={targetFovRadiusPx}
-                  min={0.000001}
-                  max={100000}
-                  recommendedMin={1}
-                  recommendedMax={640}
-                  step={1}
-                  unit="px"
-                  onCommit={(value) => updatePipelineField("target_fov_radius_px", value)}
-                  onEditingChange={handleParameterEditingChange}
-                />
-                <div className="target-weight-summary">
-                  <div>
-                    <span>六项综合评分</span>
-                    <strong>
-                      {dominantTargetSelectionWeight.label}
-                      <i>占</i>
-                      {(dominantTargetSelectionWeight.share * 100).toFixed(0)}%
-                    </strong>
-                  </div>
-                  <button type="button" className="console-button" disabled={configDialogSaving} onClick={() => openConfigDialog("target-weights")}              >
-                    <NovaIcon name="settings" size={15} />
-                    权重
-                  </button>
+                  {targetAdvancedParameters.map(renderTargetingNumberParameter)}
                 </div>
-                <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("target-advanced")}              >
-                  <NovaIcon name="settings" size={15} />
-                  目标行为
-                </button>
-              </div>
 
-              <div className="console-card">
-                <SectionTitle title="短时关联" />
-                <p className="console-field-hint">位置、重叠、大小和 raw cls 只提供短时关联证据；不把模型类别当成永久身份。</p>
-                <button type="button" className="console-button console-full-button" disabled={configDialogSaving} onClick={() => openConfigDialog("tracker")}              >
-                  <NovaIcon name="settings" size={15} />
-                  专家跟踪
-                </button>
+                <details className="parameter-disclosure">
+                  <summary>
+                    <span><b>目标偏好</b><small>距离、类别、可信度、大小、连续性和运动趋势共同决定优先目标。</small></span>
+                    <i>{dominantTargetSelectionWeight.label} {(dominantTargetSelectionWeight.share * 100).toFixed(0)}%</i>
+                  </summary>
+                  <div className="target-weight-composition" aria-label="综合目标分数权重占比">
+                    {normalizedTargetSelectionWeights.map((item) => (
+                      <i className={item.className} key={item.key} style={{ flexGrow: item.share }} />
+                    ))}
+                  </div>
+                  <div className="target-weight-legend">
+                    {normalizedTargetSelectionWeights.map((item) => (
+                      <span key={item.key}><i className={item.className} />{item.label} <b>{(item.share * 100).toFixed(0)}%</b></span>
+                    ))}
+                  </div>
+                  <div className="parameter-inline-grid">
+                    {targetSelectionWeights.map((item) => (
+                      <ParameterNumberControl
+                        detail={item.detail}
+                        key={item.key}
+                        label={`${item.label}权重`}
+                        max={100}
+                        min={0}
+                        onCommit={(value) => updatePipelineField(item.key, value)}
+                        onEditingChange={handleParameterEditingChange}
+                        recommendedMax={1}
+                        recommendedMin={0}
+                        step={0.01}
+                        value={item.value}
+                      />
+                    ))}
+                  </div>
+                </details>
               </div>
-                </div>
-              </div>
-            </details>
+            </section>
             ) : null}
-            {parameterModules.has("advanced") ? (
-            <details className="studio-diagnostic-details parameter-support-details">
+
+            {parameterModules.has("targeting") ? (
+            <details className="parameter-professional-settings" id="parameter-professional-settings">
               <summary>
-                <span>
-                  <b>保存后是否生效</b>
-                </span>
-                <i>{productConfigProfile!.attentionCount > 0 ? `${productConfigProfile!.attentionCount} 项需处理` : "正常"}</i>
+                <span><b>专业参数</b><small>只在出现误跟、断轨或设备标定偏差时调整。</small></span>
+                <i>展开</i>
               </summary>
-              <div className="parameter-support-content">
-                <ProductConfigProfilePanel
-                  busy={busy !== null}
-                  onAction={handleProductConfigAction}
-                  profile={productConfigProfile!}
-                />
+              <div className="parameter-professional-content">
+                <section>
+                  <header><h3>预测与设备标定</h3><p>修正断流后的预测历史、画面视场与设备真实移动比例。</p></header>
+                  <div className="parameter-inline-grid">
+                    {predictionCoreParameters
+                      .filter((parameter) => parameter.key !== "prediction_lead_ms")
+                      .map(renderAlgorithmNumberParameter)}
+                    {calibrationParameters.map(renderAlgorithmNumberParameter)}
+                  </div>
+                </section>
+                <section>
+                  <header><h3>短时跟踪匹配</h3><p>这些参数只用于判断相邻画面中的检测结果是否属于同一目标，不把类别当成永久身份。</p></header>
+                  <div className="parameter-inline-grid">
+                    {trackerCoreParameters.map(renderTargetingNumberParameter)}
+                  </div>
+                </section>
+                <details className="parameter-disclosure nested">
+                  <summary><span><b>轨迹滤波参数</b><small>处理框抖动、短暂漏检和异常跳变。</small></span><i>{trackerKalmanParameters.length} 项</i></summary>
+                  <div className="parameter-inline-grid">
+                    {trackerKalmanParameters.map(renderTargetingNumberParameter)}
+                  </div>
+                </details>
               </div>
             </details>
             ) : null}
+            </div>
           </>
           ) : (
           <>
@@ -5616,226 +5119,6 @@ export function StudioConsoleView({
           </section>
         ) : null}
       </main>
-
-      {algorithmSettingsDialogOpen ? (
-      <AdvancedSettingsDialog
-        description="在这里调整一组相关参数；点击“保存并应用”后直接写入设备，并等待后端确认。"
-        dirty={configDialogDirty}
-        eyebrow="算法配置"
-        footerNote={controlModeLabel}
-        onClose={() => void requestDismissConfigDialog("algorithm")}
-        onSave={() => void saveConfigDialog("algorithm")}
-        open
-        saveError={dialogSaveError}
-        saving={dialogSaving}
-        title="控制参数"
-      >
-        <div className="algorithm-settings-layout">
-          <nav aria-label="控制算法调参分类" className="algorithm-settings-nav" role="tablist">
-            {ALGORITHM_SETTINGS_SECTIONS.map((section) => {
-              const selected = algorithmSettingsSection === section.id;
-              return (
-                <button type="button"
-                  aria-controls={section.panelId}
-                  aria-selected={selected}
-                  className={selected ? "active" : ""}
-                  id={`${section.panelId}-tab`}
-                  key={section.id}
-                  onClick={() => focusAlgorithmSettingsSection(section.id)}
-                  onKeyDown={handleAlgorithmSettingsTabKeyDown}
-                  role="tab"
-                  tabIndex={selected ? 0 : -1}
-                >
-                  <b>{section.label}</b>
-                </button>
-              );
-            })}
-          </nav>
-
-          {algorithmSettingsSection === "response" ? (
-            <section aria-labelledby="algorithm-settings-response-tab" className="algorithm-settings-panel" id="algorithm-settings-response" role="tabpanel" tabIndex={0}>
-              <div className="advanced-settings-grid two-column">
-                {responseParameters.map(renderAlgorithmNumberParameter)}
-              </div>
-            </section>
-          ) : null}
-
-          {algorithmSettingsSection === "prediction" ? (
-            <section aria-labelledby="algorithm-settings-prediction-tab" className="algorithm-settings-panel" id="algorithm-settings-prediction" role="tabpanel" tabIndex={0}>
-              {controlPredictionEnabled ? (
-                <>
-                  <div className="advanced-settings-grid two-column">
-                    {predictionCoreParameters
-                      .filter((parameter) => parameter.key === "prediction_lead_ms")
-                      .map(renderAlgorithmNumberParameter)}
-                    {predictionCapParameters.map(renderAlgorithmNumberParameter)}
-                  </div>
-                  <details className="algorithm-settings-disclosure">
-                    <summary><span><b>高级预测参数</b></span><i>{predictionCoreParameters.length - 1} 项</i></summary>
-                    <div className="advanced-settings-grid two-column">
-                      {predictionCoreParameters
-                        .filter((parameter) => parameter.key !== "prediction_lead_ms")
-                        .map(renderAlgorithmNumberParameter)}
-                    </div>
-                  </details>
-                </>
-              ) : (
-                <div className="algorithm-settings-empty"><b>预测已关闭</b></div>
-              )}
-            </section>
-          ) : null}
-
-          {algorithmSettingsSection === "calibration" ? (
-            <section aria-labelledby="algorithm-settings-calibration-tab" className="algorithm-settings-panel" id="algorithm-settings-calibration" role="tabpanel" tabIndex={0}>
-              <div className="advanced-settings-grid two-column">
-                {calibrationParameters.map(renderAlgorithmNumberParameter)}
-              </div>
-            </section>
-          ) : null}
-        </div>
-      </AdvancedSettingsDialog>
-      ) : null}
-
-      {targetAdvancedDialogOpen ? (
-      <AdvancedSettingsDialog
-        dirty={configDialogDirty}
-        eyebrow="目标选择"
-        footerNote="目标行为"
-        onClose={() => void requestDismissConfigDialog("target-advanced")}
-        onSave={() => void saveConfigDialog("target-advanced")}
-        open
-        saveError={dialogSaveError}
-        saving={dialogSaving}
-        title="目标行为"
-      >
-        <div className="advanced-settings-grid two-column">
-          {targetAdvancedParameters.map(renderTargetingNumberParameter)}
-        </div>
-      </AdvancedSettingsDialog>
-      ) : null}
-
-      {trackerSettingsDialogOpen ? (
-      <AdvancedSettingsDialog
-        dirty={configDialogDirty}
-        eyebrow="目标跟踪"
-        footerNote="专家跟踪参数"
-        onClose={() => void requestDismissConfigDialog("tracker")}
-        onSave={() => void saveConfigDialog("tracker")}
-        open
-        saveError={dialogSaveError}
-        saving={dialogSaving}
-        title="专家跟踪参数"
-      >
-        <div className="advanced-settings-grid two-column">
-          {trackerCoreParameters.map(renderTargetingNumberParameter)}
-        </div>
-        <details className="algorithm-settings-disclosure">
-          <summary><span><b>卡尔曼参数</b></span><i>{trackerKalmanParameters.length} 项</i></summary>
-          <div className="advanced-settings-grid two-column">
-            {trackerKalmanParameters.map(renderTargetingNumberParameter)}
-          </div>
-        </details>
-      </AdvancedSettingsDialog>
-      ) : null}
-
-      {targetWeightsDialogOpen ? (
-        <div
-          className="target-weight-dialog-layer"
-          onClick={(event) => {
-            if (event.target === event.currentTarget && !dialogSaving) {
-              void requestDismissConfigDialog("target-weights");
-            }
-          }}
-        >
-          <section
-            aria-busy={dialogSaving}
-            aria-labelledby="target-weight-dialog-title"
-            aria-modal="true"
-            className="target-weight-dialog"
-            ref={targetWeightsDialogRef}
-            role="dialog"
-            tabIndex={-1}
-          >
-            <header className="target-weight-dialog-header">
-              <div>
-                <span className="class-config-eyebrow">目标选择</span>
-                <h2 id="target-weight-dialog-title">选择权重</h2>
-              </div>
-              <button type="button"
-                aria-label="关闭权重调整"
-                className="launch-dialog-close"
-                disabled={dialogSaving}
-                onClick={() => void requestDismissConfigDialog("target-weights")}
-                title={configDialogDirty ? "关闭并放弃本弹窗修改" : "关闭"}
-              >
-                <NovaIcon name="x-circle" size={18} />
-              </button>
-            </header>
-
-            <div
-              className="target-weight-dialog-body"
-              {...({ inert: dialogSaving ? "" : undefined } as { inert?: string })}
-            >
-              <section className="target-weight-section">
-                <div className="target-weight-section-heading">
-                  <div>
-                    <span>综合目标分数</span>
-                  </div>
-                  <b>自动归一化</b>
-                </div>
-                <div className="target-weight-composition" aria-label="综合目标分数权重占比">
-                  {normalizedTargetSelectionWeights.map((item) => (
-                    <i className={item.className} key={item.key} style={{ flexGrow: item.share }} />
-                  ))}
-                </div>
-                <div className="target-weight-legend">
-                  {normalizedTargetSelectionWeights.map((item) => (
-                    <span key={item.key}><i className={item.className} />{item.label} <b>{(item.share * 100).toFixed(0)}%</b></span>
-                  ))}
-                </div>
-                <div className="target-weight-controls two-column">
-                  {targetSelectionWeights.map((item) => (
-                    <ParameterNumberControl
-                      compact
-                      detail={item.detail}
-                      key={item.key}
-                      label={`${item.label}权重`}
-                      max={100}
-                      min={0}
-                      onCommit={(value) => updatePipelineField(item.key, value)}
-                      onEditingChange={handleParameterEditingChange}
-                      recommendedMax={1}
-                      recommendedMin={0}
-                      step={0.01}
-                      value={item.value}
-                    />
-                  ))}
-                </div>
-              </section>
-
-            </div>
-
-            <footer className="target-weight-dialog-footer">
-              <span className={dialogSaveError ? "dialog-save-status error" : configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
-                {dialogSaving
-                  ? "正在保存并应用…"
-                  : dialogSaveError
-                    ? dialogSaveError
-                    : configDialogDirty
-                      ? "修改尚未保存"
-                      : "未修改"}
-              </span>
-              <button type="button"
-                className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}
-                disabled={dialogSaving}
-                onClick={() => void saveConfigDialog("target-weights")}
-              >
-                {configDialogDirty ? "保存并应用" : "关闭"}
-              </button>
-            </footer>
-          </section>
-        </div>
-      ) : null}
 
       {classConfigDialogOpen ? (
         <div
