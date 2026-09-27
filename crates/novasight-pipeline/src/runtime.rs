@@ -17,7 +17,6 @@ use novasight_core::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::CrosshairHub;
 use crate::LatestSlot;
 use crate::slot::{MonotonicPublishError, TryMonotonicPublishError};
 
@@ -122,9 +121,6 @@ pub struct PipelineConfig {
     /// Effective continuous hardware-trigger hold threshold. Zero bypasses
     /// the delay. The control worker snapshots it at each trigger rising edge.
     pub trigger_hold_delay_ms: u64,
-    /// Optional vision-verified control origin. The hub owns its template and
-    /// observation state; targeting only performs a cheap resolved-point read.
-    pub crosshair: Option<CrosshairHub>,
     /// Positive-Y recoil contribution mixed into the newest safe output plan.
     /// A plan may carry zero tracking demand when quantization has not yet
     /// produced an integer count or no target is present.
@@ -187,7 +183,6 @@ impl Default for PipelineConfig {
             trigger_poll_interval_ms: None,
             trigger_mode: TriggerMode::Always,
             trigger_hold_delay_ms: 0,
-            crosshair: None,
             recoil: RecoilConfig::default(),
         }
     }
@@ -1358,7 +1353,6 @@ impl PipelineRuntime {
             target_slot.clone(),
             Arc::clone(&shared),
             config.targeting.clone(),
-            config.crosshair.clone(),
         )?;
         workers.push(targeting_handle);
 
@@ -1682,7 +1676,6 @@ fn spawn_targeting_worker(
     output: LatestSlot<TargetedObservation>,
     shared: Arc<SharedState>,
     config: TargetingConfig,
-    crosshair: Option<CrosshairHub>,
 ) -> Result<JoinHandle<()>, PipelineError> {
     thread::Builder::new()
         .name("novasight-targeting".to_owned())
@@ -1710,21 +1703,10 @@ fn spawn_targeting_worker(
                         .metrics
                         .targeting_batches
                         .fetch_add(1, Ordering::Relaxed);
-                    let geometric_center = batch.center();
-                    let reference = crosshair.as_ref().map(|hub| {
-                        hub.resolve(
-                            geometric_center.0,
-                            geometric_center.1,
-                            batch.coordinate_width(),
-                            batch.coordinate_height(),
-                        )
-                    });
-                    let targeting_center = reference
-                        .as_ref()
-                        .map_or(geometric_center, |item| (item.x, item.y));
+                    let control_center = batch.center();
                     let selection = targeting.select_at(
                         batch.detections(),
-                        targeting_center,
+                        control_center,
                         batch.stamp().captured_at.0,
                     );
                     if shared.vision_telemetry_due(batch.stamp().captured_at.0) {
@@ -1758,11 +1740,11 @@ fn spawn_targeting_worker(
                             }
                         }
                         _ => {
-                            let (center_x, center_y) = targeting_center;
+                            let (center_x, center_y) = control_center;
                             (None, center_x, center_y)
                         }
                     };
-                    let (crosshair_x, crosshair_y) = targeting_center;
+                    let (crosshair_x, crosshair_y) = control_center;
                     let recoil_target_valid = target_id.is_some()
                         || targeting
                             .locked()

@@ -111,7 +111,7 @@ two-second warm-up; reported image-ready latency starts at appsink consumption,
 not driver capture. With the existing P0 probe preloaded, the `gpu_candidate/result`
 span allows `analyze_pipeline_trace.py --gpu-candidate DIRECTORY` to join JPEG
 parser output to completed results by unique PTS. End-to-end capture age, image
-quality against the original preprocessing, preview/crosshair and product
+quality against the original preprocessing, preview and product
 lifecycle still require separate validation. Per-frame EGL registration is
 included in the measurement and remains an optimization candidate.
 

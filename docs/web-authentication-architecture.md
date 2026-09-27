@@ -45,7 +45,7 @@ The first version exposes one explicit role, `operator`, with named permissions:
 | --- | --- |
 | `studio:read` | authenticated API reads and status WebSockets |
 | `runtime:operate` | runtime start, stop, restart, emergency stop |
-| `configuration:write` | config, capture, and crosshair mutations |
+| `configuration:write` | config and capture mutations |
 | `models:manage` | catalog, metadata, profiling, publish, rollback |
 | `license:manage` | temporary/formal credential activation and clear |
 | `hardware:operate` | executor connect/disconnect/diagnostic operations |

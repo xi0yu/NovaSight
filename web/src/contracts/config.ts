@@ -66,7 +66,7 @@ export interface ConfigUpdateResponse {
 
 export type ConfigCommandPayload =
   | {
-      command: "set_output_gate";
+      command: "set_control_enabled";
       enabled: boolean;
       expected_revision?: number;
     }

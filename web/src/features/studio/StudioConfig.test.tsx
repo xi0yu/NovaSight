@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { LicenseStatus, RuntimeState } from "../../api";
 import { SafetyOperationProvider } from "../runtime/SafetyOperationContext";
+import { DEFAULT_STUDIO_LAYOUT } from "../../contracts/studioLayout";
 import { StudioConsoleView } from "./StudioConsoleView";
 
 const profile = { pixel_format: "MJPG", width: 1920, height: 1080, fps: 240 };
@@ -43,7 +44,7 @@ it("opens the target-control confirmation from the page-level master switch", as
   await userEvent.click(screen.getByRole("button", { name: "确认开启控制" }));
   await waitFor(() => expect(screen.getByRole("alertdialog")).toHaveTextContent("output rejected by daemon"));
   const command = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes("/config/commands"))!;
-  expect(JSON.parse(String(command[1]?.body))).toMatchObject({ command: "set_output_gate", enabled: true });
+  expect(JSON.parse(String(command[1]?.body))).toMatchObject({ command: "set_control_enabled", enabled: true });
   expect(new Headers(command[1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
   expect(new Headers(command[1]?.headers).get("x-request-id")).toMatch(/^[0-9a-f]{32}$/);
   await userEvent.click(screen.getByRole("button", { name: "取消" }));
@@ -130,6 +131,23 @@ it("keeps a typed selection weight visible while editing the page", async () => 
   expect(value).toHaveValue("0.7");
   fireEvent.blur(value);
   await waitFor(() => expect(screen.getByText("有未应用的修改")).toBeVisible());
+});
+
+it("renders parameter modules in the configured order", async () => {
+  const layout = {
+    ...DEFAULT_STUDIO_LAYOUT,
+    pages: DEFAULT_STUDIO_LAYOUT.pages.map((page) => page.id === "params"
+      ? { ...page, modules: ["targeting", "motion", "response", "output"] }
+      : page),
+  };
+  vi.stubGlobal("fetch", vi.fn((url) => String(url).endsWith("/studio-layout.json")
+    ? Promise.resolve(new Response(JSON.stringify(layout), { status: 200, headers: { "content-type": "application/json" } }))
+    : new Promise(() => {})));
+
+  render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+
+  await waitFor(() => expect(Array.from(document.querySelectorAll(".parameter-workspace > [data-module]"))
+    .map((module) => module.getAttribute("data-module"))).toEqual(["targeting", "motion", "response"]));
 });
 
 it("does not expose the removed visual-crosshair learning workflow", async () => {
@@ -449,32 +467,16 @@ it("applies trigger and target preference edits from the same page save", async 
   let current = structuredClone(configured) as Record<string, unknown>;
   const submitted: Array<Record<string, unknown>> = [];
   vi.stubGlobal("fetch", vi.fn((url, init) => {
-    if (String(url).endsWith("/api/v1/config/commands")) {
-      const payload = JSON.parse(String(init?.body)) as { command: string; mode: string };
-      current = {
-        ...current,
-        revision: Number(current.revision) + 1,
-        control: { ...(current.control as Record<string, unknown>), trigger_mode: payload.mode },
-      };
-      submitted.push(payload as unknown as Record<string, unknown>);
-      return Promise.resolve(new Response(JSON.stringify({
-        config: current, apply_mode: "hot_update", restart_required: false, applied: true, rolled_back: false, message: "ok",
-      }), { status: 200, headers: { "content-type": "application/json" } }));
-    }
     if (!String(url).endsWith("/api/config")) return new Promise(() => {});
     if ((init?.method ?? "GET") === "GET") {
       return Promise.resolve(new Response(JSON.stringify(current), { status: 200, headers: { "content-type": "application/json" } }));
     }
-    const payload = JSON.parse(String(init?.body)) as { section: string; key: string; value: unknown };
-    submitted.push(payload as unknown as Record<string, unknown>);
-    current = {
-      ...current,
-      revision: Number(current.revision) + 1,
-      [payload.section]: { ...(current[payload.section] as Record<string, unknown>), [payload.key]: payload.value },
-    };
+    const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    submitted.push(payload);
+    current = { ...payload, revision: Number(current.revision) + 1 };
     return Promise.resolve(new Response(JSON.stringify({
       config: current,
-      apply_mode: "hot_update",
+      apply_mode: "epoch_reload",
       restart_required: false,
       applied: true,
       rolled_back: false,
@@ -492,11 +494,43 @@ it("applies trigger and target preference edits from the same page save", async 
   await waitFor(() => expect(save).toBeEnabled());
   await userEvent.click(save);
 
-  await waitFor(() => expect(submitted).toHaveLength(2));
-  expect(submitted).toEqual([
-    expect.objectContaining({ command: "set_trigger_mode", mode: "hardware" }),
-    expect.objectContaining({ section: "pipeline", key: "target_selection_distance_weight", value: 0.7 }),
-  ]);
+  await waitFor(() => expect(submitted).toHaveLength(1));
+  expect(submitted[0]).toMatchObject({
+    control: expect.objectContaining({ trigger_mode: "hardware" }),
+    pipeline: expect.objectContaining({ target_selection_distance_weight: 0.7 }),
+  });
   expect(screen.getByRole("button", { name: "按键触发" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByRole("button", { name: "保存并应用" })).toBeDisabled();
+});
+
+it("keeps the whole parameter draft when the atomic save is rejected", async () => {
+  const configured = {
+    ...props.runtimeConfig,
+    pipeline: { ...props.runtimeConfig.pipeline, target_selection_distance_weight: 0.2 },
+  };
+  vi.stubGlobal("fetch", vi.fn((url, init) => {
+    if (!String(url).endsWith("/api/config")) return new Promise(() => {});
+    if ((init?.method ?? "GET") === "GET") {
+      return Promise.resolve(new Response(JSON.stringify(configured), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    }
+    return Promise.resolve(new Response(JSON.stringify({
+      code: "CONFIG_REJECTED",
+      message: "参数组合无效",
+    }), { status: 409, headers: { "content-type": "application/json" } }));
+  }));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
+
+  await userEvent.click(screen.getByText("目标偏好", { selector: "b" }));
+  const distanceWeight = screen.getByRole("textbox", { name: "距离权重 数值" });
+  fireEvent.change(distanceWeight, { target: { value: "0.7" } });
+  fireEvent.blur(distanceWeight);
+  await userEvent.click(screen.getByRole("button", { name: "保存并应用" }));
+
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("整组参数未生效"));
+  expect(distanceWeight).toHaveValue("0.70");
+  expect(screen.getByText("有未应用的修改")).toBeVisible();
+  expect(screen.getByRole("button", { name: "保存并应用" })).toBeEnabled();
 });

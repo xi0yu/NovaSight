@@ -108,6 +108,6 @@ python3 tools/diagnostics/run_jetson_p0.py \
 
 ## 尚未交付的部分
 
-当前直接 GPU 组合支持单输出 raw YOLO、batch 1、直接 resize、RGB/BGR、FP32/FP16、pixel 坐标、sigmoid 分数、class-aware NMS。对未覆盖的 letterbox、decoded-NMS / EfficientNMS / Rockchip heads、准星观察等配置明确拒绝，不能以这些拒绝代替功能迁移完成。
+当前直接 GPU 组合支持单输出 raw YOLO、batch 1、直接 resize、RGB/BGR、FP32/FP16、pixel 坐标、sigmoid 分数、class-aware NMS。对未覆盖的 letterbox、decoded-NMS / EfficientNMS / Rockchip heads 等配置明确拒绝，不能以这些拒绝代替功能迁移完成。
 
-后续仍需完成 GPU 准星学习/匹配、其余在用模型语义、启用预览订阅的影响、非空检测与控制等价验证、逐帧源到控制 P50/P95/P99、至少 30 分钟稳定性，以及同条件 RK3588 对照。现在可以确认当前模型的正式 GPU 视觉链工作，不能确认完整产品已优化完成或已经优于香橙派。
+视觉准星学习/匹配能力已从后续范围删除，控制参考点固定为检测坐标空间中心。后续仍需完成其余在用模型语义、启用预览订阅的影响、非空检测与控制等价验证、逐帧源到控制 P50/P95/P99、至少 30 分钟稳定性，以及同条件 RK3588 对照。现在可以确认当前模型的正式 GPU 视觉链工作，不能确认完整产品已优化完成或已经优于香橙派。

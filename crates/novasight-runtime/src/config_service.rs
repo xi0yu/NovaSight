@@ -372,9 +372,8 @@ impl ConfigService {
         }
 
         let rebuild_device = config_value_differs(&effective.device, &desired.device)?;
-        let rebuild_crosshair = config_value_differs(&effective.crosshair, &desired.crosshair)?;
         runtime
-            .install_stopped_config(desired.clone(), rebuild_device, rebuild_crosshair)
+            .install_stopped_config(desired.clone(), rebuild_device)
             .await
             .map_err(ConfigServiceError::Runtime)?;
 
@@ -572,8 +571,6 @@ impl ConfigService {
             installed.revision = self.effective_revision();
         }
         let rebuild_device = config_value_differs(&previous_effective.device, &installed.device)?;
-        let rebuild_crosshair =
-            config_value_differs(&previous_effective.crosshair, &installed.crosshair)?;
         // Perception and platform adapters resolve configuration from the
         // effective snapshot while the supervisor constructs the new epoch.
         *self
@@ -588,7 +585,6 @@ impl ConfigService {
                 installed,
                 previous_effective.clone(),
                 rebuild_device,
-                rebuild_crosshair,
             )
             .await
         {
@@ -1229,10 +1225,6 @@ fn non_pipeline_pending_sections(
         (
             "consumers",
             config_value_differs(&effective.consumers, &desired.consumers)?,
-        ),
-        (
-            "crosshair",
-            config_value_differs(&effective.crosshair, &desired.crosshair)?,
         ),
         (
             "limits",

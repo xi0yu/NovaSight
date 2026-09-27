@@ -5,8 +5,8 @@ use novasight_core::controller::{BlockReason, ControlMode};
 use novasight_core::prediction::PredictionMotionState;
 use novasight_core::tracking::{LockReason, TargetSelection};
 use novasight_runtime::{
-    AppConfig, CrosshairSnapshot, DetectionTelemetryItem, OutputDeliveryState, PipelineState,
-    PreviewSnapshot, RuntimeErrorSummary, RuntimeSnapshot, SubsystemSnapshot, SubsystemState,
+    AppConfig, DetectionTelemetryItem, OutputDeliveryState, PipelineState, PreviewSnapshot,
+    RuntimeErrorSummary, RuntimeSnapshot, SubsystemSnapshot, SubsystemState,
 };
 use serde::Serialize;
 
@@ -292,13 +292,10 @@ pub(crate) struct DeepStreamState {
     pub input_frames: u64,
     pub metadata_extractions: u64,
     pub published_batches: u64,
-    pub crosshair_active: bool,
-    pub crosshair_reason: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct VisionState {
-    pub crosshair: Option<CrosshairSnapshot>,
     pub inference: VisionInferenceState,
     pub detections: usize,
     pub detection_items: Vec<VisionDetectionState>,
@@ -506,7 +503,6 @@ impl RuntimeStatusState {
         effective_revision: Option<u64>,
         hardware_output_enabled: bool,
         preview: Option<&PreviewSnapshot>,
-        crosshair: Option<&CrosshairSnapshot>,
     ) -> Self {
         Self::build(
             "test-daemon",
@@ -516,7 +512,6 @@ impl RuntimeStatusState {
             effective_revision,
             hardware_output_enabled,
             preview,
-            crosshair,
             true,
         )
     }
@@ -530,7 +525,6 @@ impl RuntimeStatusState {
         effective_revision: Option<u64>,
         hardware_output_enabled: bool,
         preview: Option<&PreviewSnapshot>,
-        crosshair: Option<&CrosshairSnapshot>,
         topic: &'static str,
     ) -> Self {
         Self::build(
@@ -541,7 +535,6 @@ impl RuntimeStatusState {
             effective_revision,
             hardware_output_enabled,
             preview,
-            crosshair,
             matches!(topic, "full" | "infer" | "control"),
         )
     }
@@ -555,7 +548,6 @@ impl RuntimeStatusState {
         effective_revision: Option<u64>,
         hardware_output_enabled: bool,
         preview: Option<&PreviewSnapshot>,
-        crosshair: Option<&CrosshairSnapshot>,
         include_detection_items: bool,
     ) -> Self {
         let runtime_config = effective_config.or(config);
@@ -975,20 +967,9 @@ impl RuntimeStatusState {
                     input_frames: metrics.input_buffers,
                     metadata_extractions,
                     published_batches: metrics.published_batches,
-                    crosshair_active: crosshair.is_some_and(|state| state.running),
-                    crosshair_reason: match crosshair {
-                        Some(state) if state.running => String::new(),
-                        Some(state) if !state.enabled => {
-                            "crosshair observer is disabled by configuration".to_owned()
-                        }
-                        Some(_) if !running => "DeepStream pipeline is not running".to_owned(),
-                        Some(_) => "crosshair observer is not running".to_owned(),
-                        None => "crosshair observer is unavailable".to_owned(),
-                    },
                 },
             },
             vision: VisionState {
-                crosshair: crosshair.cloned(),
                 inference: VisionInferenceState {
                     input_width: snapshot
                         .pipeline_metrics
@@ -1398,10 +1379,10 @@ impl OutputTraceProjection<'_> {
         }
         if !pipeline.output_gate_open {
             return OutputTraceState {
-                code: "output_gate_closed",
+                code: "control_disabled",
                 state: "blocked",
-                detail: "物理输出门关闭，控制量不会发送到设备。",
-                next_action: "enable_output_gate",
+                detail: "控制总开关已关闭，新的识别结果不会进入目标选择、移动计算和设备输出。",
+                next_action: "enable_control",
             };
         }
         if !pipeline.control.trigger_active {
@@ -1566,7 +1547,6 @@ mod tests {
             Some(0),
             true,
             None,
-            None,
         ))
         .unwrap();
         let kmnet = &value["executor"]["executors"]["kmnet"];
@@ -1600,7 +1580,6 @@ mod tests {
             Some(0),
             false,
             None,
-            None,
         ))
         .unwrap();
 
@@ -1614,7 +1593,6 @@ mod tests {
             Some(&config),
             Some(0),
             true,
-            None,
             None,
         ))
         .unwrap();
@@ -1726,10 +1704,9 @@ mod tests {
             ..TargetSelection::default()
         };
 
-        let value = serde_json::to_value(RuntimeStatusState::new(
-            &snapshot, None, None, true, None, None,
-        ))
-        .unwrap();
+        let value =
+            serde_json::to_value(RuntimeStatusState::new(&snapshot, None, None, true, None))
+                .unwrap();
         let pipeline = &value["vision"]["control"]["pipeline"];
         let control = &value["vision"]["control"];
         let target = &value["vision"]["target"];
@@ -1806,7 +1783,6 @@ mod tests {
             Some(&config),
             Some(0),
             false,
-            None,
             None,
         ))
         .unwrap();

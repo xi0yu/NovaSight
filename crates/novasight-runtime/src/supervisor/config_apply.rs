@@ -44,9 +44,8 @@ pub(super) fn install_config_state(
     dependencies: &RuntimeDependencies,
     config: &AppConfig,
     rebuild_device: bool,
-    rebuild_crosshair: bool,
 ) -> Result<(), RuntimeError> {
-    let device_mode = dependencies.install_app_config(config, rebuild_device, rebuild_crosshair)?;
+    let device_mode = dependencies.install_app_config(config, rebuild_device)?;
     state.device_mode = device_mode;
     state.output_enabled =
         config.control.output_enabled && device_mode == PointerDeviceMode::Commissioned;
@@ -71,7 +70,6 @@ async fn restore_previous_config_state(
     rollback_config: &AppConfig,
     was_running: bool,
     rebuild_device: bool,
-    rebuild_crosshair: bool,
 ) -> Result<(), RuntimeError> {
     if active.is_some() {
         stop_state(snapshot_tx, ingress_tx, state, active).await?;
@@ -82,7 +80,6 @@ async fn restore_previous_config_state(
         dependencies,
         rollback_config,
         rebuild_device,
-        rebuild_crosshair,
     )?;
     if was_running {
         start_state(
@@ -110,7 +107,6 @@ pub(super) async fn apply_config_state(
     config: &AppConfig,
     rollback_config: &AppConfig,
     rebuild_device: bool,
-    rebuild_crosshair: bool,
 ) -> Result<RuntimeSnapshot, RuntimeConfigApplyFailure> {
     let was_running = matches!(
         state.pipeline,
@@ -122,28 +118,22 @@ pub(super) async fn apply_config_state(
             .map_err(RuntimeConfigApplyFailure::before_install)?;
     }
 
-    let apply_result = match install_config_state(
-        snapshot_tx,
-        state,
-        dependencies,
-        config,
-        rebuild_device,
-        rebuild_crosshair,
-    ) {
-        Err(error) => Err(error),
-        Ok(()) if was_running => {
-            start_state(
-                snapshot_tx,
-                ingress_tx,
-                notice_tx,
-                state,
-                active,
-                dependencies,
-            )
-            .await
-        }
-        Ok(()) => Ok(publish_with_result(snapshot_tx, state, now_ms())),
-    };
+    let apply_result =
+        match install_config_state(snapshot_tx, state, dependencies, config, rebuild_device) {
+            Err(error) => Err(error),
+            Ok(()) if was_running => {
+                start_state(
+                    snapshot_tx,
+                    ingress_tx,
+                    notice_tx,
+                    state,
+                    active,
+                    dependencies,
+                )
+                .await
+            }
+            Ok(()) => Ok(publish_with_result(snapshot_tx, state, now_ms())),
+        };
     match apply_result {
         Ok(snapshot) => Ok(snapshot),
         Err(apply) => {
@@ -160,7 +150,6 @@ pub(super) async fn apply_config_state(
                 rollback_config,
                 was_running,
                 rebuild_device,
-                rebuild_crosshair,
             )
             .await
             .err();

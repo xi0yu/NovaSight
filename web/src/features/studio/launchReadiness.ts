@@ -37,8 +37,9 @@ function actionForRuntime(runtime: RuntimeState): Pick<
         : { primaryAction: "open-model-manager", primaryActionLabel: "配置模型" };
     case "check_latency":
       return { primaryAction: "open-latency", primaryActionLabel: "检查延迟" };
+    case "enable_control":
     case "enable_output_gate":
-      return { primaryAction: "open-params", primaryActionLabel: "配置输出" };
+      return { primaryAction: "open-params", primaryActionLabel: "开启控制" };
     case "connect_kmnet":
       return { primaryAction: "open-kmnet-test", primaryActionLabel: "配置 kmNet" };
     case "check_license_or_build":

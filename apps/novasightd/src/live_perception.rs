@@ -15,10 +15,9 @@ use novasight_core::{
     RuntimeEpoch, select_capture_profile_for_formats,
 };
 use novasight_pipeline::{
-    CrosshairHub, CrosshairHubSlot, ModelCandidate, ParserContract as PerceptionParserContract,
-    PerceptionAdapter, PerceptionError, PerceptionEvent, PerceptionModelContract,
-    PerceptionRuntimeContract, PerceptionSession, PipelineIngress, PreviewHub,
-    validate_parser_preset,
+    ModelCandidate, ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
+    PerceptionEvent, PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession,
+    PipelineIngress, PreviewHub, validate_parser_preset,
 };
 use novasight_platform_jetson::SystemMonotonicClock;
 use novasight_platform_jetson::deepstream::{
@@ -92,12 +91,10 @@ pub(super) fn preflight_live_production(
 ) -> Result<(), LivePerceptionError> {
     preflight_pointer_adapter(config)?;
     let preview = PreviewHub::new(config.consumers.preview);
-    let crosshair = build_crosshair_hub(config)?;
     let session = build_deepstream_session_config(
         config,
         model_catalog,
         preview,
-        crosshair,
         parser_library,
         &ModelIdentityCache::default(),
     )?;
@@ -239,19 +236,12 @@ fn build_live_dependencies(
     let clock: Arc<dyn Clock> = Arc::new(SystemMonotonicClock::default());
     let latest_frames = LatestFrameExchange::new();
     let preview = PreviewHub::new(config.consumers.preview);
-    let crosshair = build_crosshair_hub(config)?;
-    let crosshair_slot = CrosshairHubSlot::new(crosshair);
     let pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
         .map_err(LivePerceptionError::Pipeline)?;
     let dependencies = RuntimeDependencies::new(clock, device, pipeline)
         .with_device_factory(|config| {
             build_pointer_installation(config)
                 .map_err(|error| RuntimeError::device_unavailable(error.to_string()))
-        })
-        .with_crosshair_slot(crosshair_slot.clone())
-        .with_crosshair_factory(|config| {
-            build_crosshair_hub(config)
-                .map_err(|error| RuntimeError::invalid_pipeline_state(error.to_string()))
         })
         .with_model_catalog(model_catalog.clone())
         .with_preview(preview.clone())
@@ -260,7 +250,6 @@ fn build_live_dependencies(
             model_catalog,
             latest_frames,
             preview,
-            crosshair: crosshair_slot,
             parser_library,
             model_identity_cache: ModelIdentityCache::default(),
         }));
@@ -315,7 +304,6 @@ struct CatalogDeepStreamAdapter {
     model_catalog: SqliteModelCatalog,
     latest_frames: LatestFrameExchange,
     preview: PreviewHub,
-    crosshair: CrosshairHubSlot,
     parser_library: PathBuf,
     model_identity_cache: ModelIdentityCache,
 }
@@ -327,7 +315,6 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             &config,
             &self.model_catalog,
             self.preview.clone(),
-            self.crosshair.current(),
             &self.parser_library,
             &self.model_identity_cache,
         )
@@ -395,7 +382,6 @@ impl PerceptionAdapter for CatalogDeepStreamAdapter {
             &current,
             &self.model_catalog,
             self.preview.clone(),
-            self.crosshair.current(),
             &self.parser_library,
             &self.model_identity_cache,
         )
@@ -418,7 +404,6 @@ fn build_deepstream_session_config(
     config: &AppConfig,
     model_catalog: &SqliteModelCatalog,
     preview_hub: PreviewHub,
-    crosshair_hub: Option<CrosshairHub>,
     parser_library: &Path,
     model_identity_cache: &ModelIdentityCache,
 ) -> Result<DeepStreamSessionConfig, LivePerceptionError> {
@@ -457,7 +442,6 @@ fn build_deepstream_session_config(
         preview: adapters.consumers.preview.then_some(PreviewPipelineConfig {
             fps: adapters.limits.stream_fps,
         }),
-        crosshair: None,
     };
     pipeline
         .build()
@@ -472,12 +456,7 @@ fn build_deepstream_session_config(
         startup_timeout: Duration::from_millis(adapters.inference.deepstream_startup_timeout_ms),
         shutdown_timeout: Duration::from_millis(adapters.inference.deepstream_shutdown_timeout_ms),
         preview: adapters.consumers.preview.then_some(preview_hub),
-        crosshair: crosshair_hub,
     })
-}
-
-fn build_crosshair_hub(_config: &AppConfig) -> Result<Option<CrosshairHub>, LivePerceptionError> {
-    Ok(None)
 }
 
 fn resolve_active_gpu_config(

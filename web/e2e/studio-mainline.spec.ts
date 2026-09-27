@@ -66,6 +66,7 @@ async function mockStudioApi(
   await page.route("**/healthz", async (route) => {
     await route.fulfill({ json: { ok: true } });
   });
+  await page.routeWebSocket("**/ws/activity", () => undefined);
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/auth/session" && route.request().method() === "GET") {
@@ -152,6 +153,29 @@ test("unavailable runtime leads to the error details", async ({ page }) => {
   await expect(page.getByRole("dialog", { name: "异常信息" })).toBeVisible();
 });
 
+test("activity page presents backend faults with domain and developer detail", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.route("**/api/activity", async (route) => route.fulfill({ json: { events: [{
+    daemon_instance_id: "daemon-test",
+    id: 1,
+    occurred_at_ms: 1_700_000_000_000,
+    level: "error",
+    tag: "参数",
+    title: "参数保存失败",
+    message: "整组参数未生效，修改仍保留。",
+    technical_detail: "request_id=req-test: validation failed",
+    request_id: "req-test",
+    count: 1,
+  }] } }));
+  await page.goto("/?page=activity");
+
+  const event = page.getByRole("article").filter({ hasText: "参数保存失败" });
+  await expect(event).toContainText("参数");
+  await expect(event).toContainText("整组参数未生效，修改仍保留。");
+  await event.getByText("原始错误与开发者详情").click();
+  await expect(event).toContainText("request_id=req-test: validation failed");
+});
+
 test("capture page keeps saved and running specifications visible without horizontal overflow", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, {
     revision: 25,
@@ -159,12 +183,12 @@ test("capture page keeps saved and running specifications visible without horizo
   });
   await page.goto("/?page=capture");
 
-  const check = page.locator(".capture-profile-check");
+  const check = page.locator(".capture-command-header");
   await expect(check).toContainText("等待运行验证");
   await expect(check.getByText("MJPEG (MJPG) / 1920x1080 / 240 FPS", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "使用这个画面规格" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "应用画面设置" })).toBeVisible();
   if ((page.viewportSize()?.width ?? 0) >= 1200) {
-    await expect(page.getByRole("heading", { name: "选择画面来源" })).toBeInViewport();
+    await expect(page.getByRole("heading", { name: "选择设备和画质" })).toBeInViewport();
   }
   expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(
     await page.evaluate(() => document.documentElement.clientWidth),
@@ -217,7 +241,7 @@ test("parameter draft survives in-app navigation without a confirmation popup", 
   expect(dialogCount).toBe(0);
 });
 
-test("algorithm parameter dialog explains its direct apply boundary", async ({ page }) => {
+test("algorithm parameters are grouped directly without the obsolete dialog", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, {
     revision: 1,
     control: {
@@ -228,11 +252,11 @@ test("algorithm parameter dialog explains its direct apply boundary", async ({ p
   });
   await page.goto("/?page=params");
 
-  await page.getByLabel("什么时候响应设置").getByRole("button", { name: "算法参数" }).click();
-
-  const dialog = page.getByRole("dialog", { name: "控制参数" });
-  await expect(dialog).toContainText("点击“保存并应用”后直接写入设备");
-  await expect(dialog).not.toContainText("草稿");
+  await expect(page.getByRole("heading", { name: "启动条件", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "移动响应", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "目标锁定", exact: true })).toBeVisible();
+  await expect(page.locator("main.console-main").getByRole("button", { name: "算法参数", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "控制参数" })).toHaveCount(0);
 });
 
 test("model search keeps selection and verification together", async ({ page }) => {
@@ -463,13 +487,12 @@ test("model organization saves catalog metadata without switching the runtime mo
   expect(publishRequests).toBe(0);
 });
 
-test("parameter sections navigate without changing physical output", async ({ page }) => {
+test("parameter page exposes one master control in its header", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "hardware", output_enabled: false }, pipeline: {} });
   await page.goto("/?page=params");
-  const outputShortcut = page.getByRole("navigation", { name: "参数分区" }).getByRole("button", { name: /是否发送到设备/ });
-  await outputShortcut.click();
-  await expect(page.getByRole("heading", { name: "是否发送到设备", exact: true })).toBeInViewport();
-  expect(page.url()).not.toContain("#parameter-stage-output");
+  await expect(page.getByRole("button", { name: /控制总开关/ })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "参数分区" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "是否发送到设备", exact: true })).toHaveCount(0);
 });
 
 test("discarding parameter edits asks first, including on narrow screens", async ({ page }) => {
@@ -490,21 +513,24 @@ test("saving parameters while output is enabled needs explicit consent", async (
     control: { trigger_mode: "hardware", output_enabled: true },
     pipeline: {},
   });
-  let commandCount = 0;
+  const savedConfigs: Array<Record<string, unknown>> = [];
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname === "/api/v1/config/commands" && request.method() === "POST") commandCount += 1;
+    if (new URL(request.url()).pathname === "/api/config" && request.method() === "POST") {
+      savedConfigs.push(request.postDataJSON() as Record<string, unknown>);
+    }
   });
   await page.goto("/?page=params");
   await page.getByRole("button", { name: "直接触发" }).click();
   await page.getByRole("button", { name: "保存并应用" }).click();
   const confirmation = page.getByRole("alertdialog", { name: "物理输出仍开启，确认保存参数？" });
   await expect(confirmation).toContainText("保存后不再等待按键");
-  expect(commandCount).toBe(0);
+  expect(savedConfigs).toHaveLength(0);
   await confirmation.getByRole("button", { name: "取消" }).click();
   await expect(page.getByRole("button", { name: "保存并应用" })).toBeEnabled();
   await page.getByRole("button", { name: "保存并应用" }).click();
   await confirmation.getByRole("button", { name: "确认保存并保持输出开启" }).click();
-  await expect.poll(() => commandCount).toBe(1);
+  await expect.poll(() => savedConfigs.length).toBe(1);
+  expect((savedConfigs[0].control as Record<string, unknown>).output_enabled).toBe(true);
 });
 
 test("narrow Studio keeps Chinese navigation and save action reachable", async ({ page }) => {
@@ -674,7 +700,7 @@ test("configuration pages explain the next action without horizontal overflow", 
   for (const [route, text] of [
     ["models", "当前模型与设备文件"],
     ["license", "更换授权码"],
-    ["params", "按使用顺序设置控制"],
+    ["params", "调整目标锁定、移动手感与安全边界。"],
   ] as const) {
     await page.goto(`/?page=${route}`);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();

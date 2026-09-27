@@ -1340,7 +1340,6 @@ fn validate_extra_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErro
                 "replay",
                 "pipeline",
                 "control",
-                "crosshair",
                 "consumers",
                 "limits",
                 "paths",

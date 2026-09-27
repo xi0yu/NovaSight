@@ -125,7 +125,10 @@ impl ConfigSchemaResponse {
                     "control",
                     "控制输出",
                     vec![
-                        hot_boolean("control.output_enabled", "允许设备位移输出"),
+                        hot_boolean(
+                            "control.output_enabled",
+                            "启用目标控制（包含算法与设备输出）",
+                        ),
                         hot_select(
                             "control.trigger_mode",
                             "输出触发方式",

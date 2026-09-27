@@ -15,8 +15,8 @@ pub use model_contract::{
     gpu_model_config, render_deepstream_nvinfer_config,
 };
 pub use pipeline::{
-    CaptureFormat, CaptureProfile, CrosshairPipelineConfig, DeepStreamPipelineSpec, InferenceStage,
-    ModelInput, PipelineSpecError, PreviewPipelineConfig, Roi,
+    CaptureFormat, CaptureProfile, DeepStreamPipelineSpec, InferenceStage, ModelInput,
+    PipelineSpecError, PreviewPipelineConfig, Roi,
 };
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
 pub use session::{

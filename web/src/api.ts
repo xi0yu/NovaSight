@@ -28,6 +28,7 @@ import {
   decodeModelProfileResponse
 } from "./contracts/modelIngress";
 import { decodeAuthSession } from "./contracts/auth";
+import { decodeActivityHistory } from "./contracts/activity";
 import type {
   ConfigCommandPayload,
   ConfigSchemaResponse,
@@ -66,6 +67,7 @@ import type {
   ModelProfileResponse
 } from "./contracts/modelIngress";
 import type { AuthSession } from "./contracts/auth";
+import type { ActivityHistoryResponse } from "./contracts/activity";
 
 export {
   decodeRuntimeStatusMessage,
@@ -85,6 +87,7 @@ export { ModelIngressContractError } from "./contracts/modelIngress";
 export type * from "./contracts/modelIngress";
 export { AuthContractError } from "./contracts/auth";
 export type * from "./contracts/auth";
+export type * from "./contracts/activity";
 
 export type HealthResponse = {
   ok: boolean;
@@ -237,7 +240,9 @@ export const API_PATHS = {
   modelJobsList: "/api/models/jobs/list",
   license: "/api/license",
   licenseActivate: "/api/license/activate",
-  statusWs: "/ws/status"
+  statusWs: "/ws/status",
+  activity: "/api/activity",
+  activityWs: "/ws/activity"
 } as const;
 
 const apiBase = (import.meta.env.VITE_NOVASIGHT_API_BASE ?? "").replace(/\/$/, "");
@@ -271,6 +276,14 @@ export function statusWebSocketUrl(topic?: RuntimeStatusTopic): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const base = `${protocol}//${window.location.host}${API_PATHS.statusWs}`;
   return topic ? `${base}?topic=${encodeURIComponent(topic)}` : base;
+}
+
+export function activityWebSocketUrl(): string {
+  const explicit = import.meta.env.VITE_NOVASIGHT_WS_BASE;
+  if (explicit) return `${explicit.replace(/\/$/, "")}${API_PATHS.activityWs}`;
+  if (apiBase.startsWith("http")) return `${apiBase.replace(/^http/, "ws")}${API_PATHS.activityWs}`;
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}${API_PATHS.activityWs}`;
 }
 
 type RequestOptions = {
@@ -583,6 +596,15 @@ export function getRuntimeConfig(): Promise<RuntimeConfig> {
   );
 }
 
+export function getActivityHistory(): Promise<ActivityHistoryResponse> {
+  return requestJson<ActivityHistoryResponse>(
+    API_PATHS.activity,
+    undefined,
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeActivityHistory
+  );
+}
+
 export function getConfigSchema(): Promise<ConfigSchemaResponse> {
   return requestJson<ConfigSchemaResponse>(
     API_PATHS.configSchema,
@@ -665,13 +687,13 @@ export function updateRuntimeConfigCommand(
   );
 }
 
-export function setRuntimeOutputGate(
+export function setRuntimeControlEnabled(
   enabled: boolean,
   expectedRevision?: number,
   physicalOutputAcknowledged = false
 ): Promise<ConfigUpdateResponse> {
   return updateRuntimeConfigCommand({
-    command: "set_output_gate",
+    command: "set_control_enabled",
     enabled,
     expected_revision: expectedRevision
   }, physicalOutputAcknowledged);

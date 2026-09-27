@@ -8,17 +8,11 @@
 
 #![forbid(unsafe_code)]
 
-mod crosshair;
 mod perception;
 mod preview;
 mod runtime;
 mod slot;
 
-pub use crosshair::{
-    ControlReference, CrosshairConfig, CrosshairEpoch, CrosshairError, CrosshairFramePublisher,
-    CrosshairHub, CrosshairHubSlot, CrosshairObservation, CrosshairSnapshot,
-    CrosshairTemplateSummary,
-};
 pub use perception::{
     ModelCandidate, ParserContract, PerceptionAdapter, PerceptionError, PerceptionErrorKind,
     PerceptionEvent, PerceptionMetrics, PerceptionModelContract, PerceptionRuntimeContract,

@@ -19,7 +19,7 @@ type RuntimeOverviewViewProps = {
   runtimeControlUnavailable: boolean;
   onOpenErrors?: () => void;
   onToggle: () => void;
-  moduleOrder?: string[];
+  moduleOrder?: readonly string[];
 };
 
 const DEFAULT_MODULES = ["runtime", "metrics", "pipeline", "diagnostics"];

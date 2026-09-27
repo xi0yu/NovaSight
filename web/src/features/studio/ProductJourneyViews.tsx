@@ -3,6 +3,7 @@ import { NovaIcon, type NovaIconName } from "../../components/visual";
 import { version as studioVersion } from "../../../package.json";
 import type { RuntimeProjection } from "../runtime/runtimeProjection";
 import type { ConsolePage } from "./StudioNavigation";
+import type { ReactNode } from "react";
 
 import "./product-journey.css";
 
@@ -265,56 +266,56 @@ export function AboutView({
   license: LicenseStatus | null;
   serviceConnected: boolean;
   layoutRevision: string;
-  modules: ReadonlySet<string>;
+  modules: readonly string[];
   onNavigate: Navigate;
 }) {
+  const moduleViews: Record<string, ReactNode> = {
+    identity: (
+      <header className="about-identity">
+        <div className="about-mark" aria-hidden="true"><NovaIcon name="prediction-line" size={36} /></div>
+        <div>
+          <span>实时视觉工作站</span>
+          <h2 id="about-product-title">NovaSight Studio</h2>
+          <p>把采集、推理、目标选择与设备输出组织成一条可核实的实时链路。</p>
+        </div>
+        <span className={serviceConnected ? "truth-badge verified" : "truth-badge"}>
+          <NovaIcon name={serviceConnected ? "connected" : "disconnected"} size={15} />
+          {serviceConnected ? "服务已连接" : "服务未连接"}
+        </span>
+      </header>
+    ),
+    version: (
+      <dl className="about-facts" aria-label="版本与配置信息">
+        <div><dt>Studio 版本</dt><dd>{studioVersion}</dd></div>
+        <div><dt>页面配置</dt><dd>{layoutRevision}</dd></div>
+        <div><dt>授权</dt><dd>{license?.valid ? license.tier || "已授权" : "不可用"}</dd></div>
+      </dl>
+    ),
+    capabilities: (
+      <section className="about-capabilities" aria-labelledby="about-capabilities-title">
+        <div>
+          <span>当前产品边界</span>
+          <h3 id="about-capabilities-title">专业能力按需展开</h3>
+          <p>普通页面只回答状态、操作和下一步；CUDA、TensorRT、NVMM 与原始运行证据保留在深入页面。</p>
+        </div>
+        <ul>
+          <li><NovaIcon name="capture" size={17} /><span>采集与 ROI</span></li>
+          <li><NovaIcon name="tensorrt" size={17} /><span>模型与推理</span></li>
+          <li><NovaIcon name="tracking" size={17} /><span>目标与跟踪</span></li>
+          <li><NovaIcon name="device-send" size={17} /><span>控制与输出</span></li>
+        </ul>
+      </section>
+    ),
+    support: (
+      <footer className="about-actions">
+        <button className="console-button" onClick={() => onNavigate("license")} type="button">查看授权</button>
+        <button className="console-button primary" onClick={() => onNavigate("activity")} type="button">打开实时日志</button>
+      </footer>
+    ),
+  };
   return (
     <section className="product-journey about-view" aria-labelledby="about-product-title">
-      {modules.has("identity") ? (
-        <header className="about-identity">
-          <div className="about-mark" aria-hidden="true"><NovaIcon name="prediction-line" size={36} /></div>
-          <div>
-            <span>实时视觉工作站</span>
-            <h2 id="about-product-title">NovaSight Studio</h2>
-            <p>把采集、推理、目标选择与设备输出组织成一条可核实的实时链路。</p>
-          </div>
-          <span className={serviceConnected ? "truth-badge verified" : "truth-badge"}>
-            <NovaIcon name={serviceConnected ? "connected" : "disconnected"} size={15} />
-            {serviceConnected ? "服务已连接" : "服务未连接"}
-          </span>
-        </header>
-      ) : null}
-
-      {modules.has("version") ? (
-        <dl className="about-facts" aria-label="版本与配置信息">
-          <div><dt>Studio 版本</dt><dd>{studioVersion}</dd></div>
-          <div><dt>页面配置</dt><dd>{layoutRevision}</dd></div>
-          <div><dt>授权</dt><dd>{license?.valid ? license.tier || "已授权" : "不可用"}</dd></div>
-        </dl>
-      ) : null}
-
-      {modules.has("capabilities") ? (
-        <section className="about-capabilities" aria-labelledby="about-capabilities-title">
-          <div>
-            <span>当前产品边界</span>
-            <h3 id="about-capabilities-title">专业能力按需展开</h3>
-            <p>普通页面只回答状态、操作和下一步；CUDA、TensorRT、NVMM 与原始运行证据保留在深入页面。</p>
-          </div>
-          <ul>
-            <li><NovaIcon name="capture" size={17} /><span>采集与 ROI</span></li>
-            <li><NovaIcon name="tensorrt" size={17} /><span>模型与推理</span></li>
-            <li><NovaIcon name="tracking" size={17} /><span>目标与跟踪</span></li>
-            <li><NovaIcon name="device-send" size={17} /><span>控制与输出</span></li>
-          </ul>
-        </section>
-      ) : null}
-
-      {modules.has("support") ? (
-        <footer className="about-actions">
-          <button className="console-button" onClick={() => onNavigate("license")} type="button">查看授权</button>
-          <button className="console-button primary" onClick={() => onNavigate("activity")} type="button">打开实时日志</button>
-        </footer>
-      ) : null}
+      {modules.map((moduleId) => moduleViews[moduleId] ? <div data-module={moduleId} key={moduleId}>{moduleViews[moduleId]}</div> : null)}
     </section>
   );
 }

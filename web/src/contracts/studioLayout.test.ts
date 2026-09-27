@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_STUDIO_LAYOUT, StudioLayoutContractError, decodeStudioLayout } from "./studioLayout";
+import { DEFAULT_STUDIO_LAYOUT, StudioLayoutContractError, decodeStudioLayout, moduleOrderForPage } from "./studioLayout";
 
 describe("studio layout contract", () => {
   it("accepts reordering known pages and modules", () => {
@@ -18,6 +18,7 @@ describe("studio layout contract", () => {
 
     expect(layout.revision).toBe("ops-42");
     expect(layout.pages[0]?.modules).toEqual(["feed", "summary", "filters"]);
+    expect(moduleOrderForPage(layout, "params")).toEqual(["output", "targeting", "motion", "response"]);
   });
 
   it("rejects arbitrary pages and modules instead of executing remote UI", () => {

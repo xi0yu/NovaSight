@@ -128,13 +128,30 @@
   font-size: 14px;
 }
 
+.activity-item-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
 .activity-level-tag {
   display: inline-flex;
-  margin: 0 8px 5px 0;
+  margin: 0;
   color: var(--status-error-fg);
   font-size: 10px;
   font-weight: 800;
   letter-spacing: .06em;
+}
+
+.activity-domain-tag {
+  display: inline-flex;
+  padding: 2px 6px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 680;
 }
 .activity-level-tag[data-tone="success"] { color: var(--status-success-fg); }
 .activity-level-tag[data-tone="info"] { color: var(--signal-info); }

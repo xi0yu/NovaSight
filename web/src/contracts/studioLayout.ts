@@ -115,6 +115,10 @@ export function decodeStudioLayout(value: unknown): StudioLayout {
 }
 
 export function modulesForPage(layout: StudioLayout, pageId: StudioLayoutPageId): ReadonlySet<string> {
+  return new Set(moduleOrderForPage(layout, pageId));
+}
+
+export function moduleOrderForPage(layout: StudioLayout, pageId: StudioLayoutPageId): readonly string[] {
   const page = layout.pages.find((candidate) => candidate.id === pageId);
-  return new Set(page?.modules ?? STUDIO_LAYOUT_MODULE_IDS[pageId]);
+  return page?.modules ?? STUDIO_LAYOUT_MODULE_IDS[pageId];
 }

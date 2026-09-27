@@ -102,7 +102,7 @@ receipts.
 | Module | Primary ownership | Boundary to preserve |
 | --- | --- | --- |
 | `novasight-core` | Domain types, freshness, targeting, tracking, prediction, control laws | No HTTP, GStreamer, TensorRT, database, or device transport knowledge |
-| `novasight-pipeline` | Owned worker threads, latest-only slots, preview/crosshair hubs, control execution | Accept validated domain observations; keep queues bounded |
+| `novasight-pipeline` | Owned worker threads, latest-only slots, preview delivery, control execution | Accept validated domain observations; keep queues bounded |
 | `novasight-runtime` | Sole lifecycle actor, configuration transactions, model activation, immutable snapshots | One authority for start/stop/update and fail-closed output |
 | `novasight-api` | HTTP/WebSocket projection and control surface | Delegate mutations to `RuntimeHandle`; do not become a second runtime |
 | `novasight-store` | Config persistence, model catalog/deployments, license persistence | Keep filesystem/database authority explicit; avoid leaking broad store dependencies |

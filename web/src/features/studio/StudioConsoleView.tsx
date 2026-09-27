@@ -44,7 +44,7 @@ import {
   moveCatalogEngine,
   getModelVersions,
   selectCaptureProfile,
-  setRuntimeOutputGate,
+  setRuntimeControlEnabled,
   setCapturePreviewEnabled,
   streamUrl,
   updateRuntimeConfig,
@@ -53,10 +53,11 @@ import { pushToastRaw, reportError, reportSuccess, useActivityNotices, useClearE
 import { formatRuntimeErrorMessage, getErrorMessage } from "../shared/format";
 import { LicenseView } from "../license/LicenseView";
 import { ActivityView } from "../activity/ActivityView";
+import { useActivityStream } from "../activity/useActivityStream";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { useStableSemanticValue } from "../shared/useStableSemanticValue";
 import { NovaIcon } from "../../components/visual";
-import { modulesForPage } from "../../contracts/studioLayout";
+import { moduleOrderForPage, modulesForPage } from "../../contracts/studioLayout";
 import { CurrentModelSummary } from "../models/CurrentModelSummary";
 import { ModelSwitchDialog } from "../models/ModelSwitchDialog";
 import {
@@ -691,13 +692,16 @@ export function StudioConsoleView({
   onStatusTopicChange
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
+  const serverActivityEvents = useActivityStream();
   const studioLayout = useStudioLayout();
   const overviewModules = modulesForPage(studioLayout, "overview");
   const captureModules = modulesForPage(studioLayout, "capture");
   const parameterModules = modulesForPage(studioLayout, "params");
-  const activityModules = studioLayout.pages.find((page) => page.id === "activity")?.modules ?? [];
-  const overviewModuleOrder = studioLayout.pages.find((page) => page.id === "overview")?.modules ?? [];
-  const aboutModules = modulesForPage(studioLayout, "about");
+  const captureModuleOrder = moduleOrderForPage(studioLayout, "capture");
+  const parameterModuleOrder = moduleOrderForPage(studioLayout, "params");
+  const activityModules = moduleOrderForPage(studioLayout, "activity");
+  const overviewModuleOrder = moduleOrderForPage(studioLayout, "overview");
+  const aboutModules = moduleOrderForPage(studioLayout, "about");
   const activePageRef = useRef(activePage);
   const pageScrollPositionsRef = useRef<Partial<Record<ConsolePage, number>>>({});
 
@@ -2056,6 +2060,17 @@ export function StudioConsoleView({
     ));
   }, [capture?.last_error, errorNotices, errors, localError, runtimeFaultDetail, runtimeFaultEvidence]);
   const activityItems = useMemo(() => [
+    ...serverActivityEvents.map((event) => ({
+      key: `server-${event.daemon_instance_id}-${event.id}`,
+      title: event.title,
+      detail: formatRuntimeErrorMessage(event.message),
+      technicalDetail: event.technical_detail,
+      requestId: event.request_id ?? undefined,
+      tag: event.tag,
+      time: event.occurred_at_ms,
+      count: event.count,
+      tone: event.level,
+    })),
     ...currentErrorDetails.map((item) => ({ ...item, tone: "error" as const })),
     ...activityNotices.map((notice) => ({
       key: `activity-${notice.id}`,
@@ -2065,7 +2080,7 @@ export function StudioConsoleView({
       count: notice.count,
       tone: notice.tone,
     })),
-  ].sort((left, right) => (right.time ?? Number.MAX_SAFE_INTEGER) - (left.time ?? Number.MAX_SAFE_INTEGER)), [activityNotices, currentErrorDetails]);
+  ].sort((left, right) => (right.time ?? Number.MAX_SAFE_INTEGER) - (left.time ?? Number.MAX_SAFE_INTEGER)), [activityNotices, currentErrorDetails, serverActivityEvents]);
 
   useEffect(() => {
     if (configuredCaptureDevice) {
@@ -2476,7 +2491,7 @@ export function StudioConsoleView({
       if (
         (runtimeOutputEnabled === true || outputEnabled)
         && (
-          ["replay", "consumers", "limits", "crosshair", "capture", "inference", "hardware", "pipeline"].includes(section)
+          ["replay", "consumers", "limits", "capture", "inference", "hardware", "pipeline"].includes(section)
           || (section === "control" && (key === "recoil" || (key === "trigger_mode" && value === "always")))
         )
         && options?.physicalOutputAcknowledged !== true
@@ -2630,18 +2645,24 @@ export function StudioConsoleView({
     if (!draft || !baseline) {
       return;
     }
+    let changes: ParameterPageFieldChange[];
+    try {
+      changes = parameterPageFieldChanges(baseline, draft);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setLocalError(`参数保存失败：${message}`);
+      setDialogSaveError(message);
+      reportError(error, { source: "parameter-page", title: "参数保存失败" });
+      return;
+    }
+    const payload = preserveOutputGate(draft, baseline);
+    payload.revision = baseline.revision;
     beginPendingConfigWrite();
     setParameterPageSaving(true);
     setBusy("parameter-page.save");
     setDialogSaveError(null);
     setLocalError(null);
-    let lastApplied: RuntimeConfig | null = null;
-    let changes: ParameterPageFieldChange[] = [];
-    let appliedChangeCount = 0;
-    let remainingChangeCount = 0;
     try {
-      changes = parameterPageFieldChanges(baseline, draft);
-      remainingChangeCount = changes.length;
       if (changes.length === 0) {
         configDraftRef.current = baseline;
         setConfigDraft(baseline);
@@ -2649,110 +2670,55 @@ export function StudioConsoleView({
         setParameterPageDirtyState(false);
         return;
       }
-      let restartRequired = false;
-      const documentChanges = changes.filter((change) =>
-        change.section === "inference"
-        || (change.section === "control" && change.key === "aim")
-        || change.section === "pipeline"
-      );
-      const needsDocumentReload = changes.some((change) =>
-        change.section === "inference" || (change.section === "control" && change.key === "aim")
-      );
-      let documentReloaded = false;
-      let expectedRevision = readNumber(baseline.revision, 0);
       const executeSave = async () => {
-        for (const change of changes) {
-          if (needsDocumentReload && documentChanges.includes(change)) {
-            if (documentReloaded) continue;
-            const current = lastApplied ?? baseline;
-            const payload = preserveOutputGate(
-              applyParameterPageFieldChanges(current, documentChanges),
-              current
-            );
-            payload.revision = expectedRevision;
-            const result = await updateRuntimeConfig(payload, physicalOutputAcknowledged);
-            if (result.apply_mode !== "epoch_reload" || !result.applied) {
-              throw new Error(`类别与推理配置未在当前进程生效，后端返回 ${result.apply_mode}`);
-            }
-            lastApplied = normalizeRuntimeConfig(result.config);
-            expectedRevision = readNumber(lastApplied.revision, expectedRevision);
-            appliedChangeCount += documentChanges.length;
-            remainingChangeCount = Math.max(0, changes.length - appliedChangeCount);
-            restartRequired ||= result.restart_required;
-            documentReloaded = true;
-            continue;
-          }
-          const result = await persistRuntimeConfigField(
-            change.section,
-            change.key,
-            change.value,
-            expectedRevision,
-            physicalOutputAcknowledged
-          );
-          if (result.apply_mode !== "hot_update" || !result.applied) {
-            throw new Error(
-              `${change.section}.${change.key} 未按热更新契约生效，后端返回 ${result.apply_mode}`
-            );
-          }
-          lastApplied = normalizeRuntimeConfig(result.config);
-          expectedRevision = readNumber(lastApplied.revision, expectedRevision);
-          appliedChangeCount += 1;
-          remainingChangeCount = Math.max(0, changes.length - appliedChangeCount);
-          restartRequired ||= result.restart_required;
+        const result = await updateRuntimeConfig(payload, physicalOutputAcknowledged);
+        if (result.apply_mode !== "epoch_reload" || !result.applied || result.rolled_back) {
+          throw new Error(`整组参数未在当前进程生效，后端返回 ${result.apply_mode}`);
         }
+        return result;
       };
       const request = configWriteQueueRef.current.then(executeSave);
       configWriteQueueRef.current = request.then(
         () => undefined,
         () => undefined
       );
-      await request;
-      finalizeRuntimeConfigWrite(lastApplied ?? baseline);
+      const result = await request;
+      finalizeRuntimeConfigWrite(normalizeRuntimeConfig(result.config));
       parameterPageBaselineRef.current = null;
       setParameterPageDirtyState(false);
       reportSuccess(
-        restartRequired ? "参数已保存，部分配置待重启" : "参数已保存并生效",
-        restartRequired
-          ? "本页运行参数已应用；其他进程级配置仍等待服务启动接管。"
-          : needsDocumentReload
-            ? "类别与推理配置已写入，并在当前进程重新加载；物理输出开关未改变。"
-            : "修改已写入配置文件并同步到当前进程；没有重建运行 epoch。",
+        result.restart_required ? "参数已应用，其他配置待重启" : "参数已保存并生效",
+        result.restart_required
+          ? "本页参数已作为一个整体应用；与本页无关的进程级配置仍等待服务重启。"
+          : "本页修改已作为一个整体写入并重新加载；控制总开关未改变。",
         "parameter-page"
       );
     } catch (error) {
-      // The write queue mutates `lastApplied` inside an async closure. Keep the
-      // recovery value explicitly wide so TypeScript does not freeze the
-      // closure-owned assignment at its initial `null` value.
-      let canonical: RuntimeConfig | null = lastApplied;
+      let canonical: RuntimeConfig | null = null;
       try {
         canonical = normalizeRuntimeConfig(await getRuntimeConfig());
       } catch {
-        // Keep the newest successful response when the recovery read also fails.
+        // Preserve the local draft when the authoritative read also fails.
       }
       if (canonical) {
-        finalizeRuntimeConfigWrite(canonical);
-        const retryDraft = changes.length > 0
-          ? applyParameterPageFieldChanges(canonical, changes)
-          : { ...draft };
+        if (runtimeConfigsEqual(canonical, { ...payload, revision: canonical.revision })) {
+          finalizeRuntimeConfigWrite(canonical);
+          parameterPageBaselineRef.current = null;
+          setParameterPageDirtyState(false);
+          reportSuccess("参数已保存并生效", "响应中断，但重新读取后已确认整组参数生效。", "parameter-page");
+          return;
+        }
+        const retryDraft = applyParameterPageFieldChanges(canonical, changes);
         retryDraft.revision = canonical.revision;
+        finalizeRuntimeConfigWrite(canonical);
         parameterPageBaselineRef.current = canonical;
         configDraftRef.current = retryDraft;
         setConfigDraft(retryDraft);
-        remainingChangeCount = changes.length > 0
-          ? parameterPageFieldChanges(canonical, retryDraft).length
-          : 0;
-        setParameterPageDirtyState(!runtimeConfigsEqual(canonical, retryDraft));
+        setParameterPageDirtyState(true);
       }
       const message = getErrorMessage(error);
-      const progress = changes.length === 0
-        ? "本次没有参数被写入，修改仍保留在页面中。"
-        : remainingChangeCount === 0
-          ? "后端已保存这些值，但当前进程未确认生效；请查看运行状态。"
-          : appliedChangeCount > 0
-            ? `已保存并应用 ${appliedChangeCount} 项，剩余 ${remainingChangeCount} 项仍保留在页面中。`
-            : `本次没有参数被写入，${remainingChangeCount} 项修改仍保留在页面中。`;
-      const failureMessage = `${progress} ${message}`;
-      setLocalError(`参数保存未全部完成：${failureMessage}`);
+      const failureMessage = `整组参数未生效，${changes.length} 项修改仍保留在页面中。${message}`;
+      setLocalError(`参数保存失败：${failureMessage}`);
       setDialogSaveError(failureMessage);
       reportError(error, { source: "parameter-page", title: "参数保存失败" });
     } finally {
@@ -2760,7 +2726,7 @@ export function StudioConsoleView({
       setBusy(null);
       finishPendingConfigWrite();
     }
-  }, [applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, parameterPageSaving, setParameterPageDirtyState]);
+  }, [beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, parameterPageSaving, setParameterPageDirtyState]);
 
   const requestSaveParameterPageDraft = useCallback(() => {
     if (!parameterPageDirtyRef.current || parameterPageSaving) return;
@@ -3384,7 +3350,7 @@ export function StudioConsoleView({
         if (outputEnabled) {
           beginPendingConfigWrite();
           try {
-            const gateResult = await setRuntimeOutputGate(false);
+            const gateResult = await setRuntimeControlEnabled(false);
             const applied = normalizeRuntimeConfig(gateResult.config);
             finalizeRuntimeConfigWrite(applied);
           } finally {
@@ -4041,8 +4007,9 @@ export function StudioConsoleView({
           </header>
           ) : null}
           <div className="capture-workbench">
-              {captureModules.has("source") ? (
-              <section className="capture-source-setup" aria-labelledby="capture-source-title">
+              {captureModuleOrder.map((moduleId) => {
+                if (moduleId === "source") return (
+              <section className="capture-source-setup" aria-labelledby="capture-source-title" key={moduleId}>
                 <header className="capture-workbench-heading">
                   <span aria-hidden="true"><NovaIcon name="capture-card" size={20} /></span>
                   <div><small>画面来源</small><h3 id="capture-source-title">选择设备和画质</h3><p>先读取设备真正支持的规格，再选择一项应用。</p></div>
@@ -4100,10 +4067,10 @@ export function StudioConsoleView({
                   />
                 </details>
               </section>
-              ) : null}
+              );
 
-              {captureModules.has("roi") ? (
-              <section className="capture-roi-stage" aria-labelledby="capture-roi-title">
+                if (moduleId === "roi") return (
+              <section className="capture-roi-stage" aria-labelledby="capture-roi-title" key={moduleId}>
                 <header className="capture-workbench-heading">
                   <span aria-hidden="true"><NovaIcon name="roi" size={20} /></span>
                   <div><small>模型视野</small><h3 id="capture-roi-title">模型看见画面中央</h3><p>只改变送入模型的中心区域，不改变采集卡分辨率。</p></div>
@@ -4143,7 +4110,9 @@ export function StudioConsoleView({
                   </div>
                 </details>
               </section>
-              ) : null}
+              );
+                return null;
+              })}
           </div>
 
           {captureModules.has("source") ? (
@@ -4578,8 +4547,9 @@ export function StudioConsoleView({
             </div>
             {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
             <div className="parameter-workspace">
-            {parameterModules.has("response") ? (
-            <section className="parameter-group" id="parameter-start-conditions" aria-labelledby="parameter-start-conditions-title">
+            {parameterModuleOrder.map((moduleId) => {
+              if (moduleId === "response") return (
+            <section className="parameter-group" data-module="response" id="parameter-start-conditions" aria-labelledby="parameter-start-conditions-title" key={moduleId}>
               <header className="parameter-group-heading">
                 <span>开始</span>
                 <div><h2 id="parameter-start-conditions-title">启动条件</h2><p>设置控制在何时进入工作状态，以及是否过滤过短的按键动作。</p></div>
@@ -4643,9 +4613,9 @@ export function StudioConsoleView({
 
             </ol>
             </section>
-            ) : null}
-            {parameterModules.has("motion") ? (
-            <section className="parameter-group" id="parameter-motion-response" aria-labelledby="parameter-motion-response-title">
+            );
+              if (moduleId === "motion") return (
+            <section className="parameter-group" data-module="motion" id="parameter-motion-response" aria-labelledby="parameter-motion-response-title" key={moduleId}>
               <header className="parameter-group-heading">
                 <span>移动</span>
                 <div><h2 id="parameter-motion-response-title">移动响应</h2><p>调整移动速度、提前量、补偿和单次输出边界。</p></div>
@@ -4750,8 +4720,9 @@ export function StudioConsoleView({
 
             </ol>
             </section>
-            ) : null}
-            {parameterModules.has("targeting") ? (
+            );
+              if (moduleId === "targeting") return (
+            <div className="parameter-module-group" data-module="targeting" key={moduleId}>
             <section className="parameter-group" id="parameter-target-lock" aria-labelledby="parameter-target-lock-title">
               <header className="parameter-group-heading">
                 <span>目标</span>
@@ -4832,9 +4803,6 @@ export function StudioConsoleView({
                 </details>
               </div>
             </section>
-            ) : null}
-
-            {parameterModules.has("targeting") ? (
             <details className="parameter-professional-settings" id="parameter-professional-settings">
               <summary>
                 <span><b>专业参数</b><small>只在出现误跟、断轨或设备标定偏差时调整。</small></span>
@@ -4864,7 +4832,10 @@ export function StudioConsoleView({
                 </details>
               </div>
             </details>
-            ) : null}
+            </div>
+            );
+              return null;
+            })}
             </div>
           </>
           ) : (

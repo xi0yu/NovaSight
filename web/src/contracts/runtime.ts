@@ -150,8 +150,6 @@ export interface RuntimeDeepStreamState {
   input_frames: number;
   metadata_extractions: number;
   published_batches: number;
-  crosshair_active: boolean;
-  crosshair_reason: string;
 }
 
 export interface RuntimePipelineSummary {
@@ -176,54 +174,6 @@ export interface RuntimeOutputTraceState {
   state: "ready" | "blocked" | "waiting" | "idle";
   detail: string;
   next_action: string;
-}
-
-export interface CrosshairObservation {
-  status: string;
-  found: boolean;
-  x: number;
-  y: number;
-  confidence: number;
-  sample_ts_ns: number;
-  template_id: string;
-  point_hits: number;
-  point_count: number;
-  offset_x: number;
-  offset_y: number;
-  reason: string;
-}
-
-export interface CrosshairTemplateSummary {
-  id: string;
-  schema_version: number;
-  created_ts_ns: number;
-  geometry_signature: string;
-  search_size: number;
-  point_count: number;
-}
-
-export interface CrosshairSnapshot {
-  enabled: boolean;
-  use_for_control: boolean;
-  running: boolean;
-  state: string;
-  observation: CrosshairObservation | null;
-  control_reference_ready: boolean;
-  control_reference_source: string;
-  control_reference_reason: string;
-  recent_samples: number;
-  required_samples: number;
-  processed_frames: number;
-  matched_frames: number;
-  dropped_frames: number;
-  last_error: string;
-  template: CrosshairTemplateSummary | null;
-}
-
-export interface CrosshairLearnResponse {
-  learned: true;
-  template: CrosshairTemplateSummary;
-  status: CrosshairSnapshot;
 }
 
 export interface RuntimeVisionInferenceState {
@@ -417,7 +367,6 @@ export interface RuntimeVisionControlState {
 }
 
 export interface RuntimeVisionState {
-  crosshair: CrosshairSnapshot | null;
   inference: RuntimeVisionInferenceState;
   detections: number;
   detection_items: RuntimeVisionDetectionState[];
@@ -689,35 +638,6 @@ function assertPipeline(value: unknown, path: string): void {
   expectNullable(deepstream.last_error, `${path}.deepstream.last_error`, expectString);
   ["input_frames", "metadata_extractions", "published_batches"].forEach((key) =>
     expectUnsignedInteger(deepstream[key], `${path}.deepstream.${key}`));
-  expectBoolean(deepstream.crosshair_active, `${path}.deepstream.crosshair_active`);
-  expectString(deepstream.crosshair_reason, `${path}.deepstream.crosshair_reason`);
-}
-
-function assertCrosshair(value: unknown, path: string): void {
-  const record = expectRecord(value, path);
-  ["enabled", "use_for_control", "running", "control_reference_ready"].forEach((key) =>
-    expectBoolean(record[key], `${path}.${key}`));
-  ["state", "control_reference_source", "control_reference_reason", "last_error"].forEach((key) =>
-    expectString(record[key], `${path}.${key}`));
-  ["recent_samples", "required_samples", "processed_frames", "matched_frames", "dropped_frames"]
-    .forEach((key) => expectUnsignedInteger(record[key], `${path}.${key}`));
-  expectNullable(record.observation, `${path}.observation`, (observation, observationPath) => {
-    const item = expectRecord(observation, observationPath);
-    ["status", "template_id", "reason"].forEach((key) => expectString(item[key], `${observationPath}.${key}`));
-    expectBoolean(item.found, `${observationPath}.found`);
-    ["x", "y", "confidence", "offset_x", "offset_y"].forEach((key) =>
-      expectFiniteNumber(item[key], `${observationPath}.${key}`));
-    ["sample_ts_ns", "point_hits", "point_count"].forEach((key) =>
-      expectUnsignedInteger(item[key], `${observationPath}.${key}`));
-  });
-  expectNullable(record.template, `${path}.template`, assertCrosshairTemplate);
-}
-
-function assertCrosshairTemplate(value: unknown, path: string): void {
-  const record = expectRecord(value, path);
-  ["id", "geometry_signature"].forEach((key) => expectString(record[key], `${path}.${key}`));
-  ["schema_version", "created_ts_ns", "search_size", "point_count"].forEach((key) =>
-    expectUnsignedInteger(record[key], `${path}.${key}`));
 }
 
 function assertPreviewSnapshot(value: unknown, path: string): void {
@@ -732,7 +652,6 @@ function assertPreviewSnapshot(value: unknown, path: string): void {
 
 function assertVision(value: unknown, path: string): void {
   const record = expectRecord(value, path);
-  expectNullable(record.crosshair, `${path}.crosshair`, assertCrosshair);
   const inference = expectRecord(record.inference, `${path}.inference`);
   ["input_width", "input_height", "generation", "model_input_width", "model_input_height",
     "source_width", "source_height", "roi_offset_x", "roi_offset_y", "roi_width", "roi_height"]
@@ -894,21 +813,6 @@ export function decodeCaptureState(value: unknown): CaptureState {
 export function decodePreviewSnapshot(value: unknown): PreviewSnapshotState {
   assertPreviewSnapshot(value, "preview");
   return value as PreviewSnapshotState;
-}
-
-export function decodeCrosshairSnapshot(value: unknown): CrosshairSnapshot {
-  assertCrosshair(value, "crosshair");
-  return value as CrosshairSnapshot;
-}
-
-export function decodeCrosshairLearnResponse(value: unknown): CrosshairLearnResponse {
-  const record = expectRecord(value, "crosshair_learn");
-  if (record.learned !== true) {
-    throw new RuntimeContractError("crosshair_learn.learned", "true");
-  }
-  assertCrosshairTemplate(record.template, "crosshair_learn.template");
-  assertCrosshair(record.status, "crosshair_learn.status");
-  return value as CrosshairLearnResponse;
 }
 
 export function decodeRuntimeStatusMessage(value: unknown): RuntimeStatusMessage {

@@ -36,8 +36,8 @@ pub use model_ingress::{
 pub use model_ingress_native::NativeModelJobRunner;
 pub use novasight_core::RuntimeEpoch;
 pub use novasight_pipeline::{
-    CrosshairSnapshot, CrosshairTemplateSummary, DetectionTelemetryItem, OutputDeliveryState,
-    PreviewFrame, PreviewHub, PreviewSnapshot, PreviewSubscription,
+    DetectionTelemetryItem, OutputDeliveryState, PreviewFrame, PreviewHub, PreviewSnapshot,
+    PreviewSubscription,
 };
 pub use novasight_store::config::AppConfig;
 pub use protocol::{RuntimeErrorSummary, SubsystemState};

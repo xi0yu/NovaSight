@@ -1,5 +1,5 @@
 import {
-  setRuntimeOutputGate,
+  setRuntimeControlEnabled,
   setRuntimeTriggerMode,
   updateRuntimeConfigField,
   type ConfigUpdateResponse,
@@ -15,9 +15,9 @@ export function persistRuntimeConfigField(
 ): Promise<ConfigUpdateResponse> {
   if (section === "control" && key === "output_enabled") {
     if (typeof value !== "boolean") {
-      throw new Error("物理输出开关需要布尔值。");
+      throw new Error("控制总开关需要布尔值。");
     }
-    return setRuntimeOutputGate(value, expectedRevision, physicalOutputAcknowledged);
+    return setRuntimeControlEnabled(value, expectedRevision, physicalOutputAcknowledged);
   }
   if (section === "control" && key === "trigger_mode") {
     if (value !== "always" && value !== "hardware") {

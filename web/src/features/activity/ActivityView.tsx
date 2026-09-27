@@ -13,6 +13,8 @@ export type ActivityItem = {
   title: string;
   detail: string;
   technicalDetail?: string;
+  requestId?: string | null;
+  tag?: string;
   time?: number;
   count?: number;
   tone?: "info" | "warn" | "error" | "success";
@@ -29,7 +31,7 @@ export function ActivityView({
 }: {
   items: ActivityItem[];
   onOpenDetails: () => void;
-  moduleOrder?: string[];
+  moduleOrder?: readonly string[];
 }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const attentionCount = items.filter((item) => item.tone === "warn" || item.tone === "error" || item.tone === undefined).length;
@@ -54,7 +56,7 @@ export function ActivityView({
         <div>
           <span>现在</span>
           <h2 id="activity-view-title">{attentionCount > 0 ? `${attentionCount} 件事需要注意` : completedCount > 0 ? "最近操作已完成" : items.length > 0 ? "最近有新记录" : "暂无活动记录"}</h2>
-          <p>{attentionCount > 0 ? "故障会保留在当前会话中；修复建议优先展示，底层证据按需展开。" : "这里只显示当前会话收到的记录；运行是否正常请查看首页状态。"}</p>
+          <p>{attentionCount > 0 ? "后端故障会在服务运行期间保留；处理建议优先展示，底层证据按需展开。" : "这里汇总后端运行事件和当前页面操作；运行结论请查看首页状态。"}</p>
         </div>
         {attentionCount > 0 ? (
           <button className="console-button secondary" onClick={onOpenDetails} type="button">查看完整详情</button>
@@ -84,7 +86,10 @@ export function ActivityView({
           <article className="activity-feed-item" data-tone={item.tone ?? "error"} key={item.key}>
             <span className="activity-feed-marker" aria-hidden="true" />
             <div>
-              <span className="activity-level-tag" data-tone={item.tone ?? "error"}>{item.tone === "success" ? "完成" : item.tone === "info" ? "信息" : item.tone === "warn" ? "警告" : "故障"}</span>
+              <div className="activity-item-tags">
+                <span className="activity-level-tag" data-tone={item.tone ?? "error"}>{item.tone === "success" ? "完成" : item.tone === "info" ? "信息" : item.tone === "warn" ? "警告" : "故障"}</span>
+                {item.tag ? <span className="activity-domain-tag">{item.tag}</span> : null}
+              </div>
               <strong>{item.title}</strong>
               {(item.count ?? 1) > 1 ? <small>本次会话重复 {item.count} 次</small> : null}
               <p>{item.detail}</p>
@@ -99,8 +104,8 @@ export function ActivityView({
           </article>
         )) : (
           <div className="activity-empty">
-            <span>{items.length > 0 ? "这个等级暂时没有日志" : "当前会话暂无记录"}</span>
-            <small>{items.length > 0 ? "选择其他等级继续查看。" : "运行、模型或配置出现变化时，会按时间出现在这里。"}</small>
+            <span>{items.length > 0 ? "这个等级暂时没有日志" : "暂无运行记录"}</span>
+            <small>{items.length > 0 ? "选择其他等级继续查看。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}</small>
           </div>
         )}
       </div>

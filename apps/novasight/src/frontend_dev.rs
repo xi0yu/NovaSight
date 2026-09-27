@@ -10,10 +10,11 @@ use tokio::process::Child;
 use tokio::time;
 
 use super::{
-    LayoutMode, PortableLayout, ReadyDocument, create_temporary_license_access,
-    ensure_portable_config, health_check, http_url, lifecycle, log_tail, print_studio_urls,
-    print_temporary_license_access, read_daemon_ready_file, read_ready_file, spawn_daemon,
-    spawn_logged_process, spawn_web, stop_child, stop_owned_daemon,
+    LayoutMode, PROCESS_SHUTDOWN_TIMEOUT, PortableLayout, ReadyDocument,
+    create_temporary_license_access, ensure_portable_config, health_check, http_url, lifecycle,
+    log_tail, print_studio_urls, print_temporary_license_access, read_daemon_ready_file,
+    read_ready_file, request_daemon_shutdown, spawn_daemon, spawn_logged_process, spawn_web,
+    stop_child, stop_owned_daemon,
 };
 
 const FRONTEND_READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -31,6 +32,7 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     }
     ensure_portable_config(layout)?;
     validate_artifacts(layout)?;
+    stop_preexisting_daemon(layout).await?;
     let _ = fs::remove_file(&layout.web_ready_file);
     let _ = fs::remove_file(&layout.daemon_ready_file);
     let temporary_license = create_temporary_license_access(layout)?;
@@ -70,6 +72,42 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     print_studio_urls(&studio_ready);
     print_temporary_license_access(temporary_license.as_ref());
     lifecycle::supervise(layout, daemon, web, Some(vite)).await
+}
+
+async fn stop_preexisting_daemon(layout: &PortableLayout) -> Result<()> {
+    if !daemon_status_succeeds(layout).await? {
+        return Ok(());
+    }
+    eprintln!(
+        "NOVASIGHT_EXISTING_DAEMON: Web 已停止，但检测到已有 novasightd；先通过本地控制通道有序停止，再启动本次工作区实例"
+    );
+    request_daemon_shutdown(layout).await?;
+    let started = Instant::now();
+    while daemon_status_succeeds(layout).await? {
+        if started.elapsed() >= PROCESS_SHUTDOWN_TIMEOUT {
+            bail!("已有 novasightd 在收到关闭请求后仍未退出；请先结束旧实例，再重新启动 NovaSight");
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(())
+}
+
+async fn daemon_status_succeeds(layout: &PortableLayout) -> Result<bool> {
+    let status = tokio::process::Command::new(&layout.control)
+        .arg("status")
+        .current_dir(&layout.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .with_context(|| {
+            format!(
+                "inspect existing daemon through {}",
+                layout.control.display()
+            )
+        })?;
+    Ok(status.success())
 }
 
 fn validate_artifacts(layout: &PortableLayout) -> Result<()> {
@@ -213,5 +251,45 @@ async fn wait_until_ready(
             );
         }
         time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{daemon_status_succeeds, stop_preexisting_daemon};
+    use crate::{LayoutMode, PortableLayout};
+
+    #[tokio::test]
+    async fn frontend_start_stops_a_daemon_left_running_without_the_web_gateway() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("novasight-existing-daemon-{suffix}"));
+        fs::create_dir_all(&root).unwrap();
+        let control = root.join("novasightctl");
+        fs::write(
+            &control,
+            "#!/bin/sh\ncase \"$1\" in\n  status) test ! -f \"$0.stopped\" ;;\n  shutdown) : > \"$0.stopped\" ;;\n  *) exit 2 ;;\nesac\n",
+        )
+        .unwrap();
+        fs::set_permissions(&control, fs::Permissions::from_mode(0o755)).unwrap();
+        let layout = PortableLayout::new(
+            LayoutMode::Developer,
+            root.clone(),
+            root.join("novasightd"),
+            root.join("novasight-web"),
+            control.clone(),
+        );
+
+        assert!(daemon_status_succeeds(&layout).await.unwrap());
+        stop_preexisting_daemon(&layout).await.unwrap();
+        assert!(!daemon_status_succeeds(&layout).await.unwrap());
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

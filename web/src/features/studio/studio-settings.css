@@ -1435,6 +1435,10 @@
   border-top: 1px solid var(--border-default);
 }
 
+.parameter-module-group {
+  display: contents;
+}
+
 .parameter-group {
   min-width: 0;
   display: grid;

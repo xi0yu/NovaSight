@@ -38,7 +38,6 @@ pub(crate) enum RuntimeCommand {
     InstallStoppedConfig {
         config: Box<AppConfig>,
         rebuild_device: bool,
-        rebuild_crosshair: bool,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
     ApplyConfig {
@@ -46,7 +45,6 @@ pub(crate) enum RuntimeCommand {
         config: Box<AppConfig>,
         rollback_config: Box<AppConfig>,
         rebuild_device: bool,
-        rebuild_crosshair: bool,
         reply: oneshot::Sender<Result<RuntimeSnapshot, RuntimeConfigApplyFailure>>,
     },
     PreflightPerception {

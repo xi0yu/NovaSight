@@ -17,11 +17,10 @@ use novasight_core::{
     PointerDeviceMode, RecordingPointerDevice, RuntimeEpoch,
 };
 use novasight_pipeline::{
-    CrosshairHub, CrosshairHubSlot, CrosshairSnapshot, ModelCandidate, PerceptionAdapter,
-    PerceptionError, PerceptionErrorKind, PerceptionEvent, PerceptionMetrics,
-    PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession, PipelineConfig,
-    PipelineEvent, PipelineIngress, PipelineLiveConfig, PipelineMetrics, PipelineRuntime,
-    PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription, TriggerMode,
+    ModelCandidate, PerceptionAdapter, PerceptionError, PerceptionErrorKind, PerceptionEvent,
+    PerceptionMetrics, PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession,
+    PipelineConfig, PipelineEvent, PipelineIngress, PipelineLiveConfig, PipelineMetrics,
+    PipelineRuntime, PipelineStatus, PreviewHub, PreviewSnapshot, PreviewSubscription, TriggerMode,
 };
 use novasight_store::config::{
     AppConfig, RecoilConfig as ConfigRecoilConfig, TriggerMode as ConfigTriggerMode,
@@ -112,17 +111,12 @@ pub struct RuntimeDependencies {
     model_catalog: Option<SqliteModelCatalog>,
     model_jobs: Option<ModelJobRunner>,
     preview: Option<PreviewHub>,
-    crosshair: CrosshairHubSlot,
-    crosshair_factory: Option<Arc<CrosshairHubFactory>>,
     output_enabled: bool,
     urgent_stop: Arc<UrgentStopSignal>,
 }
 
 type PointerDeviceFactory =
     dyn Fn(&AppConfig) -> Result<PointerDeviceInstallation, RuntimeError> + Send + Sync;
-type CrosshairHubFactory =
-    dyn Fn(&AppConfig) -> Result<Option<CrosshairHub>, RuntimeError> + Send + Sync;
-
 /// One process-local pointer adapter installation. Production composition
 /// supplies a factory so hardware parameter edits can replace the adapter
 /// between runtime epochs without restarting the daemon.
@@ -186,8 +180,6 @@ impl RuntimeDependencies {
             model_catalog: None,
             model_jobs: None,
             preview: None,
-            crosshair: CrosshairHubSlot::default(),
-            crosshair_factory: None,
             output_enabled: false,
             urgent_stop: Arc::new(UrgentStopSignal::new()),
         }
@@ -221,32 +213,6 @@ impl RuntimeDependencies {
 
     pub fn with_preview(mut self, preview: PreviewHub) -> Self {
         self.preview = Some(preview);
-        self
-    }
-
-    pub fn with_crosshair(mut self, crosshair: CrosshairHub) -> Self {
-        self.pipeline
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .crosshair = Some(crosshair.clone());
-        self.crosshair.replace(Some(crosshair));
-        self
-    }
-
-    pub fn with_crosshair_slot(mut self, crosshair: CrosshairHubSlot) -> Self {
-        self.pipeline
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .crosshair = crosshair.current();
-        self.crosshair = crosshair;
-        self
-    }
-
-    pub fn with_crosshair_factory<F>(mut self, factory: F) -> Self
-    where
-        F: Fn(&AppConfig) -> Result<Option<CrosshairHub>, RuntimeError> + Send + Sync + 'static,
-    {
-        self.crosshair_factory = Some(Arc::new(factory));
         self
     }
 
@@ -294,21 +260,11 @@ impl RuntimeDependencies {
         &self,
         config: &AppConfig,
         rebuild_device: bool,
-        rebuild_crosshair: bool,
     ) -> Result<PointerDeviceMode, RuntimeError> {
         let installation = rebuild_device
             .then(|| self.device_factory.as_ref().map(|factory| factory(config)))
             .flatten()
             .transpose()?;
-        let crosshair = if rebuild_crosshair {
-            self.crosshair_factory
-                .as_ref()
-                .map(|factory| factory(config))
-                .transpose()?
-                .unwrap_or_else(|| self.crosshair.current())
-        } else {
-            self.crosshair.current()
-        };
         let current_trigger_poll_interval_ms = {
             let pipeline = self
                 .pipeline
@@ -320,9 +276,8 @@ impl RuntimeDependencies {
             .as_ref()
             .map(|installation| installation.trigger_poll_interval_ms)
             .unwrap_or(current_trigger_poll_interval_ms);
-        let mut pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
+        let pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
             .map_err(RuntimeError::pipeline_rejected)?;
-        pipeline.crosshair = crosshair.clone();
         self.replace_model_geometry(Some(ModelGeometry {
             source_width: pipeline.control.source_width,
             roi_width: pipeline.control.roi_width,
@@ -332,9 +287,6 @@ impl RuntimeDependencies {
         self.set_recoil_config(pipeline.recoil);
         if let Some(preview) = &self.preview {
             preview.configure(config.consumers.preview);
-        }
-        if rebuild_crosshair {
-            self.crosshair.replace(crosshair);
         }
         *self
             .pipeline
@@ -946,7 +898,6 @@ impl RuntimeSupervisor {
         let urgent_admission = Arc::new(Semaphore::new(URGENT_ADMISSION_CAPACITY));
         let urgent_stop = Arc::clone(&dependencies.urgent_stop);
         let preview = dependencies.preview.clone();
-        let crosshair = dependencies.crosshair.clone();
         let join = tokio::spawn(supervisor_loop(
             command_rx,
             notice_rx,
@@ -974,7 +925,6 @@ impl RuntimeSupervisor {
                 urgent_stop,
                 urgent_admission,
                 preview,
-                crosshair,
             },
         )
     }
@@ -1020,7 +970,6 @@ pub struct RuntimeHandle {
     urgent_stop: Arc<UrgentStopSignal>,
     urgent_admission: Arc<Semaphore>,
     preview: Option<PreviewHub>,
-    crosshair: CrosshairHubSlot,
 }
 
 impl std::fmt::Debug for RuntimeHandle {
@@ -1205,13 +1154,6 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeError::supervisor_reply_lost())?
     }
 
-    pub fn crosshair_snapshot(&self) -> Option<CrosshairSnapshot> {
-        self.crosshair
-            .current()
-            .as_ref()
-            .map(CrosshairHub::snapshot)
-    }
-
     pub async fn diagnose_device_move(
         &self,
         delta_x_counts: i32,
@@ -1260,12 +1202,10 @@ impl RuntimeHandle {
         &self,
         config: AppConfig,
         rebuild_device: bool,
-        rebuild_crosshair: bool,
     ) -> Result<(), RuntimeError> {
         self.send_command(|reply| RuntimeCommand::InstallStoppedConfig {
             config: Box::new(config),
             rebuild_device,
-            rebuild_crosshair,
             reply,
         })
         .await
@@ -1277,7 +1217,6 @@ impl RuntimeHandle {
         config: AppConfig,
         rollback_config: AppConfig,
         rebuild_device: bool,
-        rebuild_crosshair: bool,
     ) -> Result<RuntimeSnapshot, RuntimeConfigApplyFailure> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.command_tx
@@ -1286,7 +1225,6 @@ impl RuntimeHandle {
                 config: Box::new(config),
                 rollback_config: Box::new(rollback_config),
                 rebuild_device,
-                rebuild_crosshair,
                 reply: reply_tx,
             })
             .await
@@ -1562,7 +1500,6 @@ async fn handle_command(
         RuntimeCommand::InstallStoppedConfig {
             config,
             rebuild_device,
-            rebuild_crosshair,
             reply,
         } => {
             let result = if active.is_some()
@@ -1574,14 +1511,7 @@ async fn handle_command(
                     "configuration reload requires a stopped runtime",
                 ))
             } else {
-                install_config_state(
-                    snapshot_tx,
-                    state,
-                    dependencies,
-                    &config,
-                    rebuild_device,
-                    rebuild_crosshair,
-                )
+                install_config_state(snapshot_tx, state, dependencies, &config, rebuild_device)
             };
             let _ = reply.send(result);
         }
@@ -1590,7 +1520,6 @@ async fn handle_command(
             config,
             rollback_config,
             rebuild_device,
-            rebuild_crosshair,
             reply,
         } => {
             let result = apply_config_state(
@@ -1604,7 +1533,6 @@ async fn handle_command(
                 &config,
                 &rollback_config,
                 rebuild_device,
-                rebuild_crosshair,
             )
             .await;
             let _ = reply.send(result);
@@ -3317,7 +3245,6 @@ mod tests {
             urgent_stop: Arc::new(UrgentStopSignal::new()),
             urgent_admission: Arc::new(Semaphore::new(URGENT_ADMISSION_CAPACITY)),
             preview: None,
-            crosshair: CrosshairHubSlot::default(),
         };
         let (occupied_reply, _occupied_reply_rx) = oneshot::channel();
         command_tx

@@ -100,8 +100,9 @@ function recoveryAction(runtime: RuntimeState): Pick<RuntimeProjection, "nextAct
         : { nextAction: "open-model-manager", nextActionLabel: "配置模型" };
     case "check_latency":
       return { nextAction: "open-latency", nextActionLabel: "检查延迟" };
+    case "enable_control":
     case "enable_output_gate":
-      return { nextAction: "open-params", nextActionLabel: "配置输出" };
+      return { nextAction: "open-params", nextActionLabel: "开启控制" };
     case "connect_kmnet":
       return { nextAction: "open-kmnet-test", nextActionLabel: "检查 kmNet" };
     case "check_license_or_build":

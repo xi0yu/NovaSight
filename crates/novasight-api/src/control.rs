@@ -1,6 +1,8 @@
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::{
     Extension, Json, Router,
@@ -29,7 +31,7 @@ use novasight_store::license::{FileLicenseRepository, LicenseDenial, LicenseErro
 use novasight_store::model_catalog::{ModelCatalogError, SqliteModelCatalog};
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, broadcast, watch};
 use tracing::Instrument;
 
 use crate::dto::{
@@ -39,6 +41,8 @@ use crate::license_session::LicenseSession;
 use crate::websocket::status::send_while_receiving;
 
 const STATUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+const ACTIVITY_HISTORY_LIMIT: usize = 200;
+const ACTIVITY_DUPLICATE_WINDOW_MS: u64 = 1_500;
 const PHYSICAL_OUTPUT_ACK_HEADER: &str = "x-novasight-physical-output-ack";
 static NEXT_HTTP_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -121,8 +125,9 @@ pub fn build_control_router_with_platform_queries(
     hardware_output_enabled: bool,
     shutdown: impl Into<Option<watch::Receiver<bool>>>,
 ) -> Router {
+    let daemon_instance_id = generate_daemon_instance_id();
     let state = ControlState {
-        daemon_instance_id: generate_daemon_instance_id(),
+        daemon_instance_id: daemon_instance_id.clone(),
         runtime,
         config: config_service.into(),
         license: license.into(),
@@ -132,6 +137,7 @@ pub fn build_control_router_with_platform_queries(
         shutdown: shutdown.into(),
         lifecycle_lock: Arc::new(Mutex::new(())),
         license_session: LicenseSession::new(),
+        activity: ActivityLog::new(daemon_instance_id),
     };
     let license_gate_enabled = state.license.is_some();
     let router = Router::new()
@@ -148,6 +154,8 @@ pub fn build_control_router_with_platform_queries(
         .route("/api/runtime/stop", post(runtime_stop))
         .route("/api/runtime/emergency-stop", post(runtime_emergency_stop))
         .route("/ws/status", get(runtime_events))
+        .route("/ws/activity", get(activity_events))
+        .route("/api/activity", get(activity_history))
         .route("/api/v1/status", get(status))
         .route("/api/v1/config", get(config).patch(update_config))
         .route("/api/v1/config/commands", post(apply_config_command))
@@ -239,6 +247,9 @@ async fn log_http_request(
             latency_ms,
             "api request completed"
         );
+        state
+            .activity
+            .record_http(&method, &path, status, &request_id, response.extensions());
         response.headers_mut().insert(
             "x-request-id",
             HeaderValue::from_str(&request_id).expect("request ID is validated ASCII"),
@@ -261,6 +272,237 @@ struct ControlState {
     shutdown: Option<watch::Receiver<bool>>,
     lifecycle_lock: Arc<Mutex<()>>,
     license_session: LicenseSession,
+    activity: ActivityLog,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ActivityEvent {
+    daemon_instance_id: String,
+    id: u64,
+    occurred_at_ms: u64,
+    level: &'static str,
+    tag: &'static str,
+    title: String,
+    message: String,
+    technical_detail: String,
+    request_id: Option<String>,
+    count: u32,
+}
+
+#[derive(Clone, Debug)]
+struct ActivityFault {
+    code: &'static str,
+    message: String,
+}
+
+#[derive(Default)]
+struct ActivityLogState {
+    next_id: u64,
+    events: VecDeque<ActivityEvent>,
+    active_runtime_faults: HashMap<&'static str, String>,
+}
+
+#[derive(Clone)]
+struct ActivityLog {
+    daemon_instance_id: Arc<str>,
+    state: Arc<StdMutex<ActivityLogState>>,
+    sender: broadcast::Sender<ActivityEvent>,
+}
+
+impl ActivityLog {
+    fn new(daemon_instance_id: Arc<str>) -> Self {
+        let (sender, _) = broadcast::channel(ACTIVITY_HISTORY_LIMIT);
+        Self {
+            daemon_instance_id,
+            state: Arc::new(StdMutex::new(ActivityLogState::default())),
+            sender,
+        }
+    }
+
+    fn history(&self) -> Vec<ActivityEvent> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .events
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<ActivityEvent> {
+        self.sender.subscribe()
+    }
+
+    fn record_http(
+        &self,
+        method: &Method,
+        path: &str,
+        status: StatusCode,
+        request_id: &str,
+        extensions: &axum::http::Extensions,
+    ) {
+        let mutation = matches!(
+            *method,
+            Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+        );
+        if status.is_success() && !mutation {
+            return;
+        }
+        let tag = activity_tag(path);
+        if status.is_success() {
+            self.record(
+                "info",
+                tag,
+                activity_title(tag, true),
+                "操作已由后端确认完成。".to_owned(),
+                format!(
+                    "来源: {tag}\n请求: {method} {path}\nHTTP: {}\n排查编号: {request_id}",
+                    status.as_u16()
+                ),
+                Some(request_id.to_owned()),
+            );
+            return;
+        }
+        let fault = extensions.get::<ActivityFault>();
+        let code = fault.map_or("HTTP_REQUEST_REJECTED", |fault| fault.code);
+        let message = fault.map_or_else(
+            || format!("后端拒绝了 {method} {path}"),
+            |fault| fault.message.clone(),
+        );
+        self.record(
+            if status.is_server_error() { "error" } else { "warn" },
+            tag,
+            activity_title(tag, false),
+            message.clone(),
+            format!(
+                "来源: {tag}\n请求: {method} {path}\nHTTP: {}\n错误代码: {code}\n排查编号: {request_id}\n{message}",
+                status.as_u16()
+            ),
+            Some(request_id.to_owned()),
+        );
+    }
+
+    fn sync_runtime_fault(
+        &self,
+        scope: &'static str,
+        tag: &'static str,
+        title: &'static str,
+        code: Option<&str>,
+        message: Option<&str>,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(message) = message.filter(|message| !message.trim().is_empty()) else {
+            state.active_runtime_faults.remove(scope);
+            return;
+        };
+        let fingerprint = format!("{}\0{}", code.unwrap_or("RUNTIME_FAULT"), message);
+        if state.active_runtime_faults.get(scope) == Some(&fingerprint) {
+            return;
+        }
+        state.active_runtime_faults.insert(scope, fingerprint);
+        drop(state);
+        self.record(
+            "error",
+            tag,
+            title.to_owned(),
+            message.to_owned(),
+            format!(
+                "来源: {tag}\n错误代码: {}\n{message}",
+                code.unwrap_or("RUNTIME_FAULT")
+            ),
+            None,
+        );
+    }
+
+    fn record(
+        &self,
+        level: &'static str,
+        tag: &'static str,
+        title: String,
+        message: String,
+        technical_detail: String,
+        request_id: Option<String>,
+    ) {
+        let now = unix_time_ms();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(last) = state.events.back_mut()
+            && last.level == level
+            && last.tag == tag
+            && last.title == title
+            && last.message == message
+            && now.saturating_sub(last.occurred_at_ms) <= ACTIVITY_DUPLICATE_WINDOW_MS
+        {
+            last.count = last.count.saturating_add(1);
+            last.occurred_at_ms = now;
+            let updated = last.clone();
+            drop(state);
+            let _ = self.sender.send(updated);
+            return;
+        }
+        state.next_id = state.next_id.saturating_add(1);
+        let event = ActivityEvent {
+            daemon_instance_id: self.daemon_instance_id.to_string(),
+            id: state.next_id,
+            occurred_at_ms: now,
+            level,
+            tag,
+            title,
+            message,
+            technical_detail,
+            request_id,
+            count: 1,
+        };
+        state.events.push_back(event.clone());
+        while state.events.len() > ACTIVITY_HISTORY_LIMIT {
+            state.events.pop_front();
+        }
+        drop(state);
+        let _ = self.sender.send(event);
+    }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn activity_tag(path: &str) -> &'static str {
+    if path.contains("/models") {
+        "模型"
+    } else if path.contains("/capture") {
+        "采集"
+    } else if path.contains("/config") {
+        "参数"
+    } else if path.contains("/executors") {
+        "设备"
+    } else if path.contains("/license") {
+        "授权"
+    } else if path.contains("/runtime") {
+        "运行"
+    } else {
+        "系统"
+    }
+}
+
+fn activity_title(tag: &str, success: bool) -> String {
+    format!(
+        "{tag}{}",
+        if success {
+            "操作已完成"
+        } else {
+            "操作未完成"
+        }
+    )
 }
 
 fn generate_daemon_instance_id() -> Arc<str> {
@@ -440,7 +682,7 @@ async fn require_license(
             reason = %status.message,
             "license authorization rejected"
         );
-        return (
+        let mut response = (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
                 "code": "LICENSE_REQUIRED",
@@ -450,6 +692,11 @@ async fn require_license(
             })),
         )
             .into_response();
+        response.extensions_mut().insert(ActivityFault {
+            code: "LICENSE_REQUIRED",
+            message: "a valid license is required".to_owned(),
+        });
+        return response;
     }
     let trusted_local_control = request.extensions().get::<TrustedLocalControl>().is_some();
     let refresh_session = if trusted_local_control {
@@ -463,16 +710,22 @@ async fn require_license(
                     reason,
                     "license session rejected"
                 );
-                return (
+                let message = "refresh the license status to establish a browser session";
+                let mut response = (
                     StatusCode::UNAUTHORIZED,
                     Json(serde_json::json!({
                         "code": "LICENSE_SESSION_REQUIRED",
                         "detail": "license session required",
-                        "message": "refresh the license status to establish a browser session",
+                        "message": message,
                         "license": status,
                     })),
                 )
                     .into_response();
+                response.extensions_mut().insert(ActivityFault {
+                    code: "LICENSE_SESSION_REQUIRED",
+                    message: message.to_owned(),
+                });
+                return response;
             }
         }
     };
@@ -484,17 +737,23 @@ async fn require_license(
             required_feature = feature,
             "license authorization rejected"
         );
-        return (
+        let message = format!("license feature {feature} is required");
+        let mut response = (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
                 "code": "LICENSE_FEATURE_REQUIRED",
-                "detail": format!("license feature {feature} is required"),
-                "message": format!("license feature {feature} is required"),
+                "detail": message,
+                "message": message,
                 "required_feature": feature,
                 "license": status,
             })),
         )
             .into_response();
+        response.extensions_mut().insert(ActivityFault {
+            code: "LICENSE_FEATURE_REQUIRED",
+            message,
+        });
+        return response;
     }
     let mut response = next.run(request).await;
     if refresh_session {
@@ -627,7 +886,7 @@ async fn runtime_state_for_topic(
         .as_ref()
         .map(ConfigService::blocking_effective_snapshot);
     let effective_revision = state.config.as_ref().map(ConfigService::effective_revision);
-    RuntimeStatusState::for_topic(
+    let status = RuntimeStatusState::for_topic(
         &state.daemon_instance_id,
         snapshot,
         config.as_ref(),
@@ -635,9 +894,10 @@ async fn runtime_state_for_topic(
         effective_revision,
         state.hardware_output_enabled,
         state.runtime.preview_snapshot().as_ref(),
-        state.runtime.crosshair_snapshot().as_ref(),
         topic,
-    )
+    );
+    record_runtime_faults(&state.activity, &status);
+    status
 }
 
 #[derive(Debug, Deserialize)]
@@ -875,7 +1135,7 @@ fn hot_pipeline_config_update(update: &ConfigFieldUpdate) -> bool {
 fn runtime_reconfigurable_config_update(update: &ConfigFieldUpdate) -> bool {
     matches!(
         update.section.as_str(),
-        "replay" | "consumers" | "limits" | "crosshair" | "capture" | "inference" | "hardware"
+        "replay" | "consumers" | "limits" | "capture" | "inference" | "hardware"
     )
 }
 
@@ -942,7 +1202,8 @@ async fn require_epoch_reload_ack(
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 enum ConfigCommandRequest {
-    SetOutputGate {
+    #[serde(rename = "set_control_enabled", alias = "set_output_gate")]
+    SetControlEnabled {
         enabled: bool,
         #[serde(default)]
         expected_revision: Option<u64>,
@@ -962,7 +1223,7 @@ impl ConfigCommandRequest {
         headers: &HeaderMap,
     ) -> Result<ConfigUpdate, ControlApiError> {
         match self {
-            Self::SetOutputGate {
+            Self::SetControlEnabled {
                 enabled,
                 expected_revision,
             } => {
@@ -1399,6 +1660,92 @@ async fn runtime_events(
     websocket.on_upgrade(move |socket| stream_runtime_events(socket, state, query))
 }
 
+#[derive(Serialize)]
+struct ActivityHistory {
+    events: Vec<ActivityEvent>,
+}
+
+async fn activity_history(State(state): State<ControlState>) -> Json<ActivityHistory> {
+    Json(ActivityHistory {
+        events: state.activity.history(),
+    })
+}
+
+async fn activity_events(
+    websocket: WebSocketUpgrade,
+    State(state): State<ControlState>,
+) -> Response {
+    websocket
+        .on_upgrade(move |socket| stream_activity_events(socket, state.activity, state.shutdown))
+}
+
+#[derive(Serialize)]
+struct ActivityEventFrame<'a> {
+    kind: &'static str,
+    event: &'a ActivityEvent,
+}
+
+async fn stream_activity_events(
+    socket: WebSocket,
+    activity: ActivityLog,
+    mut shutdown: Option<watch::Receiver<bool>>,
+) {
+    let mut receiver = activity.subscribe();
+    let (mut outbound, mut inbound) = socket.split();
+    for event in activity.history() {
+        let Ok(payload) = serde_json::to_string(&ActivityEventFrame {
+            kind: "activity_event",
+            event: &event,
+        }) else {
+            return;
+        };
+        match send_or_shutdown(
+            &mut outbound,
+            &mut inbound,
+            Message::Text(payload.into()),
+            &mut shutdown,
+        )
+        .await
+        {
+            SendOutcome::Sent => {}
+            SendOutcome::Closed | SendOutcome::Shutdown => return,
+        }
+    }
+    loop {
+        tokio::select! {
+            event = receiver.recv() => {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                let Ok(payload) = serde_json::to_string(&ActivityEventFrame {
+                    kind: "activity_event",
+                    event: &event,
+                }) else {
+                    return;
+                };
+                match send_or_shutdown(
+                    &mut outbound,
+                    &mut inbound,
+                    Message::Text(payload.into()),
+                    &mut shutdown,
+                ).await {
+                    SendOutcome::Sent => {}
+                    SendOutcome::Closed | SendOutcome::Shutdown => return,
+                }
+            }
+            incoming = inbound.next() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                    Some(Ok(_)) => {}
+                }
+            }
+            () = shutdown_requested(&mut shutdown) => return,
+        }
+    }
+}
+
 async fn close_unlicensed_websocket(mut socket: WebSocket) {
     let _ = socket
         .send(Message::Close(Some(CloseFrame {
@@ -1484,6 +1831,57 @@ async fn stream_runtime_events(socket: WebSocket, state: ControlState, query: Ru
             () = shutdown_requested(&mut shutdown) => return,
         }
     }
+}
+
+fn record_runtime_faults(activity: &ActivityLog, status: &RuntimeStatusState) {
+    activity.sync_runtime_fault(
+        "fatal",
+        "运行",
+        "运行故障",
+        status.fatal_error.as_ref().map(|error| error.code.as_str()),
+        status
+            .fatal_error
+            .as_ref()
+            .map(|error| error.message.as_str()),
+    );
+    activity.sync_runtime_fault(
+        "pipeline",
+        "推理",
+        "推理链路故障",
+        status
+            .pipeline
+            .last_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        status
+            .pipeline
+            .last_error
+            .as_ref()
+            .map(|error| error.message.as_str())
+            .or(status.pipeline.deepstream.last_error.as_deref()),
+    );
+    activity.sync_runtime_fault(
+        "capture",
+        "采集",
+        "采集链路故障",
+        None,
+        status.capture.last_error.as_deref(),
+    );
+    activity.sync_runtime_fault(
+        "executor",
+        "设备",
+        "设备控制故障",
+        status
+            .executor
+            .last_error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        status
+            .executor
+            .last_error
+            .as_ref()
+            .map(|error| error.message.as_str()),
+    );
 }
 
 fn normalize_runtime_topic(topic: Option<&str>) -> &'static str {
@@ -2022,7 +2420,13 @@ impl IntoResponse for ControlApiError {
                 "api request rejected"
             );
         }
-        (status, Json(body)).into_response()
+        let fault = ActivityFault {
+            code,
+            message: body.message.clone(),
+        };
+        let mut response = (status, Json(body)).into_response();
+        response.extensions_mut().insert(fault);
+        response
     }
 }
 
@@ -2200,6 +2604,24 @@ mod tests {
             .unwrap();
         assert!(!failure.status().is_success());
         assert_eq!(failure.headers()["x-request-id"], request_id);
+
+        let activity = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/activity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(activity.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["events"][0]["tag"], "参数");
+        assert_eq!(value["events"][0]["request_id"], request_id);
+        assert_eq!(value["events"][0]["level"], "error");
 
         let rejected_id = app
             .oneshot(
@@ -2449,7 +2871,7 @@ mod tests {
             (
                 "/api/v1/config/commands",
                 "POST",
-                r#"{"command":"set_output_gate","enabled":true}"#,
+                r#"{"command":"set_control_enabled","enabled":true}"#,
             ),
         ] {
             let response = app
@@ -2482,7 +2904,7 @@ mod tests {
                     .uri("/api/v1/config/commands")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"command":"set_output_gate","enabled":false}"#,
+                        r#"{"command":"set_control_enabled","enabled":false}"#,
                     ))
                     .unwrap(),
             )
@@ -2708,7 +3130,7 @@ mod tests {
                     .extension(TrustedLocalControl)
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"command":"set_output_gate","enabled":true}"#,
+                        r#"{"command":"set_control_enabled","enabled":true}"#,
                     ))
                     .unwrap(),
             )
@@ -2733,7 +3155,7 @@ mod tests {
                 .oneshot(
                     request
                         .body(Body::from(
-                            serde_json::json!({"command":"set_output_gate", "enabled":enabled})
+                            serde_json::json!({"command":"set_control_enabled", "enabled":enabled})
                                 .to_string(),
                         ))
                         .unwrap(),

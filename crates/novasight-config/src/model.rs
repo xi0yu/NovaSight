@@ -25,8 +25,8 @@ pub struct AppConfig {
     pub paths: PathConfig,
     #[serde(default)]
     pub consumers: ConsumerConfig,
-    #[serde(default)]
-    pub crosshair: CrosshairConfig,
+    #[serde(default, rename = "crosshair", skip_serializing)]
+    pub legacy_crosshair: Option<Value>,
     #[serde(default)]
     pub limits: LimitsConfig,
     #[serde(default)]
@@ -50,7 +50,7 @@ impl Default for AppConfig {
             control: RustControlConfig::default(),
             paths: PathConfig::default(),
             consumers: ConsumerConfig::default(),
-            crosshair: CrosshairConfig::default(),
+            legacy_crosshair: None,
             limits: LimitsConfig::default(),
             capture: None,
             inference: None,
@@ -95,7 +95,6 @@ impl AppConfig {
                 "cannot be true until a commissioned hardware section is configured",
             ));
         }
-        self.crosshair.validate()?;
         if self.limits.stream_fps == 0 {
             return Err(ConfigValidationError::new(
                 "limits.stream_fps",
@@ -132,7 +131,6 @@ impl AppConfig {
     ) -> Result<VisionAdapterConfig<'_>, ConfigValidationError> {
         self.pipeline.validate()?;
         self.control.recoil.validate()?;
-        self.crosshair.validate()?;
         if self.limits.stream_fps == 0 {
             return Err(ConfigValidationError::new(
                 "limits.stream_fps",
@@ -280,119 +278,6 @@ const fn default_recoil_interval_ms() -> u64 {
 }
 const fn default_recoil_y_counts() -> i32 {
     1
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CrosshairConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub use_for_control: bool,
-    #[serde(default = "default_crosshair_search_size")]
-    pub search_size: u32,
-    #[serde(default = "default_crosshair_sample_hz")]
-    pub sample_hz: u32,
-    #[serde(default = "default_crosshair_sample_frames")]
-    pub sample_frames: usize,
-    #[serde(default = "default_crosshair_confirm_duration_ms")]
-    pub confirm_duration_ms: f64,
-    #[serde(default = "default_crosshair_max_age_ms")]
-    pub max_age_ms: f64,
-    #[serde(default = "default_crosshair_max_offset_px")]
-    pub max_offset_px: f64,
-    #[serde(default = "default_crosshair_min_similarity")]
-    pub min_similarity: f64,
-    #[serde(default = "default_crosshair_max_step_px")]
-    pub max_step_px: f64,
-    #[serde(default, flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-impl Default for CrosshairConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            use_for_control: false,
-            search_size: default_crosshair_search_size(),
-            sample_hz: default_crosshair_sample_hz(),
-            sample_frames: default_crosshair_sample_frames(),
-            confirm_duration_ms: default_crosshair_confirm_duration_ms(),
-            max_age_ms: default_crosshair_max_age_ms(),
-            max_offset_px: default_crosshair_max_offset_px(),
-            min_similarity: default_crosshair_min_similarity(),
-            max_step_px: default_crosshair_max_step_px(),
-            extra: BTreeMap::new(),
-        }
-    }
-}
-
-impl CrosshairConfig {
-    fn validate(&self) -> Result<(), ConfigValidationError> {
-        if !(32..=640).contains(&self.search_size) {
-            return Err(ConfigValidationError::new(
-                "crosshair.search_size",
-                "must be within 32..=640",
-            ));
-        }
-        if !(1..=60).contains(&self.sample_hz) {
-            return Err(ConfigValidationError::new(
-                "crosshair.sample_hz",
-                "must be within 1..=60",
-            ));
-        }
-        if !(3..=31).contains(&self.sample_frames) {
-            return Err(ConfigValidationError::new(
-                "crosshair.sample_frames",
-                "must be within 3..=31",
-            ));
-        }
-        validate_finite_range(
-            "crosshair.confirm_duration_ms",
-            self.confirm_duration_ms,
-            0.0,
-            10_000.0,
-        )?;
-        validate_finite_range("crosshair.max_age_ms", self.max_age_ms, 1.0, 10_000.0)?;
-        validate_finite_range(
-            "crosshair.max_offset_px",
-            self.max_offset_px,
-            0.0,
-            f64::from(self.search_size) * 0.5,
-        )?;
-        validate_finite_range("crosshair.min_similarity", self.min_similarity, 0.0, 1.0)?;
-        validate_finite_range(
-            "crosshair.max_step_px",
-            self.max_step_px,
-            0.0,
-            self.max_offset_px.max(1.0),
-        )?;
-        Ok(())
-    }
-}
-
-const fn default_crosshair_search_size() -> u32 {
-    96
-}
-const fn default_crosshair_sample_hz() -> u32 {
-    10
-}
-const fn default_crosshair_sample_frames() -> usize {
-    5
-}
-const fn default_crosshair_confirm_duration_ms() -> f64 {
-    200.0
-}
-const fn default_crosshair_max_age_ms() -> f64 {
-    300.0
-}
-const fn default_crosshair_max_offset_px() -> f64 {
-    20.0
-}
-const fn default_crosshair_min_similarity() -> f64 {
-    0.68
-}
-const fn default_crosshair_max_step_px() -> f64 {
-    2.0
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1992,18 +1877,14 @@ mod tests {
     }
 
     #[test]
-    fn crosshair_configuration_is_typed_and_bounded() {
-        let mut config: AppConfig = serde_yaml::from_str(
-            "crosshair:\n  enabled: true\n  use_for_control: true\n  search_size: 96\n  sample_hz: 10\n  sample_frames: 5\n  max_offset_px: 20\n",
-        )
-        .unwrap();
-        assert!(config.crosshair.enabled);
-        assert!(config.crosshair.use_for_control);
-        config.validate_configured_adapters().unwrap();
+    fn legacy_crosshair_configuration_is_accepted_then_removed_on_save() {
+        let config: AppConfig =
+            serde_yaml::from_str("crosshair:\n  enabled: true\n  template_path: data/legacy.png\n")
+                .unwrap();
 
-        config.crosshair.max_offset_px = 49.0;
-        let error = config.validate_configured_adapters().unwrap_err();
-        assert_eq!(error.field, "crosshair.max_offset_px");
+        assert!(config.legacy_crosshair.is_some());
+        let saved = serde_yaml::to_string(&config).unwrap();
+        assert!(!saved.contains("crosshair:"));
     }
 
     #[test]

@@ -335,7 +335,9 @@ fn required_permission(method: &Method, path: &str) -> Option<&'static str> {
             "/api/v1/config",
             "/api/v1/events",
             "/api/v1/runtime",
+            "/api/activity",
             "/ws/status",
+            "/ws/activity",
         ]
         .iter()
         .any(|prefix| path_is(prefix, path))
@@ -508,6 +510,10 @@ mod tests {
             auth.authorize_proxy(&Method::GET, "/api/future-sensitive-route", &headers)
                 .is_err()
         );
+        auth.authorize_proxy(&Method::GET, "/api/activity", &headers)
+            .unwrap();
+        auth.authorize_proxy(&Method::GET, "/ws/activity", &headers)
+            .unwrap();
     }
 
     #[test]
