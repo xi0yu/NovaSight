@@ -3712,7 +3712,6 @@ export function StudioConsoleView({
             <NovaIcon name="prediction-line" size={24} strokeWidth={1.9} />
           </div>
           <span className="console-brand-name">NovaSight<span>Studio</span></span>
-          <span className="console-brand-edition" aria-hidden="true">EDGE / 01</span>
         </div>
         <div className="console-toolbar">
           <div className="console-context-deck" aria-label="当前生产上下文">

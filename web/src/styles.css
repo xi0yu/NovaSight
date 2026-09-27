@@ -3552,7 +3552,7 @@ button:focus-visible {
 [data-theme="arena-signal"] input,
 [data-theme="arena-signal"] select,
 [data-theme="arena-signal"] textarea {
-  color-scheme: light;
+  color-scheme: dark;
   border-color: var(--input-border);
   background-color: var(--input-bg);
   color: var(--text-primary);

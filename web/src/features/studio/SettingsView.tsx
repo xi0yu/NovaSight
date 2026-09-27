@@ -37,8 +37,7 @@ export function SettingsView({
   const moduleViews: Record<string, ReactNode> = {
     backup: (
       <article className="settings-transfer-row backup">
-        <span className="settings-transfer-index">01</span>
-        <span className="settings-transfer-icon" aria-hidden="true"><NovaIcon name="export" size={24} /></span>
+        <span className="settings-transfer-icon" aria-hidden="true"><NovaIcon name="export" size={20} /></span>
         <div>
           <small>保存一份当前状态</small>
           <h2>备份设置</h2>
@@ -52,8 +51,7 @@ export function SettingsView({
     ),
     restore: (
       <article className="settings-transfer-row restore">
-        <span className="settings-transfer-index">02</span>
-        <span className="settings-transfer-icon" aria-hidden="true"><NovaIcon name="import" size={24} /></span>
+        <span className="settings-transfer-icon" aria-hidden="true"><NovaIcon name="import" size={20} /></span>
         <div>
           <small>从已有文件恢复</small>
           <h2>恢复设置</h2>
@@ -100,7 +98,7 @@ export function SettingsView({
     <section className="settings-view" aria-labelledby="settings-transfer-title">
       <header className="settings-hero">
         <div>
-          <span>SETTINGS / TRANSFER</span>
+          <span>设置文件</span>
           <h2 id="settings-transfer-title">备份与恢复</h2>
           <p>日常调整留在各自页面。这里仅处理整套设备设置的备份、迁移和恢复。</p>
         </div>

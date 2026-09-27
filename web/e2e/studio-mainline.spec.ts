@@ -642,7 +642,15 @@ test("Studio action feedback respects reduced motion, transparency and higher co
   await page.mouse.up();
 
   await expect(page.locator(".console-app")).toHaveCSS("backdrop-filter", "none");
-  await expect(page.locator(".console-app")).toHaveCSS("background-color", "rgb(255, 254, 250)");
+  expect(await page.locator(".console-app").evaluate((element) => {
+    const style = getComputedStyle(element);
+    const probe = document.createElement("span");
+    probe.style.color = "var(--bg-surface)";
+    element.append(probe);
+    const expected = getComputedStyle(probe).color;
+    probe.remove();
+    return style.backgroundColor === expected;
+  })).toBe(true);
   expect(await page.locator("html").evaluate((element) => {
     const style = getComputedStyle(element);
     return style.getPropertyValue("--border-default").trim() === style.getPropertyValue("--border-strong").trim();

@@ -274,7 +274,7 @@ export function AboutView({
       <header className="about-identity">
         <div className="about-mark" aria-hidden="true"><NovaIcon name="prediction-line" size={36} /></div>
         <div>
-          <span>实时视觉工作站</span>
+          <span>应用信息</span>
           <h2 id="about-product-title">NovaSight Studio</h2>
           <p>把采集、推理、目标选择与设备输出组织成一条可核实的实时链路。</p>
         </div>
@@ -294,9 +294,9 @@ export function AboutView({
     capabilities: (
       <section className="about-capabilities" aria-labelledby="about-capabilities-title">
         <div>
-          <span>当前产品边界</span>
-          <h3 id="about-capabilities-title">专业能力按需展开</h3>
-          <p>普通页面只回答状态、操作和下一步；CUDA、TensorRT、NVMM 与原始运行证据保留在深入页面。</p>
+          <span>功能范围</span>
+          <h3 id="about-capabilities-title">当前包含的功能</h3>
+          <p>日常页面保持简单；需要排查时，可以继续查看 CUDA、TensorRT、NVMM 与原始运行证据。</p>
         </div>
         <ul>
           <li><NovaIcon name="capture" size={17} /><span>采集与 ROI</span></li>

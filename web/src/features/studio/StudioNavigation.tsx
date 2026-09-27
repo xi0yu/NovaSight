@@ -104,7 +104,7 @@ export function StudioNavigation({
   return (
     <nav className="console-navigation" aria-label="NovaSight Studio 导航">
       <div className="console-primary-navigation">
-        {pages.map((configuredPage, index) => {
+        {pages.map((configuredPage) => {
           const item: NavigationItem = {
             id: configuredPage.id,
             label: configuredPage.label,
@@ -122,10 +122,8 @@ export function StudioNavigation({
               title={item.detail}
               type="button"
             >
-              <span className="console-nav-index" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
               <span className="console-nav-icon" aria-hidden="true"><NovaIcon name={item.icon} size={19} /></span>
               <span className="console-nav-copy"><b>{item.label}</b><small>{item.detail}</small></span>
-              <span className="console-nav-current" aria-hidden="true" />
             </button>
           );
         })}
