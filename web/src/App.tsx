@@ -179,8 +179,6 @@ function runtimePayloadEqual(left: RuntimeState, right: RuntimeState): boolean {
     && jsonValuesEqual(left.fatal_error, right.fatal_error);
 }
 
-const visualSystemMode = new URLSearchParams(window.location.search).get("visual-system") === "1";
-
 // Throttles the "更新于 HH:MM:SS" text node to ≤1Hz. The parent re-renders
 // on observable WebSocket snapshot changes; without throttling the timestamp paints
 // N times per second even when the formatted string is unchanged. The
@@ -217,12 +215,6 @@ const StudioConsoleView = lazy(() =>
     default: module.StudioConsoleView
   }))
 );
-const VisualSystemView = lazy(() =>
-  import("./features/visual-system/VisualSystemView").then((module) => ({
-    default: module.VisualSystemView
-  }))
-);
-
 function RouteLoadingShell() {
   return (
     <main className="route-loading-shell" role="status">
@@ -237,9 +229,7 @@ export default function App() {
   return (
     <SafetyOperationProvider>
       <AuthGate>
-        {visualSystemMode
-          ? <Suspense fallback={<RouteLoadingShell />}><VisualSystemView /></Suspense>
-          : <StudioApp />}
+        <StudioApp />
       </AuthGate>
     </SafetyOperationProvider>
   );

@@ -3,19 +3,13 @@ import ReactDOM from "react-dom/client";
 
 import App from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
-import { resolveStoredTheme, THEME_STORAGE_KEY } from "./components/visual/themeRegistry";
 import { installGlobalErrorGuards } from "./lib/errorGuards";
 import "./design/tokens.css";
 import "./styles.css";
 
 installGlobalErrorGuards();
 
-try {
-  const storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
-  document.documentElement.dataset.theme = resolveStoredTheme(storedTheme);
-} catch {
-  document.documentElement.dataset.theme = resolveStoredTheme(null);
-}
+document.documentElement.dataset.theme = "arena-signal";
 
 const rootElement = document.getElementById("root");
 if (rootElement) {

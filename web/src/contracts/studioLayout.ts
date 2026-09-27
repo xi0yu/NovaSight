@@ -36,7 +36,7 @@ export const DEFAULT_STUDIO_LAYOUT: StudioLayout = {
   schemaVersion: 1,
   revision: "builtin-2026-09",
   pages: [
-    { id: "overview", label: "首页", modules: [...STUDIO_LAYOUT_MODULE_IDS.overview] },
+    { id: "overview", label: "首页", modules: ["setup", "runtime", "metrics"] },
     { id: "capture", label: "设备管理", modules: [...STUDIO_LAYOUT_MODULE_IDS.capture] },
     { id: "params", label: "算法参数", modules: [...STUDIO_LAYOUT_MODULE_IDS.params] },
     { id: "activity", label: "实时日志", modules: [...STUDIO_LAYOUT_MODULE_IDS.activity] },

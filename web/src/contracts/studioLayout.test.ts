@@ -34,6 +34,9 @@ describe("studio layout contract", () => {
     expect(DEFAULT_STUDIO_LAYOUT.pages.map((page) => page.id)).toEqual([
       "overview", "capture", "params", "activity", "settings", "about",
     ]);
+    expect(DEFAULT_STUDIO_LAYOUT.pages.find((page) => page.id === "overview")?.modules).toEqual([
+      "setup", "runtime", "metrics",
+    ]);
   });
 
   it("rejects a layout that hides required tasks or the output control", () => {

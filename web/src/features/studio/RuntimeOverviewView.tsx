@@ -40,21 +40,6 @@ function formatLiveMetric(available: boolean, value: number | null, digits: numb
   return available && value !== null ? `${value.toFixed(digits)}${unit}` : "等待样本";
 }
 
-function RuntimeSignalGraphic({ label }: { label: string }) {
-  return (
-    <div className="runtime-overview-visual" aria-hidden="true">
-      <svg viewBox="0 0 190 190">
-        <path className="orbit outer" d="M95 16a79 79 0 1 1 0 158a79 79 0 1 1 0-158" />
-        <path className="orbit inner" d="M95 44a51 51 0 1 1 0 102a51 51 0 1 1 0-102" />
-        <path className="cross" d="M95 4v38M95 148v38M4 95h38M148 95h38" />
-        <path className="sweep" d="M95 95L151 39" />
-        <circle cx="95" cy="95" r="8" />
-      </svg>
-      <span>{label}</span>
-    </div>
-  );
-}
-
 export function RuntimeOverviewView({
   runtime,
   projection,
@@ -80,7 +65,6 @@ export function RuntimeOverviewView({
             ? "请检查服务连接，并在“实时日志”查看原因。收到完整状态前，硬件输出保持锁定。"
             : "等待服务返回完整状态；此时不会推断感知或硬件输出。"}</p>
         </div>
-        <RuntimeSignalGraphic label="NO SIGNAL" />
         {runtimeControlUnavailable && onOpenErrors ? (
           <button className="console-button primary" onClick={onOpenErrors} type="button">查看异常信息</button>
         ) : null}
@@ -120,7 +104,6 @@ export function RuntimeOverviewView({
           <h2>{projection.conclusion}</h2>
           <p>{readiness.detail}</p>
         </div>
-        <RuntimeSignalGraphic label={metricsCurrent && phase === "running" ? "LIVE" : "STANDBY"} />
         <div className="runtime-overview-actions">
           {projection.nextAction ? (
             <button className="console-button" type="button" onClick={() => onAction(projection.nextAction!)}>{projection.nextActionLabel ?? "处理问题"}</button>
@@ -148,16 +131,6 @@ export function RuntimeOverviewView({
     pipeline: (
       <section className="runtime-overview-pipeline" aria-labelledby="runtime-pipeline-title">
         <header><div><small>实时路径</small><h3 id="runtime-pipeline-title">画面如何变成输出</h3></div><span>{metricsCurrent && runtime.semantic.phase === "running" ? "LIVE" : chainStale ? "状态已过期" : "状态快照"}</span></header>
-        <svg className="runtime-signal-map" viewBox="0 0 760 96" role="img" aria-label="采集、感知、目标和输出的实时状态图">
-          <path d="M62 46H698" />
-          {chain.map((item, index) => (
-            <g className={item.live ? "is-live" : "is-idle"} key={item.label} transform={`translate(${62 + index * 212},46)`}>
-              <circle r="10" />
-              <circle className="pulse" r="18" />
-              <text y="38" textAnchor="middle">{item.label}</text>
-            </g>
-          ))}
-        </svg>
         <ol className="runtime-pipeline-list">
           {chain.map((item, index) => <li key={item.label}><i>{index + 1}</i><span>{item.label}<strong>{item.value}</strong></span></li>)}
         </ol>

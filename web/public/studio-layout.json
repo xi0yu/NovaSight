@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "revision": "studio-default-2026-09",
   "pages": [
-    { "id": "overview", "label": "首页", "modules": ["setup", "runtime", "metrics", "pipeline", "diagnostics"] },
+    { "id": "overview", "label": "首页", "modules": ["setup", "runtime", "metrics"] },
     { "id": "capture", "label": "设备管理", "modules": ["source", "roi", "diagnostics"] },
     { "id": "params", "label": "算法参数", "modules": ["response", "targeting", "motion", "output"] },
     { "id": "activity", "label": "实时日志", "modules": ["summary", "filters", "feed"] },
