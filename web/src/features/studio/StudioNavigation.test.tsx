@@ -5,11 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 import { CONSOLE_PAGES, StudioNavigation } from "./StudioNavigation";
 
 describe("StudioNavigation", () => {
-  it("shows five task-first entries without a hidden second navigation level", async () => {
+  it("shows six task-first entries without a hidden second navigation level", async () => {
     const onNavigate = vi.fn();
     render(<StudioNavigation activePage="capture" onNavigate={onNavigate} />);
 
-    expect(screen.getAllByRole("button")).toHaveLength(5);
+    expect(screen.getAllByRole("button")).toHaveLength(6);
     expect(screen.getByRole("button", { name: "设备管理" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("region", { name: "当前设备的深入功能" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "算法参数" }));

@@ -12,6 +12,7 @@ describe("studio layout contract", () => {
         { id: "overview", label: "首页", modules: ["metrics", "runtime"] },
         { id: "capture", label: "设备管理", modules: ["roi", "source"] },
         { id: "params", label: "算法参数", modules: ["output", "targeting", "motion", "response"] },
+        { id: "settings", label: "设置", modules: ["restore", "backup"] },
         { id: "about", label: "关于", modules: ["identity", "version"] },
       ],
     });
@@ -31,7 +32,7 @@ describe("studio layout contract", () => {
 
   it("keeps a built-in complete fallback", () => {
     expect(DEFAULT_STUDIO_LAYOUT.pages.map((page) => page.id)).toEqual([
-      "overview", "capture", "params", "activity", "about",
+      "overview", "capture", "params", "activity", "settings", "about",
     ]);
   });
 

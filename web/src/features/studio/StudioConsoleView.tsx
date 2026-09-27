@@ -1,5 +1,4 @@
 import {
-  ChangeEvent,
   lazy,
   Suspense,
   useCallback,
@@ -17,7 +16,6 @@ import {
   getApiErrorCode,
   connectKmNet,
   diagnosticMoveKmNet,
-  disconnectKmNet,
   getConfigSchema,
   getRuntimeConfig,
   HealthResponse,
@@ -44,7 +42,6 @@ import {
   moveCatalogEngine,
   getModelVersions,
   selectCaptureProfile,
-  setRuntimeControlEnabled,
   setCapturePreviewEnabled,
   streamUrl,
   updateRuntimeConfig,
@@ -96,6 +93,7 @@ import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage
 import { StudioPageHeader } from "./StudioPageHeader";
 import { KvCard, Metric, SectionTitle, WorkspaceNotice } from "./StudioPresentation";
 import { StudioRuntimeBar } from "./StudioRuntimeBar";
+import { SettingsView } from "./SettingsView";
 import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
 import {
   buildLaunchReadiness,
@@ -701,6 +699,7 @@ export function StudioConsoleView({
   const parameterModuleOrder = moduleOrderForPage(studioLayout, "params");
   const activityModules = moduleOrderForPage(studioLayout, "activity");
   const overviewModuleOrder = moduleOrderForPage(studioLayout, "overview");
+  const settingsModules = moduleOrderForPage(studioLayout, "settings");
   const aboutModules = moduleOrderForPage(studioLayout, "about");
   const activePageRef = useRef(activePage);
   const pageScrollPositionsRef = useRef<Partial<Record<ConsolePage, number>>>({});
@@ -776,7 +775,6 @@ export function StudioConsoleView({
   const [parameterPageSaving, setParameterPageSaving] = useState(false);
   const [dialogSaveError, setDialogSaveError] = useState<string | null>(null);
   const configFieldIndex = useMemo(() => buildConfigFieldIndex(configSchema), [configSchema]);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mainRef = useRef<HTMLElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
   const runtimeConfigLatestRef = useRef<RuntimeConfig | null>(runtimeConfig);
@@ -794,10 +792,6 @@ export function StudioConsoleView({
   }, []);
   const parameterPageDirtyRef = useRef(false);
   const confirmationBusyRef = useRef(false);
-  // Per-call AbortController for kmNet connect/disconnect. If the user
-  // rapidly toggles "连接" / "断开", the previous in-flight call is
-  // aborted so the backend doesn't apply a stale request.
-  const kmnetAbortControllerRef = useRef<AbortController | null>(null);
   const loadedModelProjectIdRef = useRef<number | "">("");
   const loadedModelVersionIdRef = useRef<number | "">("");
   const pendingConfigWritesRef = useRef(0);
@@ -1232,15 +1226,6 @@ export function StudioConsoleView({
     };
   }, [classConfigDialogOpen, requestDismissConfigDialog]);
 
-  useEffect(() => {
-    return () => {
-      // Abort any in-flight kmNet connect/disconnect on unmount so a
-      // navigated-away component doesn't keep hitting the backend.
-      kmnetAbortControllerRef.current?.abort();
-      kmnetAbortControllerRef.current = null;
-    };
-  }, []);
-
   const capture = runtime?.capture;
   const statistics = runtime?.statistics;
   const config = configDraft ?? runtimeConfig;
@@ -1564,24 +1549,15 @@ export function StudioConsoleView({
   const effectiveConfigRevision = configApplyPresentation.effectiveRevision;
   const kmnetRestartRequired = kmnetStatus?.restart_required === true;
   const hardwareControlLicensed = license?.valid === true && license.features.includes("hardware_control");
-  const outputEnableBlockedReason = !hardwareControlLicensed
-    ? "当前授权不包含硬件控制，无法开启物理输出；请查看授权状态。"
-    : !runtimeMainlineRunning ? "请先启动主链，再连接 kmNet。"
-      : kmnetRestartRequired ? "kmNet 配置尚未生效，请先完成设备重载。"
-        : !kmnetAutoConnect ? "请先启用 kmNet 并保存设备配置。"
-          : !kmnetExecutorAvailable ? "kmNet 适配器不可用，请检查设备状态。"
-            : kmnetStatus?.runtime_connected !== true ? "请先连接 kmNet，再打开物理输出。" : "";
+  const targetControlStatus = !outputEnabled
+    ? "已关闭"
+    : runtimeMainlineRunning && kmnetRuntimeConnected
+      ? "控制中"
+      : "正在准备";
   const kmnetConfigurationState = kmnetStatus?.configuration_state
     ?? (kmnetRestartRequired ? "restart_required" : kmnetAutoConnect ? "ready" : "uncommissioned");
   const kmnetConfigurationReady = kmnetStatus?.configuration_ready === true
     || (kmnetConfigurationState === "ready" && !kmnetRestartRequired);
-  const kmnetCanConnect = kmnetStatus?.can_connect === true
-    || (kmnetConfigurationReady
-      && runtime?.running === true
-      && !kmnetRuntimeConnected
-      && !kmnetConnecting);
-  const kmnetCanDisconnect = kmnetStatus?.can_disconnect === true
-    || (runtime?.running === true && kmnetRuntimeConnected);
   const kmnetRuntimeConnectionLabel = runtime?.running === true
     ? kmnetRestartRequired
       ? kmnetRuntimeConnected ? "旧会话仍连接" : "等待重载"
@@ -2597,11 +2573,6 @@ export function StudioConsoleView({
   );
 
   const requestOutputGateChange = useCallback((enabled: boolean) => {
-    if (enabled && outputEnableBlockedReason) {
-      setLocalError(outputEnableBlockedReason);
-      reportError(new Error(outputEnableBlockedReason), { source: "output-gate", title: "无法开启目标控制" });
-      return false;
-    }
     if (!enabled) {
       return updateConfigField(
         "control",
@@ -2610,25 +2581,78 @@ export function StudioConsoleView({
         { immediate: true, optimistic: false, rethrow: true }
       );
     }
+    if (!hardwareControlLicensed) {
+      setConfirmationRequest({
+        eyebrow: "目标控制",
+        title: "当前授权不能开启目标控制",
+        description: "当前授权没有硬件控制权限。你仍可使用采集、推理和参数预览；更换授权后再开启目标控制。",
+        confirmLabel: "查看授权",
+        onConfirm: () => navigatePage("license")
+      });
+      return false;
+    }
+    if (!kmnetHost.trim() || !kmnetUuid.trim()) {
+      setConfirmationRequest({
+        eyebrow: "目标控制",
+        title: "先设置控制设备",
+        description: "目标控制需要设备地址和设备编号。完成一次设置后，之后只需使用这个总开关。",
+        confirmLabel: "设置设备",
+        onConfirm: () => navigatePage("control-test")
+      });
+      return false;
+    }
     setConfirmationRequest({
-      eyebrow: "控制总开关",
+      eyebrow: "目标控制",
       title: "开启目标控制？",
-      description: "开启后，目标选择、跟踪和移动算法会开始处理新的识别结果；满足触发条件时，控制量可通过当前 kmNet 会话发送到设备。",
+      description: "NovaSight 将自动启动视觉链路、连接当前 kmNet，并开始处理新的识别结果。你不需要再逐项启动。",
       details: [
-        `设备：${kmnetHost || "未填写"}:${kmnetPort || "未填写"} · ${kmnetRuntimeConnected ? "当前已连接" : "当前未连接"}`,
-        "被取代命令不会补发；暂停输出或断开 kmNet 会立即清空待发送命令。"
+        `控制设备：${kmnetHost}:${kmnetPort}`,
+        "关闭总开关会立即停止新的目标计算和设备输出；被取代命令不会补发。"
       ],
       confirmLabel: "确认开启控制",
       danger: true,
-      onConfirm: () => updateConfigField(
-        "control",
-        "output_enabled",
-        true,
-        { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
-      )
+      onConfirm: async () => {
+        let outputGateOpened = false;
+        try {
+          if (!kmnetAutoConnect) {
+            await updateConfigField(
+              "hardware",
+              "auto_connect",
+              true,
+              { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
+            );
+          }
+          await updateConfigField(
+            "control",
+            "output_enabled",
+            true,
+            { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
+          );
+          outputGateOpened = true;
+          if (!runtimeLifecycleActive) {
+            const started = await startMainlineLaunch(true);
+            if (!started) throw new Error("主链没有确认启动，目标控制已自动恢复为关闭。请查看异常信息后重试。");
+          } else if (!kmnetRuntimeConnected) {
+            await connectKmNet(undefined, true);
+            await onRefresh();
+          }
+          reportSuccess("目标控制已开启", "视觉链路和设备连接由 NovaSight 自动维护。", "target-control");
+          return true;
+        } catch (error) {
+          if (outputGateOpened) {
+            await updateConfigField(
+              "control",
+              "output_enabled",
+              false,
+              { immediate: true, optimistic: false, rethrow: false }
+            );
+          }
+          throw error;
+        }
+      }
     });
     return false;
-  }, [kmnetHost, kmnetPort, kmnetRuntimeConnected, outputEnableBlockedReason, updateConfigField]);
+  }, [hardwareControlLicensed, kmnetAutoConnect, kmnetHost, kmnetPort, kmnetRuntimeConnected, kmnetUuid, navigatePage, onRefresh, runtimeLifecycleActive, startMainlineLaunch, updateConfigField]);
 
   const saveParameterPageDraft = useCallback(async (physicalOutputAcknowledged = false) => {
     if (!parameterPageDirtyRef.current || parameterPageSaving) {
@@ -2690,7 +2714,7 @@ export function StudioConsoleView({
         result.restart_required ? "参数已应用，其他配置待重启" : "参数已保存并生效",
         result.restart_required
           ? "本页参数已作为一个整体应用；与本页无关的进程级配置仍等待服务重启。"
-          : "本页修改已作为一个整体写入并重新加载；控制总开关未改变。",
+          : "本页修改已作为一个整体写入并重新加载；目标控制开关未改变。",
         "parameter-page"
       );
     } catch (error) {
@@ -3327,80 +3351,6 @@ export function StudioConsoleView({
     });
   }, [activeDetectionProfile, deleteClassProfile]);
 
-  const setKmNetConnection = useCallback(async (connect: boolean, physicalOutputAcknowledged = false) => {
-    setBusy(connect ? "kmnet.connect" : "kmnet.disconnect");
-    setLocalError(null);
-    setKmnetTestMessage("");
-    // Cancel any previous kmNet call still in flight so a rapid toggle
-    // doesn't leave the backend applying a stale request.
-    kmnetAbortControllerRef.current?.abort();
-    const controller = new AbortController();
-    kmnetAbortControllerRef.current = controller;
-    const signal = controller.signal;
-    let physicalDisconnectCompleted = false;
-    try {
-      if (connect && !kmnetAutoConnect) {
-        throw new Error("请先检查地址、端口和 UUID，并开启“主链启动时连接设备”；连接操作不会替你覆盖参数。");
-      } else if (!connect) {
-        // Physical stop comes first. Persisting the fail-closed output gate is
-        // still attempted afterwards, but a storage error cannot keep an
-        // already requested device session alive.
-        await disconnectKmNet(signal);
-        physicalDisconnectCompleted = true;
-        if (outputEnabled) {
-          beginPendingConfigWrite();
-          try {
-            const gateResult = await setRuntimeControlEnabled(false);
-            const applied = normalizeRuntimeConfig(gateResult.config);
-            finalizeRuntimeConfigWrite(applied);
-          } finally {
-            finishPendingConfigWrite();
-          }
-        }
-        setKmnetTestMessageTone("success");
-        setKmnetTestMessage(
-          "kmNet 已断开；采集、推理与目标计算继续运行，物理偏移输出已关闭。"
-        );
-      } else {
-        await connectKmNet(signal, physicalOutputAcknowledged);
-        setKmnetTestMessageTone("success");
-        setKmnetTestMessage("kmNet 连接成功；若偏移输出已允许，新的实时命令现在可以发送。");
-      }
-      await onRefresh();
-    } catch (err) {
-      const action = connect ? "连接" : "断开";
-      const detail = getErrorMessage(err);
-      setLocalError(
-        physicalDisconnectCompleted
-          ? `kmNet 已断开，但未能持久化关闭输出：${detail}`
-          : `kmNet ${action}失败：${detail}`
-      );
-      reportError(err, {
-        source: "kmnet-lifecycle",
-        title: physicalDisconnectCompleted ? "kmNet 已安全断开，配置保存失败" : `kmNet ${action}失败`
-      });
-      await onRefresh();
-    } finally {
-      setBusy(null);
-    }
-  }, [beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, kmnetAutoConnect, onRefresh, outputEnabled]);
-
-  const requestKmNetConnect = useCallback(() => {
-    if (runtimeOutputEnabled !== true && !outputEnabled) {
-      void setKmNetConnection(true);
-      return;
-    }
-    setConfirmationRequest({
-      eyebrow: "kmNet 实时会话",
-      title: "物理输出仍开启，确认连接 kmNet？",
-      description: "连接成功后，主链的新控制量可能立即发送到物理设备。取消后不会发起连接。",
-      details: [`设备：${kmnetHost || "未填写"}:${kmnetPort || "未填写"}`, "若只想验证设备连接，请先到参数设置关闭物理输出。"],
-      confirmLabel: "确认连接并允许物理输出",
-      danger: true,
-      onConfirm: () => setKmNetConnection(true, true)
-    });
-  }, [kmnetHost, kmnetPort, outputEnabled, runtimeOutputEnabled, setKmNetConnection]);
-
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
     dy = kmnetTestDy
@@ -3541,12 +3491,7 @@ export function StudioConsoleView({
     });
   };
 
-  const importConfig = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) {
-      return;
-    }
+  const importConfig = async (file: File) => {
     setLocalError(null);
     try {
       const decoded = JSON.parse(await file.text()) as unknown;
@@ -3831,21 +3776,12 @@ export function StudioConsoleView({
         <StudioPageHeader
           page={activePage}
           action={activePage === "params" && parameterModules.has("output") ? (
-            <div className={outputEnabled ? "parameter-master-control enabled" : "parameter-master-control"}>
-              <span>
-                <small>目标控制</small>
-                <b>{outputEnabled ? "正在运行" : "已停止"}</b>
-              </span>
-              <ModuleSwitch
-                compact
-                label="控制总开关"
-                detail={!outputEnabled ? outputEnableBlockedReason || undefined : undefined}
-                disabled={busy !== null || (!outputEnabled && outputEnableBlockedReason !== "")}
-                enabled={outputEnabled}
-                optimistic={false}
-                onToggle={requestOutputGateChange}
-              />
-            </div>
+            <TargetControlSwitch
+              enabled={outputEnabled}
+              pending={busy === "control.output_enabled"}
+              status={targetControlStatus}
+              onToggle={requestOutputGateChange}
+            />
           ) : undefined}
         />
         <StudioRuntimeBar
@@ -3905,6 +3841,21 @@ export function StudioConsoleView({
 
         {activePage === "activity" ? (
           <ActivityView items={activityItems} moduleOrder={activityModules} onOpenDetails={() => setErrorCenterOpen(true)} />
+        ) : null}
+
+        {activePage === "settings" ? (
+          <SettingsView
+            modules={settingsModules}
+            desiredRevision={desiredConfigRevision}
+            effectiveRevision={effectiveConfigRevision}
+            restartRequired={reportedConfigRestartRequired}
+            configAvailable={runtimeConfig !== null}
+            operationPending={busy !== null || pendingConfigWriteCount > 0}
+            parameterChangesPending={parameterPageDirty}
+            onExport={exportConfig}
+            onImport={importConfig}
+            onNavigate={navigatePage}
+          />
         ) : null}
 
         {activePage === "about" ? (
@@ -4496,7 +4447,7 @@ export function StudioConsoleView({
               </span>
               <div aria-live="polite" role="status">
                 <b>有未应用的修改</b>
-                <small>保存后整组参数立即生效；控制总开关保持不变。</small>
+                <small>保存后整组参数立即生效；目标控制开关保持不变。</small>
               </div>
               <div className="parameter-save-bar-actions">
                 <button
@@ -4810,34 +4761,6 @@ export function StudioConsoleView({
               return null;
             })}
             </div>
-            <footer className="parameter-config-footer">
-              <div>
-                <b>完整配置文件</b>
-                <small>用于备份或迁移高级设置，不影响日常参数调整。</small>
-              </div>
-              <details className="parameter-file-actions">
-                <summary>导入或导出</summary>
-                <div>
-                  <button className="console-button" onClick={exportConfig} type="button" title="仅导出已保存配置，不包含本页未保存修改">
-                    <NovaIcon name="export" size={15} />
-                    导出已保存
-                  </button>
-                  <button className="console-button" disabled={parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0} onClick={() => fileInputRef.current?.click()} title={parameterPageDirty ? "请先保存或放弃当前修改，再导入配置" : ""} type="button">
-                    <NovaIcon name="import" size={15} />
-                    导入配置
-                  </button>
-                  <input
-                    ref={fileInputRef}
-                    aria-hidden="true"
-                    className="visually-hidden"
-                    tabIndex={-1}
-                    type="file"
-                    accept="application/json,.json"
-                    onChange={importConfig}
-                  />
-                </div>
-              </details>
-            </footer>
           </>
           ) : (
           <>
@@ -4922,36 +4845,14 @@ export function StudioConsoleView({
                     riskLevel="advanced"
                     onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))}
                   />
-                  <ModuleSwitch
-                    label={rustControlPlane ? "主链启动时连接设备" : "NovaSight 启动时自动连接"}
-                    detail="只影响实时主链会话；单步测试始终独立连接、发送并断开。"
-                    enabled={kmnetAutoConnect}
-                    onToggle={(enabled) => updateConfigField("hardware", "auto_connect", enabled)}
-                  />
                   <div className="kmnet-live-session">
                     <div>
-                      <b>实时主链会话</b>
-                      <small>仅在主链运行时手动重连或安全断开；单步测试不需要此操作。</small>
+                      <b>实时设备会话</b>
+                      <small>连接由目标控制统一维护；关闭目标控制后不会继续计算或发送新的偏移。</small>
                     </div>
-                    <div className="console-action-row">
-                      <button
-                        aria-pressed={kmnetConnected}
-                        className="console-button"
-                        disabled={busy !== null || kmnetRestartRequired || !kmnetAutoConnect || !kmnetCanConnect}
-                        onClick={requestKmNetConnect}
-                        type="button"
-                      >
-                        {kmnetConnecting ? "连接中" : kmnetConnectionDegraded ? "重试实时连接" : "连接实时会话"}
-                      </button>
-                      <button
-                        className="console-button danger"
-                        disabled={busy !== null || !kmnetCanDisconnect}
-                        onClick={() => void setKmNetConnection(false)}
-                        type="button"
-                      >
-                        断开实时会话
-                      </button>
-                    </div>
+                    <span className={kmnetRuntimeConnected ? "ui-badge success" : kmnetConnecting ? "ui-badge info" : "ui-badge neutral"}>
+                      {kmnetRuntimeConnectionLabel}
+                    </span>
                   </div>
                 </div>
               </details>
@@ -5489,6 +5390,37 @@ export function StudioConsoleView({
       ) : null}
 
     </section>
+  );
+}
+
+function TargetControlSwitch({
+  enabled,
+  pending,
+  status,
+  onToggle,
+}: {
+  enabled: boolean;
+  pending: boolean;
+  status: string;
+  onToggle: (enabled: boolean) => void | boolean | Promise<void | boolean>;
+}) {
+  return (
+    <button
+      aria-busy={pending}
+      aria-checked={enabled}
+      aria-label={`目标控制，${status}`}
+      className={`target-control-switch${enabled ? " on" : ""}`}
+      disabled={pending}
+      onClick={() => void Promise.resolve(onToggle(!enabled)).catch(() => undefined)}
+      role="switch"
+      type="button"
+    >
+      <span>
+        <small>TARGET CONTROL</small>
+        <b>{pending ? "正在处理" : status}</b>
+      </span>
+      <i aria-hidden="true"><span /></i>
+    </button>
   );
 }
 

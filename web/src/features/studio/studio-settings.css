@@ -1304,46 +1304,37 @@
   }
 }
 
-.parameter-master-control {
-  min-width: 300px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 8px 9px 8px 14px;
-  border: 1px solid var(--status-warning-border);
-  border-radius: var(--radius-4);
-  background: var(--status-warning-bg);
-}
-
-.parameter-master-control.enabled {
-  border-color: var(--status-success-border);
-  background: var(--status-success-bg);
-}
-
-.parameter-master-control > span {
+.target-control-switch {
+  min-width: 220px;
+  min-height: 54px;
   display: grid;
-  gap: 2px;
-}
-
-.parameter-master-control > span small {
-  color: var(--text-tertiary);
-  font-size: 10px;
-}
-
-.parameter-master-control > span b {
-  color: var(--status-warning-fg);
-  font-size: 13px;
-}
-
-.parameter-master-control.enabled > span b {
-  color: var(--status-success-fg);
-}
-
-.parameter-master-control .module-switch {
-  min-width: 142px;
+  grid-template-columns: minmax(0, 1fr) 58px;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 10px 8px 15px;
+  border: 1px solid var(--border-strong);
+  border-left: 5px solid var(--signal-attention);
+  border-radius: var(--radius-3);
   background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: left;
+  box-shadow: var(--shadow-card);
 }
+
+.target-control-switch:hover:not(:disabled) {
+  border-color: var(--signal-target);
+  border-left-color: var(--signal-target);
+  background: var(--bg-hover);
+}
+
+.target-control-switch.on { border-left-color: var(--signal-target); }
+.target-control-switch > span { display: grid; gap: 2px; }
+.target-control-switch small { color: var(--text-tertiary); font-family: var(--font-mono); font-size: 9px; font-weight: 750; letter-spacing: .09em; }
+.target-control-switch b { color: var(--text-primary); font-size: 13px; font-weight: 780; }
+.target-control-switch > i { position: relative; width: 52px; height: 28px; display: block; border: 1px solid var(--border-strong); background: var(--bg-subtle); clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px)); }
+.target-control-switch > i > span { position: absolute; top: 4px; left: 5px; width: 18px; height: 18px; background: var(--text-tertiary); transition: transform var(--duration-normal) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard); }
+.target-control-switch.on > i { border-color: var(--brand-primary); background: var(--brand-soft); }
+.target-control-switch.on > i > span { background: var(--brand-primary); transform: translateX(22px); }
 
 .parameter-save-bar {
   position: sticky;
@@ -1391,65 +1382,6 @@
 .parameter-save-bar small { color: var(--text-tertiary); font-size: 11px; line-height: 1.45; }
 .parameter-save-bar-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
 
-.parameter-file-actions { position: relative; }
-.parameter-file-actions > summary {
-  min-height: var(--button-height);
-  display: inline-flex;
-  align-items: center;
-  padding: 0 11px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--button-radius);
-  background: var(--bg-surface);
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 650;
-  cursor: pointer;
-  list-style: none;
-}
-.parameter-file-actions > summary::-webkit-details-marker { display: none; }
-.parameter-file-actions[open] > summary { border-color: var(--brand-border); color: var(--brand-primary); }
-.parameter-file-actions > div {
-  position: absolute;
-  top: calc(100% + 7px);
-  right: 0;
-  z-index: 8;
-  width: max-content;
-  display: grid;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-4);
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-dialog);
-}
-
-.parameter-config-footer {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-4) 2px 0;
-  border-top: 1px solid var(--border-default);
-}
-
-.parameter-config-footer > div {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.parameter-config-footer > div b {
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.parameter-config-footer > div small {
-  color: var(--text-tertiary);
-  font-size: 11px;
-  line-height: 1.45;
-}
 
 .parameter-workspace {
   display: grid;
@@ -1657,7 +1589,7 @@
 .console-main[data-page="params"] .console-process-state { margin-right: auto; font-size: 11px; }
 
 @media (max-width: 880px) {
-  .parameter-master-control { min-width: 0; }
+  .target-control-switch { min-width: 0; }
   .parameter-group,
   .parameter-professional-content > section { grid-template-columns: minmax(0, 1fr); gap: 18px; }
   .parameter-group-heading { position: static; }
@@ -1670,12 +1602,6 @@
   .parameter-save-bar { grid-template-columns: 32px minmax(0, 1fr); }
   .parameter-save-bar-actions { grid-column: 1 / -1; flex-wrap: wrap; }
   .parameter-save-bar-actions > .console-button { flex: 1 1 0; padding-inline: 9px; white-space: nowrap; }
-  .parameter-file-actions { flex: 1 1 0; }
-  .parameter-file-actions > summary { justify-content: center; width: 100%; min-height: 44px; }
-  .parameter-file-actions > div { right: auto; left: 0; }
-  .parameter-config-footer { align-items: stretch; flex-direction: column; }
-  .parameter-config-footer .parameter-file-actions,
-  .parameter-config-footer .parameter-file-actions > summary { width: 100%; }
   .control-chain-setting { grid-template-columns: 36px minmax(0, 1fr); }
   .control-chain-setting-title { min-height: 32px; align-content: center; }
   .trigger-mode-options,

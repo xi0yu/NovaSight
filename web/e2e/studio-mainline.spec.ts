@@ -259,9 +259,15 @@ test("algorithm parameters are grouped directly without the obsolete dialog", as
   await expect(page.getByRole("heading", { name: "移动响应", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "目标锁定", exact: true })).toBeVisible();
   await expect(page.locator(".parameter-save-bar")).toHaveCount(0);
-  await expect(page.getByText("完整配置文件", { exact: true })).toBeVisible();
+  await expect(page.getByText("完整配置文件", { exact: true })).toHaveCount(0);
   await expect(page.locator("main.console-main").getByRole("button", { name: "算法参数", exact: true })).toHaveCount(0);
   await expect(page.getByRole("dialog", { name: "控制参数" })).toHaveCount(0);
+
+  await page.getByRole("navigation", { name: "NovaSight Studio 导航" }).getByRole("button", { name: "设置" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "设置" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "备份与恢复" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "备份设置" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "恢复设置" })).toBeVisible();
 });
 
 test("model search keeps selection and verification together", async ({ page }) => {
@@ -495,7 +501,7 @@ test("model organization saves catalog metadata without switching the runtime mo
 test("parameter page exposes one master control in its header", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "hardware", output_enabled: false }, pipeline: {} });
   await page.goto("/?page=params");
-  await expect(page.getByRole("button", { name: /控制总开关/ })).toBeVisible();
+  await expect(page.getByRole("switch", { name: /目标控制/ })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "参数分区" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "是否发送到设备", exact: true })).toHaveCount(0);
 });
@@ -556,7 +562,7 @@ test("narrow Studio keeps Chinese navigation and save action reachable", async (
   await page.locator("main.console-main").evaluate((main) => { main.scrollTop = 900; });
   await expect(page.getByRole("button", { name: "保存并应用" })).toBeInViewport();
   await expect(page.getByRole("button", { name: "Choose File" })).toHaveCount(0);
-  await expect(page.locator('input[type="file"]')).toHaveAttribute("tabindex", "-1");
+  await expect(page.locator('input[type="file"]')).toHaveCount(0);
 
   for (const control of [
     page.locator(".error-center-trigger"),
@@ -595,6 +601,7 @@ test("375px Studio keeps shell actions and horizontal navigation accessible", as
 
   await expect(activePageButton).toBeInViewport();
   await expect(page.locator(".error-center-trigger")).toBeInViewport();
+  await expect(navigation.getByRole("button", { name: "设置" })).toBeVisible();
   await expect(navigation.getByRole("button", { name: "关于" })).toBeVisible();
   expect(await page.locator("body").evaluate((body) => body.scrollWidth)).toBeLessThanOrEqual(375);
 });
@@ -603,7 +610,7 @@ test("Studio ships one recognizable product appearance without a theme decision"
   await mockStudioApi(page);
   await page.goto("/?page=overview");
 
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite-signal");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "arena-signal");
   await expect(page.locator(".theme-toggle")).toHaveCount(0);
 });
 
@@ -635,7 +642,7 @@ test("Studio action feedback respects reduced motion, transparency and higher co
   await page.mouse.up();
 
   await expect(page.locator(".console-app")).toHaveCSS("backdrop-filter", "none");
-  await expect(page.locator(".console-app")).toHaveCSS("background-color", "rgb(28, 29, 28)");
+  await expect(page.locator(".console-app")).toHaveCSS("background-color", "rgb(255, 254, 250)");
   expect(await page.locator("html").evaluate((element) => {
     const style = getComputedStyle(element);
     return style.getPropertyValue("--border-default").trim() === style.getPropertyValue("--border-strong").trim();
@@ -717,11 +724,11 @@ test("configuration pages explain the next action without horizontal overflow", 
   }
 });
 
-test("Studio exposes five visible task spaces without a hidden secondary navigation", async ({ page }) => {
+test("Studio exposes six visible task spaces without a hidden secondary navigation", async ({ page }) => {
   await mockStudioApi(page);
   await page.goto("/?page=overview");
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
-  for (const label of ["首页", "设备管理", "算法参数", "实时日志", "关于"]) {
+  for (const label of ["首页", "设备管理", "算法参数", "实时日志", "设置", "关于"]) {
     await expect(navigation.getByRole("button", { name: label })).toBeVisible();
   }
   await expect(navigation.getByRole("region", { name: "当前设备的深入功能" })).toHaveCount(0);

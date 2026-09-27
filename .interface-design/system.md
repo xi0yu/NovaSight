@@ -11,7 +11,7 @@ The visible experience is light, fast, natural, alive, reliable, and easy to und
 ## Product split
 
 - **NovaSight Cloud** is object-first and remote: Home, Devices, Models, Activity, Me.
-- **NovaSight Studio** is a professional workstation with five task spaces: 首页, 设备管理, 算法参数, 实时日志, 关于. Models, inference, performance, hardware tests, and license remain explicit contextual pages reached from the object that owns them.
+- **NovaSight Studio** is a professional workstation with six task spaces: 首页, 设备管理, 算法参数, 实时日志, 设置, 关于. Models, inference, performance, hardware tests, and license remain explicit contextual pages reached from the object that owns them.
 - Cloud must not mirror every Studio setting. Both products share typography, status language, motion, and progressive disclosure.
 
 ## Human and task
@@ -30,7 +30,7 @@ The first screen answers those questions. It does not begin with analytics, regi
 
 - Organize around real objects: my device, my model, what happened, my account or license.
 - Prefer `首页 / 设备 / 模型 / 活动 / 我的` in Cloud.
-- In Studio, keep the five task spaces visible. Device depth is entered through named controls such as `当前模型 / 管理模型 / 性能详情 / 控制测试`, never through a second hidden navigation strip.
+- In Studio, keep the six task spaces visible. Device depth is entered through named controls such as `当前模型 / 管理模型 / 性能详情 / 控制测试`, never through a second hidden navigation strip.
 - A core object or task must be visible as text on the first relevant layer. Do not require users to guess a tab, hover target, right-click menu, or collapsed section.
 - Low-frequency actions may move behind `···`; the current state and primary action may not.
 
@@ -57,9 +57,9 @@ Professional information is not removed. It is revealed in response to user inte
 
 - Platform typography first: SF Pro / system UI / Noto Sans SC / PingFang SC.
 - Large headings use tighter tracking; body copy uses comfortable leading.
-- The shipped Studio appearance is **Graphite Signal**: `#141515` canvas, `#1c1d1c` surface, warm `#f4f0e5` text, signal yellow `#f2c84b`, verified green `#7ed989`, live cyan `#5fd4e5`, and fault red `#ff727f`.
-- Color communicates state. Cyan may mean live signal, green healthy, amber attention, red fault or physical risk. No decorative purple-blue AI gradients.
-- Depth is subtle surface separation. Avoid stacked glass, large shadows, excessive radius, or decorative glow.
+- The shipped Studio appearance is **Arena Signal**: warm white `#f4f1ec` canvas, clean `#fffefa` surfaces, ink `#1b1a18`, action red `#d8273f`, attention yellow `#f0bd2c`, verified green `#29975a`, and live teal `#147c87`.
+- Color communicates state. Black and gray carry information, red marks the primary target or physical risk, yellow marks progress and attention, green verifies success, and teal marks a live signal. No decorative purple-blue AI gradients.
+- Competitive character comes from asymmetric rails, clipped corners, signal ticks, and disciplined high contrast—not copied game art, ornamental glow, or a card wall.
 - Do not expose a theme chooser. One coherent product appearance is easier to recognize, test, and maintain than three partial skins.
 
 ## Interaction and state

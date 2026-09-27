@@ -12,6 +12,17 @@
   overflow: visible;
 }
 
+.console-top::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 3px;
+  pointer-events: none;
+  background: linear-gradient(90deg, var(--signal-target) 0 18%, var(--signal-attention) 18% 24%, var(--border-default) 24% 100%);
+}
+
 .console-sidebar {
   grid-column: 1;
   grid-row: 2;
@@ -97,9 +108,9 @@
 }
 
 .console-sidebar .console-nav.active {
-  border-color: var(--brand-border);
-  background: var(--brand-soft);
-  color: var(--brand-primary);
+  border-color: var(--selection-strong-bg);
+  background: var(--selection-strong-bg);
+  color: var(--selection-strong-fg);
   box-shadow: none;
 }
 
@@ -110,16 +121,24 @@
   right: -9px;
   bottom: 10px;
   width: 2px;
-  background: var(--brand-primary);
+  background: var(--signal-target);
 }
 
 .console-sidebar .console-nav.active .console-nav-icon {
-  color: var(--brand-primary);
-  background: color-mix(in srgb, var(--brand-primary) 10%, transparent);
+  color: var(--signal-attention);
+  background: color-mix(in srgb, var(--signal-attention) 16%, transparent);
 }
 
 .console-sidebar .console-nav.active::before {
-  display: none;
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  display: block;
+  width: 9px;
+  height: 3px;
+  background: var(--signal-attention);
+  transform: skewX(-28deg);
 }
 
 .console-toolbar {

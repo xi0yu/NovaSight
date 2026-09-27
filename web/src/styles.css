@@ -3549,25 +3549,25 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-[data-theme="graphite-signal"] input,
-[data-theme="graphite-signal"] select,
-[data-theme="graphite-signal"] textarea {
-  color-scheme: dark;
+[data-theme="arena-signal"] input,
+[data-theme="arena-signal"] select,
+[data-theme="arena-signal"] textarea {
+  color-scheme: light;
   border-color: var(--input-border);
   background-color: var(--input-bg);
   color: var(--text-primary);
   caret-color: var(--brand-primary);
 }
 
-[data-theme="graphite-signal"] option,
-[data-theme="graphite-signal"] optgroup {
+[data-theme="arena-signal"] option,
+[data-theme="arena-signal"] optgroup {
   background: var(--bg-elevated);
   color: var(--text-primary);
 }
 
-[data-theme="graphite-signal"] input:-webkit-autofill,
-[data-theme="graphite-signal"] input:-webkit-autofill:hover,
-[data-theme="graphite-signal"] input:-webkit-autofill:focus {
+[data-theme="arena-signal"] input:-webkit-autofill,
+[data-theme="arena-signal"] input:-webkit-autofill:hover,
+[data-theme="arena-signal"] input:-webkit-autofill:focus {
   -webkit-text-fill-color: var(--text-primary);
   box-shadow: 0 0 0 1000px var(--input-bg) inset;
   transition: background-color 9999s ease-out;
@@ -4373,31 +4373,31 @@ body::after {
 }
 
 
-[data-theme="graphite-signal"] body {
+[data-theme="arena-signal"] body {
   background: var(--bg-app);
 }
 
-[data-theme="graphite-signal"] .console-top {
+[data-theme="arena-signal"] .console-top {
   background: var(--bg-surface);
 }
 
-[data-theme="graphite-signal"] .console-sidebar {
+[data-theme="arena-signal"] .console-sidebar {
   background: var(--bg-sidebar);
 }
 
-[data-theme="graphite-signal"] .console-nav,
-[data-theme="graphite-signal"] .ui-panel,
-[data-theme="graphite-signal"] .console-card {
+[data-theme="arena-signal"] .console-nav,
+[data-theme="arena-signal"] .ui-panel,
+[data-theme="arena-signal"] .console-card {
   border-radius: var(--card-radius);
 }
 
-[data-theme="graphite-signal"] .console-button.primary,
-[data-theme="graphite-signal"] .ui-button-primary,
-[data-theme="graphite-signal"] .button.primary {
+[data-theme="arena-signal"] .console-button.primary:not(:disabled),
+[data-theme="arena-signal"] .ui-button-primary:not(:disabled),
+[data-theme="arena-signal"] .button.primary:not(:disabled) {
   background: var(--brand-primary);
 }
 
-[data-theme="graphite-signal"] .console-nav.active {
+[data-theme="arena-signal"] .console-nav.active {
   border-color: var(--brand-border);
   background: var(--selection-strong-bg);
 }

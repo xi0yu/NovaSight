@@ -38,7 +38,7 @@ it("opens the target-control confirmation from the page-level master switch", as
   expect(screen.getByRole("heading", { level: 1, name: "算法参数" })).toBeVisible();
   expect(screen.getByRole("heading", { name: "启动条件" })).toBeVisible();
   expect(screen.getByRole("heading", { name: "目标锁定" })).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "控制总开关" }));
+  await userEvent.click(screen.getByRole("switch", { name: /目标控制/ }));
   expect(screen.getByRole("alertdialog", { name: "开启目标控制？" })).toBeVisible();
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/config/commands"))).toBe(false);
   await userEvent.click(screen.getByRole("button", { name: "确认开启控制" }));
@@ -52,12 +52,13 @@ it("opens the target-control confirmation from the page-level master switch", as
   expect(screen.getByRole("dialog", { name: "异常信息" })).toHaveTextContent("排查编号 0123456789abcdef0123456789abcdef");
 });
 
-it("explains missing hardware authorization instead of offering a no-op output action", async () => {
+it("routes an unlicensed target-control request to authorization instead of hiding the action", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} license={{ ...props.license, features: [] }} /></SafetyOperationProvider>);
-  const control = screen.getByRole("button", { name: /控制总开关/ });
-  expect(control).toBeDisabled();
-  expect(control).toHaveTextContent("当前授权不包含硬件控制");
-  expect(screen.queryByRole("button", { name: "打开输出" })).not.toBeInTheDocument();
+  const control = screen.getByRole("switch", { name: /目标控制/ });
+  expect(control).toBeEnabled();
+  await userEvent.click(control);
+  expect(screen.getByRole("alertdialog", { name: "当前授权不能开启目标控制" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "查看授权" })).toBeEnabled();
 });
 
 it.each([{ pixel_format: "NV12" }, { width: 1280 }, { fps: 120 }, { device: "/dev/video1" }])("does not claim capture is effective just because ROI matches (%j)", (changed) => {
@@ -216,21 +217,14 @@ it("asks before starting a stopped mainline with physical output enabled", async
   expect(new Headers(starts()[0][1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
 });
 
-it("asks before reconnecting kmNet while physical output is enabled", async () => {
+it("keeps the live kmNet session under the single target-control switch", async () => {
   history.replaceState(null, "", "/?page=control-test");
   const disconnected = { ...runtime, executor: { executors: { kmnet: { available: true, connected: false, runtime_connected: false, connection_state: "disconnected", configuration_ready: true, can_connect: true } } } } as unknown as RuntimeState;
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={disconnected} runtimeConfig={{ ...props.runtimeConfig, control: { output_enabled: true } }} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByText("设备连接配置", { selector: "b" }));
-  const connects = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/api/executors/kmnet/connect"));
-  await userEvent.click(screen.getByRole("button", { name: "连接实时会话" }));
-  expect(screen.getByRole("alertdialog", { name: "物理输出仍开启，确认连接 kmNet？" })).toHaveTextContent("可能立即发送");
-  expect(connects()).toHaveLength(0);
-  await userEvent.click(screen.getByRole("button", { name: "取消" }));
-  expect(connects()).toHaveLength(0);
-  await userEvent.click(screen.getByRole("button", { name: "连接实时会话" }));
-  await userEvent.click(screen.getByRole("button", { name: "确认连接并允许物理输出" }));
-  expect(connects()).toHaveLength(1);
-  expect(new Headers(connects()[0][1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
+  expect(screen.getByText("连接由目标控制统一维护；关闭目标控制后不会继续计算或发送新的偏移。")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "连接实时会话" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "断开实时会话" })).not.toBeInTheDocument();
 });
 
 it("asks before reloading ROI while physical output is enabled", async () => {
@@ -323,11 +317,10 @@ it("keeps failed capability detection visible beside capture controls", async ()
 it("does not let a pending parameter draft get overwritten by config import", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByRole("button", { name: "按键触发" }));
-  expect(screen.getByRole("button", { name: "导入配置" })).not.toBeVisible();
-  await userEvent.click(screen.getByText("导入或导出"));
-  expect(screen.getByRole("button", { name: "导入配置" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "导出已保存" })).toBeEnabled();
-  expect(screen.getByText("有未应用的修改")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "设置" }));
+  expect(screen.getByRole("button", { name: "先处理参数" })).toBeEnabled();
+  expect(screen.getByRole("button", { name: "下载备份" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "选择备份" })).not.toBeInTheDocument();
 });
 
 it("keeps physical output off when an imported file requests it on", async () => {
@@ -344,6 +337,7 @@ it("keeps physical output off when an imported file requests it on", async () =>
     return new Promise(() => {});
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "设置" }));
   const file = new File([JSON.stringify(imported)], "dangerous.json", { type: "application/json" });
   fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
   const confirmation = await screen.findByRole("alertdialog", { name: "应用 dangerous.json？" });

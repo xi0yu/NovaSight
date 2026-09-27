@@ -19,6 +19,7 @@ export type ConsolePage =
   | "params"
   | "control-test"
   | "latency"
+  | "settings"
   | "about";
 
 type NavigationItem = {
@@ -39,6 +40,7 @@ export const DEFAULT_CONSOLE_PAGE: ConsolePage = "overview";
 export const CONSOLE_PAGES = new Set<ConsolePage>([
   "overview", "onboarding", "activity", "device", "capture", "infer", "control",
   "models", "management", "license", "params", "control-test", "latency", "about",
+  "settings",
 ]);
 
 const navigationDetails: Record<StudioLayoutPage["id"], Omit<NavigationItem, "id" | "label">> = {
@@ -46,6 +48,7 @@ const navigationDetails: Record<StudioLayoutPage["id"], Omit<NavigationItem, "id
   capture: { detail: "输入、模型与采集规格", icon: "devices" },
   params: { detail: "识别、目标与输出参数", icon: "settings" },
   activity: { detail: "按等级查看运行与操作日志", icon: "logs" },
+  settings: { detail: "备份、恢复与系统设置", icon: "settings" },
   about: { detail: "平台版本、能力与支持", icon: "help" },
 };
 
@@ -72,6 +75,7 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
   params: { group: "NovaSight", title: "算法参数", description: "调整目标锁定、移动手感与安全边界。" },
   "control-test": { group: "设备管理", title: "控制测试", description: "脱离自动目标链路验证 kmNet 连接和受控移动输出。" },
   latency: { group: "设备管理", title: "性能", description: "定位采集到设备发送之间的阶段耗时和数据新鲜度问题。" },
+  settings: { group: "NovaSight", title: "设置", description: "备份当前设置，或从已有备份安全恢复。" },
   about: { group: "NovaSight", title: "关于 NovaSight", description: "查看平台版本、能力边界、授权状态和支持入口。" },
 };
 

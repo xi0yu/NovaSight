@@ -455,7 +455,7 @@ Recovery uses one restrained transition from warning/fault treatment to confirme
 
 This active design plus its accepted design-review corrections is the first-release authority. Where it conflicts with `.interface-design/system.md`, `docs/novasight-frontend-visual-system.md`, current `web/src/design/tokens.css`, or `themeRegistry.ts`, the first-release contract here wins. The older documents and token blocks remain implementation evidence only until T8 updates or archives the conflicting clauses in the same change; they are not a second source of visual truth.
 
-The first release has one runtime appearance ID: `graphite-signal`. The app does not render a one-option chooser. Legacy browser values including `studio`, `rose-white`, `graphite-red`, `light`, and `dark` migrate once to `graphite-signal`; they never resurrect an old theme or appear as unavailable options. `color-scheme: dark` is explicit.
+The first release has one runtime appearance ID: `arena-signal`. The app does not render a one-option chooser. Legacy browser values including `studio`, `rose-white`, `graphite-red`, `light`, and `dark` migrate once to `arena-signal`; they never resurrect an old theme or appear as unavailable options. `color-scheme: light` is explicit.
 
 Authoritative Graphite Signal foundation:
 
@@ -1539,7 +1539,7 @@ Question: D1 — M1: 这次 CEO 评审应以哪种范围姿态推进？
 
 Project/branch/task: NovaSight `develop-alpha` 消费级 Studio 重构，已完成 office-hours 和工程评审。
 
-ELI10: 当前计划覆盖五个页面、实时历史、三套视觉、后端活动流、配置写入和实机验收，必然改动二十多个文件。过去五次前端重做都在旧结构上继续加代码，所以这次先决定是收敛到最小可交付核心、保持现有范围，还是继续寻找新功能；模式本身不会自动删除或增加任何功能。
+ELI10: 当前计划覆盖六个页面、实时历史、统一视觉、后端活动流、配置写入和实机验收，必然改动二十多个文件。过去五次前端重做都在旧结构上继续加代码，所以这次先决定是收敛到最小可交付核心、保持现有范围，还是继续寻找新功能；模式本身不会自动删除或增加任何功能。
 
 Stakes if we pick wrong: 范围太大可能再次得到“换汤不换药”的第六版，范围太小则可能推迟你认为构成 NovaSight 身份的 Eye / Body / Nerve 体验。
 
@@ -2402,7 +2402,7 @@ Overall design score is the lowest rated pass: **5/10 → 9/10**. The remaining 
 | DR-9 | auto-selected after `自动继续` | brand graphics are limited to target corners, the N-shaped Body path, and matching Nerve trajectory geometry |
 | DR-10 | auto-selected after `自动继续` | LIVE motion is driven by accepted evidence, capped at 2 Hz, and freezes on stale/paused/reconnecting/fault |
 | DR-11 | auto-selected after `自动继续` | use the existing platform-first font stack and the specified 12–44px type scale; add no remote font |
-| DR-12 | auto-selected after `自动继续` | `graphite-signal` is the sole first-release theme ID; retire legacy options and reconcile old authority sources |
+| DR-12 | auto-selected after `自动继续` | `arena-signal` is the sole first-release theme ID; retire legacy options and reconcile old authority sources |
 | DR-13 | auto-selected after `自动继续` | selection, caret, focus, links, scrollbars, labels, and numeric typography have explicit browser contracts |
 | DR-14 | auto-selected after `自动继续` | every page has named behavior at ≥1280, 1024–1279, 768–1023, <768, 200% zoom, and increased contrast |
 | DR-15 | auto-selected after `自动继续` | Parameters exposes a model workspace with folder/list/detail hierarchy and `使用此模型` as the primary action |

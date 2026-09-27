@@ -82,9 +82,9 @@ export function useMainlineLaunch({
     };
   }, [markEmergencyStopCausalityUnknown]);
 
-  const start = useCallback(async (physicalOutputAcknowledged = false) => {
+  const start = useCallback(async (physicalOutputAcknowledged = false): Promise<boolean> => {
     if (requestControllerRef.current !== null) {
-      return;
+      return false;
     }
     const controller = new AbortController();
     requestControllerRef.current = controller;
@@ -97,7 +97,7 @@ export function useMainlineLaunch({
         await startRuntimePipeline(controller.signal, physicalOutputAcknowledged);
       } catch (error) {
         if (controller.signal.aborted) {
-          return;
+          return false;
         }
         requestError = error;
       }
@@ -107,26 +107,26 @@ export function useMainlineLaunch({
           await onRefresh();
         } catch (error) {
           if (!mountedRef.current) {
-            return;
+            return true;
           }
           const detail = getErrorMessage(error);
           setLocalError(`运行请求已完成，但最新运行状态刷新失败：${detail}`);
           reportError(error, { source: "mainline-refresh", title: "运行状态刷新失败" });
         }
-        return;
+        return true;
       }
 
       let acceptedByRuntime = false;
       try {
         const runtime = await getRuntimeState(controller.signal, START_RECONCILE_TIMEOUT_MS);
         if (!mountedRef.current) {
-          return;
+          return false;
         }
         onRuntimeStateChange(runtime);
         acceptedByRuntime = runtimeAcceptedStart(runtime);
       } catch (error) {
         if (!mountedRef.current) {
-          return;
+          return false;
         }
         reportError(error, { source: "mainline-reconcile", title: "启动状态确认失败" });
       }
@@ -143,6 +143,7 @@ export function useMainlineLaunch({
           reportError(error, { source: "mainline-refresh", title: "运行状态刷新失败" });
         }
       }
+      return acceptedByRuntime;
     } finally {
       const ownsRequest = requestControllerRef.current === controller;
       if (ownsRequest) {

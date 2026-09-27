@@ -46,7 +46,7 @@ for (const savedTheme of ["rose-white", "graphite-red", "frontier-industrial"] a
   test(`${savedTheme} migrates to the product appearance before authentication paints`, async ({ page }) => {
     await page.addInitScript((selectedTheme) => localStorage.setItem("novasight.theme", selectedTheme), savedTheme);
     await page.goto("/");
-    await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite-signal");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "arena-signal");
     await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
   });
 }
