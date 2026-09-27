@@ -103,7 +103,7 @@ it("opens control parameters from the live control chain", async () => {
   history.replaceState(null, "", "/?page=control");
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByRole("button", { name: "前往控制参数" }));
-  expect(screen.getByRole("heading", { level: 1, name: "参数" })).toBeVisible();
+  expect(screen.getByRole("heading", { level: 1, name: "算法参数" })).toBeVisible();
 });
 
 it("asks before discarding unsaved parameter edits", async () => {
@@ -135,7 +135,7 @@ it("keeps unsaved dialog edits when the user cancels closing it", async () => {
   expect(screen.queryByRole("dialog", { name: "选择权重" })).not.toBeInTheDocument();
 });
 
-it("stages a typed selection weight before closing the dialog", async () => {
+it("keeps a typed selection weight in the dialog until it is applied", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByRole("button", { name: "权重" }));
   const value = screen.getByRole("textbox", { name: "距离权重 数值" });
@@ -323,7 +323,7 @@ it("does not let a pending parameter draft get overwritten by config import", as
   await userEvent.click(screen.getByText("配置文件"));
   expect(screen.getByRole("button", { name: "导入配置" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "导出已保存" })).toBeEnabled();
-  expect(screen.getByText(/导出不包含草稿/)).toBeVisible();
+  expect(screen.getByText(/导出不包含未保存内容/)).toBeVisible();
 });
 
 it("keeps physical output off when an imported file requests it on", async () => {
@@ -390,10 +390,10 @@ it("saves a class aim-point edit without reporting unsupported control.aim", asy
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByText("目标识别与跟踪（进阶）"));
   await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
-  await userEvent.click(within(screen.getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
-  await userEvent.click(screen.getByRole("button", { name: "加入草稿并关闭" }));
-  await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled());
+  const dialog = screen.getByRole("dialog", { name: "管理类别配置" });
+  await userEvent.click(within(within(dialog).getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "管理类别配置" })).not.toBeInTheDocument());
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({ control: { output_enabled: false, aim: { class_roles: { default: { "0": "head" } } } } });
 });
@@ -415,17 +415,17 @@ it("saves a new class profile as one runtime configuration update", async () => 
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByText("目标识别与跟踪（进阶）"));
   await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
-  await userEvent.type(screen.getByRole("textbox", { name: "新建配置" }), "arena");
-  await userEvent.click(screen.getByRole("button", { name: "复制当前" }));
-  await userEvent.click(screen.getByRole("button", { name: "加入草稿并关闭" }));
-  await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
-  expect(screen.getByRole("alertdialog", { name: "物理输出仍开启，确认保存参数？" })).toBeVisible();
+  const dialog = screen.getByRole("dialog", { name: "管理类别配置" });
+  await userEvent.type(within(dialog).getByRole("textbox", { name: "新建配置" }), "arena");
+  await userEvent.click(within(dialog).getByRole("button", { name: "复制当前" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
+  expect(screen.getByRole("alertdialog", { name: "物理输出仍开启，确认应用这些设置？" })).toBeVisible();
   expect(submitted).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "取消" }));
   expect(submitted).toBeNull();
-  await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
-  await userEvent.click(screen.getByRole("button", { name: "确认保存并保持输出开启" }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled());
+  await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
+  await userEvent.click(screen.getByRole("button", { name: "确认保存并应用" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "管理类别配置" })).not.toBeInTheDocument());
   expect(submitted).toMatchObject({
     revision: 25,
     inference: { detection_class_profile: "arena", detection_class_profiles: { default: ["enemy"], arena: ["enemy"] } },
@@ -436,7 +436,7 @@ it("saves a new class profile as one runtime configuration update", async () => 
   expect(new Headers(writes[0][1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
 });
 
-it("retains a rejected class edit and does not claim the draft is empty", async () => {
+it("retains a rejected class edit inside the dialog", async () => {
   const configured = { ...props.runtimeConfig,
     inference: { detection_class_profile: "default", detection_class_profiles: { default: ["enemy"] } },
     control: { ...props.runtimeConfig.control, aim: { class_roles: { default: {} } } },
@@ -450,10 +450,52 @@ it("retains a rejected class edit and does not claim the draft is empty", async 
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByText("目标识别与跟踪（进阶）"));
   await userEvent.click(screen.getByRole("button", { name: "管理类别配置" }));
-  await userEvent.click(within(screen.getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
-  await userEvent.click(screen.getByRole("button", { name: "加入草稿并关闭" }));
-  await userEvent.click(screen.getByRole("button", { name: "保存修改" }));
-  await waitFor(() => expect(screen.getByText(/invalid class role/)).toBeVisible());
-  expect(screen.getByRole("button", { name: "保存修改" })).toBeEnabled();
-  expect(screen.queryByText(/没有剩余未保存修改/)).not.toBeInTheDocument();
+  const dialog = screen.getByRole("dialog", { name: "管理类别配置" });
+  await userEvent.click(within(within(dialog).getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
+  await waitFor(() => expect(within(dialog).getByText(/invalid class role/)).toBeVisible());
+  expect(dialog).toBeVisible();
+  expect(within(dialog).getByRole("button", { name: "保存并应用" })).toBeEnabled();
+});
+
+it("saves only dialog changes and keeps earlier page edits unsaved", async () => {
+  const configured = {
+    ...props.runtimeConfig,
+    control: { ...props.runtimeConfig.control, trigger_mode: "always" },
+    pipeline: { ...props.runtimeConfig.pipeline, target_selection_distance_weight: 0.2 },
+  };
+  let submitted: Record<string, unknown> | null = null;
+  vi.stubGlobal("fetch", vi.fn((url, init) => {
+    if (!String(url).endsWith("/api/config")) return new Promise(() => {});
+    if ((init?.method ?? "GET") === "GET") {
+      return Promise.resolve(new Response(JSON.stringify(configured), { status: 200, headers: { "content-type": "application/json" } }));
+    }
+    submitted = JSON.parse(String(init?.body));
+    return Promise.resolve(new Response(JSON.stringify({
+      config: { ...submitted, revision: 26 },
+      apply_mode: "epoch_reload",
+      restart_required: false,
+      applied: true,
+      rolled_back: false,
+      message: "ok",
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+  }));
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
+
+  await userEvent.click(screen.getByRole("button", { name: "按键触发" }));
+  await userEvent.click(screen.getByText("目标识别与跟踪（进阶）"));
+  await userEvent.click(screen.getByRole("button", { name: "权重" }));
+  const dialog = screen.getByRole("dialog", { name: "选择权重" });
+  const distanceWeight = within(dialog).getByRole("textbox", { name: "距离权重 数值" });
+  fireEvent.change(distanceWeight, { target: { value: "0.7" } });
+  fireEvent.blur(distanceWeight);
+  await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
+
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "选择权重" })).not.toBeInTheDocument());
+  expect(submitted).toMatchObject({
+    control: { trigger_mode: "always" },
+    pipeline: { target_selection_distance_weight: 0.7 },
+  });
+  expect(screen.getByRole("button", { name: "按键触发" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "保存并应用" })).toBeEnabled();
 });

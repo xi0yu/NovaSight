@@ -1,5 +1,6 @@
 import type { LicenseStatus, RuntimeState } from "../../api";
 import { NovaIcon, type NovaIconName } from "../../components/visual";
+import { version as studioVersion } from "../../../package.json";
 import type { RuntimeProjection } from "../runtime/runtimeProjection";
 import type { ConsolePage } from "./StudioNavigation";
 
@@ -21,9 +22,9 @@ function completedSetupSteps(state: SetupState): number {
     .filter(Boolean).length;
 }
 
-export function HomeSetupPrompt({ state, onNavigate }: { state: SetupState; onNavigate: Navigate }) {
+export function HomeSetupPrompt({ state, statusKnown, onNavigate }: { state: SetupState; statusKnown: boolean; onNavigate: Navigate }) {
   const completed = completedSetupSteps(state);
-  if (completed === SETUP_STEP_COUNT) return null;
+  if (!statusKnown || (state.captureReady && state.modelReady && state.configReady)) return null;
   return (
     <section className="home-setup-prompt" aria-labelledby="home-setup-title">
       <span className="home-setup-icon" aria-hidden="true"><NovaIcon name="play-circle" size={20} /></span>
@@ -39,7 +40,7 @@ export function HomeSetupPrompt({ state, onNavigate }: { state: SetupState; onNa
   );
 }
 
-export function OnboardingView({ state, onNavigate }: { state: SetupState; onNavigate: Navigate }) {
+export function OnboardingView({ state, statusKnown, onNavigate }: { state: SetupState; statusKnown: boolean; onNavigate: Navigate }) {
   const completed = completedSetupSteps(state);
   const steps: Array<{
     label: string;
@@ -61,22 +62,22 @@ export function OnboardingView({ state, onNavigate }: { state: SetupState; onNav
       <header className="onboarding-hero">
         <div>
           <span>新手引导</span>
-          <h2 id="onboarding-title">四步准备好第一条视觉链路</h2>
-          <p>每一步都读取当前服务状态；你可以随时离开，已经完成的设置不会丢失。</p>
+          <h2 id="onboarding-title">{statusKnown ? "四步准备好第一条视觉链路" : "正在核对当前设备"}</h2>
+          <p>{statusKnown ? "每一步都读取当前服务状态；你可以随时离开，已经完成的设置不会丢失。" : "服务状态尚不可用，暂时不能判断哪些步骤已经完成。请先检查连接。"}</p>
         </div>
-        <div className="onboarding-progress" role="status" aria-label={`已完成 ${completed} 步，共 ${SETUP_STEP_COUNT} 步`}>
-          <strong>{completed}<small>/{SETUP_STEP_COUNT}</small></strong>
-          <span>已完成</span>
+        <div className="onboarding-progress" role="status" aria-label={statusKnown ? `已完成 ${completed} 步，共 ${SETUP_STEP_COUNT} 步` : "设置进度待核实"}>
+          <strong>{statusKnown ? completed : "—"}<small>/{SETUP_STEP_COUNT}</small></strong>
+          <span>{statusKnown ? "已完成" : "待核实"}</span>
         </div>
       </header>
 
       <ol className="onboarding-steps">
         {steps.map((step, index) => (
-          <li className={step.complete ? "complete" : step === next ? "current" : "pending"} key={step.label}>
-            <span className="onboarding-step-index">{step.complete ? <NovaIcon name="check-circle" size={16} /> : index + 1}</span>
+          <li className={!statusKnown ? "pending" : step.complete ? "complete" : step === next ? "current" : "pending"} key={step.label}>
+            <span className="onboarding-step-index">{statusKnown && step.complete ? <NovaIcon name="check-circle" size={16} /> : index + 1}</span>
             <span className="onboarding-step-icon" aria-hidden="true"><NovaIcon name={step.icon} size={20} /></span>
             <div>
-              <small>{step.complete ? "已完成" : step === next ? "下一步" : "稍后"}</small>
+              <small>{!statusKnown ? "待核实" : step.complete ? "已完成" : step === next ? "下一步" : "稍后"}</small>
               <h3>{step.label}</h3>
               <p>{step.detail}</p>
             </div>
@@ -86,15 +87,16 @@ export function OnboardingView({ state, onNavigate }: { state: SetupState; onNav
       </ol>
 
       <footer className="onboarding-actions">
-        <button className="console-button" onClick={() => onNavigate("overview")} type="button">跳过并返回首页</button>
-        <button className="console-button primary" onClick={() => onNavigate(next.page)} type="button">{next.action}</button>
+        {statusKnown ? <button className="console-button" onClick={() => onNavigate("overview")} type="button">跳过并返回首页</button> : null}
+        <button className="console-button primary" onClick={() => onNavigate(statusKnown ? next.page : "activity")} type="button">{statusKnown ? next.action : "查看连接问题"}</button>
       </footer>
     </section>
   );
 }
 
-function runtimePhaseLabel(runtime: RuntimeState | null): string {
+function runtimePhaseLabel(runtime: RuntimeState | null, verified: boolean): string {
   if (!runtime) return "等待状态";
+  if (!verified) return "状态已过期";
   if (runtime.running) return "正在运行";
   if (runtime.semantic.phase === "faulted") return "运行故障";
   if (runtime.semantic.phase === "starting") return "正在启动";
@@ -133,6 +135,9 @@ export function DeviceStatusView({
 }) {
   const kmnet = runtime?.executor.executors.kmnet;
   const verified = runtime !== null && projection?.transport === "current";
+  const metricLabel = (value: number | null | undefined, unit: string) => verified && runtime?.statistics.metrics_available === true
+    ? metric(value, unit)
+    : verified ? "等待样本" : runtime ? "状态已过期" : "等待样本";
   const updated = lastUpdated?.toLocaleTimeString("zh-CN", { hour12: false }) ?? "尚未取得";
   return (
     <section className="product-journey device-status-view" aria-labelledby="device-truth-title">
@@ -149,28 +154,28 @@ export function DeviceStatusView({
       </header>
 
       <dl className="device-live-metrics" aria-label="设备实时数据">
-        <div><dt>现在</dt><dd>{runtimePhaseLabel(runtime)}</dd></div>
-        <div><dt>推理输入</dt><dd>{metric(runtime?.statistics.nvinfer_input_fps, " FPS")}</dd></div>
-        <div><dt>推理耗时</dt><dd>{metric(runtime?.statistics.inference_latency_ms, " ms")}</dd></div>
-        <div><dt>结果新鲜度</dt><dd>{metric(runtime?.statistics.detection_data_age_ms, " ms")}</dd></div>
+        <div><dt>现在</dt><dd>{runtimePhaseLabel(runtime, verified)}</dd></div>
+        <div><dt>推理输入</dt><dd>{metricLabel(runtime?.statistics.nvinfer_input_fps, " FPS")}</dd></div>
+        <div><dt>推理耗时</dt><dd>{metricLabel(runtime?.statistics.inference_latency_ms, " ms")}</dd></div>
+        <div><dt>结果新鲜度</dt><dd>{metricLabel(runtime?.statistics.detection_data_age_ms, " ms")}</dd></div>
       </dl>
 
       <section className="device-state-list" aria-label="设备各部分状态">
         <article>
           <span aria-hidden="true"><NovaIcon name="capture" size={19} /></span>
           <div><h3>画面</h3><p>{captureProfile || "尚未保存画面规格"}</p></div>
-          <strong>{runtime?.capture.running ? "正在接收" : runtime?.capture.available ? "待运行" : "未确认"}</strong>
+          <strong>{!verified ? "等待核实" : runtime?.capture.running ? "正在接收" : runtime?.capture.available ? "待运行" : "未确认"}</strong>
           <button onClick={() => onNavigate("capture")} type="button">设置</button>
         </article>
         <article>
           <span aria-hidden="true"><NovaIcon name="models" size={19} /></span>
           <div><h3>模型</h3><p>{activeModelName}</p></div>
-          <strong>{!runtime ? "等待核实" : modelLoaded ? "已装载" : runtime.inference.configured ? "待装载" : "未配置"}</strong>
+          <strong>{!verified ? "等待核实" : modelLoaded ? "已装载" : runtime?.inference.configured ? "待装载" : "未配置"}</strong>
           <button onClick={() => onNavigate("models")} type="button">管理</button>
         </article>
         <article>
           <span aria-hidden="true"><NovaIcon name="device-send" size={19} /></span>
-          <div><h3>设备输出</h3><p>{kmnet?.runtime_connected ? "kmNet 实时会话已连接" : "kmNet 未连接或等待主链"}</p></div>
+          <div><h3>设备输出</h3><p>{!verified ? "kmNet 连接状态待核实" : kmnet?.runtime_connected ? "kmNet 实时会话已连接" : "kmNet 未连接或等待主链"}</p></div>
           <strong>{projection?.output.label ?? "等待核实"}</strong>
           <button onClick={() => onNavigate("params")} type="button">查看</button>
         </article>
@@ -209,12 +214,12 @@ export function ManagementView({
   setupState: SetupState;
   onNavigate: Navigate;
 }) {
-  const setupComplete = completedSetupSteps(setupState) === SETUP_STEP_COUNT;
+  const setupReady = setupState.captureReady && setupState.modelReady && setupState.configReady;
   const resources: Array<{ label: string; value: string; detail: string; page: ConsolePage; icon: NovaIconName }> = [
-    { label: "设备", value: deviceLabel || "尚未配置", detail: runtimeAvailable ? "当前状态可读取" : "等待服务状态", page: "device", icon: "devices" },
-    { label: "模型", value: `${projectCount} 个项目`, detail: setupState.modelReady ? "已有部署模型" : "尚未部署模型", page: "models", icon: "models" },
-    { label: "活动", value: errorCount > 0 ? `${errorCount} 条需要注意` : "没有待处理故障", detail: "操作结果与故障历史", page: "activity", icon: "notification" },
-    { label: "授权", value: license?.valid ? license.tier || "已授权" : "需要授权", detail: license?.valid ? "当前权限有效" : "当前权限不可用", page: "license", icon: "shield-check" },
+    { label: "设备", value: deviceLabel || (runtimeAvailable ? "尚未配置" : "待核实"), detail: runtimeAvailable ? "当前状态可读取" : "等待服务状态", page: "device", icon: "devices" },
+    { label: "模型", value: projectCount > 0 || runtimeAvailable ? `${projectCount} 个项目` : "项目待核实", detail: !runtimeAvailable ? "等待服务状态" : setupState.modelReady ? "已有部署模型" : "尚未部署模型", page: "models", icon: "models" },
+    { label: "活动", value: errorCount > 0 ? `${errorCount} 条需要注意` : "暂无故障记录", detail: "操作结果与故障历史", page: "activity", icon: "notification" },
+    { label: "授权", value: license?.valid ? license.tier || "已授权" : license ? "需要授权" : "授权待核实", detail: license?.valid ? "当前权限有效" : license ? "当前权限不可用" : "等待授权信息", page: "license", icon: "shield-check" },
   ];
   return (
     <section className="product-journey management-view" aria-labelledby="management-title">
@@ -224,8 +229,8 @@ export function ManagementView({
           <h2 id="management-title">管理真实对象，不管理后台术语</h2>
           <p>设备、模型、活动和授权集中在这里。每项数据都来自当前服务，不用虚构的 KPI 填满页面。</p>
         </div>
-        <button className="console-button primary" onClick={() => onNavigate(setupComplete ? "device" : "onboarding")} type="button">
-          {setupComplete ? "查看设备状态" : "继续新手引导"}
+        <button className="console-button primary" onClick={() => onNavigate(!runtimeAvailable || setupReady ? "device" : "onboarding")} type="button">
+          {!runtimeAvailable || setupReady ? "查看设备状态" : "继续新手引导"}
         </button>
       </header>
 
@@ -246,6 +251,70 @@ export function ManagementView({
         </div>
         <button className="console-button" onClick={() => onNavigate("license")} type="button">查看授权范围</button>
       </section>
+    </section>
+  );
+}
+
+export function AboutView({
+  license,
+  serviceConnected,
+  layoutRevision,
+  modules,
+  onNavigate,
+}: {
+  license: LicenseStatus | null;
+  serviceConnected: boolean;
+  layoutRevision: string;
+  modules: ReadonlySet<string>;
+  onNavigate: Navigate;
+}) {
+  return (
+    <section className="product-journey about-view" aria-labelledby="about-product-title">
+      {modules.has("identity") ? (
+        <header className="about-identity">
+          <div className="about-mark" aria-hidden="true"><NovaIcon name="prediction-line" size={36} /></div>
+          <div>
+            <span>实时视觉工作站</span>
+            <h2 id="about-product-title">NovaSight Studio</h2>
+            <p>把采集、推理、目标选择与设备输出组织成一条可核实的实时链路。</p>
+          </div>
+          <span className={serviceConnected ? "truth-badge verified" : "truth-badge"}>
+            <NovaIcon name={serviceConnected ? "connected" : "disconnected"} size={15} />
+            {serviceConnected ? "服务已连接" : "服务未连接"}
+          </span>
+        </header>
+      ) : null}
+
+      {modules.has("version") ? (
+        <dl className="about-facts" aria-label="版本与配置信息">
+          <div><dt>Studio 版本</dt><dd>{studioVersion}</dd></div>
+          <div><dt>页面配置</dt><dd>{layoutRevision}</dd></div>
+          <div><dt>授权</dt><dd>{license?.valid ? license.tier || "已授权" : "不可用"}</dd></div>
+        </dl>
+      ) : null}
+
+      {modules.has("capabilities") ? (
+        <section className="about-capabilities" aria-labelledby="about-capabilities-title">
+          <div>
+            <span>当前产品边界</span>
+            <h3 id="about-capabilities-title">专业能力按需展开</h3>
+            <p>普通页面只回答状态、操作和下一步；CUDA、TensorRT、NVMM 与原始运行证据保留在深入页面。</p>
+          </div>
+          <ul>
+            <li><NovaIcon name="capture" size={17} /><span>采集与 ROI</span></li>
+            <li><NovaIcon name="tensorrt" size={17} /><span>模型与推理</span></li>
+            <li><NovaIcon name="tracking" size={17} /><span>目标与跟踪</span></li>
+            <li><NovaIcon name="device-send" size={17} /><span>控制与输出</span></li>
+          </ul>
+        </section>
+      ) : null}
+
+      {modules.has("support") ? (
+        <footer className="about-actions">
+          <button className="console-button" onClick={() => onNavigate("license")} type="button">查看授权</button>
+          <button className="console-button primary" onClick={() => onNavigate("activity")} type="button">打开实时日志</button>
+        </footer>
+      ) : null}
     </section>
   );
 }

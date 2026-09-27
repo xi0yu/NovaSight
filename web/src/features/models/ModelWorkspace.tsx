@@ -5,10 +5,12 @@ import "./model-workspace.css";
 
 export function ModelWorkspace({
   activeModelName,
+  activeArtifactStatus,
   onOpenInference,
   panelProps,
 }: {
   activeModelName: string;
+  activeArtifactStatus: string | null;
   onOpenInference: () => void;
   panelProps: ModelSelectionPanelProps;
 }) {
@@ -17,6 +19,7 @@ export function ModelWorkspace({
     ? panelProps.activeLoaded ? "loaded" : "deployed"
     : "empty";
   const hasDiscoveredModel = panelProps.modelCount > 0 || Boolean(activeFile);
+  const activeVerified = activeArtifactStatus === "ready";
   return (
     <section className="model-workspace" aria-labelledby="model-workspace-title">
       <header className="model-workspace-header">
@@ -41,12 +44,12 @@ export function ModelWorkspace({
             <span>后端 <strong>{panelProps.runtimeBackend || "未上报"}</strong></span>
           </div>
           <button className="console-button secondary" onClick={onOpenInference} type="button">
-            查看实时推理
+            {activeFile ? "查看实时推理" : "查看推理状态"}
           </button>
         </div>
         <ol className="model-promotion-overview" aria-label="模型进入生产槽的步骤">
-          <li className={hasDiscoveredModel ? "complete" : "current"}><span>1</span><b>发现文件</b><small>设备资产</small></li>
-          <li className={activeFile ? "complete" : "pending"}><span>2</span><b>资格检查</b><small>输入与解析</small></li>
+          <li className={hasDiscoveredModel ? "complete" : panelProps.root ? "current" : "pending"}><span>1</span><b>发现文件</b><small>{panelProps.root ? "设备资产" : "待读取"}</small></li>
+          <li className={activeVerified ? "complete" : activeFile ? "current" : "pending"}><span>2</span><b>资格检查</b><small>{activeVerified ? "已有验证记录" : "待验证"}</small></li>
           <li className={activeFile ? "complete" : "pending"}><span>3</span><b>部署模型</b><small>写入运行配置</small></li>
           <li className={panelProps.activeLoaded ? "complete" : activeFile ? "current" : "pending"}><span>4</span><b>运行装载</b><small>真实状态读回</small></li>
         </ol>

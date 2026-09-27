@@ -11,7 +11,7 @@ The visible experience is light, fast, natural, alive, reliable, and easy to und
 ## Product split
 
 - **NovaSight Cloud** is object-first and remote: Home, Devices, Models, Activity, Me.
-- **NovaSight Studio** is a professional workstation: Home, Device, Models, Activity, License. Capture, inference, tracking, control, parameters, performance, and hardware tests live one level deeper inside the current device.
+- **NovaSight Studio** is a professional workstation with five task spaces: 首页, 设备管理, 算法参数, 实时日志, 关于. Models, inference, performance, hardware tests, and license remain explicit contextual pages reached from the object that owns them.
 - Cloud must not mirror every Studio setting. Both products share typography, status language, motion, and progressive disclosure.
 
 ## Human and task
@@ -30,7 +30,7 @@ The first screen answers those questions. It does not begin with analytics, regi
 
 - Organize around real objects: my device, my model, what happened, my account or license.
 - Prefer `首页 / 设备 / 模型 / 活动 / 我的` in Cloud.
-- In Studio, expose device-specific depth only after entering the device: `画面 / 推理 / 目标与控制 / 参数 / 性能 / 控制测试`.
+- In Studio, keep the five task spaces visible. Device depth is entered through named controls such as `当前模型 / 管理模型 / 性能详情 / 控制测试`, never through a second hidden navigation strip.
 - A core object or task must be visible as text on the first relevant layer. Do not require users to guess a tab, hover target, right-click menu, or collapsed section.
 - Low-frequency actions may move behind `···`; the current state and primary action may not.
 
@@ -57,10 +57,10 @@ Professional information is not removed. It is revealed in response to user inte
 
 - Platform typography first: SF Pro / system UI / Noto Sans SC / PingFang SC.
 - Large headings use tighter tracking; body copy uses comfortable leading.
-- Dominant surfaces are quiet white, glacier gray, or restrained graphite.
+- The shipped Studio appearance is **Graphite Signal**: `#141515` canvas, `#1c1d1c` surface, warm `#f4f0e5` text, signal yellow `#f2c84b`, verified green `#7ed989`, live cyan `#5fd4e5`, and fault red `#ff727f`.
 - Color communicates state. Cyan may mean live signal, green healthy, amber attention, red fault or physical risk. No decorative purple-blue AI gradients.
 - Depth is subtle surface separation. Avoid stacked glass, large shadows, excessive radius, or decorative glow.
-- Preserve only the three approved appearances: 专业工作台, 粉白清昼, 黑灰红.
+- Do not expose a theme chooser. One coherent product appearance is easier to recognize, test, and maintain than three partial skins.
 
 ## Interaction and state
 
@@ -70,6 +70,7 @@ Professional information is not removed. It is revealed in response to user inte
 - Stop, pause output, ordinary save, retry, and navigation do not ask repeatedly.
 - Interrupted tasks retain the user’s intent and return path. Reconnect reads back authoritative state before retrying.
 - A saved value, requested value, and effective runtime value are different states and must be labeled honestly.
+- Parameter dialogs perform one explicit transaction: `保存并应用` writes only that dialog's changes, waits for backend confirmation, and stays open with the user's input on failure. Never expose an intermediate “draft” action.
 
 ## Error and activity language
 

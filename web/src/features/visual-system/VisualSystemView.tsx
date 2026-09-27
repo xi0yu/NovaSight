@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 
-import { EmptyStateVisual, NovaIcon, StatusBadge, ThemeToggle } from "../../components/visual";
+import { EmptyStateVisual, NovaIcon, StatusBadge } from "../../components/visual";
 import { iconCategories, type NovaIconName } from "../../design/iconNames";
 import { visualAssetGroups } from "../../design/visualAssets";
 import type { NovaStatus } from "../../design/statusTokens";
@@ -81,7 +81,7 @@ export function VisualSystemView() {
             <p>SVG icons, status badges, brand marks, feature illustrations, and empty states.</p>
           </div>
         </div>
-        <ThemeToggle />
+        <StatusBadge status="running" label="Graphite Signal" detail="product appearance" />
       </header>
 
       <section className="visual-section">

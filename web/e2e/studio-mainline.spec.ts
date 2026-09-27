@@ -131,6 +131,19 @@ test("Studio navigation moves keyboard focus to the new page heading", async ({ 
   await expect(page.getByRole("heading", { level: 1, name: "首页" })).toBeFocused();
 });
 
+test("service failure is not shown as first-time setup or an empty model library", async ({ page }) => {
+  await mockStudioApi(page);
+  await page.goto("/?page=overview");
+  await expect(page.getByRole("status").filter({ hasText: "当前运行结论" })).toContainText("无法确认运行状态");
+  await expect(page.getByText(/首次设置/)).toHaveCount(0);
+
+  await page.goto("/?page=models");
+  await expect(page.getByText("设备模型目录尚未读取成功")).toBeVisible();
+  await expect(page.getByRole("button", { name: "新建文件夹" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "重试读取" })).toBeVisible();
+  await expect(page.getByText(/暂无可选模型/)).toHaveCount(0);
+});
+
 test("unavailable runtime leads to the error details", async ({ page }) => {
   await mockStudioApi(page);
   await page.goto("/?page=overview");
@@ -172,8 +185,7 @@ test("Studio navigation restores each page scroll position", async ({ page }) =>
 
   await navigation.getByRole("button", { name: "首页" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "首页" })).toBeFocused();
-  await navigation.getByRole("button", { name: "设备" }).click();
-  await navigation.getByRole("button", { name: "参数" }).click();
+  await navigation.getByRole("button", { name: "算法参数" }).click();
 
   await expect.poll(() => main.evaluate((element) => element.scrollTop)).toBe(paramsScrollTop);
 });
@@ -195,18 +207,17 @@ test("parameter draft survives in-app navigation without a confirmation popup", 
   await page.goto("/?page=params");
 
   await page.getByRole("button", { name: "按键触发" }).click();
-  await expect(page.getByRole("button", { name: "保存修改" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "保存并应用" })).toBeEnabled();
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
   await navigation.getByRole("button", { name: "首页" }).click();
-  await navigation.getByRole("button", { name: "设备" }).click();
-  await navigation.getByRole("button", { name: "参数" }).click();
+  await navigation.getByRole("button", { name: "算法参数" }).click();
 
   await expect(page.getByRole("button", { name: "按键触发" })).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("button", { name: "保存修改" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "保存并应用" })).toBeEnabled();
   expect(dialogCount).toBe(0);
 });
 
-test("algorithm parameters explain the two-stage save flow", async ({ page }) => {
+test("algorithm parameter dialog explains its direct apply boundary", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, {
     revision: 1,
     control: {
@@ -217,11 +228,11 @@ test("algorithm parameters explain the two-stage save flow", async ({ page }) =>
   });
   await page.goto("/?page=params");
 
-  await page.getByRole("button", { name: "算法参数" }).click();
+  await page.getByLabel("什么时候响应设置").getByRole("button", { name: "算法参数" }).click();
 
   const dialog = page.getByRole("dialog", { name: "控制参数" });
-  await expect(dialog).toContainText("加入草稿并关闭");
-  await expect(dialog).toContainText("返回参数页后点击“保存修改”才会写入设备");
+  await expect(dialog).toContainText("点击“保存并应用”后直接写入设备");
+  await expect(dialog).not.toContainText("草稿");
 });
 
 test("model search keeps selection and verification together", async ({ page }) => {
@@ -485,13 +496,13 @@ test("saving parameters while output is enabled needs explicit consent", async (
   });
   await page.goto("/?page=params");
   await page.getByRole("button", { name: "直接触发" }).click();
-  await page.getByRole("button", { name: "保存修改" }).click();
+  await page.getByRole("button", { name: "保存并应用" }).click();
   const confirmation = page.getByRole("alertdialog", { name: "物理输出仍开启，确认保存参数？" });
   await expect(confirmation).toContainText("保存后不再等待按键");
   expect(commandCount).toBe(0);
   await confirmation.getByRole("button", { name: "取消" }).click();
-  await expect(page.getByRole("button", { name: "保存修改" })).toBeEnabled();
-  await page.getByRole("button", { name: "保存修改" }).click();
+  await expect(page.getByRole("button", { name: "保存并应用" })).toBeEnabled();
+  await page.getByRole("button", { name: "保存并应用" }).click();
   await confirmation.getByRole("button", { name: "确认保存并保持输出开启" }).click();
   await expect.poll(() => commandCount).toBe(1);
 });
@@ -502,8 +513,8 @@ test("narrow Studio keeps Chinese navigation and save action reachable", async (
   await page.goto("/?page=params");
 
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
-  await expect(navigation.getByText("参数", { exact: true })).toBeVisible();
-  await expect(navigation.getByRole("button", { name: "参数" })).toBeInViewport();
+  await expect(navigation.getByText("算法参数", { exact: true })).toBeVisible();
+  await expect(navigation.getByRole("button", { name: "算法参数" })).toBeInViewport();
 
   const shellHeader = page.locator(".console-top");
   expect((await shellHeader.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(76);
@@ -511,14 +522,14 @@ test("narrow Studio keeps Chinese navigation and save action reachable", async (
   const saveBar = page.locator(".parameter-save-bar");
   await expect(saveBar).toHaveCSS("position", "sticky");
   await page.locator("main.console-main").evaluate((main) => { main.scrollTop = 900; });
-  await expect(page.getByRole("button", { name: "保存修改" })).toBeInViewport();
+  await expect(page.getByRole("button", { name: "保存并应用" })).toBeInViewport();
   await expect(page.getByRole("button", { name: "Choose File" })).toHaveCount(0);
   await expect(page.locator('input[type="file"]')).toHaveAttribute("tabindex", "-1");
 
   for (const control of [
     page.locator(".error-center-trigger"),
-    page.getByRole("button", { name: "保存修改" }),
-    navigation.getByRole("button", { name: "参数" }),
+    page.getByRole("button", { name: "保存并应用" }),
+    navigation.getByRole("button", { name: "算法参数" }),
   ]) {
     expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
@@ -547,45 +558,21 @@ test("375px Studio keeps shell actions and horizontal navigation accessible", as
   await page.goto("/?page=params");
 
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
-  const activePageButton = navigation.getByRole("button", { name: "参数" });
+  const activePageButton = navigation.getByRole("button", { name: "算法参数" });
   await activePageButton.scrollIntoViewIfNeeded();
 
   await expect(activePageButton).toBeInViewport();
   await expect(page.locator(".error-center-trigger")).toBeInViewport();
-  await expect(page.locator(".theme-toggle")).toBeInViewport();
+  await expect(navigation.getByRole("button", { name: "关于" })).toBeVisible();
   expect(await page.locator("body").evaluate((body) => body.scrollWidth)).toBeLessThanOrEqual(375);
 });
 
-test("theme chooser exposes visible controls that a user can actually click", async ({ page }) => {
+test("Studio ships one recognizable product appearance without a theme decision", async ({ page }) => {
   await mockStudioApi(page);
   await page.goto("/?page=overview");
 
-  const trigger = page.locator(".theme-toggle");
-  expect.soft(await trigger.evaluate((element) => element.tagName)).toBe("BUTTON");
-  expect.soft(await trigger.innerText()).toContain("主题");
-  await trigger.click();
-  await expect(page.locator(".theme-option")).toHaveCount(3);
-
-  const graphiteRed = page.getByRole("button", { name: /黑灰红/ });
-  await expect(graphiteRed).toBeVisible();
-  await graphiteRed.scrollIntoViewIfNeeded();
-  const optionReceivesPointer = await graphiteRed.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-    return hit !== null && element.contains(hit);
-  });
-  expect(optionReceivesPointer).toBe(true);
-
-  await graphiteRed.click();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite-red");
-  await expect(trigger).toContainText("黑灰红");
-  expect(await page.evaluate(() => window.localStorage.getItem("novasight.theme"))).toBe("graphite-red");
-
-  await trigger.click();
-  const viewport = page.viewportSize();
-  await page.mouse.click(12, (viewport?.height ?? 720) - 12);
-  await expect(trigger).toHaveAttribute("aria-expanded", "false");
-  await expect(page.getByRole("group", { name: "网站主题" })).toHaveCount(0);
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite-signal");
+  await expect(page.locator(".theme-toggle")).toHaveCount(0);
 });
 
 test("Studio action feedback respects reduced motion, transparency and higher contrast", async ({ page }) => {
@@ -616,7 +603,7 @@ test("Studio action feedback respects reduced motion, transparency and higher co
   await page.mouse.up();
 
   await expect(page.locator(".console-app")).toHaveCSS("backdrop-filter", "none");
-  await expect(page.locator(".console-app")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  await expect(page.locator(".console-app")).toHaveCSS("background-color", "rgb(28, 29, 28)");
   expect(await page.locator("html").evaluate((element) => {
     const style = getComputedStyle(element);
     return style.getPropertyValue("--border-default").trim() === style.getPropertyValue("--border-strong").trim();
@@ -632,7 +619,6 @@ test("760px Studio recovery actions keep touch-safe targets", async ({ page }) =
     page.getByRole("button", { name: "查看异常", exact: true }),
     page.getByRole("button", { name: "重试" }),
     page.locator(".error-center-trigger"),
-    page.locator(".theme-toggle"),
   ]) {
     expect((await control.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
   }
@@ -669,8 +655,8 @@ test("authenticated operator can manage and safely exit the current license", as
 
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
   await expect(navigation).toBeVisible();
-  await navigation.getByRole("button", { name: "管理" }).click();
-  await page.getByRole("button", { name: /授权.*当前权限有效/ }).click();
+  await navigation.getByRole("button", { name: "关于" }).click();
+  await page.getByRole("button", { name: "查看授权" }).click();
 
   await expect(page).toHaveURL(/\?page=license$/);
   await expect(page.getByRole("heading", { level: 1, name: "授权" })).toBeVisible();
@@ -699,21 +685,18 @@ test("configuration pages explain the next action without horizontal overflow", 
   }
 });
 
-test("Studio exposes object-first navigation and reveals device tools progressively", async ({ page }) => {
+test("Studio exposes five visible task spaces without a hidden secondary navigation", async ({ page }) => {
   await mockStudioApi(page);
   await page.goto("/?page=overview");
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
-  for (const label of ["首页", "设备", "模型", "活动", "管理"]) {
+  for (const label of ["首页", "设备管理", "算法参数", "实时日志", "关于"]) {
     await expect(navigation.getByRole("button", { name: label })).toBeVisible();
   }
-  await expect(navigation.getByRole("button", { name: "参数" })).toHaveCount(0);
-  await navigation.getByRole("button", { name: "设备" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "设备状态" })).toBeFocused();
-  await expect(page.getByText("等待当前状态")).toBeVisible();
-  await expect(navigation.getByRole("region", { name: "当前设备的深入功能" })).toBeVisible();
-  await expect(navigation.getByRole("button", { name: "参数" })).toBeVisible();
-  await navigation.getByRole("button", { name: "活动" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "活动" })).toBeFocused();
+  await expect(navigation.getByRole("region", { name: "当前设备的深入功能" })).toHaveCount(0);
+  await navigation.getByRole("button", { name: "设备管理" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "设备管理" })).toBeFocused();
+  await navigation.getByRole("button", { name: "实时日志" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "实时日志" })).toBeFocused();
   await expect(page.getByText(/件事需要注意/)).toBeVisible();
 });
 
@@ -721,11 +704,14 @@ test("management exposes onboarding and real object pages without fake cloud con
   await mockStudioApi(page);
   await page.goto("/?page=management");
 
-  await expect(page.getByRole("heading", { level: 1, name: "管理" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "资源与授权" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "管理真实对象，不管理后台术语" })).toBeVisible();
   await expect(page.getByText(/团队、账单和多设备云端编排没有后端数据时不会伪装成可用功能/)).toBeVisible();
-  await page.getByRole("button", { name: "继续新手引导" }).click();
+  await page.getByRole("button", { name: "查看设备状态" }).click();
+  await expect(page).toHaveURL(/\?page=device$/);
+  await page.goto("/?page=onboarding");
   await expect(page).toHaveURL(/\?page=onboarding$/);
-  await expect(page.getByRole("heading", { level: 1, name: "新手引导" })).toBeFocused();
-  await expect(page.getByRole("status", { name: /已完成 \d 步，共 4 步/ })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "新手引导" })).toBeVisible();
+  await expect(page.getByRole("status", { name: "设置进度待核实" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看连接问题" })).toBeVisible();
 });

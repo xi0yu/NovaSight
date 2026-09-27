@@ -33,12 +33,10 @@ const projection: RuntimeProjection = {
 
 const controlProps = {
   controlBusy: false,
-  emergencyStopping: false,
   launchPending: false,
   runtimeStopping: false,
   runtimeControlUnavailable: false,
   onToggle: vi.fn(),
-  onEmergencyStop: vi.fn(),
 };
 
 describe("RuntimeOverviewView", () => {
@@ -115,7 +113,6 @@ describe("RuntimeOverviewView", () => {
 
   it("puts real core metrics and runtime controls in the first-screen conclusion", async () => {
     const onToggle = vi.fn();
-    const onEmergencyStop = vi.fn();
     render(
       <RuntimeOverviewView
         runtime={runtime}
@@ -124,25 +121,22 @@ describe("RuntimeOverviewView", () => {
         lastUpdated={new Date("2026-08-20T08:00:00Z")}
         onAction={() => undefined}
         controlBusy={false}
-        emergencyStopping={false}
         launchPending={false}
         runtimeStopping={false}
         runtimeControlUnavailable={false}
         onToggle={onToggle}
-        onEmergencyStop={onEmergencyStop}
       />
     );
 
     const metrics = screen.getByLabelText("核心运行数据");
     expect(metrics).toHaveClass("is-live");
-    expect(metrics).toHaveTextContent("推理输入 FPS240");
-    expect(metrics).toHaveTextContent("检测结果 FPS238");
+    expect(metrics).toHaveTextContent("推理输入240 FPS");
+    expect(metrics).toHaveTextContent("检测结果238 FPS");
     expect(metrics).toHaveTextContent("推理耗时8.2 ms");
 
     await userEvent.click(screen.getByRole("button", { name: "停止运行" }));
-    await userEvent.click(screen.getByRole("button", { name: "紧急停止" }));
     expect(onToggle).toHaveBeenCalledOnce();
-    expect(onEmergencyStop).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "紧急停止" })).not.toBeInTheDocument();
   });
 
   it("does not present missing live samples as zero", () => {
@@ -172,7 +166,7 @@ describe("RuntimeOverviewView", () => {
     const metrics = screen.getByLabelText("核心运行数据");
     expect(metrics).not.toHaveClass("is-live");
     expect(metrics).not.toHaveTextContent(/FPS0/);
-    expect(screen.getAllByText("等待样本")).toHaveLength(3);
+    expect(screen.getAllByText("等待样本")).toHaveLength(4);
   });
 
   it("does not present stale statistics as current live metrics", () => {
@@ -187,8 +181,10 @@ describe("RuntimeOverviewView", () => {
       />
     );
 
-    expect(screen.getAllByText("状态已过期")).toHaveLength(3);
+    expect(screen.getAllByText("状态已过期").length).toBeGreaterThanOrEqual(4);
     expect(screen.getByLabelText("核心运行数据")).not.toHaveTextContent("240");
+    expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
+    expect(screen.getByRole("heading", { name: "画面如何变成输出" }).closest("section")).not.toHaveTextContent("LIVE");
   });
 
   it("shows pending start and stop feedback before the next runtime snapshot", () => {

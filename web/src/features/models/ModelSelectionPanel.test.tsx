@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelCatalogDirectory, ModelCatalogModel } from "../../api";
 
 import { ModelSelectionPanel } from "./ModelSelectionPanel";
+import { ModelWorkspace } from "./ModelWorkspace";
 
 describe("ModelSelectionPanel", () => {
   beforeEach(() => window.sessionStorage.clear());
@@ -152,11 +153,13 @@ describe("ModelSelectionPanel", () => {
     expect(screen.getByRole("button", { name: "保存整理结果" })).toBeDisabled();
   });
 
-  it("shows a direct recovery path instead of empty filters when no model exists", () => {
+  it("shows a retry instead of claiming an empty library when catalog loading fails", async () => {
+    const onRefresh = vi.fn();
     render(
       <ModelSelectionPanel
         root={null}
         loading={false}
+        catalogError="服务暂时不可用"
         directoryCount={0}
         modelCount={0}
         selectedPath={undefined}
@@ -173,7 +176,7 @@ describe("ModelSelectionPanel", () => {
         canSwitch={false}
         parserPreset="auto"
         onParserPresetChange={vi.fn()}
-        onRefresh={vi.fn()}
+        onRefresh={onRefresh}
         onCreateFolder={vi.fn(async () => {})}
         onRequestMove={vi.fn()}
         onSelectModel={vi.fn()}
@@ -183,10 +186,21 @@ describe("ModelSelectionPanel", () => {
     );
 
     expect(screen.queryByRole("region", { name: "模型筛选" })).not.toBeInTheDocument();
-    expect(screen.getByText(/将 \.engine 文件放入设备的 models 目录/)).toBeInTheDocument();
+    expect(screen.getByText(/无法读取设备模型目录。服务暂时不可用/)).toBeVisible();
+    expect(screen.queryByText(/暂无可选模型/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新建文件夹" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "重试读取" }));
+    expect(onRefresh).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: "刷新模型" })).toBeEnabled();
     expect(screen.queryByText("所选 Engine 文件")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "验证并切换到所选模型" })).not.toBeInTheDocument();
+  });
+
+  it("does not call an active but unverified model qualified", () => {
+    render(<ModelWorkspace activeModelName="test" activeArtifactStatus="failed" onOpenInference={vi.fn()}
+      panelProps={panelProps({ activeArtifactPath: "stable.engine", activeLoaded: true })} />);
+    expect(screen.getByRole("list", { name: "模型进入生产槽的步骤" })).toHaveTextContent("待验证");
+    expect(screen.queryByText("已有验证记录")).not.toBeInTheDocument();
   });
 
   it("restores model filters when the operator returns during the same browser session", async () => {

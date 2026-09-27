@@ -10,12 +10,10 @@ type StudioRuntimeBarProps = {
   launchPending: boolean;
   diagnosticModeReady: boolean;
   busy: boolean;
-  emergencyStopping: boolean;
   runtimeControlUnavailable: boolean;
   captureStatus: string;
   inferenceStatus: string;
   onToggle: () => void;
-  onEmergencyStop: () => void;
 };
 
 export function StudioRuntimeBar({
@@ -27,12 +25,10 @@ export function StudioRuntimeBar({
   launchPending,
   diagnosticModeReady,
   busy,
-  emergencyStopping,
   runtimeControlUnavailable,
   captureStatus,
   inferenceStatus,
-  onToggle,
-  onEmergencyStop
+  onToggle
 }: StudioRuntimeBarProps) {
   if (!(["capture", "infer", "control", "latency", "control-test"] as ConsolePage[]).includes(page)) return null;
 
@@ -63,7 +59,7 @@ export function StudioRuntimeBar({
         {runtimeLifecycleActive ? (
           <button
             className="console-button danger"
-            disabled={busy || emergencyStopping || runtimeStopping || runtimeControlUnavailable}
+            disabled={busy || runtimeStopping || runtimeControlUnavailable}
             onClick={onToggle}
             type="button"
           >
@@ -86,7 +82,7 @@ export function StudioRuntimeBar({
       </div>
       <button
         className={!runtimeAvailable ? "console-button" : runtimeLifecycleActive ? "console-button danger" : "console-button primary"}
-        disabled={busy || emergencyStopping || runtimeStopping || runtimeControlUnavailable}
+        disabled={busy || runtimeStopping || runtimeControlUnavailable}
         onClick={onToggle}
         type="button"
       >
@@ -101,17 +97,6 @@ export function StudioRuntimeBar({
                 ? "停止运行"
                 : "运行"}
       </button>
-      {runtimeLifecycleActive ? (
-        <button
-          className="console-button danger studio-emergency-stop"
-          disabled={emergencyStopping}
-          onClick={onEmergencyStop}
-          type="button"
-        >
-          <NovaIcon name="pause-output" size={15} />
-          {emergencyStopping ? "紧急停止中" : "紧急停止"}
-        </button>
-      ) : null}
     </section>
   );
 }

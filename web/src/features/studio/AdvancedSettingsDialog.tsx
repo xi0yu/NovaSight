@@ -113,11 +113,11 @@ export function AdvancedSettingsDialog({
         <footer className="advanced-settings-dialog-footer">
           <span className={saveError ? "dialog-save-status error" : dirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
             {saving
-              ? "正在处理…"
+              ? "正在保存并应用…"
               : saveError
                 ? saveError
                 : dirty
-                  ? "修改尚未加入页面草稿"
+                  ? "修改尚未保存"
                   : footerNote}
           </span>
           <button
@@ -126,7 +126,7 @@ export function AdvancedSettingsDialog({
             onClick={dirty ? onSave : onClose}
             type="button"
           >
-            {dirty ? "加入草稿并关闭" : "关闭"}
+            {dirty ? "保存并应用" : "关闭"}
           </button>
         </footer>
       </section>

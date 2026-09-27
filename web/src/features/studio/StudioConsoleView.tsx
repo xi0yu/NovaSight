@@ -59,7 +59,8 @@ import { LicenseView } from "../license/LicenseView";
 import { ActivityView } from "../activity/ActivityView";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { useStableSemanticValue } from "../shared/useStableSemanticValue";
-import { NovaIcon, ThemeToggle } from "../../components/visual";
+import { NovaIcon } from "../../components/visual";
+import { modulesForPage } from "../../contracts/studioLayout";
 import { CurrentModelSummary } from "../models/CurrentModelSummary";
 import { ModelSwitchDialog } from "../models/ModelSwitchDialog";
 import {
@@ -110,8 +111,10 @@ import {
 import { useMainlineLaunch } from "./useMainlineLaunch";
 import { useConfigApplyPresentation } from "./useConfigApplyPresentation";
 import { useModelSwitchWorkflow } from "./useModelSwitchWorkflow";
+import { useStudioLayout } from "./useStudioLayout";
 import { RuntimeOverviewView } from "./RuntimeOverviewView";
 import {
+  AboutView,
   DeviceStatusView,
   HomeSetupPrompt,
   ManagementView,
@@ -741,6 +744,13 @@ export function StudioConsoleView({
   onStatusTopicChange
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
+  const studioLayout = useStudioLayout();
+  const overviewModules = modulesForPage(studioLayout, "overview");
+  const captureModules = modulesForPage(studioLayout, "capture");
+  const parameterModules = modulesForPage(studioLayout, "params");
+  const activityModules = studioLayout.pages.find((page) => page.id === "activity")?.modules ?? [];
+  const overviewModuleOrder = studioLayout.pages.find((page) => page.id === "overview")?.modules ?? [];
+  const aboutModules = modulesForPage(studioLayout, "about");
   const activePageRef = useRef(activePage);
   const pageScrollPositionsRef = useRef<Partial<Record<ConsolePage, number>>>({});
 
@@ -774,6 +784,7 @@ export function StudioConsoleView({
   const [modelCatalogModelCount, setModelCatalogModelCount] = useState(0);
   const [modelCatalogDirectoryCount, setModelCatalogDirectoryCount] = useState(0);
   const [modelCatalogLoading, setModelCatalogLoading] = useState(false);
+  const [modelCatalogError, setModelCatalogError] = useState<string | null>(null);
   const [selectedModelCatalogPath, setSelectedModelCatalogPath] = useState<string>();
   const [kmnetTestDx, setKmnetTestDx] = useState(10);
   const [kmnetTestDy, setKmnetTestDy] = useState(0);
@@ -815,8 +826,8 @@ export function StudioConsoleView({
   }, []);
   const [configSchema, setConfigSchema] = useState<ConfigSchemaResponse | null>(null);
   const [configDialogDirty, setConfigDialogDirty] = useState(false);
-  const configDialogSaving = false;
-  const dialogSaving = false;
+  const [configDialogSaving, setConfigDialogSaving] = useState(false);
+  const dialogSaving = configDialogSaving;
   const [parameterPageDirty, setParameterPageDirty] = useState(false);
   const [parameterPageSaving, setParameterPageSaving] = useState(false);
   const [dialogSaveError, setDialogSaveError] = useState<string | null>(null);
@@ -923,7 +934,7 @@ export function StudioConsoleView({
 
   const requestDiscardParameterPageDraft = useCallback(() => {
     setConfirmationRequest({
-      eyebrow: "参数草稿",
+      eyebrow: "未保存修改",
       title: "放弃未保存的修改？",
       description: "当前页面的未保存参数会被丢弃，恢复为最新已保存配置。此操作不能撤销。",
       confirmLabel: "确认放弃修改",
@@ -1019,7 +1030,10 @@ export function StudioConsoleView({
     setConfigDialogVisibility(dialog, true);
   }, [setConfigDialogVisibility]);
 
-  const saveConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
+  const saveConfigDialog = useCallback(async (
+    dialog: ConfigDialogId,
+    physicalOutputAcknowledged = false
+  ) => {
     if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
       return;
     }
@@ -1038,14 +1052,101 @@ export function StudioConsoleView({
       return;
     }
 
-    stageParameterPageDraft(draft);
-    finishConfigDialog(dialog);
-    reportInfo(
-      "修改已加入参数草稿",
-      "这些参数尚未写入配置；请在参数设置页面点击“保存修改”。",
-      "config-dialog"
-    );
-  }, [finishConfigDialog, stageParameterPageDraft]);
+    const outputIsActive = runtime?.vision?.control?.output_enabled === true
+      || readBoolean(asRecord((runtimeConfigLatestRef.current ?? baseline).control).output_enabled, false);
+    if (outputIsActive && !physicalOutputAcknowledged) {
+      setConfirmationRequest({
+        eyebrow: "应用参数",
+        title: "物理输出仍开启，确认应用这些设置？",
+        description: "保存后会立即更新当前运行参数，设备的控制量可能随之改变。取消后修改会继续保留在当前窗口。",
+        details: ["如需先暂停设备，请取消并关闭物理输出。"],
+        confirmLabel: "确认保存并应用",
+        danger: true,
+        onConfirm: () => saveConfigDialog(dialog, true)
+      });
+      return;
+    }
+
+    let dialogChanges: ParameterPageFieldChange[];
+    let preservedPageChanges: ParameterPageFieldChange[] = [];
+    try {
+      dialogChanges = parameterPageFieldChanges(baseline, draft);
+      const pageBaseline = parameterPageBaselineRef.current;
+      if (pageBaseline) {
+        const dialogKeys = new Set(dialogChanges.map((change) => `${change.section}.${change.key}`));
+        preservedPageChanges = parameterPageFieldChanges(pageBaseline, baseline)
+          .filter((change) => !dialogKeys.has(`${change.section}.${change.key}`));
+      }
+    } catch (error) {
+      setDialogSaveError(getErrorMessage(error));
+      return;
+    }
+
+    dialogSavingRef.current = true;
+    setConfigDialogSaving(true);
+    setDialogSaveError(null);
+    beginPendingConfigWrite();
+    try {
+      const canonical = cloneRuntimeConfig(runtimeConfigLatestRef.current);
+      if (!canonical) {
+        throw new Error("尚未读取运行配置。");
+      }
+      const payload = preserveOutputGate(
+        applyParameterPageFieldChanges(canonical, dialogChanges),
+        canonical
+      );
+      payload.revision = canonical.revision;
+      const request = configWriteQueueRef.current.then(() =>
+        updateRuntimeConfig(payload, physicalOutputAcknowledged)
+      );
+      configWriteQueueRef.current = request.then(() => undefined, () => undefined);
+      const result = await request;
+      if (!result.applied) {
+        throw new Error(result.message || "后端未确认这些设置已经生效。");
+      }
+      const applied = normalizeRuntimeConfig(result.config);
+      finalizeRuntimeConfigWrite(applied);
+      if (preservedPageChanges.length > 0) {
+        const remaining = applyParameterPageFieldChanges(applied, preservedPageChanges);
+        remaining.revision = applied.revision;
+        parameterPageBaselineRef.current = applied;
+        configDraftRef.current = remaining;
+        setConfigDraft(remaining);
+        setParameterPageDirtyState(true);
+      } else {
+        parameterPageBaselineRef.current = null;
+        setParameterPageDirtyState(false);
+      }
+      finishConfigDialog(dialog);
+      reportSuccess(
+        "设置已保存并应用",
+        result.restart_required
+          ? "运行参数已写入；进程级基础配置将在下次启动时接管。"
+          : "后端已确认当前运行配置更新完成。",
+        "config-dialog"
+      );
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setDialogSaveError(message);
+      reportError(error, {
+        source: "config-dialog",
+        title: "设置应用失败",
+        publicDetail: message,
+        popup: false
+      });
+    } finally {
+      finishPendingConfigWrite();
+      dialogSavingRef.current = false;
+      setConfigDialogSaving(false);
+    }
+  }, [
+    beginPendingConfigWrite,
+    finalizeRuntimeConfigWrite,
+    finishConfigDialog,
+    finishPendingConfigWrite,
+    runtime,
+    setParameterPageDirtyState
+  ]);
 
   const requestDismissConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
     if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
@@ -1067,9 +1168,9 @@ export function StudioConsoleView({
     }
 
     setConfirmationRequest({
-      eyebrow: "未保存的弹窗修改",
+      eyebrow: "未保存修改",
       title: "关闭并放弃本次修改？",
-      description: "本弹窗内的修改还没有加入参数草稿。确认后会丢弃这些修改；参数页已有的草稿不受影响。",
+      description: "当前窗口内的修改尚未保存。确认后会丢弃这些修改；参数页已有的未保存修改不受影响。",
       confirmLabel: "放弃弹窗修改",
       danger: true,
       onConfirm: () => {
@@ -2247,6 +2348,7 @@ export function StudioConsoleView({
     setModelCatalog(result.root);
     setModelCatalogModelCount(result.model_count);
     setModelCatalogDirectoryCount(result.directory_count);
+    setModelCatalogError(null);
   }, []);
 
   const modelSwitch = useModelSwitchWorkflow({
@@ -2290,6 +2392,7 @@ export function StudioConsoleView({
         if (cancelled) {
           return;
         }
+        setModelCatalogError(getErrorMessage(err));
         setLocalError(`模型目录读取失败：${getErrorMessage(err)}`);
         reportError(err, { source: "model-catalog", title: "模型目录读取失败" });
       })
@@ -2523,8 +2626,6 @@ export function StudioConsoleView({
   }, [buildCapturePayload, device, onRefresh, selectedChoice]);
 
   const {
-    emergencyStop: emergencyStopMainline,
-    emergencyStopping,
     start: startMainlineLaunch,
     stop: stopMainlineLaunch
   } = useMainlineLaunch({
@@ -2543,7 +2644,8 @@ export function StudioConsoleView({
   );
   const runtimeLifecycleActive = runtimeControlRequested || runtimeStopping;
   const diagnosticModeReady = runtimePhase === "stopped";
-  const runtimeControlUnavailable = runtime === null || health?.ok !== true;
+  const runtimeControlUnavailable = runtime === null || health?.ok !== true
+    || (realtimeStatus !== "connected" && realtimeStatus !== "fallback");
   const runtimeUnavailableLabel = errors.health
     ? "服务不可达"
     : health === null
@@ -2906,12 +3008,12 @@ export function StudioConsoleView({
       }
       const message = getErrorMessage(error);
       const progress = changes.length === 0
-        ? "本次没有参数被写入，修改仍保留为草稿。"
+        ? "本次没有参数被写入，修改仍保留在页面中。"
         : remainingChangeCount === 0
           ? "后端已保存这些值，但当前进程未确认生效；请查看运行状态。"
           : appliedChangeCount > 0
-            ? `已保存并应用 ${appliedChangeCount} 项，剩余 ${remainingChangeCount} 项仍保留为草稿。`
-            : `本次没有参数被写入，${remainingChangeCount} 项修改仍保留为草稿。`;
+            ? `已保存并应用 ${appliedChangeCount} 项，剩余 ${remainingChangeCount} 项仍保留在页面中。`
+            : `本次没有参数被写入，${remainingChangeCount} 项修改仍保留在页面中。`;
       const failureMessage = `${progress} ${message}`;
       setLocalError(`参数保存未全部完成：${failureMessage}`);
       setDialogSaveError(failureMessage);
@@ -2935,7 +3037,7 @@ export function StudioConsoleView({
     setConfirmationRequest({
       eyebrow: "运行参数",
       title: "物理输出仍开启，确认保存参数？",
-      description: "保存会把修改应用到当前主链；主链运行时，设备的控制量可能立即改变。取消后修改会保留为草稿。",
+      description: "保存会把修改应用到当前主链；主链运行时，设备的控制量可能立即改变。取消后修改会继续保留在当前页面。",
       details: [
         ...(directTrigger ? ["触发方式将改为“直接触发”，保存后不再等待按键。"] : []),
         "若要先暂停设备，请取消并到“物理输出”区关闭输出。"
@@ -3605,7 +3707,7 @@ export function StudioConsoleView({
     setConfirmationRequest({
       eyebrow: "类别配置",
       title: `删除类别配置“${activeDetectionProfile}”？`,
-      description: "此配置及其类别瞄点设置会从参数草稿移除；返回参数页保存后才会写入设备。",
+      description: "此配置及其类别瞄点设置会从当前编辑中移除；点击“保存并应用”后才会写入设备。",
       confirmLabel: "确认删除配置",
       danger: true,
       onConfirm: deleteClassProfile
@@ -3890,6 +3992,7 @@ export function StudioConsoleView({
         `刷新完成：发现 ${result.model_count} 个模型文件；仅刷新目录与元数据，未读取 Engine 内容。`
       );
     } catch (err) {
+      setModelCatalogError(getErrorMessage(err));
       setLocalError(`模型列表刷新失败：${getErrorMessage(err)}`);
 
       reportError(err, { source: "model-catalog", title: "模型列表刷新失败" });
@@ -4012,6 +4115,7 @@ export function StudioConsoleView({
       && runtime?.config.restart_required !== true,
     runtimeReady: runtime?.running === true
   };
+  const setupStatusKnown = runtime !== null && runtimeConfig !== null && runtimeTransportConfidence === "current";
   const handleLaunchReadinessAction = useCallback((action: LaunchReadinessAction) => {
     if (action === "open-model-manager") {
       navigatePage("models");
@@ -4129,7 +4233,6 @@ export function StudioConsoleView({
               <span>{currentErrorDetails.length > 0 ? "查看故障" : "异常"}</span>
               {currentErrorDetails.length > 0 ? <b>{currentErrorDetails.length}</b> : null}
             </button>
-            <ThemeToggle />
             {configApplyPending ? (
               <div
                 aria-label="正在保存并应用运行配置"
@@ -4146,7 +4249,7 @@ export function StudioConsoleView({
       </header>
 
       <div className="console-sidebar">
-        <StudioNavigation activePage={activePage} onNavigate={navigatePage} />
+        <StudioNavigation activePage={activePage} onNavigate={navigatePage} pages={studioLayout.pages} />
       </div>
 
       <main className="console-main" data-page={activePage} ref={mainRef}>
@@ -4160,17 +4263,15 @@ export function StudioConsoleView({
           launchPending={mainlineLaunchPending}
           diagnosticModeReady={diagnosticModeReady}
           busy={busy !== null}
-          emergencyStopping={emergencyStopping}
           runtimeControlUnavailable={runtimeControlUnavailable}
           captureStatus={captureStatusText}
           inferenceStatus={inferenceStatusText}
           onToggle={() => void toggleCapture()}
-          onEmergencyStop={() => void emergencyStopMainline()}
         />
 
         {activePage === "overview" ? (
           <>
-            <HomeSetupPrompt state={setupState} onNavigate={navigatePage} />
+            {overviewModules.has("setup") ? <HomeSetupPrompt state={setupState} statusKnown={setupStatusKnown} onNavigate={navigatePage} /> : null}
             <RuntimeOverviewView
               runtime={runtime}
               projection={runtimeProjection}
@@ -4178,19 +4279,18 @@ export function StudioConsoleView({
               lastUpdated={lastUpdated}
               onAction={handleRuntimeRecoveryAction}
               controlBusy={busy !== null}
-              emergencyStopping={emergencyStopping}
               launchPending={mainlineLaunchPending}
               runtimeStopping={runtimeStopping}
               runtimeControlUnavailable={runtimeControlUnavailable}
               onOpenErrors={() => setErrorCenterOpen(true)}
               onToggle={() => void toggleCapture()}
-              onEmergencyStop={() => void emergencyStopMainline()}
+              moduleOrder={overviewModuleOrder}
             />
           </>
         ) : null}
 
         {activePage === "onboarding" ? (
-          <OnboardingView state={setupState} onNavigate={navigatePage} />
+          <OnboardingView state={setupState} statusKnown={setupStatusKnown} onNavigate={navigatePage} />
         ) : null}
 
         {activePage === "device" ? (
@@ -4210,13 +4310,24 @@ export function StudioConsoleView({
         ) : null}
 
         {activePage === "activity" ? (
-          <ActivityView items={activityItems} onOpenDetails={() => setErrorCenterOpen(true)} />
+          <ActivityView items={activityItems} moduleOrder={activityModules} onOpenDetails={() => setErrorCenterOpen(true)} />
+        ) : null}
+
+        {activePage === "about" ? (
+          <AboutView
+            license={license}
+            serviceConnected={health?.ok === true && runtimeTransportConfidence === "current"}
+            layoutRevision={studioLayout.revision}
+            modules={aboutModules}
+            onNavigate={navigatePage}
+          />
         ) : null}
 
         {activePage === "models" ? (
           <Suspense fallback={<div className="console-info" role="status">正在加载模型管理工作区…</div>}>
             <ModelWorkspace
               activeModelName={activeModelName}
+              activeArtifactStatus={artifact?.status ?? null}
               onOpenInference={() => navigatePage("infer")}
               panelProps={{
                 root: modelCatalog,
@@ -4233,6 +4344,7 @@ export function StudioConsoleView({
                 runtimeBackend: readString(runtime?.inference?.selected, ""),
                 runtimeInputShape: displayedInputShape,
                 catalogMessage: modelCatalogMessage,
+                catalogError: modelCatalogError,
                 switchMessage: modelSwitch.message,
                 busy,
                 canSwitch: selectedCatalogModel?.kind === "engine",
@@ -4288,6 +4400,7 @@ export function StudioConsoleView({
 
         {activePage === "capture" ? (
           <section className="console-page">
+          {captureModules.has("source") ? (
           <section className="console-card capture-profile-check" data-state={captureProfileState} aria-labelledby="capture-profile-check-title">
             <div className="capture-profile-check-header">
               <div>
@@ -4316,7 +4429,15 @@ export function StudioConsoleView({
               <span>有效输入 FPS 不是采集卡原始帧率。</span>
             </p>
           </section>
+          ) : null}
+          {captureModules.has("model") ? (
+            <section className="capture-model-bridge" aria-label="当前模型">
+              <div><span>当前模型</span><strong>{activeModelName}</strong><small>{runtimeInference?.loaded === true ? "运行态已装载" : "等待运行态装载"}</small></div>
+              <button className="console-button" onClick={() => navigatePage("models")} type="button"><NovaIcon name="models" size={15} />管理模型</button>
+            </section>
+          ) : null}
           <div className="console-grid2 capture-config-grid compact-content-grid">
+              {captureModules.has("source") ? (
               <div className="console-card">
                 <SectionTitle title="选择画面来源" />
                 <TextControl
@@ -4380,7 +4501,9 @@ export function StudioConsoleView({
                   }))}
                 />
               </div>
+              ) : null}
 
+              {captureModules.has("roi") ? (
               <div className="console-card">
                 <SectionTitle title="识别区域" />
                 <ParameterNumberControl
@@ -4411,8 +4534,10 @@ export function StudioConsoleView({
                   <span>配置 ROI</span><b>{sourceWidth > 0 ? `x=${roiX}, y=${roiY}, ${rustControlPlane ? `${configuredRoiWidth}x${configuredRoiHeight}` : `${roiSize}x${roiSize}`}` : NO_SAMPLE}</b>
                 </div>
               </div>
+              ) : null}
           </div>
 
+          {captureModules.has("diagnostics") ? (
           <details className="studio-diagnostic-details">
             <summary>
               <span>
@@ -4447,6 +4572,7 @@ export function StudioConsoleView({
               </div>
             </div>
           </details>
+          ) : null}
           </section>
         ) : null}
 
@@ -4787,17 +4913,17 @@ export function StudioConsoleView({
               </span>
               <div aria-live="polite" role="status">
                 <b>{parameterPageDirty ? "修改尚未保存" : "没有待保存的参数"}</b>
-                <small>{parameterPageDirty ? "导入前先保存或放弃草稿；导出不包含草稿，保存后请核对生效状态" : "修改普通参数后点击“保存修改”；输出开关单独确认"}</small>
+                <small>{parameterPageDirty ? "导入前先保存或放弃当前修改；导出不包含未保存内容，保存后请核对生效状态" : "页面参数统一保存并应用；输出开关单独确认"}</small>
               </div>
               <div className="parameter-save-bar-actions">
                 <details className="parameter-file-actions">
                   <summary>配置文件</summary>
                   <div>
-                    <button className="console-button" onClick={exportConfig} type="button" title="仅导出已保存配置，不包含本页草稿">
+                    <button className="console-button" onClick={exportConfig} type="button" title="仅导出已保存配置，不包含本页未保存修改">
                       <NovaIcon name="export" size={15} />
                       导出已保存
                     </button>
-                    <button className="console-button" disabled={parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0} onClick={() => fileInputRef.current?.click()} title={parameterPageDirty ? "请先保存或放弃当前参数草稿，再导入配置" : ""} type="button">
+                    <button className="console-button" disabled={parameterPageDirty || parameterPageSaving || pendingConfigWriteCount > 0} onClick={() => fileInputRef.current?.click()} title={parameterPageDirty ? "请先保存或放弃当前修改，再导入配置" : ""} type="button">
                       <NovaIcon name="import" size={15} />
                       导入配置
                     </button>
@@ -4829,17 +4955,18 @@ export function StudioConsoleView({
                   type="button"
                 >
                   <NovaIcon name="save" size={15} />
-                  {parameterPageSaving ? "正在保存…" : "保存修改"}
+                  {parameterPageSaving ? "正在保存并应用…" : "保存并应用"}
                 </button>
               </div>
             </div>
             {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
             <nav className="parameter-quick-nav" aria-label="参数分区">
-              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-trigger")}><span>1</span>什么时候响应</button>
-              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-safety")}><span>2</span>怎么移动</button>
-              <button type="button" onClick={() => jumpToParameterStage("parameter-stage-output")}><span>3</span>是否发送到设备</button>
+              {parameterModules.has("response") ? <button type="button" onClick={() => jumpToParameterStage("parameter-stage-trigger")}><span>1</span>什么时候响应</button> : null}
+              {parameterModules.has("motion") ? <button type="button" onClick={() => jumpToParameterStage("parameter-stage-safety")}><span>2</span>怎么移动</button> : null}
+              {parameterModules.has("output") ? <button type="button" onClick={() => jumpToParameterStage("parameter-stage-output")}><span>3</span>是否发送到设备</button> : null}
             </nav>
             <div className="parameter-stage-list">
+            {parameterModules.has("response") ? (
             <section className="parameter-stage" id="parameter-stage-trigger" aria-labelledby="parameter-stage-trigger-title">
               <header className="parameter-stage-heading">
                 <span>第 1 步</span>
@@ -4929,6 +5056,8 @@ export function StudioConsoleView({
 
             </ol>
             </section>
+            ) : null}
+            {parameterModules.has("motion") ? (
             <section className="parameter-stage" id="parameter-stage-safety" aria-labelledby="parameter-stage-safety-title">
               <header className="parameter-stage-heading">
                 <span>第 2 步</span>
@@ -4999,6 +5128,8 @@ export function StudioConsoleView({
 
             </ol>
             </section>
+            ) : null}
+            {parameterModules.has("output") ? (
             <section className="parameter-stage parameter-stage-output" id="parameter-stage-output" aria-labelledby="parameter-stage-output-title">
               <header className="parameter-stage-heading">
                 <span>第 3 步</span>
@@ -5023,7 +5154,9 @@ export function StudioConsoleView({
               </li>
             </ol>
             </section>
+            ) : null}
             </div>
+            {parameterModules.has("targeting") ? (
             <details className="studio-diagnostic-details parameter-support-details">
               <summary>
                 <span>
@@ -5212,6 +5345,8 @@ export function StudioConsoleView({
                 </div>
               </div>
             </details>
+            ) : null}
+            {parameterModules.has("advanced") ? (
             <details className="studio-diagnostic-details parameter-support-details">
               <summary>
                 <span>
@@ -5227,6 +5362,7 @@ export function StudioConsoleView({
                 />
               </div>
             </details>
+            ) : null}
           </>
           ) : (
           <>
@@ -5481,22 +5617,9 @@ export function StudioConsoleView({
         ) : null}
       </main>
 
-      {runtimeLifecycleActive ? (
-        <button
-          aria-label="紧急停止主链"
-          className="console-button danger studio-mobile-emergency-stop"
-          disabled={emergencyStopping}
-          onClick={() => void emergencyStopMainline()}
-          type="button"
-        >
-          <NovaIcon name="emergency-stop" size={17} />
-          {emergencyStopping ? "紧急停止确认中" : "紧急停止"}
-        </button>
-      ) : null}
-
       {algorithmSettingsDialogOpen ? (
       <AdvancedSettingsDialog
-        description="“加入草稿并关闭”只保留在本页；返回参数页后点击“保存修改”才会写入设备。"
+        description="在这里调整一组相关参数；点击“保存并应用”后直接写入设备，并等待后端确认。"
         dirty={configDialogDirty}
         eyebrow="算法配置"
         footerNote={controlModeLabel}
@@ -5695,11 +5818,11 @@ export function StudioConsoleView({
             <footer className="target-weight-dialog-footer">
               <span className={dialogSaveError ? "dialog-save-status error" : configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
                 {dialogSaving
-                  ? "正在处理…"
+                  ? "正在保存并应用…"
                   : dialogSaveError
                     ? dialogSaveError
                     : configDialogDirty
-                      ? "修改尚未加入页面草稿"
+                      ? "修改尚未保存"
                       : "未修改"}
               </span>
               <button type="button"
@@ -5707,7 +5830,7 @@ export function StudioConsoleView({
                 disabled={dialogSaving}
                 onClick={() => void saveConfigDialog("target-weights")}
               >
-                {configDialogDirty ? "加入草稿并关闭" : "关闭"}
+                {configDialogDirty ? "保存并应用" : "关闭"}
               </button>
             </footer>
           </section>
@@ -5956,11 +6079,11 @@ export function StudioConsoleView({
             <footer className="class-config-dialog-footer">
               <span className={dialogSaveError ? "dialog-save-status error" : configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
                 {dialogSaving
-                  ? "正在处理类别配置…"
+                  ? "正在保存并应用类别配置…"
                   : dialogSaveError
                     ? `处理失败 · ${dialogSaveError}`
                     : configDialogDirty
-                      ? "有未确认修改 · 加入页面草稿后仍需点击“保存修改”。"
+                      ? "有未保存修改 · 保存后会直接写入设备并应用。"
                       : `未修改 · 当前配置：${activeDetectionProfile}`}
               </span>
               <button type="button"
@@ -5968,7 +6091,7 @@ export function StudioConsoleView({
                 disabled={dialogSaving}
                 onClick={() => void saveConfigDialog("class-config")}
               >
-                {configDialogDirty ? "加入草稿并关闭" : "关闭"}
+                {configDialogDirty ? "保存并应用" : "关闭"}
               </button>
             </footer>
           </section>
@@ -6067,6 +6190,7 @@ export function StudioConsoleView({
           runtimeBackend: readString(runtime?.inference?.selected, ""),
           runtimeInputShape: displayedInputShape,
           catalogMessage: modelCatalogMessage,
+          catalogError: modelCatalogError,
           switchMessage: modelSwitch.message,
           busy,
           canSwitch: selectedCatalogModel?.kind === "engine",

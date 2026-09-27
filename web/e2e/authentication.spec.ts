@@ -42,11 +42,11 @@ test("rate-limited authentication gives one bounded recovery message", async ({ 
   await expect(page.locator("body")).not.toContainText("not-a-real-code");
 });
 
-for (const [savedTheme, appliedTheme] of [["rose-white", "rose-white"], ["graphite-red", "graphite-red"], ["frontier-industrial", "graphite-red"]] as const) {
-  test(`${savedTheme} resolves before the authentication screen paints`, async ({ page }) => {
+for (const savedTheme of ["rose-white", "graphite-red", "frontier-industrial"] as const) {
+  test(`${savedTheme} migrates to the product appearance before authentication paints`, async ({ page }) => {
     await page.addInitScript((selectedTheme) => localStorage.setItem("novasight.theme", selectedTheme), savedTheme);
     await page.goto("/");
-    await expect(page.locator("html")).toHaveAttribute("data-theme", appliedTheme);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite-signal");
     await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
   });
 }

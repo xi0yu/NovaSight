@@ -14,11 +14,18 @@ const incomplete = {
 describe("guided product journeys", () => {
   it("takes a new user to the first unfinished task", async () => {
     const onNavigate = vi.fn();
-    render(<OnboardingView state={incomplete} onNavigate={onNavigate} />);
+    render(<OnboardingView state={incomplete} statusKnown onNavigate={onNavigate} />);
 
     expect(screen.getByRole("status", { name: "已完成 1 步，共 4 步" })).toBeInTheDocument();
     await userEvent.click(screen.getAllByRole("button", { name: "选择模型" })[1]!);
     expect(onNavigate).toHaveBeenCalledWith("models");
+  });
+
+  it("does not label an unreachable device as a fresh setup", () => {
+    render(<OnboardingView state={{ captureReady: false, modelReady: false, configReady: false, runtimeReady: false }} statusKnown={false} onNavigate={vi.fn()} />);
+    expect(screen.getByRole("heading", { name: "正在核对当前设备" })).toBeVisible();
+    expect(screen.getByRole("status", { name: "设置进度待核实" })).toBeVisible();
+    expect(screen.queryByText("已完成 0 步")).not.toBeInTheDocument();
   });
 
   it("does not invent device health while the runtime snapshot is missing", () => {
@@ -44,13 +51,29 @@ describe("guided product journeys", () => {
     expect(screen.queryByText(/GPU|温度/)).not.toBeInTheDocument();
   });
 
+  it("marks old device readings as expired after the realtime channel goes stale", () => {
+    const staleRuntime = {
+      semantic: { phase: "running" },
+      capture: { device: "/dev/video0", running: true, available: true },
+      inference: { configured: true },
+      statistics: { metrics_available: true, nvinfer_input_fps: 240, inference_latency_ms: 4, detection_data_age_ms: 2 },
+      executor: { executors: { kmnet: { runtime_connected: true } } },
+    } as unknown as import("../../api").RuntimeState;
+    render(<DeviceStatusView runtime={staleRuntime} projection={{ transport: "stale", output: { label: "输出状态未知" } } as import("../runtime/runtimeProjection").RuntimeProjection}
+      captureProfile="MJPG 1920x1080" activeModelName="test" modelLoaded lastUpdated={null}
+      desiredRevision={25} effectiveRevision={25} errorCount={0} onNavigate={vi.fn()} onOpenErrors={vi.fn()} />);
+    expect(screen.getAllByText("状态已过期")).toHaveLength(4);
+    expect(screen.queryByText("240.0 FPS")).not.toBeInTheDocument();
+    expect(screen.getByText("kmNet 连接状态待核实")).toBeVisible();
+  });
+
   it("continues onboarding from management when setup is incomplete", async () => {
     const onNavigate = vi.fn();
     render(
       <ManagementView
         license={null}
         deviceLabel=""
-        runtimeAvailable={false}
+        runtimeAvailable
         projectCount={0}
         errorCount={0}
         setupState={incomplete}
@@ -60,5 +83,14 @@ describe("guided product journeys", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "继续新手引导" }));
     expect(onNavigate).toHaveBeenCalledWith("onboarding");
+  });
+
+  it("does not present missing service data as an unconfigured device or empty model library", () => {
+    render(<ManagementView license={null} deviceLabel="" runtimeAvailable={false} projectCount={0} errorCount={0}
+      setupState={{ captureReady: false, modelReady: false, configReady: false, runtimeReady: false }} onNavigate={vi.fn()} />);
+    expect(screen.getByText("项目待核实")).toBeVisible();
+    expect(screen.getByText("授权待核实")).toBeVisible();
+    expect(screen.queryByText("尚未配置")).not.toBeInTheDocument();
+    expect(screen.queryByText("尚未部署模型")).not.toBeInTheDocument();
   });
 });

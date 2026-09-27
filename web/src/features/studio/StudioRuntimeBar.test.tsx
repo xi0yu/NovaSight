@@ -15,12 +15,10 @@ describe("StudioRuntimeBar", () => {
         launchPending={false}
         diagnosticModeReady={false}
         busy={false}
-        emergencyStopping={false}
         runtimeControlUnavailable
         captureStatus="等待状态"
         inferenceStatus="等待状态"
         onToggle={vi.fn()}
-        onEmergencyStop={vi.fn()}
       />
     );
     expect(screen.getByText("运行状态未确认")).toBeInTheDocument();
@@ -38,12 +36,10 @@ describe("StudioRuntimeBar", () => {
         launchPending={false}
         diagnosticModeReady={false}
         busy={false}
-        emergencyStopping={false}
         runtimeControlUnavailable={false}
         captureStatus="运行中"
         inferenceStatus="识别结果已产出"
         onToggle={vi.fn()}
-        onEmergencyStop={vi.fn()}
       />
     );
 

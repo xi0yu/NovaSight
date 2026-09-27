@@ -3690,9 +3690,9 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
-[data-theme="graphite-red"] input,
-[data-theme="graphite-red"] select,
-[data-theme="graphite-red"] textarea {
+[data-theme="graphite-signal"] input,
+[data-theme="graphite-signal"] select,
+[data-theme="graphite-signal"] textarea {
   color-scheme: dark;
   border-color: var(--input-border);
   background-color: var(--input-bg);
@@ -3700,15 +3700,15 @@ button:focus-visible {
   caret-color: var(--brand-primary);
 }
 
-[data-theme="graphite-red"] option,
-[data-theme="graphite-red"] optgroup {
+[data-theme="graphite-signal"] option,
+[data-theme="graphite-signal"] optgroup {
   background: var(--bg-elevated);
   color: var(--text-primary);
 }
 
-[data-theme="graphite-red"] input:-webkit-autofill,
-[data-theme="graphite-red"] input:-webkit-autofill:hover,
-[data-theme="graphite-red"] input:-webkit-autofill:focus {
+[data-theme="graphite-signal"] input:-webkit-autofill,
+[data-theme="graphite-signal"] input:-webkit-autofill:hover,
+[data-theme="graphite-signal"] input:-webkit-autofill:focus {
   -webkit-text-fill-color: var(--text-primary);
   box-shadow: 0 0 0 1000px var(--input-bg) inset;
   transition: background-color 9999s ease-out;
@@ -4327,12 +4327,6 @@ button:focus-visible {
   color: var(--status-error-fg);
 }
 
-/* ============================================================
- * Character theme archive
- * Generated key art remains in atmosphere layers. Data panes retain
- * quiet semantic surfaces and product-native status colors.
- * ============================================================ */
-
 body {
   background: var(--bg-app);
 }
@@ -4343,26 +4337,6 @@ body::before {
 
 body::after {
   display: none;
-}
-
-[data-theme="studio"] body {
-  background: var(--bg-app);
-}
-
-[data-theme="studio"] body::before,
-[data-theme="studio"] body::after,
-[data-theme="studio"] .console-sidebar::after {
-  display: none;
-}
-
-[data-theme="studio"] .console-top,
-[data-theme="studio"] .console-sidebar,
-[data-theme="studio"] .console-main {
-  background: var(--bg-app);
-}
-
-[data-theme="studio"] .console-top {
-  background: var(--bg-surface);
 }
 
 #root {
@@ -4480,171 +4454,6 @@ body::after {
   opacity: 1;
 }
 
-.theme-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 40px;
-  padding: 4px 9px 4px 7px;
-  gap: 8px;
-  border: 1px solid color-mix(in srgb, var(--brand-primary) 22%, var(--border-default));
-  border-radius: var(--radius-4);
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  box-shadow: none;
-  font-size: var(--text-label);
-  font-weight: 650;
-  font-family: inherit;
-  line-height: var(--leading-label);
-  cursor: pointer;
-}
-
-.theme-toggle:hover,
-.theme-toggle:focus-visible {
-  border-color: color-mix(in srgb, var(--brand-primary) 36%, var(--border-default));
-  background: color-mix(in srgb, var(--brand-soft) 64%, var(--bg-surface));
-}
-
-.theme-toggle:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
-}
-
-.theme-toggle svg {
-  color: var(--signal-target);
-}
-
-.theme-picker {
-  position: relative;
-  z-index: 40;
-  flex: 0 0 auto;
-}
-
-.theme-picker.is-open .theme-toggle {
-  border-color: var(--brand-primary);
-  background: var(--brand-soft);
-}
-
-.theme-toggle-copy,
-.theme-option-copy {
-  min-width: 0;
-  display: grid;
-  gap: 1px;
-  text-align: left;
-}
-
-.theme-toggle-copy strong,
-.theme-option-copy strong {
-  color: var(--text-primary);
-  font-size: 12px;
-  line-height: 15px;
-  font-weight: 700;
-}
-
-.theme-toggle-copy small,
-.theme-option-copy small {
-  color: var(--text-tertiary);
-  font-size: 10px;
-  line-height: 13px;
-  font-weight: 600;
-}
-
-.theme-swatch {
-  width: 24px;
-  height: 24px;
-  flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--text-primary) 14%, transparent);
-  border-radius: 4px;
-  background: var(--theme-choice-swatch);
-  box-shadow: none;
-}
-
-.theme-swatch-studio { --theme-choice-swatch: var(--theme-choice-swatch-studio); }
-.theme-swatch-rose-white { --theme-choice-swatch: var(--theme-choice-swatch-rose-white); }
-.theme-swatch-graphite-red { --theme-choice-swatch: var(--theme-choice-swatch-graphite-red); }
-
-.theme-menu {
-  position: absolute;
-  top: calc(100% + 9px);
-  right: 0;
-  width: min(330px, calc(100vw - 32px));
-  max-height: min(590px, calc(100vh - 72px));
-  display: grid;
-  gap: 5px;
-  padding: 8px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  border: 1px solid color-mix(in srgb, var(--brand-primary) 24%, var(--border-default));
-  border-radius: max(var(--card-radius), 10px);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-dialog);
-  animation: theme-menu-enter var(--duration-panel) var(--ease-standard) both;
-}
-
-.theme-menu-heading {
-  display: grid;
-  gap: 2px;
-  padding: 9px 10px 8px;
-  border-bottom: 1px solid var(--border-default);
-}
-
-.theme-menu-heading strong {
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
-.theme-option {
-  width: 100%;
-  min-height: 62px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 11px;
-  padding: 7px 9px;
-  border: 1px solid transparent;
-  border-radius: var(--button-radius);
-  background: transparent;
-  color: var(--text-secondary);
-  text-align: left;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-
-.theme-option-art {
-  width: 46px;
-  height: 46px;
-  overflow: hidden;
-  border: 2px solid var(--bg-elevated);
-  border-radius: 10px;
-  background: var(--theme-choice-art) center / cover no-repeat;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand-primary) 48%, var(--border-default));
-}
-
-.theme-option-art-studio { --theme-choice-art: var(--theme-choice-art-studio); }
-.theme-option-art-rose-white { --theme-choice-art: var(--theme-choice-art-rose-white); }
-.theme-option-art-graphite-red { --theme-choice-art: var(--theme-choice-art-graphite-red); }
-
-.theme-option:hover,
-.theme-option[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--brand-primary) 28%, var(--border-default));
-  background: color-mix(in srgb, var(--brand-soft) 72%, var(--bg-surface));
-}
-
-.theme-option-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--brand-primary);
-  font-size: 10px;
-  font-weight: 750;
-  white-space: nowrap;
-}
-
-@keyframes theme-menu-enter {
-  from { opacity: 0; transform: translateY(-5px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
 .console-metric.tone-target strong,
 .console-metric.tone-target .console-metric-icon {
   color: var(--signal-target);
@@ -4705,39 +4514,31 @@ body::after {
 }
 
 
-[data-theme="rose-white"] body::before {
-  display: none;
-}
-
-[data-theme="rose-white"] .console-app {
-  box-shadow: 0 0 0 1px var(--theme-shell-ring), 0 18px 44px var(--theme-shell-shadow);
-}
-
-[data-theme="graphite-red"] body {
+[data-theme="graphite-signal"] body {
   background: var(--bg-app);
 }
 
-[data-theme="graphite-red"] .console-top {
+[data-theme="graphite-signal"] .console-top {
   background: var(--bg-surface);
 }
 
-[data-theme="graphite-red"] .console-sidebar {
+[data-theme="graphite-signal"] .console-sidebar {
   background: var(--bg-sidebar);
 }
 
-[data-theme="graphite-red"] .console-nav,
-[data-theme="graphite-red"] .ui-panel,
-[data-theme="graphite-red"] .console-card {
+[data-theme="graphite-signal"] .console-nav,
+[data-theme="graphite-signal"] .ui-panel,
+[data-theme="graphite-signal"] .console-card {
   border-radius: var(--card-radius);
 }
 
-[data-theme="graphite-red"] .console-button.primary,
-[data-theme="graphite-red"] .ui-button-primary,
-[data-theme="graphite-red"] .button.primary {
+[data-theme="graphite-signal"] .console-button.primary,
+[data-theme="graphite-signal"] .ui-button-primary,
+[data-theme="graphite-signal"] .button.primary {
   background: var(--brand-primary);
 }
 
-[data-theme="graphite-red"] .console-nav.active {
+[data-theme="graphite-signal"] .console-nav.active {
   border-color: var(--brand-border);
   background: var(--selection-strong-bg);
 }
@@ -4778,16 +4579,10 @@ body::after {
     display: none;
   }
 
-  .theme-menu {
-    right: auto;
-    left: 0;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .console-nav,
-  .theme-toggle,
-  .theme-menu,
   .console-button,
   .ui-button,
   .button {
@@ -5453,7 +5248,6 @@ body::after {
 
 @media (prefers-reduced-transparency: reduce) {
   .console-app,
-  .theme-menu,
   .toast-card {
     background: var(--bg-surface);
     backdrop-filter: none;
@@ -5473,7 +5267,6 @@ body::after {
   }
 
   .console-app,
-  .theme-menu,
   .toast-card {
     background: var(--bg-surface);
   }

@@ -86,6 +86,7 @@ export interface ModelSelectionPanelProps {
   runtimeBackend: string;
   runtimeInputShape: string;
   catalogMessage: string;
+  catalogError?: string | null;
   switchMessage: string;
   busy: string | null;
   canSwitch: boolean;
@@ -114,6 +115,7 @@ export function ModelSelectionPanel({
   runtimeBackend,
   runtimeInputShape,
   catalogMessage,
+  catalogError = null,
   switchMessage,
   busy,
   canSwitch,
@@ -331,11 +333,11 @@ export function ModelSelectionPanel({
       <header className="model-selection-toolbar">
         <div>
           <strong>设备模型文件</strong>
-          <span>共 {modelCount} 个文件 · {directoryCount} 个文件夹；{root ? `${registeredCount} 个已登记 Engine · ${unregisteredEngineCount} 个待验证 Engine · ${viewOnlyCount} 个仅供查看` : "正在读取使用状态"}</span>
+          <span>{root ? `共 ${modelCount} 个文件 · ${directoryCount} 个文件夹；${registeredCount} 个已登记 Engine · ${unregisteredEngineCount} 个待验证 Engine · ${viewOnlyCount} 个仅供查看` : loading ? "正在读取设备模型目录" : "设备模型目录尚未读取成功"}</span>
         </div>
         <div className="model-selection-toolbar-actions">
           <button className="console-button secondary"
-            disabled={busy !== null || metadataDirty || pendingTagIsNew || folderCreating}
+            disabled={root === null || busy !== null || metadataDirty || pendingTagIsNew || folderCreating}
             onClick={() => { setNewFolderOpen((current) => !current); setFolderActionError(null); }}
             type="button"
           >新建文件夹</button>
@@ -457,6 +459,11 @@ export function ModelSelectionPanel({
           </div> : null}
           {loading && root === null ? (
             <div className="model-catalog-placeholder">正在读取 models 目录...</div>
+          ) : root === null ? (
+            <div className="model-catalog-placeholder" role="alert">
+              <p>无法读取设备模型目录。{catalogError || "请检查服务连接。"}</p>
+              <button className="console-button" onClick={onRefresh} type="button">重试读取</button>
+            </div>
           ) : displayedModels.length > 0 || displayedFolders.length > 0 ? (
             <ModelCatalogTree
               key={catalogViewKey}

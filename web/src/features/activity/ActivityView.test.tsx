@@ -27,3 +27,9 @@ it("separates completed operations from items that need attention", () => {
   expect(screen.getByRole("button", { name: "查看完整详情" })).toBeVisible();
   expect(screen.getByText("原始错误与开发者详情")).toBeVisible();
 });
+
+it("does not call an empty activity list healthy", () => {
+  render(<ActivityView items={[]} onOpenDetails={vi.fn()} />);
+  expect(screen.getByRole("heading", { name: "暂无活动记录" })).toBeVisible();
+  expect(screen.queryByText("一切正常")).not.toBeInTheDocument();
+});

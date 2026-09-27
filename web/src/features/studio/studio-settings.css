@@ -3800,3 +3800,24 @@
     background: var(--status-warning-bg);
   }
 }
+.capture-model-bridge {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 12px 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.capture-model-bridge > div { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 12px; }
+.capture-model-bridge span { color: var(--text-tertiary); font-size: 11px; }
+.capture-model-bridge strong { overflow: hidden; color: var(--text-primary); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.capture-model-bridge small { color: var(--status-running-fg); font-size: 11px; }
+
+@media (max-width: 620px) {
+  .capture-model-bridge { align-items: stretch; flex-direction: column; }
+  .capture-model-bridge > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+}
