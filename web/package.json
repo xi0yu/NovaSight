@@ -9,6 +9,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:ui": "vite --open /preview.html?page=overview",
     "icons:export": "node scripts/export-nova-icons.mjs",
     "test:unit": "vitest",
     "test:unit:ci": "vitest run",

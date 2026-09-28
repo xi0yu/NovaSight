@@ -132,6 +132,15 @@ test("Studio navigation moves keyboard focus to the new page heading", async ({ 
   await expect(page.getByRole("heading", { level: 1, name: "首页" })).toBeFocused();
 });
 
+test("frontend-only preview opens the home page without a backend", async ({ page }) => {
+  await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/healthz", (route) => route.abort());
+  await page.goto("/preview.html?page=overview");
+
+  await expect(page.getByRole("heading", { level: 1, name: "首页" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: /运行总开关/ })).toBeVisible();
+});
+
 test("Studio navigation uses a desktop rail and returns to a top strip on narrow screens", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await mockStudioApi(page);
