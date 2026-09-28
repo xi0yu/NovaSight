@@ -4165,7 +4165,7 @@ body {
 .compact-settings-details summary { cursor: pointer; color: var(--text-secondary); font-size: 12px; font-weight: 750; }
 
 .error-center-trigger {
-  min-height: 30px;
+  min-height: 44px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
