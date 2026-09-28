@@ -1178,14 +1178,11 @@ impl CaptureConfig {
     pub fn manual(
         device: PathBuf,
         pixel_format: String,
-        width: u32,
-        height: u32,
-        fps: u32,
-        roi_left: u32,
-        roi_top: u32,
-        roi_width: u32,
-        roi_height: u32,
+        profile: (u32, u32, u32),
+        roi: (u32, u32, u32, u32),
     ) -> Self {
+        let (width, height, fps) = profile;
+        let (roi_left, roi_top, roi_width, roi_height) = roi;
         Self {
             device,
             preference: CapturePreference::Manual,

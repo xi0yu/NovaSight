@@ -6,6 +6,8 @@ const webRoot = path.resolve(new URL("..", import.meta.url).pathname);
 const srcRoot = path.join(webRoot, "src");
 const failures = [];
 
+const indexSource = fs.readFileSync(path.join(webRoot, "index.html"), "utf8");
+
 function readSource(relativePath) {
   const absolutePath = path.join(srcRoot, relativePath);
   if (!fs.existsSync(absolutePath)) {
@@ -18,6 +20,9 @@ function readSource(relativePath) {
 function assertContains(source, pattern, label) {
   if (!pattern.test(source)) failures.push(`missing ${label}`);
 }
+
+assertContains(indexSource, /name="theme-color" content="#0d0f13"/, "dark browser theme color");
+assertContains(indexSource, /name="color-scheme" content="dark"/, "dark browser color scheme");
 
 function extractQuotedStrings(source) {
   return Array.from(source.matchAll(/"([^"]+)"/g), (match) => match[1]);

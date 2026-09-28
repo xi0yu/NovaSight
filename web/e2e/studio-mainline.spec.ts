@@ -196,7 +196,7 @@ test("unavailable runtime leads to the error details", async ({ page }) => {
 
 test("activity page presents backend faults with domain and developer detail", async ({ page }) => {
   await mockStudioApi(page);
-  await page.route("**/api/activity", async (route) => route.fulfill({ json: { events: [{
+  await page.route(/\/api\/activity(?:\?.*)?$/, async (route) => route.fulfill({ json: { events: [{
     daemon_instance_id: "daemon-test",
     id: 1,
     occurred_at_ms: 1_700_000_000_000,
@@ -210,7 +210,7 @@ test("activity page presents backend faults with domain and developer detail", a
   }] } }));
   await page.goto("/?page=activity");
 
-  const event = page.getByRole("article").filter({ hasText: "参数保存失败" });
+  const event = page.getByRole("listitem").filter({ hasText: "参数保存失败" });
   await expect(event).toContainText("参数");
   await expect(event).toContainText("整组参数未生效，修改仍保留。");
   await event.getByText("原始错误与开发者详情").click();
@@ -227,10 +227,8 @@ test("capture page keeps saved and running specifications visible without horizo
   const check = page.locator(".capture-command-header");
   await expect(check).toContainText("等待运行验证");
   await expect(check.getByText("MJPEG (MJPG) / 1920x1080 / 240 FPS", { exact: true })).toBeVisible();
-  const applyBar = page.locator(".capture-apply-bar");
-  await expect(applyBar.getByRole("button", { name: "应用画面设置" })).toBeVisible();
-  await expect(applyBar).toHaveCSS("position", "static");
-  expect(await applyBar.evaluate((element) => element.closest(".capture-source-setup") !== null)).toBe(true);
+  await expect(page.getByText("点击一个 FPS 即自动验证并保存整组设备配置。", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "应用画面设置" })).toHaveCount(0);
   if ((page.viewportSize()?.width ?? 0) >= 1200) {
     await expect(page.getByRole("heading", { name: "选择设备和画质" })).toBeInViewport();
   }

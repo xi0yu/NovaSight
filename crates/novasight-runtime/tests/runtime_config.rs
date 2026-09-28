@@ -35,13 +35,8 @@ fn with_test_capture(mut config: AppConfig) -> AppConfig {
     config.capture = Some(CaptureConfig::manual(
         "/dev/video-test".into(),
         "MJPG".to_owned(),
-        1920,
-        1080,
-        120,
-        640,
-        220,
-        640,
-        640,
+        (1920, 1080, 120),
+        (640, 220, 640, 640),
     ));
     config
 }

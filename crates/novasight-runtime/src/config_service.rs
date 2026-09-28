@@ -450,13 +450,13 @@ impl ConfigService {
             CaptureConfig::manual(
                 PathBuf::from(&selected.device),
                 selected.pixel_format.clone(),
-                selected.width,
-                selected.height,
-                selected.fps,
-                (selected.width - roi_size) / 2,
-                (selected.height - roi_size) / 2,
-                roi_size,
-                roi_size,
+                (selected.width, selected.height, selected.fps),
+                (
+                    (selected.width - roi_size) / 2,
+                    (selected.height - roi_size) / 2,
+                    roi_size,
+                    roi_size,
+                ),
             )
         });
         capture.device = PathBuf::from(&selected.device);

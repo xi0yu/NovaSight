@@ -84,7 +84,13 @@ jobs:
         run: cargo build -p novasightd --no-default-features --locked
 
       - name: Verify fail-closed ARM64 host preview
-        run: out/cargo/debug/novasightd --check --config crates/novasight-config/src/bootstrap.yaml
+        run: |
+          if output="$(out/cargo/debug/novasightd --check --config crates/novasight-config/src/bootstrap.yaml 2>&1)"; then
+            echo "expected an incomplete bootstrap configuration to fail closed"
+            exit 1
+          fi
+          printf '%s\n' "$output"
+          grep -Fqx 'HOST_PREVIEW_CONFIG_INVALID: capture: section is required for live vision' <<<"$output"
 
       - name: Verify authenticated Web/API daemon composition
         run: bash scripts/ci/host-composition-contract.sh

@@ -328,21 +328,6 @@
 
 .capture-optional-settings[open] > summary { margin-bottom: 14px; color: var(--text-primary); }
 
-.capture-apply-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  margin-top: 2px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border-default);
-}
-
-.capture-apply-bar > div { min-width: 0; display: grid; gap: 3px; }
-.capture-apply-bar strong { color: var(--text-primary); font-size: 13px; }
-.capture-apply-bar small { color: var(--text-tertiary); font-size: 11px; overflow-wrap: anywhere; }
-.capture-apply-bar .console-button { flex: 0 0 auto; }
-
 .inference-config-grid {
   gap: 0;
   border-top: 1px solid var(--border-default);
@@ -383,11 +368,9 @@
   .capture-command-header { gap: 16px; }
   .capture-device-picker > header { align-items: stretch; flex-direction: column; }
   .capture-device-options { grid-template-columns: minmax(0, 1fr); }
-  .capture-runtime-proof,
-  .capture-apply-bar { align-items: stretch; flex-direction: column; }
+  .capture-runtime-proof { align-items: stretch; flex-direction: column; }
   .capture-profile-check-state { white-space: normal; }
   .capture-device-row { grid-template-columns: minmax(0, 1fr); }
-  .capture-apply-bar .console-button { width: 100%; }
   .capture-source-setup,
   .capture-roi-stage { padding: 20px 16px; }
   .capture-quality-browser > header { flex-direction: column; }

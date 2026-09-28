@@ -84,9 +84,9 @@
 }
 
 .console-safety-deck .error-center-trigger {
-  width: 40px;
-  min-width: 40px;
-  min-height: 40px;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
   justify-content: center;
   padding: 0;
   border-color: transparent;
@@ -315,7 +315,6 @@
   .console-safety-deck .console-live,
   .console-toolbar-pending { display: none; }
   .console-toolbar { justify-content: flex-end; padding-inline: 8px; }
-  .console-safety-deck .error-center-trigger { width: 44px; min-width: 44px; min-height: 44px; }
   .console-sidebar {
     grid-area: 2 / 1;
     overflow-x: auto;
