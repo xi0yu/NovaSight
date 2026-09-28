@@ -139,6 +139,8 @@ test("frontend-only preview opens the home page without a backend", async ({ pag
 
   await expect(page.getByRole("heading", { level: 1, name: "首页" })).toBeVisible();
   await expect(page.getByRole("switch", { name: /运行总开关/ })).toBeVisible();
+  await expect(page.getByText("设备未确认", { exact: true })).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("/dev/video0");
 });
 
 test("Studio navigation uses a desktop rail and returns to a top strip on narrow screens", async ({ page }) => {

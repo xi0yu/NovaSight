@@ -12,6 +12,10 @@ export interface CaptureCapabilitiesResponse {
   reason: string;
 }
 
+export interface CaptureDevicesResponse {
+  devices: string[];
+}
+
 export interface CaptureSelectPayload {
   device: string;
   preference?: "auto_high_fps" | "auto_low_latency" | "auto_balanced" | "manual";
@@ -83,4 +87,17 @@ export function decodeCaptureCapabilities(value: unknown): CaptureCapabilitiesRe
     ),
     reason: expectString(record.reason, "capture_capabilities.reason")
   };
+}
+
+export function decodeCaptureDevices(value: unknown): CaptureDevicesResponse {
+  const record = expectRecord(value, "capture_devices");
+  if (!Array.isArray(record.devices)) {
+    throw new CaptureContractError("capture_devices.devices", "string[]");
+  }
+  const devices = record.devices.map((device, index) => {
+    const path = expectString(device, `capture_devices.devices[${index}]`).trim();
+    if (!path) throw new CaptureContractError(`capture_devices.devices[${index}]`, "non-empty string");
+    return path;
+  });
+  return { devices: Array.from(new Set(devices)) };
 }

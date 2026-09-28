@@ -7,7 +7,7 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use std::collections::{BTreeMap, BTreeSet};
-    use std::fs::OpenOptions;
+    use std::fs::{self, OpenOptions};
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 
@@ -161,6 +161,27 @@ mod linux {
     pub struct V4l2CapabilityProbe;
 
     impl CaptureCapabilityProbe for V4l2CapabilityProbe {
+        fn devices(&self) -> Result<Vec<String>, CaptureProbeError> {
+            let entries = fs::read_dir("/dev").map_err(|error| {
+                CaptureProbeError::new(
+                    "CAPTURE_DEVICE_DISCOVERY_FAILED",
+                    format!("failed to read /dev while discovering V4L2 devices: {error}"),
+                )
+            })?;
+            let mut devices = entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_type()
+                        .is_ok_and(|file_type| file_type.is_char_device())
+                        && is_video_device_name(&entry.file_name().to_string_lossy())
+                })
+                .map(|entry| entry.path().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            devices.sort_by_key(|device| video_device_index(device).unwrap_or(u32::MAX));
+            Ok(devices)
+        }
+
         fn probe(&self, device: &str) -> Result<CaptureCapabilities, CaptureProbeError> {
             let device = device.trim();
             if device.is_empty() {
@@ -255,6 +276,16 @@ mod linux {
                 capabilities,
             })
         }
+    }
+
+    fn is_video_device_name(name: &str) -> bool {
+        name.strip_prefix("video").is_some_and(|suffix| {
+            !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    }
+
+    fn video_device_index(path: &str) -> Option<u32> {
+        path.rsplit_once("video")?.1.parse().ok()
     }
 
     fn unavailable(device: &str, reason: String) -> CaptureCapabilities {
@@ -412,6 +443,18 @@ mod linux {
             assert!(result.capabilities.is_empty());
             assert!(result.reason.contains("VIDIOC_ENUM_FMT"));
         }
+
+        #[test]
+        fn video_device_names_are_strict_and_sort_numerically() {
+            assert!(is_video_device_name("video0"));
+            assert!(is_video_device_name("video12"));
+            assert!(!is_video_device_name("video"));
+            assert!(!is_video_device_name("video0-meta"));
+
+            let mut devices = ["/dev/video10", "/dev/video2", "/dev/video0"];
+            devices.sort_by_key(|device| video_device_index(device).unwrap());
+            assert_eq!(devices, ["/dev/video0", "/dev/video2", "/dev/video10"]);
+        }
     }
 }
 
@@ -424,6 +467,13 @@ pub struct V4l2CapabilityProbe;
 
 #[cfg(not(target_os = "linux"))]
 impl novasight_core::CaptureCapabilityProbe for V4l2CapabilityProbe {
+    fn devices(&self) -> Result<Vec<String>, novasight_core::CaptureProbeError> {
+        Err(novasight_core::CaptureProbeError::new(
+            "CAPTURE_PROBE_UNSUPPORTED_PLATFORM",
+            "V4L2 capture probing is only available on Linux",
+        ))
+    }
+
     fn probe(
         &self,
         _device: &str,

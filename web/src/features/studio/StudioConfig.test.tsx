@@ -116,11 +116,14 @@ it("does not claim capture is applied before runtime verification", () => {
 it("does not invent /dev/video0 when capture has not been configured", () => {
   history.replaceState(null, "", "/?page=capture");
   const { capture: _capture, ...unconfigured } = props.runtimeConfig;
-  render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={unconfigured} /></SafetyOperationProvider>);
+  const unconfiguredRuntime = { ...runtime, capture: { available: false, device: "", running: false, profile: null } } as RuntimeState;
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={unconfiguredRuntime} runtimeConfig={unconfigured} /></SafetyOperationProvider>);
 
+  expect(screen.queryByText("/dev/video0")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText("输入其他设备路径"));
   expect(screen.getByRole("textbox", { name: "设备路径" })).toHaveValue("");
   expect(screen.getByRole("heading", { name: "尚未配置采集设备" })).toBeVisible();
-  expect(screen.getByRole("button", { name: "查询支持规格" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "读取设备规格" })).toBeDisabled();
 });
 
 it("opens control parameters from the live control chain", async () => {
@@ -290,7 +293,8 @@ it("shows capture selection rejection beside the clicked frame rate", async () =
     return new Promise(() => {});
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={{ ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } }} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "查询支持规格" }));
+  await userEvent.click(screen.getByText("输入其他设备路径"));
+  await userEvent.click(screen.getByRole("button", { name: "读取设备规格" }));
   await userEvent.click(await screen.findByRole("button", { name: "240 FPS" }));
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(true);
   expect(await screen.findByRole("alert")).toHaveTextContent("device rejected 240 FPS");
@@ -303,7 +307,8 @@ it("requires an explicit capture choice when the saved format is absent from det
     ? Promise.resolve(new Response(JSON.stringify({ available: true, device: "/dev/video0", capabilities: [{ pixel_format: "NV12", width: 1280, height: 720, fps_list: [120] }], reason: "" }), { status: 200, headers: { "content-type": "application/json" } }))
     : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "查询支持规格" }));
+  await userEvent.click(screen.getByText("输入其他设备路径"));
+  await userEvent.click(screen.getByRole("button", { name: "读取设备规格" }));
   const fps = await screen.findByRole("button", { name: "120 FPS" });
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(false);
   await userEvent.click(fps);
@@ -323,6 +328,7 @@ it("does not reuse a previous device format when the operator changes capture de
   history.replaceState(null, "", "/?page=capture");
   const stopped = { ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByText("输入其他设备路径"));
   const device = screen.getByRole("textbox", { name: "设备路径" });
   await userEvent.clear(device);
   await userEvent.type(device, "/dev/video1");
@@ -336,7 +342,8 @@ it("keeps failed capability detection visible beside capture controls", async ()
   vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/capabilities")
     ? Promise.reject(new Error("camera unplugged")) : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "查询支持规格" }));
+  await userEvent.click(screen.getByText("输入其他设备路径"));
+  await userEvent.click(screen.getByRole("button", { name: "读取设备规格" }));
   expect(await screen.findByText(/设备能力检测失败：camera unplugged/)).toBeVisible();
 });
 

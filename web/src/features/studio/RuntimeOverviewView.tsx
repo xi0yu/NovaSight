@@ -25,12 +25,11 @@ type RuntimeOverviewViewProps = {
 
 const DEFAULT_MODULES = ["runtime", "metrics", "pipeline", "diagnostics"];
 
-function toneForProjection(projection: RuntimeProjection): string {
-  if (projection.transport !== "current" || projection.output.state === "unknown") return "unknown";
+function toneForRuntime(projection: RuntimeProjection, phase: string, lifecycleActive: boolean): "idle" | "danger" | "warning" | "success" {
   if (projection.lifecycle.state === "faulted" || projection.perception.state === "faulted") return "danger";
-  if (projection.daemonConfirmedSafe) return "safe";
-  if (projection.output.state === "armed") return "armed";
-  return "attention";
+  if (projection.transport !== "current" || projection.output.state === "unknown") return "warning";
+  if (phase === "starting" || phase === "stopping" || phase === "waiting_model") return "warning";
+  return lifecycleActive ? "success" : "idle";
 }
 
 function formatEvidenceTime(value: Date | null): string {
@@ -97,10 +96,10 @@ export function RuntimeOverviewView({
     );
   }
 
-  const tone = toneForProjection(projection);
   const kmnet = runtime.executor.executors.kmnet;
   const phase = runtime.semantic.phase;
   const lifecycleActive = runtime.presentation.lifecycle.can_stop || phase === "stopping";
+  const tone = toneForRuntime(projection, phase, lifecycleActive);
   const stopping = phase === "stopping" || runtimeStopping;
   const starting = phase === "starting" || launchPending;
   const metricsCurrent = projection.transport === "current";
@@ -125,7 +124,7 @@ export function RuntimeOverviewView({
       <article className={`runtime-overview-conclusion ${tone}`}>
         <div className="runtime-overview-identity">
           <span className="runtime-overview-conclusion-icon" aria-hidden="true">
-            <NovaIcon name={tone === "safe" ? "shield-check" : tone === "danger" ? "triangle-alert" : "activity-pulse"} size={24} />
+            <NovaIcon name={tone === "success" ? "shield-check" : tone === "danger" ? "triangle-alert" : "activity-pulse"} size={24} />
           </span>
           <div><small>{metricsCurrent ? "当前设备" : "最近设备"}</small><strong>{runtime.capture.device || "设备未确认"}</strong></div>
         </div>

@@ -178,6 +178,7 @@ pub fn build_control_router_with_platform_queries(
         .route("/api/config", get(config).post(update_config_document))
         .route("/api/config/schema", get(config_schema))
         .route("/api/capture/state", get(capture_state))
+        .route("/api/capture/devices", get(capture_devices))
         .route(
             "/api/capture/preview",
             get(preview_status).post(set_preview),
@@ -1495,6 +1496,11 @@ struct CaptureCapabilitiesQuery {
     device: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct CaptureDevicesResponse {
+    devices: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CaptureCapabilitiesRequest {
@@ -1511,6 +1517,19 @@ struct CaptureSelectRequest {
     width: Option<u32>,
     height: Option<u32>,
     fps: Option<u32>,
+}
+
+async fn capture_devices(
+    State(state): State<ControlState>,
+) -> Result<Json<CaptureDevicesResponse>, ControlApiError> {
+    let probe = state
+        .capture_probe
+        .ok_or(ControlApiError::CaptureProbeUnavailable)?;
+    let devices = tokio::task::spawn_blocking(move || probe.devices())
+        .await
+        .map_err(ControlApiError::CaptureProbeTask)?
+        .map_err(ControlApiError::CaptureProbe)?;
+    Ok(Json(CaptureDevicesResponse { devices }))
 }
 
 async fn capture_capabilities(

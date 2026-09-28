@@ -17,16 +17,16 @@
   gap: 16px;
   padding: 14px 16px;
   border: 1px solid var(--border-default);
-  border-left: 3px solid var(--status-warning-icon);
+  border-left: 4px solid var(--status-waiting-icon);
   border-radius: 8px;
   background: var(--bg-surface);
   box-shadow: var(--shadow-card);
 }
 
-.runtime-overview-conclusion.safe { border-left-color: var(--status-success-icon); }
-.runtime-overview-conclusion.danger { border-left-color: var(--status-error-icon); }
-.runtime-overview-conclusion.armed { border-left-color: var(--status-running-icon); }
-.runtime-overview-conclusion.unknown { border-left-color: var(--status-waiting-icon); }
+.runtime-overview-conclusion.idle { border-color: var(--status-waiting-border); border-left-color: var(--status-waiting-icon); background: color-mix(in srgb, var(--status-waiting-bg) 42%, var(--bg-surface)); }
+.runtime-overview-conclusion.danger { border-color: var(--status-error-border); border-left-color: var(--status-error-icon); background: color-mix(in srgb, var(--status-error-bg) 40%, var(--bg-surface)); }
+.runtime-overview-conclusion.warning { border-color: var(--status-warning-border); border-left-color: var(--status-warning-icon); background: color-mix(in srgb, var(--status-warning-bg) 40%, var(--bg-surface)); }
+.runtime-overview-conclusion.success { border-color: var(--status-success-border); border-left-color: var(--status-success-icon); background: color-mix(in srgb, var(--status-success-bg) 40%, var(--bg-surface)); }
 
 .runtime-overview-identity {
   min-width: 0;
@@ -46,10 +46,10 @@
   color: var(--status-warning-icon);
 }
 
-.runtime-overview-conclusion.safe .runtime-overview-conclusion-icon { background: var(--status-success-bg); color: var(--status-success-icon); }
+.runtime-overview-conclusion.idle .runtime-overview-conclusion-icon { background: var(--status-waiting-bg); color: var(--status-waiting-icon); }
 .runtime-overview-conclusion.danger .runtime-overview-conclusion-icon { background: var(--status-error-bg); color: var(--status-error-icon); }
-.runtime-overview-conclusion.armed .runtime-overview-conclusion-icon { background: var(--status-running-bg); color: var(--status-running-icon); }
-.runtime-overview-conclusion.unknown .runtime-overview-conclusion-icon { background: var(--status-waiting-bg); color: var(--status-waiting-icon); }
+.runtime-overview-conclusion.warning .runtime-overview-conclusion-icon { background: var(--status-warning-bg); color: var(--status-warning-icon); }
+.runtime-overview-conclusion.success .runtime-overview-conclusion-icon { background: var(--status-success-bg); color: var(--status-success-icon); }
 
 .runtime-overview-identity > div { min-width: 0; }
 .runtime-overview-identity small,

@@ -136,9 +136,30 @@ describe("RuntimeOverviewView", () => {
     expect(metrics).toHaveTextContent("推理耗时8.2 ms");
 
     expect(screen.getByRole("switch", { name: "运行总开关，运行中" })).toHaveAttribute("data-tone", "success");
+    expect(screen.getByRole("heading", { name: projection.conclusion }).closest("article")).toHaveClass("success");
     await userEvent.click(screen.getByRole("switch", { name: "运行总开关，运行中" }));
     expect(onToggle).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "紧急停止" })).not.toBeInTheDocument();
+  });
+
+  it("uses neutral gray when the mainline is stopped", () => {
+    const stoppedRuntime = {
+      ...runtime,
+      semantic: { ...runtime.semantic, phase: "stopped" },
+      presentation: { ...runtime.presentation, lifecycle: { can_start: true, can_stop: false } },
+    } as RuntimeState;
+    render(
+      <RuntimeOverviewView
+        runtime={stoppedRuntime}
+        projection={{ ...projection, lifecycle: { state: "stopped", label: "已停止", detail: "" }, conclusion: "主链已关闭", daemonConfirmedSafe: true }}
+        readiness={{ state: "action", title: "已关闭", detail: "启动后开始采集和推理。" }}
+        lastUpdated={null}
+        onAction={() => undefined}
+        {...controlProps}
+      />
+    );
+    expect(screen.getByRole("heading", { name: "主链已关闭" }).closest("article")).toHaveClass("idle");
+    expect(screen.getByRole("switch", { name: "运行总开关，已关闭" })).toHaveAttribute("data-tone", "idle");
   });
 
   it("does not present missing live samples as zero", () => {

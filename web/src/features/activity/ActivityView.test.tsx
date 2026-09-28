@@ -45,6 +45,6 @@ it("renders records as a list and exposes clearing", async () => {
   }]} onClear={onClear} onOpenDetails={vi.fn()} />);
 
   expect(screen.getByRole("list", { name: "最近活动" })).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "清理记录" }));
+  await userEvent.click(screen.getByRole("button", { name: "清理历史" }));
   expect(onClear).toHaveBeenCalledOnce();
 });

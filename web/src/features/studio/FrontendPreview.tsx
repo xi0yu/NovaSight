@@ -2,8 +2,6 @@ import type { LicenseStatus, RuntimeState } from "../../api";
 import { SafetyOperationProvider } from "../runtime/SafetyOperationContext";
 import { StudioConsoleView } from "./StudioConsoleView";
 
-const captureProfile = { pixel_format: "MJPG", width: 1920, height: 1080, fps: 240 };
-
 const runtime = {
   semantic: {
     daemon_instance_id: "frontend-preview",
@@ -19,7 +17,7 @@ const runtime = {
     output: { state: "safe", reason_code: "runtime_stopped", daemon_confirmed_safe: true },
   },
   running: false,
-  capture: { available: true, device: "/dev/video0", running: false, profile: captureProfile },
+  capture: { available: false, device: "", running: false, profile: null, state: "unconfigured" },
   statistics: { metrics_available: false, detection_freshness_threshold_ms: 55 },
   config: { version: 1, effective_version: 1 },
   executor: {
@@ -48,7 +46,6 @@ export function FrontendPreview() {
         runtime={runtime}
         runtimeConfig={{
           revision: 1,
-          capture: { ...captureProfile, device: "/dev/video0", roi_left: 0, roi_top: 0, roi_width: 256, roi_height: 256 },
           pipeline: { fire_delay_enabled: false, fire_delay_ms: 0, projection_fov_x_deg: 90 },
           control: { output_enabled: false },
           hardware: { auto_connect: true },

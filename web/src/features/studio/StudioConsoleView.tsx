@@ -35,6 +35,7 @@ import {
   type RuntimeVisionDetectionState,
   type RuntimeVisionTargetState,
   getCaptureCapabilities,
+  getCaptureDevices,
   getModelArtifacts,
   getModelCatalog,
   createCatalogFolder,
@@ -769,6 +770,10 @@ export function StudioConsoleView({
   );
 
   const [caps, setCaps] = useState<CaptureCapabilitiesResponse | null>(null);
+  const [captureDevices, setCaptureDevices] = useState<string[]>([]);
+  const [deviceDiscoveryStatus, setDeviceDiscoveryStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [deviceDiscoveryError, setDeviceDiscoveryError] = useState<string | null>(null);
+  const autoQueriedCaptureDeviceRef = useRef("");
   const [selectedModelProjectId, setSelectedModelProjectId] = useState<number | "">("");
   const [selectedModelVersionId, setSelectedModelVersionId] = useState<number | "">("");
   const [selectedModelArtifactId, setSelectedModelArtifactId] = useState<number | "">("");
@@ -1301,6 +1306,9 @@ export function StudioConsoleView({
   const configuredCaptureWidth = readNumber(captureConfig.width, 0);
   const configuredCaptureHeight = readNumber(captureConfig.height, 0);
   const configuredCaptureFps = readNumber(captureConfig.fps, 0);
+  const captureDeviceChoices = useMemo(() => configuredCaptureDevice && !captureDevices.includes(configuredCaptureDevice)
+    ? [configuredCaptureDevice, ...captureDevices]
+    : captureDevices, [captureDevices, configuredCaptureDevice]);
   const configuredRoiLeft = readNumber(captureConfig.roi_left, 0);
   const configuredRoiTop = readNumber(captureConfig.roi_top, 0);
   const configuredRoiWidth = readNumber(captureConfig.roi_width, 0);
@@ -2277,13 +2285,34 @@ export function StudioConsoleView({
     };
   }, [modelDetailsRefreshKey, modelManagerActive, selectedModelVersionId]);
 
-  const refreshCapabilities = useCallback(async () => {
+  const refreshCaptureDevices = useCallback(async () => {
+    setDeviceDiscoveryStatus("loading");
+    setDeviceDiscoveryError(null);
+    try {
+      const result = await getCaptureDevices();
+      setCaptureDevices(result.devices);
+      setDeviceDiscoveryStatus("ready");
+    } catch (error) {
+      const message = `设备扫描失败：${getErrorMessage(error)}`;
+      setDeviceDiscoveryStatus("error");
+      setDeviceDiscoveryError(message);
+      reportError(error, { source: "capture-devices", title: "采集设备扫描失败", popup: false });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activePage === "capture" && deviceDiscoveryStatus === "idle") {
+      void refreshCaptureDevices();
+    }
+  }, [activePage, deviceDiscoveryStatus, refreshCaptureDevices]);
+
+  const loadCaptureCapabilities = useCallback(async (selectedDevice: string) => {
     setBusy("caps");
     setLocalError(null);
     setCaptureActionError(null);
     setCaps(null);
     try {
-      const result = await getCaptureCapabilities(device);
+      const result = await getCaptureCapabilities(selectedDevice);
       setCaps(result);
       if (!result.available) {
         const reason = result.reason || "设备不可用";
@@ -2298,7 +2327,32 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [device]);
+  }, []);
+
+  useEffect(() => {
+    if (
+      activePage === "capture"
+      && deviceDiscoveryStatus === "ready"
+      && configuredCaptureDevice
+      && captureDevices.includes(configuredCaptureDevice)
+      && autoQueriedCaptureDeviceRef.current !== configuredCaptureDevice
+    ) {
+      autoQueriedCaptureDeviceRef.current = configuredCaptureDevice;
+      void loadCaptureCapabilities(configuredCaptureDevice);
+    }
+  }, [activePage, captureDevices, configuredCaptureDevice, deviceDiscoveryStatus, loadCaptureCapabilities]);
+
+  const refreshCapabilities = useCallback(async () => {
+    await loadCaptureCapabilities(device);
+  }, [device, loadCaptureCapabilities]);
+
+  const chooseCaptureDevice = useCallback((selectedDevice: string) => {
+    if (busy !== null) return;
+    if (selectedDevice !== device) setDevice(selectedDevice);
+    setCaps(null);
+    setCaptureActionError(null);
+    void loadCaptureCapabilities(selectedDevice);
+  }, [busy, device, loadCaptureCapabilities]);
 
   const buildCapturePayload = useCallback((choice: CapabilityChoice): CaptureSelectPayload => ({
     device,
@@ -3771,23 +3825,63 @@ export function StudioConsoleView({
                   <span aria-hidden="true"><NovaIcon name="capture-card" size={20} /></span>
                   <div><small>画面来源</small><h3 id="capture-source-title">选择设备和画质</h3><p>读取设备真实能力；点击帧率后立即保存，不需要再次应用。</p></div>
                 </header>
-                <div className="capture-device-row">
-                  <TextControl
-                    label="设备路径"
-                    detail={configuredCaptureDevice ? `当前已保存 ${configuredCaptureDevice}，可在这里更换。` : "首次使用必须填写实际设备路径并读取能力。"}
-                    value={device}
-                    applyMode="launch"
-                    onCommit={(value) => {
-                      setDevice(value);
-                      setCaps(null);
-                      setCaptureActionError(null);
-                    }}
-                  />
-                  <button className="console-button secondary" disabled={busy === "caps" || !device.trim()} onClick={refreshCapabilities} type="button">
-                    <NovaIcon name="refresh" size={15} />
-                    {busy === "caps" ? "正在查询…" : "查询支持规格"}
-                  </button>
+                <div className="capture-device-picker">
+                  <header>
+                    <div><b>选择采集设备</b><small>只展示 Jetson 当前发现的 V4L2 设备；选择后自动读取其真实规格。</small></div>
+                    <button className="console-button secondary" disabled={deviceDiscoveryStatus === "loading" || busy !== null} onClick={() => void refreshCaptureDevices()} type="button">
+                      <NovaIcon name="refresh" size={15} />
+                      {deviceDiscoveryStatus === "loading" ? "正在扫描…" : "重新扫描"}
+                    </button>
+                  </header>
+                  <div className="capture-device-options" role="listbox" aria-label="可用采集设备">
+                    {captureDeviceChoices.map((captureDevice) => {
+                      const saved = captureDevice === configuredCaptureDevice;
+                      const discovered = captureDevices.includes(captureDevice);
+                      const selected = captureDevice === device;
+                      return (
+                        <button
+                          aria-selected={selected}
+                          className={selected ? "selected" : ""}
+                          disabled={busy !== null || runtimeLifecycleActive}
+                          key={captureDevice}
+                          onClick={() => chooseCaptureDevice(captureDevice)}
+                          role="option"
+                          type="button"
+                        >
+                          <span aria-hidden="true"><NovaIcon name="capture-card" size={18} /></span>
+                          <span><b>{captureDevice}</b><small>{saved ? "已保存" : "可选择"}{!discovered ? " · 当前未发现" : ""}</small></span>
+                          <i>{selected && busy === "caps" ? "读取中" : selected ? "已选" : "选择"}</i>
+                        </button>
+                      );
+                    })}
+                    {deviceDiscoveryStatus === "ready" && captureDeviceChoices.length === 0 ? (
+                      <div className="capture-device-empty"><b>没有发现采集设备</b><small>连接采集卡后重新扫描，或在下方输入其他设备路径。</small></div>
+                    ) : null}
+                    {deviceDiscoveryStatus === "error" ? (
+                      <div className="capture-device-empty error" role="alert"><b>无法扫描设备</b><small>{deviceDiscoveryError}</small></div>
+                    ) : null}
+                  </div>
                 </div>
+                <details className="capture-custom-device">
+                  <summary>输入其他设备路径</summary>
+                  <div className="capture-device-row">
+                    <TextControl
+                      label="设备路径"
+                      detail="仅在设备未出现在扫描结果时使用；读取成功后仍需选择一个帧率才会保存。"
+                      value={device}
+                      applyMode="launch"
+                      onCommit={(value) => {
+                        setDevice(value);
+                        setCaps(null);
+                        setCaptureActionError(null);
+                      }}
+                    />
+                    <button className="console-button secondary" disabled={busy === "caps" || !device.trim()} onClick={refreshCapabilities} type="button">
+                      <NovaIcon name="refresh" size={15} />
+                      {busy === "caps" ? "正在读取…" : "读取设备规格"}
+                    </button>
+                  </div>
+                </details>
                 <div className="capture-quality-browser" aria-label="分辨率与帧率">
                   <header>
                     <div><b>设备支持的画面规格</b><small>{caps ? `按格式分类，共 ${detectedChoices.length} 个组合；分辨率和帧率从高到低排列。` : "先查询设备，结果会按格式、分辨率和帧率分类。"}</small></div>

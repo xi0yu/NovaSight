@@ -20,7 +20,7 @@ import {
   decodeRuntimeConfig
 } from "./contracts/config";
 import { decodeLicenseStatus } from "./contracts/license";
-import { decodeCaptureCapabilities } from "./contracts/capture";
+import { decodeCaptureCapabilities, decodeCaptureDevices } from "./contracts/capture";
 import { decodeDiagnosticMoveResponse } from "./contracts/hardware";
 import {
   decodeDeepStreamRecommendation,
@@ -56,6 +56,7 @@ import type {
 import type { LicenseStatus } from "./contracts/license";
 import type {
   CaptureCapabilitiesResponse,
+  CaptureDevicesResponse,
   CaptureSelectPayload
 } from "./contracts/capture";
 import type { DiagnosticMoveResponse } from "./contracts/hardware";
@@ -222,6 +223,7 @@ export const API_PATHS = {
   config: "/api/config",
   configCommands: "/api/v1/config/commands",
   configSchema: "/api/config/schema",
+  captureDevices: "/api/capture/devices",
   captureCapabilities: "/api/capture/capabilities",
   captureSelect: "/api/capture/select",
   capturePreview: "/api/capture/preview",
@@ -735,6 +737,15 @@ export function getCaptureCapabilities(
     },
     { timeoutMs: STANDARD_READ_TIMEOUT_MS },
     decodeCaptureCapabilities
+  );
+}
+
+export function getCaptureDevices(): Promise<CaptureDevicesResponse> {
+  return requestJson<CaptureDevicesResponse>(
+    API_PATHS.captureDevices,
+    undefined,
+    { timeoutMs: STANDARD_READ_TIMEOUT_MS },
+    decodeCaptureDevices
   );
 }
 

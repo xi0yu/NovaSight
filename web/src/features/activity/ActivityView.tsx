@@ -5,7 +5,7 @@ import { NovaIcon } from "../../components/visual";
 import "./activity-view.css";
 
 function formatActivityTime(timestamp: number): string {
-  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date(timestamp).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 export type ActivityItem = {
@@ -93,39 +93,40 @@ export function ActivityView({
           type="button"
         >
           <NovaIcon name="delete" size={15} />
-          {clearing ? "正在清理…" : "清理记录"}
+          {clearing ? "正在清理…" : "清理历史"}
         </button>
       </div>
     ),
     feed: (
-      <ul className="activity-feed" aria-label="最近活动">
-        {filteredItems.length > 0 ? filteredItems.map((item) => (
-          <li className="activity-feed-item" data-tone={item.tone ?? "error"} key={item.key}>
-            <span className="activity-feed-marker" aria-hidden="true" />
-            <div>
-              <div className="activity-item-tags">
-                <span className="activity-level-tag" data-tone={item.tone ?? "error"}>{item.tone === "success" ? "完成" : item.tone === "info" ? "信息" : item.tone === "warn" ? "警告" : "故障"}</span>
-                {item.tag ? <span className="activity-domain-tag">{item.tag}</span> : null}
+      <section className="activity-list" aria-label="实时日志列表">
+        <div className="activity-list-header" aria-hidden="true"><span /><span>等级</span><span>事件</span><span>来源</span><span>时间</span></div>
+        <ul className="activity-feed" aria-label="最近活动">
+          {filteredItems.length > 0 ? filteredItems.map((item) => (
+            <li className="activity-feed-item" data-tone={item.tone ?? "error"} key={item.key}>
+              <span className="activity-feed-marker" aria-hidden="true" />
+              <span className="activity-level-tag" data-tone={item.tone ?? "error"}>{item.tone === "success" ? "完成" : item.tone === "info" ? "信息" : item.tone === "warn" ? "警告" : "故障"}</span>
+              <div className="activity-item-copy">
+                <strong>{item.title}</strong>
+                <p>{item.detail}</p>
+                {(item.count ?? 1) > 1 ? <small>本次会话重复 {item.count} 次</small> : null}
+                {item.technicalDetail ? (
+                  <details>
+                    <summary>原始错误与开发者详情</summary>
+                    <pre>{item.technicalDetail}</pre>
+                  </details>
+                ) : null}
               </div>
-              <strong>{item.title}</strong>
-              {(item.count ?? 1) > 1 ? <small>本次会话重复 {item.count} 次</small> : null}
-              <p>{item.detail}</p>
+              <span className="activity-domain-tag">{item.tag || "NovaSight"}</span>
               {item.time ? <time>{formatActivityTime(item.time)}</time> : <time>仍在发生</time>}
-              {item.technicalDetail ? (
-                <details>
-                  <summary>原始错误与开发者详情</summary>
-                  <pre>{item.technicalDetail}</pre>
-                </details>
-              ) : null}
-            </div>
-          </li>
-        )) : (
-          <li className="activity-empty">
-            <span>{items.length > 0 ? "这个等级暂时没有日志" : "暂无运行记录"}</span>
-            <small>{items.length > 0 ? "选择其他等级继续查看。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}</small>
-          </li>
-        )}
-      </ul>
+            </li>
+          )) : (
+            <li className="activity-empty">
+              <span>{items.length > 0 ? "这个等级暂时没有日志" : "暂无运行记录"}</span>
+              <small>{items.length > 0 ? "选择其他等级继续查看。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}</small>
+            </li>
+          )}
+        </ul>
+      </section>
     ),
   };
 

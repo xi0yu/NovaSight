@@ -53,6 +53,7 @@ pub struct CaptureCapabilities {
 }
 
 pub trait CaptureCapabilityProbe: Send + Sync + 'static {
+    fn devices(&self) -> Result<Vec<String>, CaptureProbeError>;
     fn probe(&self, device: &str) -> Result<CaptureCapabilities, CaptureProbeError>;
 }
 
