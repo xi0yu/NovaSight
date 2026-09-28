@@ -323,6 +323,9 @@ fn authenticated_status(csrf_token: String, expires_at: u64) -> SessionStatus {
 }
 
 fn required_permission(method: &Method, path: &str) -> Option<&'static str> {
+    if *method == Method::DELETE && path == "/api/activity" {
+        return Some("runtime:operate");
+    }
     if matches!(*method, Method::GET | Method::HEAD)
         && [
             "/api/license",
@@ -480,6 +483,25 @@ mod tests {
         for path in ["/api/runtime/start", "/api/executors/kmnet/disconnect"] {
             auth.authorize_proxy(&Method::POST, path, &headers).unwrap();
         }
+    }
+
+    #[test]
+    fn web_operator_can_clear_activity_history() {
+        let auth = AuthService::new(false);
+        let issued = auth.issue_session().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(issued.cookie.to_str().unwrap().split(';').next().unwrap())
+                .unwrap(),
+        );
+        headers.insert(
+            CSRF_HEADER,
+            HeaderValue::from_str(issued.status.csrf_token.as_deref().unwrap()).unwrap(),
+        );
+
+        auth.authorize_proxy(&Method::DELETE, "/api/activity", &headers)
+            .unwrap();
     }
 
     #[test]
