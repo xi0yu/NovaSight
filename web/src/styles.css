@@ -492,15 +492,6 @@ body {
   .auth-session-route { display: none; }
 }
 
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-size: 56px 56px;
-  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.42), transparent 72%);
-}
-
 button,
 select,
 input {
@@ -758,58 +749,12 @@ h1 {
   margin: 0 auto;
 }
 
-.ui-panel {
-  min-width: 0;
-  border-radius: var(--radius-panel);
-  padding: 16px;
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-panel);
-  border: 1px solid var(--border-subtle);
-  position: relative;
-  overflow: hidden;
-}
-
-.ui-panel::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(90deg, rgba(37, 99, 235, 0.035), transparent 24%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.72), transparent 34%);
-}
-
-.ui-panel-header,
-.ui-panel-body {
-  position: relative;
-}
-
-.ui-panel-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  min-height: 46px;
-  margin-bottom: 16px;
-}
-
-.ui-panel h2 {
-  color: var(--ink);
-  font-size: 1.04rem;
-  line-height: 1.2;
-  letter-spacing: 0;
-}
-
 .eyebrow {
   color: var(--primary);
   font-size: 0.72rem;
   font-weight: 800;
   line-height: 1.1;
   margin-bottom: 6px;
-}
-
-.ui-panel-action {
-  flex: 0 0 auto;
 }
 
 .ui-button-primary {
@@ -989,31 +934,6 @@ tbody tr:hover {
 
 .compact-button {
   min-height: 40px;
-}
-
-.loading-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
-}
-
-.loading-grid div {
-  height: 92px;
-  border-radius: var(--radius-panel);
-  background: linear-gradient(90deg, var(--surface-1), var(--surface-3), var(--surface-1));
-  background-size: 220% 100%;
-  box-shadow: var(--shadow-control);
-  animation: pulse 1.3s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0% {
-    background-position: 120% 0;
-  }
-  100% {
-    background-position: -120% 0;
-  }
 }
 
 .badge {
@@ -2291,10 +2211,6 @@ tbody tr:hover {
     border-left: 0;
   }
 
-  .loading-grid {
-    grid-template-columns: 1fr;
-  }
-
   .preference-actions {
     justify-content: flex-start;
   }
@@ -2311,15 +2227,6 @@ tbody tr:hover {
 
   h1 {
     font-size: 1.58rem;
-  }
-
-  .ui-panel {
-    padding: 13px;
-  }
-
-  .ui-panel-header {
-    align-items: flex-start;
-    flex-direction: column;
   }
 
   .model-selection-toolbar {
@@ -3446,8 +3353,8 @@ tbody tr:hover {
 }
 
 /* ============================================================
- * NovaSight Visual System v1
- * Token-backed overrides for the professional realtime-vision UI.
+ * NovaSight Studio shared UI contracts
+ * Token-backed controls for the realtime-vision UI.
  * ============================================================ */
 
 :root {
@@ -3714,7 +3621,6 @@ button:focus-visible {
   color: var(--brand-primary);
 }
 
-.ui-panel,
 .license-panel,
 .license-gate,
 .console-process {
@@ -3997,201 +3903,6 @@ button:focus-visible {
   display: none;
 }
 
-.ns-status-card {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  padding: 14px;
-  border: 1px solid var(--status-border);
-  border-radius: var(--radius-4);
-  background: var(--status-bg);
-  color: var(--status-fg);
-}
-
-.ns-status-card-icon {
-  width: 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--radius-4);
-  background: color-mix(in srgb, var(--status-icon) 12%, var(--bg-surface));
-  color: var(--status-icon);
-}
-
-.ns-status-card-copy {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.ns-status-card-copy strong {
-  color: var(--text-primary);
-  font-size: 14px;
-  line-height: 20px;
-  font-weight: 650;
-}
-
-.ns-status-card-copy span {
-  color: var(--status-fg);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.ns-status-card-copy code {
-  width: fit-content;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-}
-
-.ns-status-card-normal {
-  --status-bg: var(--status-normal-bg);
-  --status-border: var(--status-normal-border);
-  --status-fg: var(--status-normal-fg);
-  --status-icon: var(--status-normal-icon);
-}
-
-.ns-status-card-running {
-  --status-bg: var(--status-running-bg);
-  --status-border: var(--status-running-border);
-  --status-fg: var(--status-running-fg);
-  --status-icon: var(--status-running-icon);
-}
-
-.ns-status-card-waiting {
-  --status-bg: var(--status-waiting-bg);
-  --status-border: var(--status-waiting-border);
-  --status-fg: var(--status-waiting-fg);
-  --status-icon: var(--status-waiting-icon);
-}
-
-.ns-status-card-warning {
-  --status-bg: var(--status-warning-bg);
-  --status-border: var(--status-warning-border);
-  --status-fg: var(--status-warning-fg);
-  --status-icon: var(--status-warning-icon);
-}
-
-.ns-status-card-error {
-  --status-bg: var(--status-error-bg);
-  --status-border: var(--status-error-border);
-  --status-fg: var(--status-error-fg);
-  --status-icon: var(--status-error-icon);
-}
-
-.ns-status-card-disabled {
-  --status-bg: var(--status-disabled-bg);
-  --status-border: var(--status-disabled-border);
-  --status-fg: var(--status-disabled-fg);
-  --status-icon: var(--status-disabled-icon);
-}
-
-.ns-empty {
-  display: grid;
-  justify-items: center;
-  gap: 12px;
-  padding: 28px 18px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-4);
-  background:
-    radial-gradient(circle at 50% 0%, rgba(85, 111, 246, 0.08), transparent 45%),
-    var(--bg-elevated);
-  color: var(--text-secondary);
-  text-align: center;
-  box-shadow: var(--shadow-card);
-}
-
-.ns-empty-sm {
-  padding: 18px;
-}
-
-.ns-empty-lg {
-  padding: 34px 24px;
-}
-
-.ns-empty-visual {
-  position: relative;
-  width: 160px;
-  height: 120px;
-  display: grid;
-  place-items: center;
-}
-
-.ns-empty-sm .ns-empty-visual {
-  width: 96px;
-  height: 96px;
-}
-
-.ns-empty-lg .ns-empty-visual {
-  width: 240px;
-  height: 180px;
-}
-
-.ns-empty-illustration {
-  width: 100%;
-  height: 100%;
-  color: var(--brand-primary);
-  stroke: currentColor;
-  stroke-width: 1.7;
-}
-
-.ns-empty-icon {
-  position: absolute;
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  border: 1px solid var(--brand-border);
-  border-radius: var(--radius-6);
-  background: var(--brand-soft);
-  color: var(--brand-primary);
-  box-shadow: 0 8px 24px rgba(85, 111, 246, 0.14);
-}
-
-.ns-empty-copy {
-  min-width: 0;
-  display: grid;
-  gap: 6px;
-}
-
-.ns-empty strong {
-  color: var(--text-primary);
-  font-size: 14px;
-  line-height: 20px;
-  font-weight: 650;
-}
-
-.ns-empty span {
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 20px;
-}
-
-.ns-empty code {
-  max-width: min(520px, 100%);
-  padding: 4px 8px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-3);
-  background: var(--bg-subtle);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.ns-empty-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px;
-}
-
-
-
-
-
-
 .console-metric b,
 .console-kv b {
   font-family: var(--font-mono);
@@ -4215,14 +3926,6 @@ button:focus-visible {
 
 body {
   background: var(--bg-app);
-}
-
-body::before {
-  display: none;
-}
-
-body::after {
-  display: none;
 }
 
 #root {
@@ -4255,21 +3958,6 @@ body::after {
   isolation: isolate;
   overflow: hidden;
   background: var(--bg-app);
-}
-
-.console-sidebar::after {
-  content: "";
-  position: absolute;
-  right: -24%;
-  bottom: -3%;
-  z-index: 0;
-  width: 150%;
-  height: 76%;
-  pointer-events: none;
-  background: var(--theme-keyart) var(--theme-art-position) / 100% auto no-repeat;
-  opacity: var(--theme-art-opacity);
-  filter: saturate(0.86) contrast(0.92);
-  mask-image: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.66) 30%, #000 100%);
 }
 
 .console-sidebar > * {
@@ -4413,7 +4101,6 @@ body::after {
 }
 
 [data-theme="arena-signal"] .console-nav,
-[data-theme="arena-signal"] .ui-panel,
 [data-theme="arena-signal"] .console-card {
   border-radius: var(--card-radius);
 }
@@ -4458,11 +4145,6 @@ body::after {
 @media (max-width: 1024px) {
   .console-top {
     background-position: 0 0, right -150px center;
-  }
-
-  body::after,
-  .console-sidebar::after {
-    display: none;
   }
 
 }

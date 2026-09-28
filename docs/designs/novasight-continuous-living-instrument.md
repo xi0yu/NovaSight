@@ -453,7 +453,7 @@ Recovery uses one restrained transition from warning/fault treatment to confirme
 
 #### First-release design authority
 
-This active design plus its accepted design-review corrections is the first-release authority. Where it conflicts with `.interface-design/system.md`, `docs/novasight-frontend-visual-system.md`, current `web/src/design/tokens.css`, or `themeRegistry.ts`, the first-release contract here wins. The older documents and token blocks remain implementation evidence only until T8 updates or archives the conflicting clauses in the same change; they are not a second source of visual truth.
+This active design plus its accepted design-review corrections is the first-release authority. The obsolete frontend visual-system document and theme registry have been removed; `.interface-design/system.md` and `web/src/design/tokens.css` remain implementation references and must follow this contract.
 
 The first release has one runtime appearance ID: `arena-signal`. The app does not render a one-option chooser. Legacy browser values including `studio`, `rose-white`, `graphite-red`, `light`, and `dark` migrate once to `arena-signal`; they never resurrect an old theme or appear as unavailable options. `color-scheme: light` is explicit.
 
@@ -478,8 +478,8 @@ Authoritative Graphite Signal foundation:
 
 - Open working surfaces use spacing, typography, hairlines, and stable geometry; they never inherit the old card shadow by default.
 - Dialogs and true overlays may use one downward-offset soft shadow. Zero-offset colored halos, glow borders, glass panels, and decorative gradients are removed.
-- The existing `NovaIcon`, logo SVGs, Button, InlineError, EmptyState, LoadingSkeleton, status text semantics, and error-detail structure are reused after token alignment.
-- `Panel` is reused only where a bounded panel is the interaction, not as the automatic wrapper for every metric, parameter section, or log group.
+- The existing `NovaIcon`, Button, InlineError, status text semantics, and error-detail structure are reused after token alignment.
+- Bounded panels are used only when the panel itself is the interaction, not as the automatic wrapper for every metric, parameter section, or log group.
 - Generic service-health status may keep the existing shared badge vocabulary. Physical-output states and parameter Apply Trail states use dedicated mappings because their state machines are richer; they are not coerced into the generic six-tone status enum.
 - Status color is always paired with the state icon and exact wording. Signal yellow indicates deliberate selection or active path, not generic success; red remains fault/physical risk, not brand decoration.
 
@@ -2353,7 +2353,7 @@ Approval readiness: **ENGINEERING CLEAR**. Remaining work is implementation and 
 
 - Review scope: the complete first-release interaction and visual plan, not product code.
 - Surface classifier: **OPERATE**. NovaSight is primarily a live instrument for acting on and understanding a running vision system; read-only evidence supports that job but does not turn it into an analytics dashboard.
-- No repository-level `DESIGN.md` exists. `.interface-design/system.md`, `docs/novasight-frontend-visual-system.md`, `web/src/design/tokens.css`, and `web/src/components/visual/themeRegistry.ts` previously gave conflicting answers. The active first-release authority is now the Graphite Signal contract in this plan, and T8/DRT1 must reconcile or archive the older sources.
+- No repository-level `DESIGN.md` exists. Older visual-system documentation and the retired theme registry previously gave conflicting answers; both have now been removed. The active first-release authority is the Graphite Signal contract in this plan.
 - Existing structural reference: `docs/designs/assets/novasight-continuous-living-instrument-wireframe.png`. It remains useful for Eye / Body / Nerve proportions, while DR-1 through DR-3 explicitly supersede its hidden navigation, unstable metric hierarchy, and passive output pill.
 - Designer rendering was unavailable in this environment, so the review used the existing wireframe, the live repository contracts, one completed external text review, and one native independent design review. No new mockup was generated or approved.
 
@@ -2416,7 +2416,7 @@ Against Graphite canvas `#141515`, the specified foreground ratios are: primary 
 ### What already exists for design implementation
 
 - `App.tsx` already owns the browser session and transport; the redesign does not add another socket or global state system.
-- `StudioNavigation`, `RuntimeOverviewView`, `ProductJourneyViews`, model workspace components, current icon assets, logo SVGs, Button, InlineError, EmptyState, LoadingSkeleton, and error-detail patterns are reuse candidates.
+- `StudioNavigation`, `RuntimeOverviewView`, `ProductJourneyViews`, model workspace components, `NovaIcon`, Button, InlineError, and error-detail patterns are reuse candidates.
 - Existing capture, model, configuration, license, runtime snapshot, stale fencing, draft retention, and output safety semantics stay authoritative underneath the new presentation.
 - History API fallback already exists at the server boundary; five routes need a small registry, not a new router dependency.
 
@@ -2435,7 +2435,7 @@ Synthesized from this review's findings. Each task derives from a specific findi
 
 - [ ] **DRT1 (P1, human: ~3h / CC: ~35min)** — Design system — Make Graphite Signal the single first-release visual authority.
   - Surfaced by: Pass 5 — conflicting design documents, tokens, and legacy theme registry entries.
-  - Files: `.interface-design/system.md`, `docs/novasight-frontend-visual-system.md`, `web/src/design/tokens.css`, `web/src/components/visual/themeRegistry.ts`.
+  - Files: `.interface-design/system.md`, `web/src/design/tokens.css`.
   - Verify: repository search returns one active first-release theme; typecheck/build; contrast and focus audit.
 - [ ] **DRT2 (P1, human: ~1.5d / CC: ~2h)** — Shell and Home — Replace the legacy shell with the visible five-space instrument layout.
   - Surfaced by: Pass 1 — persistent labeled navigation, one visual anchor, fixed Body hero, and one run switch with receipt were missing.
