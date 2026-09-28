@@ -115,7 +115,9 @@ async fn stop_preexisting_daemon(layout: &PortableLayout) -> Result<()> {
 
 async fn daemon_status_succeeds(layout: &PortableLayout) -> Result<bool> {
     let status = tokio::process::Command::new(&layout.control)
-        .arg("status")
+        // Runtime status is license-gated; license status remains available on
+        // the trusted local socket and is enough to prove daemon ownership.
+        .args(["license", "status"])
         .current_dir(&layout.root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -300,7 +302,7 @@ mod tests {
         let control = root.join("novasightctl");
         fs::write(
             &control,
-            "#!/bin/sh\ncase \"$1\" in\n  status) test ! -f \"$0.stopped\" ;;\n  shutdown) : > \"$0.stopped\" ;;\n  *) exit 2 ;;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  license) test \"$2\" = status && test ! -f \"$0.stopped\" ;;\n  status) exit 77 ;;\n  shutdown) : > \"$0.stopped\" ;;\n  *) exit 2 ;;\nesac\n",
         )
         .unwrap();
         fs::set_permissions(&control, fs::Permissions::from_mode(0o755)).unwrap();
@@ -330,7 +332,7 @@ mod tests {
         let control = root.join("novasightctl");
         fs::write(
             &control,
-            "#!/bin/sh\ncase \"$1\" in\n  status) test ! -f \"$0.stopped\" ;;\n  shutdown) : > \"$0.stopped\" ;;\n  *) exit 2 ;;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  license) test \"$2\" = status && test ! -f \"$0.stopped\" ;;\n  status) exit 77 ;;\n  shutdown) : > \"$0.stopped\" ;;\n  *) exit 2 ;;\nesac\n",
         )
         .unwrap();
         fs::set_permissions(&control, fs::Permissions::from_mode(0o755)).unwrap();
