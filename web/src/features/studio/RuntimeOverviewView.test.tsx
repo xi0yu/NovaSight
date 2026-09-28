@@ -135,6 +135,7 @@ describe("RuntimeOverviewView", () => {
     expect(metrics).toHaveTextContent("检测结果238 FPS");
     expect(metrics).toHaveTextContent("推理耗时8.2 ms");
 
+    expect(screen.getByRole("switch", { name: "运行总开关，运行中" })).toHaveAttribute("data-tone", "success");
     await userEvent.click(screen.getByRole("switch", { name: "运行总开关，运行中" }));
     expect(onToggle).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "紧急停止" })).not.toBeInTheDocument();
@@ -201,7 +202,7 @@ describe("RuntimeOverviewView", () => {
         runtimeStopping
       />
     );
-    expect(screen.getByRole("switch", { name: "运行总开关，正在停止" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "运行总开关，正在停止" })).toHaveAttribute("data-tone", "warning");
 
     rerender(
       <RuntimeOverviewView
@@ -215,6 +216,6 @@ describe("RuntimeOverviewView", () => {
         launchPending
       />
     );
-    expect(screen.getByRole("switch", { name: "运行总开关，正在启动" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "运行总开关，正在启动" })).toHaveAttribute("data-tone", "warning");
   });
 });

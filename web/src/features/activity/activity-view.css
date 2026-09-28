@@ -63,6 +63,15 @@
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   background: var(--bg-surface);
+  padding: 0;
+  list-style: none;
+}
+
+.activity-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .activity-filters {
@@ -71,6 +80,8 @@
   padding: 10px 0 2px;
   overflow-x: auto;
 }
+
+.activity-clear { flex: 0 0 auto; margin-bottom: 2px; }
 
 .activity-filters button {
   min-height: 38px;
@@ -226,6 +237,9 @@
   .activity-summary .console-button {
     grid-column: 1 / -1;
   }
+
+  .activity-toolbar { align-items: stretch; flex-direction: column; }
+  .activity-clear { align-self: flex-end; }
 
   .activity-feed-item > div { grid-template-columns: minmax(0, 1fr); }
   .activity-feed-item .activity-item-tags,

@@ -37,7 +37,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
 });
 afterEach(() => { vi.unstubAllGlobals(); history.replaceState(null, "", "/"); });
-it("opens the runtime confirmation from the home-page master switch", async () => {
+it("runs the home-page master switch immediately and reports a rejected output gate", async () => {
   history.replaceState(null, "", "/?page=overview");
   const stoppedRuntime = {
     ...runtime,
@@ -52,20 +52,17 @@ it("opens the runtime confirmation from the home-page master switch", async () =
     : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stoppedRuntime} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByRole("switch", { name: /运行总开关/ }));
-  expect(screen.getByRole("alertdialog", { name: "开启 NovaSight？" })).toBeVisible();
-  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/config/commands"))).toBe(false);
-  await userEvent.click(screen.getByRole("button", { name: "确认开启" }));
-  await waitFor(() => expect(screen.getByRole("alertdialog")).toHaveTextContent("output rejected by daemon"));
+  expect(screen.queryByRole("alertdialog", { name: "开启 NovaSight？" })).not.toBeInTheDocument();
+  await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/config/commands"))).toBe(true));
   const command = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes("/config/commands"))!;
   expect(JSON.parse(String(command[1]?.body))).toMatchObject({ command: "set_control_enabled", enabled: true });
   expect(new Headers(command[1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
   expect(new Headers(command[1]?.headers).get("x-request-id")).toMatch(/^[0-9a-f]{32}$/);
-  await userEvent.click(screen.getByRole("button", { name: "取消" }));
   await userEvent.click(screen.getByRole("button", { name: /异常信息/ }));
   expect(screen.getByRole("dialog", { name: "异常信息" })).toHaveTextContent("排查编号 0123456789abcdef0123456789abcdef");
 });
 
-it("routes an unlicensed runtime request to authorization instead of hiding the action", async () => {
+it("routes an unlicensed runtime request directly to authorization", async () => {
   history.replaceState(null, "", "/?page=overview");
   const stoppedRuntime = {
     ...runtime,
@@ -79,8 +76,8 @@ it("routes an unlicensed runtime request to authorization instead of hiding the 
   const control = screen.getByRole("switch", { name: /运行总开关/ });
   expect(control).toBeEnabled();
   await userEvent.click(control);
-  expect(screen.getByRole("alertdialog", { name: "当前授权不能开启运行" })).toBeVisible();
-  expect(screen.getByRole("button", { name: "查看授权" })).toBeEnabled();
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 1, name: "授权" })).toBeVisible();
 });
 
 it.each([{ pixel_format: "NV12" }, { width: 1280 }, { fps: 120 }, { device: "/dev/video1" }])("does not claim capture is effective just because ROI matches (%j)", (changed) => {
@@ -114,6 +111,16 @@ it("does not claim capture is applied before runtime verification", () => {
   expect(check).toHaveTextContent("等待运行验证");
   expect(check).toHaveTextContent("主链未运行");
   expect(check).not.toHaveTextContent("运行规格一致");
+});
+
+it("does not invent /dev/video0 when capture has not been configured", () => {
+  history.replaceState(null, "", "/?page=capture");
+  const { capture: _capture, ...unconfigured } = props.runtimeConfig;
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={unconfigured} /></SafetyOperationProvider>);
+
+  expect(screen.getByRole("textbox", { name: "设备路径" })).toHaveValue("");
+  expect(screen.getByRole("heading", { name: "尚未配置采集设备" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "查询支持规格" })).toBeDisabled();
 });
 
 it("opens control parameters from the live control chain", async () => {
@@ -223,19 +230,14 @@ it("asks before metadata saving registers an unregistered Engine and locks its p
   await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/api/models/catalog/register"))).toBe(true));
 });
 
-it("asks before starting a stopped mainline with physical output enabled", async () => {
+it("starts a stopped mainline immediately with explicit physical output acknowledgement", async () => {
   history.replaceState(null, "", "/?page=overview");
   const stopped = { ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState;
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} runtimeConfig={{ ...props.runtimeConfig, control: { output_enabled: true } }} /></SafetyOperationProvider>);
   const starts = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/api/studio/v1/runtime"));
   await userEvent.click(screen.getByRole("switch", { name: /运行总开关/ }));
-  expect(screen.getByRole("alertdialog", { name: "开启 NovaSight？" })).toHaveTextContent("采集、推理和控制");
-  expect(starts()).toHaveLength(0);
-  await userEvent.click(screen.getByRole("button", { name: "取消" }));
-  expect(starts()).toHaveLength(0);
-  await userEvent.click(screen.getByRole("switch", { name: /运行总开关/ }));
-  await userEvent.click(screen.getByRole("button", { name: "确认开启" }));
   expect(starts()).toHaveLength(1);
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   expect(JSON.parse(String(starts()[0][1]?.body))).toEqual({
     desired_state: "running",
     acknowledge_physical_output: true,
@@ -280,15 +282,16 @@ it("shows tracking-budget losses in control diagnostics", async () => {
   expect(screen.getByText("进入跟踪 / 预算舍弃").nextElementSibling).toHaveTextContent("16 / 1");
 });
 
-it("shows capture selection rejection beside the save control", async () => {
+it("shows capture selection rejection beside the clicked frame rate", async () => {
   history.replaceState(null, "", "/?page=capture");
-  vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/select")
-    ? Promise.resolve(new Response(JSON.stringify({ code: "CAPTURE_PROFILE_UNSUPPORTED", message: "device rejected 240 FPS" }), { status: 422, headers: { "content-type": "application/json" } }))
-    : new Promise(() => {})));
+  vi.stubGlobal("fetch", vi.fn((url) => {
+    if (String(url).includes("/capture/capabilities")) return Promise.resolve(new Response(JSON.stringify({ available: true, device: "/dev/video0", capabilities: [{ pixel_format: "MJPG", width: 1920, height: 1080, fps_list: [240] }], reason: "" }), { status: 200, headers: { "content-type": "application/json" } }));
+    if (String(url).includes("/capture/select")) return Promise.resolve(new Response(JSON.stringify({ code: "CAPTURE_PROFILE_UNSUPPORTED", message: "device rejected 240 FPS" }), { status: 422, headers: { "content-type": "application/json" } }));
+    return new Promise(() => {});
+  }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={{ ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } }} /></SafetyOperationProvider>);
-  const save = screen.getByRole("button", { name: "应用画面设置" });
-  expect(save).toBeEnabled();
-  await userEvent.click(save);
+  await userEvent.click(screen.getByRole("button", { name: "查询支持规格" }));
+  await userEvent.click(await screen.findByRole("button", { name: "240 FPS" }));
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(true);
   expect(await screen.findByRole("alert")).toHaveTextContent("device rejected 240 FPS");
 });
@@ -300,12 +303,11 @@ it("requires an explicit capture choice when the saved format is absent from det
     ? Promise.resolve(new Response(JSON.stringify({ available: true, device: "/dev/video0", capabilities: [{ pixel_format: "NV12", width: 1280, height: 720, fps_list: [120] }], reason: "" }), { status: 200, headers: { "content-type": "application/json" } }))
     : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "读取设备" }));
-  const format = await screen.findByRole("combobox", { name: "分辨率与帧率" });
-  expect(format).toHaveValue("");
-  expect(screen.getByRole("button", { name: "应用画面设置" })).toBeDisabled();
-  await userEvent.selectOptions(format, "NV12:1280x720@120");
-  await waitFor(() => expect(screen.getByRole("button", { name: "应用画面设置" })).toBeEnabled());
+  await userEvent.click(screen.getByRole("button", { name: "查询支持规格" }));
+  const fps = await screen.findByRole("button", { name: "120 FPS" });
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(false);
+  await userEvent.click(fps);
+  expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(true);
 });
 
 it("does not silently save an auto-high-fps capture profile with no chosen format", () => {
@@ -313,8 +315,7 @@ it("does not silently save an auto-high-fps capture profile with no chosen forma
   const stopped = { ...runtime, running: false, capture: { ...runtime.capture, running: false, profile: null }, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
   const unconfigured = { ...props.runtimeConfig, capture: { device: "/dev/video0" } };
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} runtimeConfig={unconfigured} /></SafetyOperationProvider>);
-  expect(screen.getByRole("combobox", { name: "分辨率与帧率" })).toHaveValue("");
-  expect(screen.getByRole("button", { name: "应用画面设置" })).toBeDisabled();
+  expect(screen.getByLabelText("分辨率与帧率")).toHaveTextContent("尚未查询设备规格");
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/capture/select"))).toBe(false);
 });
 
@@ -326,7 +327,7 @@ it("does not reuse a previous device format when the operator changes capture de
   await userEvent.clear(device);
   await userEvent.type(device, "/dev/video1");
   await userEvent.tab();
-  expect(screen.getByRole("button", { name: "应用画面设置" })).toBeDisabled();
+  expect(screen.getByLabelText("分辨率与帧率")).toHaveTextContent("尚未查询设备规格");
 });
 
 it("keeps failed capability detection visible beside capture controls", async () => {
@@ -335,7 +336,7 @@ it("keeps failed capability detection visible beside capture controls", async ()
   vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/capabilities")
     ? Promise.reject(new Error("camera unplugged")) : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "读取设备" }));
+  await userEvent.click(screen.getByRole("button", { name: "查询支持规格" }));
   expect(await screen.findByText(/设备能力检测失败：camera unplugged/)).toBeVisible();
 });
 

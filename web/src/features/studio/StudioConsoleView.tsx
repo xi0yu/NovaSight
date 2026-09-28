@@ -45,7 +45,7 @@ import {
   streamUrl,
   updateRuntimeConfig,
 } from "../../api";
-import { pushToastRaw, reportError, reportSuccess, useActivityNotices, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
+import { pushToastRaw, reportError, reportSuccess, useActivityNotices, useClearActivityNotices, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { formatRuntimeErrorMessage, getErrorMessage } from "../shared/format";
 import { LicenseView } from "../license/LicenseView";
 import { ActivityView } from "../activity/ActivityView";
@@ -75,7 +75,6 @@ import {
   InlineTextControl,
   ParameterNumberControl,
   ParameterPresetControl,
-  SelectControl,
   TextControl
 } from "./StudioControls";
 import {
@@ -217,6 +216,15 @@ type CapabilityChoice = {
   width: number;
   height: number;
   fps: number;
+};
+
+type CapabilityFormatGroup = {
+  pixelFormat: string;
+  resolutions: Array<{
+    width: number;
+    height: number;
+    choices: CapabilityChoice[];
+  }>;
 };
 
 type ConfigDialogId = "class-config";
@@ -458,10 +466,29 @@ function groupCapabilities(caps: CaptureCapability[]): CapabilityChoice[] {
       const rightRank = formatRank(right.pixel_format);
       return (
         (leftRank < 0 ? 99 : leftRank) - (rightRank < 0 ? 99 : rightRank) ||
-        right.fps - left.fps ||
-        right.width * right.height - left.width * left.height
+        right.width * right.height - left.width * left.height ||
+        right.width - left.width ||
+        right.fps - left.fps
       );
     });
+}
+
+function groupCapabilityChoices(choices: CapabilityChoice[]): CapabilityFormatGroup[] {
+  const formats = new Map<string, Map<string, CapabilityChoice[]>>();
+  for (const choice of choices) {
+    const resolutions = formats.get(choice.pixel_format) ?? new Map<string, CapabilityChoice[]>();
+    const key = `${choice.width}x${choice.height}`;
+    resolutions.set(key, [...(resolutions.get(key) ?? []), choice]);
+    formats.set(choice.pixel_format, resolutions);
+  }
+  return Array.from(formats, ([pixelFormat, resolutions]) => ({
+    pixelFormat,
+    resolutions: Array.from(resolutions.values(), (items) => ({
+      width: items[0].width,
+      height: items[0].height,
+      choices: items,
+    })),
+  }));
 }
 
 function canonicalCaptureFormat(value: string): string {
@@ -469,10 +496,6 @@ function canonicalCaptureFormat(value: string): string {
   if (normalized === "MJPEG") return "MJPG";
   if (normalized === "YUY2") return "YUYV";
   return normalized;
-}
-
-function choiceId(choice: CapabilityChoice): string {
-  return `${choice.pixel_format}:${choice.width}x${choice.height}@${choice.fps}`;
 }
 
 function choiceLabel(choice: CapabilityChoice): string {
@@ -718,7 +741,7 @@ export function StudioConsoleView({
   onRuntimeStateChange
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
-  const serverActivityEvents = useActivityStream();
+  const { events: serverActivityEvents, clear: clearServerActivity } = useActivityStream();
   const studioLayout = useStudioLayout();
   const overviewModules = modulesForPage(studioLayout, "overview");
   const captureModules = modulesForPage(studioLayout, "capture");
@@ -742,11 +765,10 @@ export function StudioConsoleView({
     }
   }, [activePage, onEnsureProjects]);
   const [device, setDevice] = useState(
-    readString(nestedRecord(runtimeConfig, "capture").device, runtime?.capture?.device ?? "/dev/video0")
+    readString(nestedRecord(runtimeConfig, "capture").device)
   );
 
   const [caps, setCaps] = useState<CaptureCapabilitiesResponse | null>(null);
-  const [selectedChoiceId, setSelectedChoiceId] = useState("");
   const [selectedModelProjectId, setSelectedModelProjectId] = useState<number | "">("");
   const [selectedModelVersionId, setSelectedModelVersionId] = useState<number | "">("");
   const [selectedModelArtifactId, setSelectedModelArtifactId] = useState<number | "">("");
@@ -771,6 +793,7 @@ export function StudioConsoleView({
   const [errorCenterOpen, setErrorCenterOpen] = useState(false);
   const errorNotices = useErrorNotices();
   const activityNotices = useActivityNotices();
+  const clearActivityNotices = useClearActivityNotices();
   const clearErrorNotices = useClearErrorNotices();
   const lastRuntimeFaultRef = useRef("");
   const [modelManagerDialogOpen, setModelManagerDialogOpen] = useState(false);
@@ -1327,12 +1350,6 @@ export function StudioConsoleView({
     : configuredCaptureProfile == null || selectedProfile == null
       ? "unknown"
       : captureProfileMatches ? "matched" : "mismatch";
-  const configuredChoiceId = configuredCaptureProfile
-    ? `${configuredCaptureProfile.pixel_format}:${configuredCaptureProfile.width}x${configuredCaptureProfile.height}@${configuredCaptureProfile.fps}`
-    : "";
-  const runningChoiceId = selectedProfile
-    ? `${selectedProfile.pixel_format.toUpperCase()}:${selectedProfile.width}x${selectedProfile.height}@${selectedProfile.fps}`
-    : "";
   const displayCaptureProfile = configuredCaptureProfile ?? selectedProfile ?? null;
   const displayCaptureProfileSource = configuredCaptureProfile
     ? "已保存配置"
@@ -1340,26 +1357,7 @@ export function StudioConsoleView({
       ? "当前生效配置"
       : selectedProfile?.source || NO_SAMPLE;
   const detectedChoices = useMemo(() => groupCapabilities(caps?.capabilities ?? []), [caps]);
-  const choices = useMemo(() => {
-    if (detectedChoices.length > 0) {
-      return detectedChoices;
-    }
-    if (configuredCaptureProfile) {
-      return [configuredCaptureProfile];
-    }
-    if (selectedProfile) {
-      return [{
-        pixel_format: selectedProfile.pixel_format.toUpperCase(),
-        width: selectedProfile.width,
-        height: selectedProfile.height,
-        fps: selectedProfile.fps
-      }];
-    }
-    return [];
-  }, [configuredChoiceId, detectedChoices, runningChoiceId]);
-  const selectedChoice =
-    choices.find((choice) => choiceId(choice) === selectedChoiceId) ??
-    (device === configuredCaptureDevice ? choices.find((choice) => choiceId(choice) === configuredChoiceId) : undefined);
+  const capabilityGroups = useMemo(() => groupCapabilityChoices(detectedChoices), [detectedChoices]);
   const roiSize = rustControlPlane
     ? configuredRoiWidth > 0 && configuredRoiHeight > 0
       ? Math.min(configuredRoiWidth, configuredRoiHeight)
@@ -2077,16 +2075,8 @@ export function StudioConsoleView({
   useEffect(() => {
     if (configuredCaptureDevice) {
       setDevice(configuredCaptureDevice);
-    } else if (runtime?.capture?.device) {
-      setDevice(runtime.capture.device);
     }
-  }, [configuredCaptureDevice, runtime?.capture?.device]);
-
-  useEffect(() => {
-    if (!selectedChoiceId && configuredChoiceId && device === configuredCaptureDevice) {
-      setSelectedChoiceId(configuredChoiceId);
-    }
-  }, [configuredCaptureDevice, configuredChoiceId, device, selectedChoiceId]);
+  }, [configuredCaptureDevice]);
 
   const applyModelCatalogResult = useCallback((result: ModelCatalogResponse) => {
     setModelCatalog(result.root);
@@ -2300,16 +2290,6 @@ export function StudioConsoleView({
         setLocalError(reason);
         reportError(new Error(reason), { source: "capture-caps", title: "采集设备不可用" });
       }
-      const grouped = groupCapabilities(result.capabilities);
-      const configured = device === configuredCaptureDevice ? grouped.find((choice: CapabilityChoice) => choiceMatchesConfig(choice, {
-        pixel_format: configuredCapturePixelFormat,
-        width: configuredCaptureWidth,
-        height: configuredCaptureHeight,
-        fps: configuredCaptureFps
-      })) : undefined;
-      setSelectedChoiceId((current) => grouped.some((choice) => choiceId(choice) === current)
-        ? current
-        : configured ? choiceId(configured) : "");
     } catch (err) {
       const message = `设备能力检测失败：${getErrorMessage(err)}`;
       setLocalError(message);
@@ -2318,14 +2298,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [
-    configuredCaptureFps,
-    configuredCaptureHeight,
-    configuredCapturePixelFormat,
-    configuredCaptureWidth,
-    configuredCaptureDevice,
-    device
-  ]);
+  }, [device]);
 
   const buildCapturePayload = useCallback((choice: CapabilityChoice): CaptureSelectPayload => ({
     device,
@@ -2336,15 +2309,15 @@ export function StudioConsoleView({
     fps: choice.fps
   }), [device]);
 
-  const applyCapture = useCallback(async () => {
-    if (!selectedChoice || !device.trim()) {
+  const applyCapture = useCallback(async (choice: CapabilityChoice) => {
+    if (!device.trim()) {
       setCaptureActionError("请先填写视频设备并明确选择采集格式，再保存配置。");
       return;
     }
     setBusy("capture");
     setLocalError(null);
     setCaptureActionError(null);
-    const payload = buildCapturePayload(selectedChoice);
+    const payload = buildCapturePayload(choice);
     let operationFailed = false;
     try {
       await selectCaptureProfile(payload);
@@ -2367,7 +2340,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [buildCapturePayload, device, onRefresh, selectedChoice]);
+  }, [buildCapturePayload, device, onRefresh]);
 
   const {
     start: startMainlineLaunch,
@@ -2559,84 +2532,75 @@ export function StudioConsoleView({
     [activePage, applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange, outputEnabled, runtimeConfig, runtimeLifecycleActive, runtimeOutputEnabled, setConfirmationRequest, setParameterPageDirtyState, stageConfigDialogDraft, stageParameterPageDraft]
   );
 
-  const requestRuntimeChange = useCallback((enabled: boolean) => {
+  const requestRuntimeChange = useCallback(async (enabled: boolean) => {
     if (!enabled) {
-      return stopMainlineLaunch();
+      let gateError: unknown = null;
+      if (outputEnabled || runtimeOutputEnabled === true) {
+        try {
+          await updateConfigField(
+            "control",
+            "output_enabled",
+            false,
+            { immediate: true, optimistic: false, rethrow: true }
+          );
+        } catch (error) {
+          gateError = error;
+        }
+      }
+      const stopped = await stopMainlineLaunch();
+      if (gateError) throw gateError;
+      return stopped;
     }
     if (!hardwareControlLicensed) {
-      setConfirmationRequest({
-        eyebrow: "运行总开关",
-        title: "当前授权不能开启运行",
-        description: "当前授权没有硬件控制权限。更换授权后才能启动采集、推理与控制主链。",
-        confirmLabel: "查看授权",
-        onConfirm: () => navigatePage("license")
-      });
+      setLocalError("当前授权没有硬件控制权限。请先完成授权。");
+      navigatePage("license");
       return false;
     }
     if (!kmnetHost.trim() || !kmnetUuid.trim()) {
-      setConfirmationRequest({
-        eyebrow: "运行总开关",
-        title: "先设置控制设备",
-        description: "运行主链需要设备地址和设备编号。完成一次设置后，之后只需使用首页总开关。",
-        confirmLabel: "设置设备",
-        onConfirm: () => navigatePage("control-test")
-      });
+      setLocalError("请先设置控制设备地址和设备编号。");
+      navigatePage("control-test");
       return false;
     }
-    setConfirmationRequest({
-      eyebrow: "运行总开关",
-      title: "开启 NovaSight？",
-      description: "NovaSight 将启动采集、推理和控制，并连接当前控制设备。关闭后只保留 Studio 与服务通信。",
-      details: [
-        `当前控制设备：${kmnetHost}:${kmnetPort}`,
-        "关闭总开关会停止采集、推理、目标计算和设备输出。"
-      ],
-      confirmLabel: "确认开启",
-      danger: true,
-      onConfirm: async () => {
-        let outputGateOpened = false;
-        try {
-          if (!kmnetAutoConnect) {
-            await updateConfigField(
-              "hardware",
-              "auto_connect",
-              true,
-              { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
-            );
-          }
-          if (!outputEnabled && runtimeOutputEnabled !== true) {
-            await updateConfigField(
-              "control",
-              "output_enabled",
-              true,
-              { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
-            );
-            outputGateOpened = true;
-          }
-          if (!runtimeLifecycleActive) {
-            const started = await startMainlineLaunch(true);
-            if (!started) throw new Error("服务没有确认启动，请查看异常信息后重试。");
-          } else if (!kmnetRuntimeConnected) {
-            await connectKmNet(undefined, true);
-            await onRefresh();
-          }
-          reportSuccess("NovaSight 已开启", "采集、推理、控制和设备连接由服务统一维护。", "runtime-switch");
-          return true;
-        } catch (error) {
-          if (outputGateOpened) {
-            await updateConfigField(
-              "control",
-              "output_enabled",
-              false,
-              { immediate: true, optimistic: false, rethrow: false }
-            );
-          }
-          throw error;
-        }
+    let outputGateOpened = false;
+    try {
+      if (!kmnetAutoConnect) {
+        await updateConfigField(
+          "hardware",
+          "auto_connect",
+          true,
+          { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
+        );
       }
-    });
-    return false;
-  }, [hardwareControlLicensed, kmnetAutoConnect, kmnetHost, kmnetPort, kmnetRuntimeConnected, kmnetUuid, navigatePage, onRefresh, outputEnabled, runtimeLifecycleActive, runtimeOutputEnabled, startMainlineLaunch, stopMainlineLaunch, updateConfigField]);
+      if (!outputEnabled && runtimeOutputEnabled !== true) {
+        await updateConfigField(
+          "control",
+          "output_enabled",
+          true,
+          { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
+        );
+        outputGateOpened = true;
+      }
+      if (!runtimeLifecycleActive) {
+        const started = await startMainlineLaunch(true);
+        if (!started) throw new Error("服务没有确认启动，请查看异常信息后重试。");
+      } else if (!kmnetRuntimeConnected) {
+        await connectKmNet(undefined, true);
+        await onRefresh();
+      }
+      reportSuccess("NovaSight 已开启", "采集、推理、控制和设备连接由服务统一维护。", "runtime-switch");
+      return true;
+    } catch (error) {
+      if (outputGateOpened) {
+        await updateConfigField(
+          "control",
+          "output_enabled",
+          false,
+          { immediate: true, optimistic: false, rethrow: false }
+        );
+      }
+      throw error;
+    }
+  }, [hardwareControlLicensed, kmnetAutoConnect, kmnetHost, kmnetRuntimeConnected, kmnetUuid, navigatePage, onRefresh, outputEnabled, runtimeLifecycleActive, runtimeOutputEnabled, startMainlineLaunch, stopMainlineLaunch, updateConfigField]);
 
   const saveParameterPageDraft = useCallback(async (physicalOutputAcknowledged = false) => {
     if (!parameterPageDirtyRef.current || parameterPageSaving) {
@@ -3641,7 +3605,7 @@ export function StudioConsoleView({
               runtimeStopping={runtimeStopping}
               runtimeControlUnavailable={runtimeControlUnavailable}
               onOpenErrors={() => setErrorCenterOpen(true)}
-              onToggle={() => void requestRuntimeChange(!runtimeLifecycleActive)}
+              onToggle={() => requestRuntimeChange(!runtimeLifecycleActive)}
               moduleOrder={overviewModuleOrder}
             />
           </>
@@ -3668,7 +3632,21 @@ export function StudioConsoleView({
         ) : null}
 
         {activePage === "activity" ? (
-          <ActivityView items={activityItems} moduleOrder={activityModules} onOpenDetails={() => setErrorCenterOpen(true)} />
+          <ActivityView
+            items={activityItems}
+            moduleOrder={activityModules}
+            onClear={async () => {
+              try {
+                await clearServerActivity();
+                clearActivityNotices();
+                clearErrorNotices();
+              } catch (error) {
+                reportError(error, { source: "activity-clear", title: "日志清理失败" });
+                throw error;
+              }
+            }}
+            onOpenDetails={() => setErrorCenterOpen(true)}
+          />
         ) : null}
 
         {activePage === "settings" ? (
@@ -3769,7 +3747,7 @@ export function StudioConsoleView({
           <header className="capture-command-header" data-state={captureProfileState} aria-labelledby="capture-profile-check-title">
             <div className="capture-command-copy">
               <span className="class-config-eyebrow">当前画面输入</span>
-              <h2 id="capture-profile-check-title">{configuredCaptureDevice || device || "连接一个采集设备"}</h2>
+              <h2 id="capture-profile-check-title">{configuredCaptureDevice || "尚未配置采集设备"}</h2>
               <p>{configuredCaptureProfile ? choiceLabel(configuredCaptureProfile) : "尚未选择画面规格"}</p>
             </div>
             <div className="capture-runtime-proof">
@@ -3791,43 +3769,64 @@ export function StudioConsoleView({
               <section className="capture-source-setup" aria-labelledby="capture-source-title" key={moduleId}>
                 <header className="capture-workbench-heading">
                   <span aria-hidden="true"><NovaIcon name="capture-card" size={20} /></span>
-                  <div><small>画面来源</small><h3 id="capture-source-title">选择设备和画质</h3><p>先读取设备真正支持的规格，再选择一项应用。</p></div>
+                  <div><small>画面来源</small><h3 id="capture-source-title">选择设备和画质</h3><p>读取设备真实能力；点击帧率后立即保存，不需要再次应用。</p></div>
                 </header>
                 <div className="capture-device-row">
                   <TextControl
                     label="设备路径"
-                    detail="通常是 /dev/video0；更换采集卡后重新读取。"
+                    detail={configuredCaptureDevice ? `当前已保存 ${configuredCaptureDevice}，可在这里更换。` : "首次使用必须填写实际设备路径并读取能力。"}
                     value={device}
                     applyMode="launch"
                     onCommit={(value) => {
                       setDevice(value);
                       setCaps(null);
-                      setSelectedChoiceId("");
                       setCaptureActionError(null);
                     }}
                   />
-                  <button className="console-button secondary" disabled={busy === "caps"} onClick={refreshCapabilities} type="button">
+                  <button className="console-button secondary" disabled={busy === "caps" || !device.trim()} onClick={refreshCapabilities} type="button">
                     <NovaIcon name="refresh" size={15} />
-                    {busy === "caps" ? "正在读取…" : "读取设备"}
+                    {busy === "caps" ? "正在查询…" : "查询支持规格"}
                   </button>
                 </div>
-                <div className="capture-quality-field">
-                  <SelectControl
-                    label="分辨率与帧率"
-                    detail={caps ? `设备返回 ${choices.length} 个可用组合。` : "读取设备后，这里只显示它实际支持的组合。"}
-                    value={selectedChoice ? choiceId(selectedChoice) : ""}
-                    applyMode="launch"
-                    options={choices.length > 0
-                      ? [{ value: "", label: "请选择采集格式", disabled: true }, ...choices.map((choice) => ({
-                          value: choiceId(choice),
-                          label: choiceLabel(choice)
-                        }))]
-                      : [{ value: "", label: "请先检测设备能力", disabled: true }]}
-                    onCommit={(value) => {
-                      setSelectedChoiceId(value);
-                      setCaptureActionError(null);
-                    }}
-                  />
+                <div className="capture-quality-browser" aria-label="分辨率与帧率">
+                  <header>
+                    <div><b>设备支持的画面规格</b><small>{caps ? `按格式分类，共 ${detectedChoices.length} 个组合；分辨率和帧率从高到低排列。` : "先查询设备，结果会按格式、分辨率和帧率分类。"}</small></div>
+                    {configuredCaptureProfile ? <span>当前：{choiceLabel(configuredCaptureProfile)}</span> : null}
+                  </header>
+                  {capabilityGroups.length > 0 ? capabilityGroups.map((group) => (
+                    <section className="capture-format-group" key={group.pixelFormat}>
+                      <h4>{canonicalCaptureFormat(group.pixelFormat) === "MJPG" ? "MJPEG / MJPG" : group.pixelFormat}</h4>
+                      <div>
+                        {group.resolutions.map((resolution) => (
+                          <div className="capture-resolution-row" key={`${resolution.width}x${resolution.height}`}>
+                            <span><b>{resolution.width} × {resolution.height}</b><small>{(resolution.width * resolution.height / 1_000_000).toFixed(1)} MP</small></span>
+                            <div aria-label={`${resolution.width} × ${resolution.height} 可选帧率`}>
+                              {resolution.choices.map((choice) => {
+                                const active = device === configuredCaptureDevice && configuredCaptureProfile != null && choiceMatchesConfig(choice, captureConfig);
+                                return (
+                                  <button
+                                    aria-pressed={active}
+                                    className={active ? "active" : ""}
+                                    disabled={busy !== null || runtimeLifecycleActive || runtimeControlUnavailable}
+                                    key={choice.fps}
+                                    onClick={() => void applyCapture(choice)}
+                                    type="button"
+                                  >
+                                    {busy === "capture" ? "保存中" : `${choice.fps} FPS`}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )) : (
+                    <div className="capture-quality-empty">
+                      {caps?.available === false ? "当前设备不可用" : "尚未查询设备规格"}
+                    </div>
+                  )}
+                  {runtimeLifecycleActive ? <p className="capture-save-hint">停止首页运行总开关后可更换画面规格。</p> : <p className="capture-save-hint">点击一个 FPS 即自动验证并保存整组设备配置。</p>}
                 </div>
                 {captureActionError ? <p className="operation-inline-error" role="alert">{captureActionError}</p> : null}
                 <details className="capture-optional-settings">
@@ -3845,20 +3844,6 @@ export function StudioConsoleView({
                     }))}
                   />
                 </details>
-                <footer className="capture-apply-bar">
-                  <div>
-                    <strong>{runtimeLifecycleActive ? "需先停止运行" : selectedChoice ? "应用所选画面" : "等待选择画面规格"}</strong>
-                    <small>{selectedChoice ? `${device} · ${choiceLabel(selectedChoice)}` : "读取设备后选择一项真实支持的规格。"}</small>
-                  </div>
-                  <button
-                    className="console-button primary"
-                    disabled={busy !== null || runtimeLifecycleActive || runtimeControlUnavailable || !selectedChoice || !device.trim() || caps?.available === false}
-                    onClick={() => void applyCapture()}
-                    type="button"
-                  >
-                    {busy === "capture" ? "正在应用并核对…" : "应用画面设置"}
-                  </button>
-                </footer>
               </section>
               );
 
@@ -4438,7 +4423,7 @@ export function StudioConsoleView({
             );
               if (moduleId === "targeting") return (
             <div className="parameter-module-group" data-module="targeting" key={moduleId}>
-            <section className="parameter-group" id="parameter-target-lock" aria-labelledby="parameter-target-lock-title">
+            <section className="parameter-group" data-module="targeting" id="parameter-target-lock" aria-labelledby="parameter-target-lock-title">
               <header className="parameter-group-heading">
                 <span>目标</span>
                 <div><h2 id="parameter-target-lock-title">目标锁定</h2><p>决定哪些目标可以被选中，以及短暂遮挡或更优目标出现时如何处理。</p></div>

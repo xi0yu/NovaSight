@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeActivityEventFrame, decodeActivityHistory } from "./activity";
+import { decodeActivityClear, decodeActivityEventFrame, decodeActivityHistory } from "./activity";
 
 const event = {
   daemon_instance_id: "daemon-1",
@@ -24,5 +24,10 @@ describe("activity contract", () => {
   it("rejects malformed severity and duplicate count values", () => {
     expect(() => decodeActivityHistory({ events: [{ ...event, level: "fatal" }] })).toThrow(/level/);
     expect(() => decodeActivityHistory({ events: [{ ...event, count: 0 }] })).toThrow(/count/);
+  });
+
+  it("decodes a cleared activity count", () => {
+    expect(decodeActivityClear({ cleared: 4 })).toEqual({ cleared: 4 });
+    expect(() => decodeActivityClear({ cleared: -1 })).toThrow(/cleared/);
   });
 });

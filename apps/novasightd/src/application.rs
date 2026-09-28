@@ -13,6 +13,8 @@ use std::time::Instant;
 use clap::Parser;
 #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
 use novasight_core::{Clock, MonotonicNanos, PointerDevice, UncommissionedPointerDevice};
+#[cfg(not(all(feature = "deepstream", target_os = "linux")))]
+use novasight_pipeline::PipelineConfig;
 #[cfg(all(feature = "deepstream", target_os = "linux"))]
 use novasight_runtime::NativeModelJobRunner;
 #[cfg(not(all(feature = "deepstream", target_os = "linux")))]
@@ -152,11 +154,6 @@ pub async fn entry() -> ExitCode {
         }
     }
 
-    #[cfg(all(feature = "deepstream", target_os = "linux"))]
-    if let Err(error) = loaded.config().require_production_adapters() {
-        eprintln!("PRODUCTION_CONFIG_INVALID: {error}");
-        return ExitCode::FAILURE;
-    }
     let instance_lock = match server::acquire_instance_lock(mode.hardware_output_enabled()) {
         Ok(lock) => lock,
         Err(error) => {
@@ -265,8 +262,11 @@ fn build_runtime_dependencies(
     model_catalog: SqliteModelCatalog,
     _parser_library: PathBuf,
 ) -> Result<RuntimeDependencies, String> {
-    let pipeline = compose_pipeline_config(config, None)
-        .map_err(|error| format!("HOST_PREVIEW_RUNTIME_INVALID: {error}"))?;
+    let pipeline = match compose_pipeline_config(config, None) {
+        Ok(pipeline) => pipeline,
+        Err(_) if config.capture.is_none() => PipelineConfig::default(),
+        Err(error) => return Err(format!("HOST_PREVIEW_RUNTIME_INVALID: {error}")),
+    };
     let clock: Arc<dyn Clock> = Arc::new(HostMonotonicClock::default());
     // Absence at the existing perception seam means no frame producer is
     // started. The uncommissioned device keeps every output path fail-closed.

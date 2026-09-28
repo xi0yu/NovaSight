@@ -79,17 +79,8 @@ control:
     # 启动控制算法后先等待一个完整间隔；之后在下一张安全新画面中合成一次 +Y，不补发旧间隔。
     interval_ms: 16
     y_counts: 1
-capture:
-  device: /dev/video0
-  preference: manual
-  width: 1920
-  height: 1080
-  fps: 120
-  pixel_format: MJPG
-  roi_left: 640
-  roi_top: 220
-  roi_width: 640
-  roi_height: 640
+# Capture is commissioned from Studio after the operator selects a real device
+# and one of the profiles reported by that device.
 inference:
   enabled: true
   backend: deepstream_nvinfer

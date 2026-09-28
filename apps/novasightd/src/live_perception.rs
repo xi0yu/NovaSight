@@ -17,7 +17,7 @@ use novasight_core::{
 use novasight_pipeline::{
     ModelCandidate, ParserContract as PerceptionParserContract, PerceptionAdapter, PerceptionError,
     PerceptionEvent, PerceptionModelContract, PerceptionRuntimeContract, PerceptionSession,
-    PipelineIngress, PreviewHub, validate_parser_preset,
+    PipelineConfig, PipelineIngress, PreviewHub, validate_parser_preset,
 };
 use novasight_platform_jetson::SystemMonotonicClock;
 use novasight_platform_jetson::deepstream::{
@@ -64,21 +64,24 @@ pub(super) fn build_live_production_dependencies(
 fn build_pointer_installation(
     config: &AppConfig,
 ) -> Result<PointerDeviceInstallation, LivePerceptionError> {
-    let adapters = config
-        .require_production_adapters()
-        .map_err(LivePerceptionError::Config)?;
-    if let Some(selected) = select_uncommissioned_pointer_adapter(adapters.device) {
+    let Some(device_config) = config.device.as_ref() else {
+        return Ok(PointerDeviceInstallation::new(
+            Arc::new(novasight_core::UncommissionedPointerDevice),
+            None,
+        ));
+    };
+    if let Some(selected) = select_uncommissioned_pointer_adapter(device_config) {
         return Ok(PointerDeviceInstallation::new(
             selected.device,
             selected.trigger_poll_interval_ms,
         ));
     }
-    let device: Arc<dyn PointerDevice> = match adapters.device.backend {
-        DeviceBackend::NativeUdp => Arc::new(build_native_kmnet(adapters.device)?),
+    let device: Arc<dyn PointerDevice> = match device_config.backend {
+        DeviceBackend::NativeUdp => Arc::new(build_native_kmnet(device_config)?),
     };
     Ok(PointerDeviceInstallation::new(
         device,
-        Some(adapters.device.trigger_poll_interval_ms),
+        Some(device_config.trigger_poll_interval_ms),
     ))
 }
 
@@ -236,8 +239,11 @@ fn build_live_dependencies(
     let clock: Arc<dyn Clock> = Arc::new(SystemMonotonicClock::default());
     let latest_frames = LatestFrameExchange::new();
     let preview = PreviewHub::new(config.consumers.preview);
-    let pipeline = compose_pipeline_config(config, trigger_poll_interval_ms)
-        .map_err(LivePerceptionError::Pipeline)?;
+    let pipeline = match compose_pipeline_config(config, trigger_poll_interval_ms) {
+        Ok(pipeline) => pipeline,
+        Err(_) if config.capture.is_none() => PipelineConfig::default(),
+        Err(error) => return Err(LivePerceptionError::Pipeline(error)),
+    };
     let dependencies = RuntimeDependencies::new(clock, device, pipeline)
         .with_device_factory(|config| {
             build_pointer_installation(config)

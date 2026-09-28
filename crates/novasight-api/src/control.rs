@@ -162,7 +162,10 @@ pub fn build_control_router_with_platform_queries(
         )
         .route("/ws/studio/v1/status", get(studio_runtime_events))
         .route("/ws/activity", get(activity_events))
-        .route("/api/activity", get(activity_history))
+        .route(
+            "/api/activity",
+            get(activity_history).delete(clear_activity_history),
+        )
         .route("/api/v1/status", get(status))
         .route("/api/v1/config", get(config).patch(update_config))
         .route("/api/v1/config/commands", post(apply_config_command))
@@ -254,9 +257,11 @@ async fn log_http_request(
             latency_ms,
             "api request completed"
         );
-        state
-            .activity
-            .record_http(&method, &path, status, &request_id, response.extensions());
+        if !(method == Method::DELETE && path == "/api/activity") {
+            state
+                .activity
+                .record_http(&method, &path, status, &request_id, response.extensions());
+        }
         response.headers_mut().insert(
             "x-request-id",
             HeaderValue::from_str(&request_id).expect("request ID is validated ASCII"),
@@ -338,6 +343,17 @@ impl ActivityLog {
 
     fn subscribe(&self) -> broadcast::Receiver<ActivityEvent> {
         self.sender.subscribe()
+    }
+
+    fn clear(&self) -> usize {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cleared = state.events.len();
+        state.events.clear();
+        state.active_runtime_faults.clear();
+        cleared
     }
 
     fn record_http(
@@ -1546,10 +1562,11 @@ async fn select_capture(
         .config
         .as_ref()
         .ok_or(ControlApiError::ConfigUnavailable)?;
-    // Studio deliberately confirms the capture profile before starting the
-    // mainline. Load any saved epoch-scoped settings first so this preflight
-    // step cannot dead-end on a harmless desired/effective revision split.
-    service.prepare_runtime_start(&state.runtime).await?;
+    // Load saved epoch-scoped settings before replacing an existing capture
+    // profile. The first selection has no vision plan to install yet.
+    if service.snapshot().await.capture.is_some() {
+        service.prepare_runtime_start(&state.runtime).await?;
+    }
     let persisted = service.apply_capture_profile(&selected).await?;
     service
         .install_persisted_runtime_config(&state.runtime, persisted.config)
@@ -1585,8 +1602,8 @@ async fn probe_capture_capabilities(
                 .await
                 .capture
                 .map(|capture| capture.device.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "/dev/video0".to_owned()),
-            None => "/dev/video0".to_owned(),
+                .ok_or(ControlApiError::CaptureDeviceRequired)?,
+            None => return Err(ControlApiError::CaptureDeviceRequired),
         },
     };
     let probe = state
@@ -1775,9 +1792,20 @@ struct ActivityHistory {
     events: Vec<ActivityEvent>,
 }
 
+#[derive(Serialize)]
+struct ActivityClearResult {
+    cleared: usize,
+}
+
 async fn activity_history(State(state): State<ControlState>) -> Json<ActivityHistory> {
     Json(ActivityHistory {
         events: state.activity.history(),
+    })
+}
+
+async fn clear_activity_history(State(state): State<ControlState>) -> Json<ActivityClearResult> {
+    Json(ActivityClearResult {
+        cleared: state.activity.clear(),
     })
 }
 
@@ -2121,6 +2149,7 @@ enum ControlApiError {
     CaptureProbe(CaptureProbeError),
     CaptureProbeTask(tokio::task::JoinError),
     CaptureProbeUnavailable,
+    CaptureDeviceRequired,
     CaptureSelection(CaptureSelectionError),
     CaptureSelectionRequiresStoppedRuntime,
     LocalControlRequired,
@@ -2194,7 +2223,6 @@ impl IntoResponse for ControlApiError {
                     | "CONFIG_HOT_UPDATE_TRANSACTION_REQUIRED"
                     | "CONFIG_REPLACEMENT_INVALID"
                     | "CONFIG_REPLACEMENT_REVISION_REQUIRED"
-                    | "CAPTURE_NOT_CONFIGURED"
                     | "CAPTURE_PROFILE_INVALID" => StatusCode::BAD_REQUEST,
                     _ => StatusCode::INTERNAL_SERVER_ERROR,
                 };
@@ -2494,6 +2522,11 @@ impl IntoResponse for ControlApiError {
                 "CAPTURE_PROBE_UNAVAILABLE",
                 "no platform capture capability probe is attached".to_owned(),
             ),
+            Self::CaptureDeviceRequired => (
+                StatusCode::BAD_REQUEST,
+                "CAPTURE_DEVICE_REQUIRED",
+                "select a capture device before querying its capabilities".to_owned(),
+            ),
             Self::CaptureSelection(error) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "CAPTURE_PROFILE_UNSUPPORTED",
@@ -2732,6 +2765,34 @@ mod tests {
         assert_eq!(value["events"][0]["tag"], "参数");
         assert_eq!(value["events"][0]["request_id"], request_id);
         assert_eq!(value["events"][0]["level"], "error");
+
+        let cleared = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/activity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(cleared.status().is_success());
+        let activity = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/activity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(activity.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["events"], serde_json::json!([]));
 
         let rejected_id = app
             .oneshot(

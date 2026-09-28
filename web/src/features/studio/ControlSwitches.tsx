@@ -6,6 +6,7 @@ export function RuntimeSwitch({
   pending,
   disabled = false,
   status,
+  tone,
   onToggle,
 }: {
   label: string;
@@ -13,6 +14,7 @@ export function RuntimeSwitch({
   pending: boolean;
   disabled?: boolean;
   status: string;
+  tone: "idle" | "danger" | "warning" | "success";
   onToggle: (enabled: boolean) => void | boolean | Promise<void | boolean>;
 }) {
   return (
@@ -21,6 +23,7 @@ export function RuntimeSwitch({
       aria-checked={enabled}
       aria-label={`${label}，${status}`}
       className={`runtime-master-switch${enabled ? " on" : ""}`}
+      data-tone={tone}
       disabled={pending || disabled}
       onClick={() => void Promise.resolve(onToggle(!enabled)).catch(() => undefined)}
       role="switch"

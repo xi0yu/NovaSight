@@ -26,14 +26,17 @@ const DEFAULT_MODULES = ["summary", "filters", "feed"];
 
 export function ActivityView({
   items,
+  onClear,
   onOpenDetails,
   moduleOrder = DEFAULT_MODULES,
 }: {
   items: ActivityItem[];
+  onClear: () => Promise<void> | void;
   onOpenDetails: () => void;
   moduleOrder?: readonly string[];
 }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
+  const [clearing, setClearing] = useState(false);
   const attentionCount = items.filter((item) => item.tone === "warn" || item.tone === "error" || item.tone === undefined).length;
   const completedCount = items.filter((item) => item.tone === "success").length;
   const filteredItems = useMemo(() => filter === "all"
@@ -64,26 +67,40 @@ export function ActivityView({
       </header>
     ),
     filters: (
-      <nav className="activity-filters" aria-label="日志等级筛选">
-        {([
+      <div className="activity-toolbar">
+        <nav className="activity-filters" aria-label="日志等级筛选">
+          {([
           ["all", "全部"], ["error", "故障"], ["warn", "警告"], ["success", "完成"], ["info", "信息"],
-        ] as const).map(([value, label]) => (
-          <button
-            aria-pressed={filter === value}
-            data-tone={value}
-            key={value}
-            onClick={() => setFilter(value)}
-            type="button"
-          >
-            <span>{label}</span><b>{counts[value]}</b>
-          </button>
-        ))}
-      </nav>
+          ] as const).map(([value, label]) => (
+            <button
+              aria-pressed={filter === value}
+              data-tone={value}
+              key={value}
+              onClick={() => setFilter(value)}
+              type="button"
+            >
+              <span>{label}</span><b>{counts[value]}</b>
+            </button>
+          ))}
+        </nav>
+        <button
+          className="console-button secondary activity-clear"
+          disabled={clearing || items.length === 0}
+          onClick={() => {
+            setClearing(true);
+            void Promise.resolve(onClear()).catch(() => undefined).finally(() => setClearing(false));
+          }}
+          type="button"
+        >
+          <NovaIcon name="delete" size={15} />
+          {clearing ? "正在清理…" : "清理记录"}
+        </button>
+      </div>
     ),
     feed: (
-      <div className="activity-feed" aria-label="最近活动">
+      <ul className="activity-feed" aria-label="最近活动">
         {filteredItems.length > 0 ? filteredItems.map((item) => (
-          <article className="activity-feed-item" data-tone={item.tone ?? "error"} key={item.key}>
+          <li className="activity-feed-item" data-tone={item.tone ?? "error"} key={item.key}>
             <span className="activity-feed-marker" aria-hidden="true" />
             <div>
               <div className="activity-item-tags">
@@ -101,14 +118,14 @@ export function ActivityView({
                 </details>
               ) : null}
             </div>
-          </article>
+          </li>
         )) : (
-          <div className="activity-empty">
+          <li className="activity-empty">
             <span>{items.length > 0 ? "这个等级暂时没有日志" : "暂无运行记录"}</span>
             <small>{items.length > 0 ? "选择其他等级继续查看。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}</small>
-          </div>
+          </li>
         )}
-      </div>
+      </ul>
     ),
   };
 

@@ -48,8 +48,10 @@ fn bundled_runtime_config_loads_current_algorithm_defaults() {
     assert_eq!(config.pipeline.prediction_lead_ms, 16.0);
     assert_eq!(config.pipeline.prediction_cap_px, 10.0);
     assert!(config.pipeline.prediction_enabled);
+    assert!(config.capture.is_none());
 
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert!(persisted["capture"].is_null());
     assert!(persisted["pipeline"]["atan_scale_counts"].is_null());
 }
 

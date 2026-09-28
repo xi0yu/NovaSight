@@ -19,7 +19,7 @@ type RuntimeOverviewViewProps = {
   runtimeStopping: boolean;
   runtimeControlUnavailable: boolean;
   onOpenErrors?: () => void;
-  onToggle: () => void;
+  onToggle: () => void | Promise<void | boolean>;
   moduleOrder?: readonly string[];
 };
 
@@ -107,6 +107,11 @@ export function RuntimeOverviewView({
   const metricsAvailable = metricsCurrent && runtime.statistics.metrics_available === true;
   const missingMetricLabel = metricsCurrent ? "等待样本" : "状态已过期";
   const runtimeControlLabel = stopping ? "正在停止" : starting ? "正在启动" : lifecycleActive ? "运行中" : "已关闭";
+  const runtimeControlTone = phase === "faulted"
+    ? "danger"
+    : starting || stopping || phase === "waiting_model"
+      ? "warning"
+      : lifecycleActive ? "success" : "idle";
   const chainStale = !metricsCurrent;
   const chain = [
     { label: "采集输入", value: chainStale ? "状态已过期" : runtime.capture.running ? "正在接收" : runtime.capture.available ? "待运行" : "不可用", live: metricsCurrent && runtime.capture.running },
@@ -139,6 +144,7 @@ export function RuntimeOverviewView({
             pending={starting || stopping}
             disabled={controlBusy || runtimeControlUnavailable || !metricsCurrent}
             status={runtimeControlLabel}
+            tone={runtimeControlTone}
             onToggle={onToggle}
           />
         </div>

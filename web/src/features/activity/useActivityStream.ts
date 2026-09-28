@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   activityWebSocketUrl,
+  clearActivityHistory,
   getActivityHistory,
   type ServerActivityEvent,
 } from "../../api";
@@ -18,7 +19,7 @@ function mergeActivityEvent(current: ServerActivityEvent[], event: ServerActivit
   return next.slice(-HISTORY_LIMIT);
 }
 
-export function useActivityStream(): ServerActivityEvent[] {
+export function useActivityStream(): { events: ServerActivityEvent[]; clear: () => Promise<void> } {
   const [events, setEvents] = useState<ServerActivityEvent[]>([]);
 
   useEffect(() => {
@@ -73,5 +74,10 @@ export function useActivityStream(): ServerActivityEvent[] {
     };
   }, []);
 
-  return events;
+  const clear = useCallback(async () => {
+    await clearActivityHistory();
+    setEvents([]);
+  }, []);
+
+  return { events, clear };
 }

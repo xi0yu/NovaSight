@@ -1175,6 +1175,33 @@ impl Default for CaptureConfig {
 }
 
 impl CaptureConfig {
+    pub fn manual(
+        device: PathBuf,
+        pixel_format: String,
+        width: u32,
+        height: u32,
+        fps: u32,
+        roi_left: u32,
+        roi_top: u32,
+        roi_width: u32,
+        roi_height: u32,
+    ) -> Self {
+        Self {
+            device,
+            preference: CapturePreference::Manual,
+            pixel_format,
+            width,
+            height,
+            fps,
+            roi_left,
+            roi_top,
+            roi_width,
+            roi_height,
+            production_fields_explicit: true,
+            ..Self::default()
+        }
+    }
+
     pub fn validate_runtime_plan(&self) -> Result<(), ConfigValidationError> {
         self.validate()
     }
@@ -1665,7 +1692,7 @@ fn default_license() -> PathBuf {
 }
 
 fn default_capture_device() -> PathBuf {
-    PathBuf::from("/dev/video0")
+    PathBuf::new()
 }
 
 const fn default_true() -> bool {

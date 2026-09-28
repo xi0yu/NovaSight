@@ -17,6 +17,10 @@ export interface ActivityHistoryResponse {
   events: ServerActivityEvent[];
 }
 
+export interface ActivityClearResponse {
+  cleared: number;
+}
+
 export interface ActivityEventFrame {
   kind: "activity_event";
   event: ServerActivityEvent;
@@ -45,6 +49,12 @@ export function decodeActivityHistory(value: unknown): ActivityHistoryResponse {
   const root = record(value, "activity");
   if (!Array.isArray(root.events)) throw new Error("activity.events 应为数组");
   return { events: root.events.map((event, index) => activityEvent(event, `activity.events[${index}]`)) };
+}
+
+export function decodeActivityClear(value: unknown): ActivityClearResponse {
+  const root = record(value, "activity_clear");
+  if (!Number.isSafeInteger(root.cleared) || Number(root.cleared) < 0) throw new Error("activity_clear.cleared 无效");
+  return { cleared: Number(root.cleared) };
 }
 
 export function decodeActivityEventFrame(value: unknown): ActivityEventFrame {

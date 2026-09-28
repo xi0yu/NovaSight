@@ -150,7 +150,7 @@ fn initialize_default_document(path: &Path) -> Result<AppConfig, ConfigError> {
 
     let (_, _, candidate) = load_document(&temporary_path)?;
     candidate
-        .require_production_adapters()
+        .validate_configured_adapters()
         .map_err(|source| ConfigError::Validation {
             path: path.to_owned(),
             source,

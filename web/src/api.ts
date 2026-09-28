@@ -28,7 +28,7 @@ import {
   decodeModelProfileResponse
 } from "./contracts/modelIngress";
 import { decodeAuthSession } from "./contracts/auth";
-import { decodeActivityHistory } from "./contracts/activity";
+import { decodeActivityClear, decodeActivityHistory } from "./contracts/activity";
 import type {
   ConfigCommandPayload,
   ConfigSchemaResponse,
@@ -66,7 +66,7 @@ import type {
   ModelProfileResponse
 } from "./contracts/modelIngress";
 import type { AuthSession } from "./contracts/auth";
-import type { ActivityHistoryResponse } from "./contracts/activity";
+import type { ActivityClearResponse, ActivityHistoryResponse } from "./contracts/activity";
 
 export {
   decodeRuntimeStatusMessage,
@@ -602,6 +602,15 @@ export function getActivityHistory(): Promise<ActivityHistoryResponse> {
     undefined,
     { timeoutMs: STANDARD_READ_TIMEOUT_MS },
     decodeActivityHistory
+  );
+}
+
+export function clearActivityHistory(): Promise<ActivityClearResponse> {
+  return requestJson<ActivityClearResponse>(
+    API_PATHS.activity,
+    { method: "DELETE" },
+    undefined,
+    decodeActivityClear
   );
 }
 

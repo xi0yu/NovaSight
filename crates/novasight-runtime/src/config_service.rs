@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use novasight_core::SelectedCaptureProfile;
 use novasight_store::config::{
-    AppConfig, CapturePreference, ConfigError, ConfigRepository,
+    AppConfig, CaptureConfig, CapturePreference, ConfigError, ConfigRepository,
     RecoilConfig as ConfigRecoilConfig, TriggerMode as ConfigTriggerMode, YamlConfigRepository,
 };
 use serde::{Deserialize, Serialize};
@@ -445,16 +445,30 @@ impl ConfigService {
             });
         }
         let mut candidate = current.clone();
-        let capture = candidate
-            .capture
-            .as_mut()
-            .ok_or(ConfigServiceError::CaptureNotConfigured)?;
+        let roi_size = selected.width.min(selected.height).min(640);
+        let capture = candidate.capture.get_or_insert_with(|| {
+            CaptureConfig::manual(
+                PathBuf::from(&selected.device),
+                selected.pixel_format.clone(),
+                selected.width,
+                selected.height,
+                selected.fps,
+                (selected.width - roi_size) / 2,
+                (selected.height - roi_size) / 2,
+                roi_size,
+                roi_size,
+            )
+        });
         capture.device = PathBuf::from(&selected.device);
         capture.preference = CapturePreference::Manual;
         capture.pixel_format.clone_from(&selected.pixel_format);
         capture.width = selected.width;
         capture.height = selected.height;
         capture.fps = selected.fps;
+        capture.roi_width = capture.roi_width.min(selected.width);
+        capture.roi_height = capture.roi_height.min(selected.height);
+        capture.roi_left = capture.roi_left.min(selected.width - capture.roi_width);
+        capture.roi_top = capture.roi_top.min(selected.height - capture.roi_height);
         candidate
             .validate_configured_adapters()
             .map_err(ConfigServiceError::CaptureValidation)?;
@@ -1072,8 +1086,6 @@ pub enum ConfigServiceError {
     SerializeFieldValue(serde_yaml::Error),
     #[error("configuration replacement must include its current numeric revision")]
     ReplacementRevisionRequired,
-    #[error("capture adapter is not configured")]
-    CaptureNotConfigured,
     #[error("selected capture profile is incompatible with the current configuration: {0}")]
     CaptureValidation(novasight_store::config::ConfigValidationError),
     #[error("output gate update must target control.output_enabled with a boolean value")]
@@ -1142,7 +1154,6 @@ impl ConfigServiceError {
             Self::Config(error) => error.code(),
             Self::SerializeFieldValue(_) => "CONFIG_FIELD_VALUE_INVALID",
             Self::ReplacementRevisionRequired => "CONFIG_REPLACEMENT_REVISION_REQUIRED",
-            Self::CaptureNotConfigured => "CAPTURE_NOT_CONFIGURED",
             Self::CaptureValidation(_) => "CAPTURE_PROFILE_INVALID",
             Self::OutputGateUpdateInvalid => "CONFIG_FIELD_VALUE_INVALID",
             Self::OutputGateValidation(_) => "CONFIG_VALIDATION_ERROR",
@@ -1328,6 +1339,36 @@ mod tests {
             value: Value::Bool(enabled),
             expected_revision: Some(0),
         }
+    }
+
+    #[tokio::test]
+    async fn first_capture_selection_creates_and_persists_the_capture_section() {
+        let directory = TestConfigDirectory::new();
+        let path = directory.0.join("novasight.yaml");
+        fs::write(&path, "revision: 0\n").unwrap();
+        let service = ConfigService::new(&path, YamlConfigRepository::load(&path).unwrap());
+        let selected = SelectedCaptureProfile {
+            device: "/dev/video2".to_owned(),
+            pixel_format: "MJPG".to_owned(),
+            width: 1920,
+            height: 1080,
+            fps: 120,
+            frame_rate: novasight_core::CaptureFrameRate::new(120, 1).unwrap(),
+            preference: novasight_core::CaptureSelectionPreference::Manual,
+            selection_reason: "test",
+        };
+
+        let update = service.apply_capture_profile(&selected).await.unwrap();
+        let capture = update.config.capture.unwrap();
+
+        assert_eq!(capture.device, PathBuf::from("/dev/video2"));
+        assert_eq!((capture.roi_width, capture.roi_height), (640, 640));
+        assert_eq!((capture.roi_left, capture.roi_top), (640, 220));
+        assert!(
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("device: /dev/video2")
+        );
     }
 
     async fn wait_for_checkpoint(notify: &Notify, message: &str) {

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use novasight_runtime::compose_pipeline_config;
-use novasight_store::config::YamlConfigRepository;
+use novasight_store::config::{AppConfig, CaptureConfig, YamlConfigRepository};
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
@@ -29,6 +29,21 @@ impl Drop for TempDirectory {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.0).unwrap();
     }
+}
+
+fn with_test_capture(mut config: AppConfig) -> AppConfig {
+    config.capture = Some(CaptureConfig::manual(
+        "/dev/video-test".into(),
+        "MJPG".to_owned(),
+        1920,
+        1080,
+        120,
+        640,
+        220,
+        640,
+        640,
+    ));
+    config
 }
 
 #[test]
@@ -61,7 +76,7 @@ fn compose_pipeline_config_uses_configured_kalman_prediction_window() {
         )
         .unwrap();
 
-    let pipeline = compose_pipeline_config(&config, None).unwrap();
+    let pipeline = compose_pipeline_config(&with_test_capture(config), None).unwrap();
 
     assert_eq!(pipeline.targeting.kalman.max_predict_dt_ms, 42.0);
     assert_eq!(pipeline.targeting.kalman.max_predict_missing_ms, 125.0);
@@ -91,7 +106,7 @@ fn compose_pipeline_config_uses_continuous_response_fields() {
     }
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    let pipeline = compose_pipeline_config(&config, None).unwrap();
+    let pipeline = compose_pipeline_config(&with_test_capture(config), None).unwrap();
 
     assert_eq!(pipeline.control.response_scale, 0.42);
     assert_eq!(pipeline.control.response_boost, 0.60);
@@ -113,7 +128,7 @@ fn compose_pipeline_config_wires_target_decision_policy() {
     config.pipeline.target_selection_motion_weight = 0.6;
     config.pipeline.target_selection_motion_horizon_ms = 45.0;
 
-    let pipeline = compose_pipeline_config(&config, None).unwrap();
+    let pipeline = compose_pipeline_config(&with_test_capture(config), None).unwrap();
 
     assert_eq!(pipeline.targeting.tracker_class_cost_weight, 0.7);
     assert_eq!(pipeline.targeting.selection_weights.distance, 0.1);

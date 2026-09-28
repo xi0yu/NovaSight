@@ -100,6 +100,13 @@ export function useClearErrorNotices(): (ids?: readonly number[]) => void {
   }, []);
 }
 
+export function useClearActivityNotices(): () => void {
+  return useCallback(() => {
+    activityNotices = [];
+    emitActivities();
+  }, []);
+}
+
 function dismiss(id: number): void {
   setToasts(toasts.filter((toast) => toast.id !== id));
 }
