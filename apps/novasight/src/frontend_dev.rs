@@ -22,16 +22,9 @@ const FRONTEND_READY_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     std::env::set_current_dir(&layout.root)
         .with_context(|| format!("set workspace root {}", layout.root.display()))?;
-    if let Ok(ready) = read_ready_file(&layout.web_ready_file)
-        && health_check(&ready.address)
-    {
-        bail!(
-            "another NovaSight Web/API gateway is already running at {}; stop it before starting frontend development",
-            ready.url
-        );
-    }
     ensure_portable_config(layout)?;
     validate_artifacts(layout)?;
+    stop_preexisting_stack(layout).await?;
     stop_preexisting_daemon(layout).await?;
     let _ = fs::remove_file(&layout.web_ready_file);
     let _ = fs::remove_file(&layout.daemon_ready_file);
@@ -72,6 +65,34 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     print_studio_urls(&studio_ready);
     print_temporary_license_access(temporary_license.as_ref());
     lifecycle::supervise(layout, daemon, web, Some(vite)).await
+}
+
+async fn stop_preexisting_stack(layout: &PortableLayout) -> Result<()> {
+    let Ok(ready) = read_ready_file(&layout.web_ready_file) else {
+        return Ok(());
+    };
+    if !health_check(&ready.address) {
+        return Ok(());
+    }
+    if !daemon_status_succeeds(layout).await? {
+        bail!(
+            "NovaSight Web/API is running at {}, but its daemon is not reachable through the local control channel; stop that standalone gateway before restarting frontend development",
+            ready.url
+        );
+    }
+    eprintln!("NOVASIGHT_EXISTING_STACK: 检测到已有开发实例；正在安全退出旧实例并启动当前代码");
+    request_daemon_shutdown(layout).await?;
+    let started = Instant::now();
+    while health_check(&ready.address) {
+        if started.elapsed() >= PROCESS_SHUTDOWN_TIMEOUT {
+            bail!(
+                "旧 NovaSight Web/API 在 daemon 退出后仍未释放 {}",
+                ready.address
+            );
+        }
+        time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(())
 }
 
 async fn stop_preexisting_daemon(layout: &PortableLayout) -> Result<()> {
@@ -257,10 +278,15 @@ async fn wait_until_ready(
 #[cfg(all(test, unix))]
 mod tests {
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::{daemon_status_succeeds, stop_preexisting_daemon};
+    use super::{
+        daemon_status_succeeds, health_check, stop_preexisting_daemon, stop_preexisting_stack,
+    };
     use crate::{LayoutMode, PortableLayout};
 
     #[tokio::test]
@@ -288,6 +314,66 @@ mod tests {
 
         assert!(daemon_status_succeeds(&layout).await.unwrap());
         stop_preexisting_daemon(&layout).await.unwrap();
+        assert!(!daemon_status_succeeds(&layout).await.unwrap());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn frontend_start_restarts_an_existing_owned_stack() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("novasight-existing-stack-{suffix}"));
+        fs::create_dir_all(root.join("run")).unwrap();
+        let control = root.join("novasightctl");
+        fs::write(
+            &control,
+            "#!/bin/sh\ncase \"$1\" in\n  status) test ! -f \"$0.stopped\" ;;\n  shutdown) : > \"$0.stopped\" ;;\n  *) exit 2 ;;\nesac\n",
+        )
+        .unwrap();
+        fs::set_permissions(&control, fs::Permissions::from_mode(0o755)).unwrap();
+        let layout = PortableLayout::new(
+            LayoutMode::Developer,
+            root.clone(),
+            root.join("novasightd"),
+            root.join("novasight-web"),
+            control.clone(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        fs::write(
+            &layout.web_ready_file,
+            format!(r#"{{"address":"{address}","url":"http://{address}/"}}"#),
+        )
+        .unwrap();
+        let stopped = control.with_file_name("novasightctl.stopped");
+        let gateway = thread::spawn(move || {
+            loop {
+                if stopped.exists() {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0; 256];
+                        let _ = stream.read(&mut request);
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                        );
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("fake gateway failed: {error}"),
+                }
+            }
+        });
+
+        assert!(health_check(&address.to_string()));
+        stop_preexisting_stack(&layout).await.unwrap();
+        gateway.join().unwrap();
         assert!(!daemon_status_succeeds(&layout).await.unwrap());
 
         fs::remove_dir_all(root).unwrap();

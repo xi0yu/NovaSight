@@ -201,7 +201,8 @@ cargo run -p novasight
 ```
 
 The launcher detects the source workspace automatically; no startup mode or
-runtime parameters are accepted from the user-facing command.
+runtime parameters are accepted from the user-facing command. Running it again
+safely replaces a development stack previously started by the same launcher.
 
 The Web/API and Vite processes read their endpoint roles from `deploy/studio-endpoints.json`.
 Vite listens on `0.0.0.0:7351` with strict port ownership and proxies API,
