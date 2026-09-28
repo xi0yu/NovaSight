@@ -584,6 +584,15 @@ fn health_check(address: &str) -> bool {
     buffer[..read].starts_with(b"HTTP/1.1 200") || buffer[..read].starts_with(b"HTTP/1.0 200")
 }
 
+fn tcp_port_accepts_connections(address: &str) -> bool {
+    address
+        .parse::<SocketAddr>()
+        .map(connectable_local_address)
+        .is_ok_and(|address| {
+            TcpStream::connect_timeout(&address, Duration::from_millis(300)).is_ok()
+        })
+}
+
 fn open_studio(ready: &ReadyDocument) {
     print_studio_urls(ready);
     let url = ready_address(ready)

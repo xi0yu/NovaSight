@@ -14,7 +14,7 @@ use super::{
     create_temporary_license_access, ensure_portable_config, health_check, http_url, lifecycle,
     log_tail, print_studio_urls, print_temporary_license_access, read_daemon_ready_file,
     read_ready_file, request_daemon_shutdown, spawn_daemon, spawn_logged_process, spawn_web,
-    stop_child, stop_owned_daemon,
+    stop_child, stop_owned_daemon, tcp_port_accepts_connections,
 };
 
 const FRONTEND_READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -83,7 +83,7 @@ async fn stop_preexisting_stack(layout: &PortableLayout) -> Result<()> {
     eprintln!("NOVASIGHT_EXISTING_STACK: 检测到已有开发实例；正在安全退出旧实例并启动当前代码");
     request_daemon_shutdown(layout).await?;
     let started = Instant::now();
-    while health_check(&ready.address) {
+    while tcp_port_accepts_connections(&ready.address) {
         if started.elapsed() >= PROCESS_SHUTDOWN_TIMEOUT {
             bail!(
                 "旧 NovaSight Web/API 在 daemon 退出后仍未释放 {}",
@@ -288,6 +288,7 @@ mod tests {
 
     use super::{
         daemon_status_succeeds, health_check, stop_preexisting_daemon, stop_preexisting_stack,
+        tcp_port_accepts_connections,
     };
     use crate::{LayoutMode, PortableLayout};
 
@@ -353,16 +354,28 @@ mod tests {
         .unwrap();
         let stopped = control.with_file_name("novasightctl.stopped");
         let gateway = thread::spawn(move || {
+            let mut shutdown_observations = 0;
             loop {
                 if stopped.exists() {
-                    break;
+                    shutdown_observations += 1;
+                    if shutdown_observations >= 20 {
+                        break;
+                    }
                 }
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         let mut request = [0; 256];
                         let _ = stream.read(&mut request);
+                        let status = if stopped.exists() {
+                            "503 Service Unavailable"
+                        } else {
+                            "200 OK"
+                        };
                         let _ = stream.write_all(
-                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                            format!(
+                                "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
+                            )
+                            .as_bytes(),
                         );
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -375,6 +388,7 @@ mod tests {
 
         assert!(health_check(&address.to_string()));
         stop_preexisting_stack(&layout).await.unwrap();
+        assert!(!tcp_port_accepts_connections(&address.to_string()));
         gateway.join().unwrap();
         assert!(!daemon_status_succeeds(&layout).await.unwrap());
 
