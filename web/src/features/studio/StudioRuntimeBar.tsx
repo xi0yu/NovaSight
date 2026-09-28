@@ -5,30 +5,18 @@ type StudioRuntimeBarProps = {
   page: ConsolePage;
   runtimeAvailable: boolean;
   runtimeLifecycleActive: boolean;
-  runtimeControlRequested: boolean;
-  runtimeStopping: boolean;
-  launchPending: boolean;
   diagnosticModeReady: boolean;
-  busy: boolean;
-  runtimeControlUnavailable: boolean;
   captureStatus: string;
   inferenceStatus: string;
-  onToggle: () => void;
 };
 
 export function StudioRuntimeBar({
   page,
   runtimeAvailable,
   runtimeLifecycleActive,
-  runtimeControlRequested,
-  runtimeStopping,
-  launchPending,
   diagnosticModeReady,
-  busy,
-  runtimeControlUnavailable,
   captureStatus,
-  inferenceStatus,
-  onToggle
+  inferenceStatus
 }: StudioRuntimeBarProps) {
   if (!(["capture", "infer", "control", "latency", "control-test"] as ConsolePage[]).includes(page)) return null;
 
@@ -56,23 +44,13 @@ export function StudioRuntimeBar({
           <strong>{title}</strong>
           <small>{detail}</small>
         </div>
-        {runtimeLifecycleActive ? (
-          <button
-            className="console-button danger"
-            disabled={busy || runtimeStopping || runtimeControlUnavailable}
-            onClick={onToggle}
-            type="button"
-          >
-            <NovaIcon name="stop" size={15} />
-            {runtimeStopping ? "正在停止" : "停止主链"}
-          </button>
-        ) : null}
+        {runtimeLifecycleActive ? <span className="studio-runtime-state">请先到首页关闭运行</span> : null}
       </section>
     );
   }
 
   return (
-    <section className="studio-runtime-bar" aria-label="主链运行控制">
+    <section className="studio-runtime-bar" aria-label="主链运行状态">
       <span className="studio-runtime-icon" aria-hidden="true">
         <NovaIcon name="activity-pulse" size={17} />
       </span>
@@ -80,23 +58,7 @@ export function StudioRuntimeBar({
         <strong>{!runtimeAvailable ? "运行状态未确认" : runtimeLifecycleActive ? "实时主链" : "主链待机"}</strong>
         <small>{`采集 ${captureStatus} · 推理 ${inferenceStatus}`}</small>
       </div>
-      <button
-        className={!runtimeAvailable ? "console-button" : runtimeLifecycleActive ? "console-button danger" : "console-button primary"}
-        disabled={busy || runtimeStopping || runtimeControlUnavailable}
-        onClick={onToggle}
-        type="button"
-      >
-        <NovaIcon name={runtimeLifecycleActive ? "stop" : "start"} size={15} />
-        {runtimeStopping
-          ? "正在停止"
-          : launchPending
-            ? "正在启动"
-            : !runtimeAvailable
-              ? "等待状态"
-              : runtimeControlRequested
-                ? "停止运行"
-                : "运行"}
-      </button>
+      <span className="studio-runtime-state">{runtimeLifecycleActive ? "运行由首页管理" : "待机"}</span>
     </section>
   );
 }

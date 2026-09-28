@@ -9,6 +9,7 @@ import { SafetyOperationProvider, useSafetyOperation } from "./SafetyOperationCo
 function safeRuntime(daemonInstanceId: string, snapshotSequence: number): RuntimeState {
   return {
     semantic: { daemon_instance_id: daemonInstanceId, snapshot_sequence: snapshotSequence, phase: "stopped" },
+    presentation: { output: { daemon_confirmed_safe: true } },
     executor: { executors: { kmnet: { runtime_connected: false } } },
     vision: {
       output_trace: { code: "runtime_stopped" },

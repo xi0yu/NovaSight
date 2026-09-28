@@ -9,6 +9,7 @@ import { StudioConsoleView } from "./StudioConsoleView";
 const profile = { pixel_format: "MJPG", width: 1920, height: 1080, fps: 240 };
 const runtime = {
   semantic: { daemon_instance_id: "test", phase: "running", perception_phase: "running", epoch: 1, snapshot_sequence: 1 },
+  presentation: { lifecycle: { can_start: false, can_stop: true }, readiness: { code: "ready", recommended_action: null }, perception: { state: "current" }, output: { state: "blocked", reason_code: "output_disabled", daemon_confirmed_safe: false } },
   running: true, capture: { device: "/dev/video0", running: true, profile },
   statistics: { detection_data_age_ms: 1, detection_freshness_threshold_ms: 55 }, config: { version: 25, effective_version: 25 },
   executor: { executors: { kmnet: { available: true, connected: true, runtime_connected: true, connection_state: "connected" } } },
@@ -16,6 +17,12 @@ const runtime = {
   vision: { control: {}, output_trace: {}, target_pipeline: { rejection_reasons: [], counts: {} }, detections: [],
     inference: { roi_offset_x: 0, roi_offset_y: 0, roi_width: 256, roi_height: 256 } },
 } as unknown as RuntimeState;
+const stoppedPresentation: RuntimeState["presentation"] = {
+  lifecycle: { can_start: true, can_stop: false },
+  readiness: { code: "stopped", recommended_action: null },
+  perception: { state: "stopped" },
+  output: { state: "safe", reason_code: "runtime_stopped", daemon_confirmed_safe: true },
+};
 const props = {
   license: { valid: true, features: ["hardware_control"] } as LicenseStatus,
   health: null, runtime,
@@ -23,25 +30,31 @@ const props = {
     pipeline: { projection_fov_x_deg: 90 }, control: { output_enabled: false }, hardware: { auto_connect: true } },
   projects: [], errors: {}, lastUpdated: null, realtimeStatus: "connected" as const,
   onEnsureProjects: vi.fn(async () => []), onLicenseChange: vi.fn(), onRefresh: vi.fn(async () => {}),
-  onRuntimeConfigChange: vi.fn(), onRuntimeStateChange: vi.fn(() => true), onStatusTopicChange: vi.fn(),
+  onRuntimeConfigChange: vi.fn(), onRuntimeStateChange: vi.fn(() => true),
 };
 beforeEach(() => {
   history.replaceState(null, "", "/?page=params");
   vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
 });
 afterEach(() => { vi.unstubAllGlobals(); history.replaceState(null, "", "/"); });
-it("opens the target-control confirmation from the page-level master switch", async () => {
+it("opens the runtime confirmation from the home-page master switch", async () => {
+  history.replaceState(null, "", "/?page=overview");
+  const stoppedRuntime = {
+    ...runtime,
+    semantic: { ...runtime.semantic, phase: "stopped" },
+    presentation: stoppedPresentation,
+    running: false,
+    capture: { ...runtime.capture, running: false },
+    pipeline: { ...runtime.pipeline, running: false, state: "stopped" },
+  } as unknown as RuntimeState;
   vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/config/commands")
     ? Promise.resolve(new Response(JSON.stringify({ code: "TEST_OUTPUT_REJECTED", message: "output rejected by daemon" }), { status: 409, headers: { "content-type": "application/json", "x-request-id": "0123456789abcdef0123456789abcdef" } }))
     : new Promise(() => {})));
-  render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
-  expect(screen.getByRole("heading", { level: 1, name: "算法参数" })).toBeVisible();
-  expect(screen.getByRole("heading", { name: "启动条件" })).toBeVisible();
-  expect(screen.getByRole("heading", { name: "目标锁定" })).toBeVisible();
-  await userEvent.click(screen.getByRole("switch", { name: /目标控制/ }));
-  expect(screen.getByRole("alertdialog", { name: "开启目标控制？" })).toBeVisible();
+  render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stoppedRuntime} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("switch", { name: /运行总开关/ }));
+  expect(screen.getByRole("alertdialog", { name: "开启 NovaSight？" })).toBeVisible();
   expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes("/config/commands"))).toBe(false);
-  await userEvent.click(screen.getByRole("button", { name: "确认开启控制" }));
+  await userEvent.click(screen.getByRole("button", { name: "确认开启" }));
   await waitFor(() => expect(screen.getByRole("alertdialog")).toHaveTextContent("output rejected by daemon"));
   const command = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes("/config/commands"))!;
   expect(JSON.parse(String(command[1]?.body))).toMatchObject({ command: "set_control_enabled", enabled: true });
@@ -52,12 +65,21 @@ it("opens the target-control confirmation from the page-level master switch", as
   expect(screen.getByRole("dialog", { name: "异常信息" })).toHaveTextContent("排查编号 0123456789abcdef0123456789abcdef");
 });
 
-it("routes an unlicensed target-control request to authorization instead of hiding the action", async () => {
-  render(<SafetyOperationProvider><StudioConsoleView {...props} license={{ ...props.license, features: [] }} /></SafetyOperationProvider>);
-  const control = screen.getByRole("switch", { name: /目标控制/ });
+it("routes an unlicensed runtime request to authorization instead of hiding the action", async () => {
+  history.replaceState(null, "", "/?page=overview");
+  const stoppedRuntime = {
+    ...runtime,
+    semantic: { ...runtime.semantic, phase: "stopped" },
+    presentation: stoppedPresentation,
+    running: false,
+    capture: { ...runtime.capture, running: false },
+    pipeline: { ...runtime.pipeline, running: false, state: "stopped" },
+  } as unknown as RuntimeState;
+  render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stoppedRuntime} license={{ ...props.license, features: [] }} /></SafetyOperationProvider>);
+  const control = screen.getByRole("switch", { name: /运行总开关/ });
   expect(control).toBeEnabled();
   await userEvent.click(control);
-  expect(screen.getByRole("alertdialog", { name: "当前授权不能开启目标控制" })).toBeVisible();
+  expect(screen.getByRole("alertdialog", { name: "当前授权不能开启运行" })).toBeVisible();
   expect(screen.getByRole("button", { name: "查看授权" })).toBeEnabled();
 });
 
@@ -161,7 +183,7 @@ it("does not expose the removed visual-crosshair learning workflow", async () =>
 
 it("asks before sending a physical kmNet diagnostic move", async () => {
   history.replaceState(null, "", "/?page=control-test");
-  const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState;
+  const stopped = { ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState;
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={stopped} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByRole("button", { name: "发送" }));
   expect(screen.getByRole("alertdialog", { name: "发送一次物理位移？" })).toHaveTextContent("dx=");
@@ -202,27 +224,30 @@ it("asks before metadata saving registers an unregistered Engine and locks its p
 });
 
 it("asks before starting a stopped mainline with physical output enabled", async () => {
-  history.replaceState(null, "", "/?page=capture");
-  const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState;
+  history.replaceState(null, "", "/?page=overview");
+  const stopped = { ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState;
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} runtimeConfig={{ ...props.runtimeConfig, control: { output_enabled: true } }} /></SafetyOperationProvider>);
-  const starts = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/api/runtime/start"));
-  await userEvent.click(screen.getByRole("button", { name: /^运行$/ }));
-  expect(screen.getByRole("alertdialog", { name: "物理输出仍开启，确认启动主链？" })).toHaveTextContent("可能自动连接 kmNet");
+  const starts = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/api/studio/v1/runtime"));
+  await userEvent.click(screen.getByRole("switch", { name: /运行总开关/ }));
+  expect(screen.getByRole("alertdialog", { name: "开启 NovaSight？" })).toHaveTextContent("采集、推理和控制");
   expect(starts()).toHaveLength(0);
   await userEvent.click(screen.getByRole("button", { name: "取消" }));
   expect(starts()).toHaveLength(0);
-  await userEvent.click(screen.getByRole("button", { name: /^运行$/ }));
-  await userEvent.click(screen.getByRole("button", { name: "确认启动并允许物理输出" }));
+  await userEvent.click(screen.getByRole("switch", { name: /运行总开关/ }));
+  await userEvent.click(screen.getByRole("button", { name: "确认开启" }));
   expect(starts()).toHaveLength(1);
-  expect(new Headers(starts()[0][1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
+  expect(JSON.parse(String(starts()[0][1]?.body))).toEqual({
+    desired_state: "running",
+    acknowledge_physical_output: true,
+  });
 });
 
-it("keeps the live kmNet session under the single target-control switch", async () => {
+it("keeps the live kmNet session under the home runtime switch", async () => {
   history.replaceState(null, "", "/?page=control-test");
   const disconnected = { ...runtime, executor: { executors: { kmnet: { available: true, connected: false, runtime_connected: false, connection_state: "disconnected", configuration_ready: true, can_connect: true } } } } as unknown as RuntimeState;
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={disconnected} runtimeConfig={{ ...props.runtimeConfig, control: { output_enabled: true } }} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByText("设备连接配置", { selector: "b" }));
-  expect(screen.getByText("连接由目标控制统一维护；关闭目标控制后不会继续计算或发送新的偏移。")).toBeVisible();
+  expect(screen.getByText("连接由首页运行总开关统一维护；关闭运行后不会继续计算或发送新的偏移。")).toBeVisible();
   expect(screen.queryByRole("button", { name: "连接实时会话" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "断开实时会话" })).not.toBeInTheDocument();
 });
@@ -260,7 +285,7 @@ it("shows capture selection rejection beside the save control", async () => {
   vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/select")
     ? Promise.resolve(new Response(JSON.stringify({ code: "CAPTURE_PROFILE_UNSUPPORTED", message: "device rejected 240 FPS" }), { status: 422, headers: { "content-type": "application/json" } }))
     : new Promise(() => {})));
-  render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={{ ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } }} /></SafetyOperationProvider>);
+  render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={{ ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } }} /></SafetyOperationProvider>);
   const save = screen.getByRole("button", { name: "应用画面设置" });
   expect(save).toBeEnabled();
   await userEvent.click(save);
@@ -270,7 +295,7 @@ it("shows capture selection rejection beside the save control", async () => {
 
 it("requires an explicit capture choice when the saved format is absent from detected capabilities", async () => {
   history.replaceState(null, "", "/?page=capture");
-  const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
+  const stopped = { ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
   vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/capabilities")
     ? Promise.resolve(new Response(JSON.stringify({ available: true, device: "/dev/video0", capabilities: [{ pixel_format: "NV12", width: 1280, height: 720, fps_list: [120] }], reason: "" }), { status: 200, headers: { "content-type": "application/json" } }))
     : new Promise(() => {})));
@@ -285,7 +310,7 @@ it("requires an explicit capture choice when the saved format is absent from det
 
 it("does not silently save an auto-high-fps capture profile with no chosen format", () => {
   history.replaceState(null, "", "/?page=capture");
-  const stopped = { ...runtime, running: false, capture: { ...runtime.capture, running: false, profile: null }, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
+  const stopped = { ...runtime, running: false, capture: { ...runtime.capture, running: false, profile: null }, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
   const unconfigured = { ...props.runtimeConfig, capture: { device: "/dev/video0" } };
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} runtimeConfig={unconfigured} /></SafetyOperationProvider>);
   expect(screen.getByRole("combobox", { name: "分辨率与帧率" })).toHaveValue("");
@@ -295,7 +320,7 @@ it("does not silently save an auto-high-fps capture profile with no chosen forma
 
 it("does not reuse a previous device format when the operator changes capture device", async () => {
   history.replaceState(null, "", "/?page=capture");
-  const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
+  const stopped = { ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
   const device = screen.getByRole("textbox", { name: "设备路径" });
   await userEvent.clear(device);
@@ -306,7 +331,7 @@ it("does not reuse a previous device format when the operator changes capture de
 
 it("keeps failed capability detection visible beside capture controls", async () => {
   history.replaceState(null, "", "/?page=capture");
-  const stopped = { ...runtime, running: false, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
+  const stopped = { ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
   vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/capabilities")
     ? Promise.reject(new Error("camera unplugged")) : new Promise(() => {})));
   render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
@@ -316,7 +341,9 @@ it("keeps failed capability detection visible beside capture controls", async ()
 
 it("does not let a pending parameter draft get overwritten by config import", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "按键触发" }));
+  const delay = screen.getByRole("textbox", { name: "触发延迟" });
+  fireEvent.change(delay, { target: { value: "25" } });
+  fireEvent.blur(delay);
   await userEvent.click(screen.getByRole("button", { name: "设置" }));
   expect(screen.getByRole("button", { name: "先处理参数" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "下载备份" })).toBeEnabled();
@@ -341,7 +368,7 @@ it("keeps physical output off when an imported file requests it on", async () =>
   const file = new File([JSON.stringify(imported)], "dangerous.json", { type: "application/json" });
   fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
   const confirmation = await screen.findByRole("alertdialog", { name: "应用 dangerous.json？" });
-  expect(confirmation).toHaveTextContent("物理输出开关不会随导入文件改变");
+  expect(confirmation).toHaveTextContent("导入不会改变首页运行总开关");
   await userEvent.click(within(confirmation).getByRole("button", { name: "确认导入配置" }));
   await waitFor(() => expect(submitted).not.toBeNull());
   expect((submitted as unknown as { control: { output_enabled: boolean } }).control.output_enabled).toBe(false);
@@ -349,18 +376,16 @@ it("keeps physical output off when an imported file requests it on", async () =>
   expect(new Headers(request[1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
 });
 
-it("confirms class-profile deletion each time instead of retaining an armed delete", async () => {
+it("shows one target-class configuration without profile management", async () => {
   const configured = { ...props.runtimeConfig, inference: {
     detection_class_profile: "default",
     detection_class_profiles: { default: ["enemy"], secondary: ["enemy"] },
   } };
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "编辑类别方案" }));
-  await userEvent.click(screen.getByRole("button", { name: "删除类别配置 default" }));
-  expect(screen.getByRole("alertdialog", { name: "删除类别配置“default”？" })).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "取消" }));
-  await userEvent.click(screen.getByRole("button", { name: "删除类别配置 default" }));
-  expect(screen.getByRole("alertdialog", { name: "删除类别配置“default”？" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
+  const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
+  expect(within(dialog).queryByText("配置文件")).not.toBeInTheDocument();
+  expect(within(dialog).queryByRole("button", { name: /删除类别配置/ })).not.toBeInTheDocument();
 });
 
 it("saves a class aim-point edit without reporting unsupported control.aim", async () => {
@@ -385,19 +410,24 @@ it("saves a class aim-point edit without reporting unsupported control.aim", asy
     return Promise.resolve(new Response(JSON.stringify({ config: current, apply_mode: payload.section ? "hot_update" : "epoch_reload", restart_required: false, applied: true, rolled_back: false, message: "ok" }), { status: 200, headers: { "content-type": "application/json" } }));
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "编辑类别方案" }));
-  const dialog = screen.getByRole("dialog", { name: "管理类别配置" });
+  await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
+  const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
   await userEvent.click(within(within(dialog).getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "管理类别配置" })).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "编辑目标类别" })).not.toBeInTheDocument());
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({ control: { output_enabled: false, aim: { class_roles: { default: { "0": "head" } } } } });
 });
 
-it("saves a new class profile as one runtime configuration update", async () => {
+it("collapses legacy class profiles into one configuration when saving", async () => {
   const configured = { ...props.runtimeConfig,
-    inference: { detection_class_profile: "default", detection_class_profiles: { default: ["enemy"] } },
-    control: { ...props.runtimeConfig.control, output_enabled: true, aim: { class_roles: { default: {} } } },
+    inference: {
+      detection_class_profile: "arena",
+      detection_class_profiles: { default: ["enemy"], arena: ["target"] },
+      detection_class_priorities: { default: "0", arena: "0" },
+      detection_class_filters: { default: "all", arena: "0" },
+    },
+    control: { ...props.runtimeConfig.control, aim: { class_roles: { default: {}, arena: {} } } },
   };
   let submitted: Record<string, unknown> | null = null;
   vi.stubGlobal("fetch", vi.fn((url, init) => {
@@ -409,26 +439,24 @@ it("saves a new class profile as one runtime configuration update", async () => 
     return Promise.resolve(new Response(JSON.stringify({ config: { ...submitted, revision: 26 }, apply_mode: "epoch_reload", restart_required: false, applied: true, rolled_back: false, message: "ok" }), { status: 200, headers: { "content-type": "application/json" } }));
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "编辑类别方案" }));
-  const dialog = screen.getByRole("dialog", { name: "管理类别配置" });
-  await userEvent.type(within(dialog).getByRole("textbox", { name: "新建配置" }), "arena");
-  await userEvent.click(within(dialog).getByRole("button", { name: "复制当前" }));
+  await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
+  const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
+  await userEvent.click(within(within(dialog).getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
-  expect(screen.getByRole("alertdialog", { name: "物理输出仍开启，确认应用这些设置？" })).toBeVisible();
-  expect(submitted).toBeNull();
-  await userEvent.click(screen.getByRole("button", { name: "取消" }));
-  expect(submitted).toBeNull();
-  await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
-  await userEvent.click(screen.getByRole("button", { name: "确认保存并应用" }));
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "管理类别配置" })).not.toBeInTheDocument());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "编辑目标类别" })).not.toBeInTheDocument());
   expect(submitted).toMatchObject({
     revision: 25,
-    inference: { detection_class_profile: "arena", detection_class_profiles: { default: ["enemy"], arena: ["enemy"] } },
-    control: { output_enabled: true, aim: { class_roles: expect.any(Object) } },
+    inference: {
+      detection_class_profile: "default",
+      detection_class_profiles: { default: ["target"] },
+      detection_class_priorities: { default: "0" },
+      detection_class_filters: { default: "0" },
+    },
+    control: { aim: { class_roles: { default: { "0": "head" } } } },
   });
   const writes = vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/api/config") && init?.method === "POST");
   expect(writes).toHaveLength(1);
-  expect(new Headers(writes[0][1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
+  expect(new Headers(writes[0][1]?.headers).get("x-novasight-physical-output-ack")).toBeNull();
 });
 
 it("retains a rejected class edit inside the dialog", async () => {
@@ -443,8 +471,8 @@ it("retains a rejected class edit inside the dialog", async () => {
       : new Response(JSON.stringify({ code: "CLASS_CONFIG_REJECTED", message: "invalid class role" }), { status: 422, headers: { "content-type": "application/json" } }));
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
-  await userEvent.click(screen.getByRole("button", { name: "编辑类别方案" }));
-  const dialog = screen.getByRole("dialog", { name: "管理类别配置" });
+  await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
+  const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
   await userEvent.click(within(within(dialog).getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
   await waitFor(() => expect(within(dialog).getByText(/invalid class role/)).toBeVisible());
@@ -452,7 +480,7 @@ it("retains a rejected class edit inside the dialog", async () => {
   expect(within(dialog).getByRole("button", { name: "保存并应用" })).toBeEnabled();
 });
 
-it("applies trigger and target preference edits from the same page save", async () => {
+it("applies trigger delay and target preference edits from the same page save", async () => {
   const configured = {
     ...props.runtimeConfig,
     control: { ...props.runtimeConfig.control, trigger_mode: "always" },
@@ -479,7 +507,9 @@ it("applies trigger and target preference edits from the same page save", async 
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
 
-  await userEvent.click(screen.getByRole("button", { name: "按键触发" }));
+  const triggerDelay = screen.getByRole("textbox", { name: "触发延迟" });
+  fireEvent.change(triggerDelay, { target: { value: "35" } });
+  fireEvent.blur(triggerDelay);
   await userEvent.click(screen.getByText("目标偏好", { selector: "b" }));
   const distanceWeight = screen.getByRole("textbox", { name: "距离权重 数值" });
   fireEvent.change(distanceWeight, { target: { value: "0.7" } });
@@ -490,10 +520,13 @@ it("applies trigger and target preference edits from the same page save", async 
 
   await waitFor(() => expect(submitted).toHaveLength(1));
   expect(submitted[0]).toMatchObject({
-    control: expect.objectContaining({ trigger_mode: "hardware" }),
-    pipeline: expect.objectContaining({ target_selection_distance_weight: 0.7 }),
+    pipeline: expect.objectContaining({
+      fire_delay_enabled: true,
+      fire_delay_ms: 35,
+      target_selection_distance_weight: 0.7,
+    }),
   });
-  expect(screen.getByRole("button", { name: "按键触发" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.queryByRole("button", { name: "按键触发" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "保存并应用" })).not.toBeInTheDocument();
 });
 

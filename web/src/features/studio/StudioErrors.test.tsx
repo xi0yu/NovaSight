@@ -11,6 +11,7 @@ const fault = { code: "PERCEPTION_FAILED", subsystem: "inference", message };
 afterEach(() => vi.unstubAllGlobals());
 const runtime = {
   semantic: { daemon_instance_id: "daemon-test", phase: "faulted", perception_phase: "faulted", epoch: 3, snapshot_sequence: 10, snapshot_updated_at_ms: 1234 },
+  presentation: { lifecycle: { can_start: false, can_stop: true }, readiness: { code: "failed", recommended_action: "inspect_runtime" }, perception: { state: "faulted" }, output: { state: "unknown", reason_code: "runtime_faulted", daemon_confirmed_safe: false } },
   running: false, source: "test", active_model: null, fatal_error: fault,
   capture: {}, statistics: {}, config: {}, executor: { executors: {} },
   pipeline: { state: "faulted", epoch: 3, last_error: fault, deepstream: {} },
@@ -31,7 +32,7 @@ it.each(["fatal", "pipeline", "inference", "deepstream"])("shows %s faults, reta
   const props = {
     license: null, health: null, runtime: reported, runtimeConfig: null, projects: [], errors: {}, lastUpdated: null,
     realtimeStatus: "connected" as const, onEnsureProjects: vi.fn(async () => []), onLicenseChange: vi.fn(),
-    onRefresh: vi.fn(async () => {}), onRuntimeConfigChange: vi.fn(), onRuntimeStateChange: vi.fn(() => true), onStatusTopicChange: vi.fn(),
+    onRefresh: vi.fn(async () => {}), onRuntimeConfigChange: vi.fn(), onRuntimeStateChange: vi.fn(() => true),
   };
   const view = render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
   await userEvent.click(screen.getByRole("button", { name: /异常信息/ }));

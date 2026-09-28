@@ -1,5 +1,6 @@
 import type { LicenseStatus, RuntimeState } from "../../api";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
+import { recoveryAction } from "../runtime/runtimeProjection";
 
 export type LaunchReadinessState = "ready" | "action" | "blocked" | "idle";
 
@@ -24,34 +25,11 @@ function actionForRuntime(runtime: RuntimeState): Pick<
   LaunchReadinessSummary,
   "primaryAction" | "primaryActionLabel"
 > {
-  if (getRuntimeMainlineStatus(runtime).readinessCode === "no_video") {
-    return { primaryAction: "open-capture", primaryActionLabel: "检查采集" };
-  }
-  const nextAction = runtime.vision.output_trace?.next_action;
-  switch (nextAction) {
-    case "check_model":
-      return { primaryAction: "open-model-manager", primaryActionLabel: "检查模型" };
-    case "check_capture_or_model":
-      return runtime.active_model
-        ? { primaryAction: "open-capture", primaryActionLabel: "检查采集" }
-        : { primaryAction: "open-model-manager", primaryActionLabel: "配置模型" };
-    case "check_latency":
-      return { primaryAction: "open-latency", primaryActionLabel: "检查延迟" };
-    case "enable_control":
-    case "enable_output_gate":
-      return { primaryAction: "open-params", primaryActionLabel: "开启控制" };
-    case "connect_kmnet":
-      return { primaryAction: "open-kmnet-test", primaryActionLabel: "配置 kmNet" };
-    case "check_license_or_build":
-      return { primaryAction: "open-license", primaryActionLabel: "检查授权" };
-    case "check_targeting":
-    case "inspect_control":
-    case "inspect_runtime_ingress":
-    case "activate_trigger":
-      return { primaryAction: "open-control", primaryActionLabel: "查看控制" };
-    default:
-      return {};
-  }
+  const action = recoveryAction(runtime);
+  return {
+    primaryAction: action.nextAction,
+    primaryActionLabel: action.nextActionLabel,
+  };
 }
 
 export function buildLaunchReadiness({
@@ -123,19 +101,28 @@ export function buildLaunchReadiness({
     };
   }
   if (phase === "stopped") {
+    if (!runtime.presentation.lifecycle.can_start) {
+      return {
+        state: "blocked",
+        title: "停止状态未确认",
+        detail: "novasightd 尚未确认设备断开且输出已阻止，请先执行停止操作。",
+        primaryAction: "open-control",
+        primaryActionLabel: "检查控制"
+      };
+    }
     return {
       state: "ready",
       title: "可以运行",
       detail: runtime.active_model
-        ? "点击运行后，NovaSight 会直接使用已保存配置启动主链。"
-        : "点击运行后主链会先启动并等待模型，不需要填写启动参数。"
+        ? "打开首页运行总开关后，NovaSight 会直接使用已保存配置开始工作。"
+        : "打开首页运行总开关后，服务会先启动并等待模型，不需要填写启动参数。"
     };
   }
 
   const action = actionForRuntime(runtime);
   if (action.primaryAction) {
     return {
-      state: runtime.vision.output_trace?.state === "blocked" ? "action" : "ready",
+    state: runtime.presentation.output.state === "blocked" ? "action" : "ready",
       title: status.readinessLabel || "主链运行中",
       detail: status.readinessDetail || runtime.vision.output_trace?.detail || "运行状态正常。",
       ...action

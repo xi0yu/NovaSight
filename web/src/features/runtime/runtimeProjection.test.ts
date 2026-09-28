@@ -10,22 +10,46 @@ function runtime(overrides: {
   willEmit?: boolean | null;
   age?: number | null;
   threshold?: number | null;
-  nextAction?: string;
+  recommendedAction?: RuntimeState["presentation"]["readiness"]["recommended_action"];
 } = {}): RuntimeState {
+  const phase = overrides.phase ?? "stopped";
+  const age = overrides.age ?? 4;
+  const threshold = overrides.threshold ?? 20;
+  const daemonSafe = phase === "stopped"
+    && (overrides.outputCode ?? "runtime_stopped") === "runtime_stopped"
+    && overrides.runtimeConnected !== true
+    && overrides.willEmit !== true;
+  const perception = phase === "running"
+    ? age !== null && threshold !== null && age <= threshold ? "current" : "stale"
+    : phase === "faulted" ? "faulted" : phase === "starting" ? "starting" : "stopped";
+  const output = daemonSafe
+    ? "safe"
+    : ["starting", "stopping", "faulted"].includes(phase) || phase === "stopped"
+      ? "unknown"
+      : perception === "stale" ? "blocked" : "armed";
   return {
-    running: overrides.phase === "running",
+    running: phase === "running",
     semantic: {
       daemon_instance_id: "daemon-a",
-      phase: overrides.phase ?? "stopped",
-      perception_phase: overrides.phase === "running" ? "running" : "stopped",
+      phase,
+      perception_phase: phase === "running" ? "running" : "stopped",
       epoch: null,
       snapshot_sequence: 8,
       snapshot_updated_at_ms: 100,
     },
+    presentation: {
+      lifecycle: { can_start: daemonSafe, can_stop: phase !== "stopping" && !daemonSafe },
+      readiness: {
+        code: phase === "stopped" ? "stopped" : phase === "faulted" ? "failed" : "ready",
+        recommended_action: overrides.recommendedAction ?? null,
+      },
+      perception: { state: perception },
+      output: { state: output, reason_code: overrides.outputCode ?? "runtime_stopped", daemon_confirmed_safe: daemonSafe },
+    },
     executor: { executors: { kmnet: { runtime_connected: overrides.runtimeConnected ?? false } } },
     statistics: {
-      detection_data_age_ms: overrides.age ?? 4,
-      detection_freshness_threshold_ms: overrides.threshold ?? 20,
+      detection_data_age_ms: age,
+      detection_freshness_threshold_ms: threshold,
     },
     inference: { detail: null, reason: null },
     vision: {
@@ -33,7 +57,7 @@ function runtime(overrides: {
         code: overrides.outputCode ?? "runtime_stopped",
         state: "blocked",
         detail: "输出被安全门控阻止",
-        next_action: overrides.nextAction ?? "wait_next_frame",
+        next_action: "wait_next_frame",
       },
       control: { will_emit: overrides.willEmit ?? false },
     },
@@ -72,12 +96,12 @@ describe("runtime projection", () => {
   });
 
   it("routes known recovery actions and leaves unknown actions inert", () => {
-    expect(projectRuntimeState(runtime({ nextAction: "check_latency" }), "current")?.nextAction).toBe("open-latency");
-    expect(projectRuntimeState(runtime({ nextAction: "future_action" }), "current")?.nextAction).toBeUndefined();
+    expect(projectRuntimeState(runtime({ recommendedAction: "inspect_latency" }), "current")?.nextAction).toBe("open-latency");
+    expect(projectRuntimeState(runtime(), "current")?.nextAction).toBeUndefined();
   });
 
   it("prioritizes capture recovery when the running mainline has no video", () => {
-    const projection = projectRuntimeState(runtime({ phase: "running", nextAction: "check_model" }), "current");
+    const projection = projectRuntimeState(runtime({ phase: "running", recommendedAction: "configure_capture" }), "current");
     expect(projection?.nextAction).toBe("open-capture");
     expect(projection?.nextActionLabel).toBe("检查采集");
   });

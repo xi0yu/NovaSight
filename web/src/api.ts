@@ -39,8 +39,7 @@ import type {
 import type {
   CaptureState,
   PreviewSnapshotState,
-  RuntimeState,
-  RuntimeStatusTopic
+  RuntimeState
 } from "./contracts/runtime";
 import type {
   ConversionJob,
@@ -217,10 +216,9 @@ export function getApiErrorCode(error: unknown): string {
 export const API_PATHS = {
   health: "/healthz",
   authSession: "/api/auth/session",
-  runtimeState: "/api/runtime/state",
-  runtimeStart: "/api/runtime/start",
-  runtimeStop: "/api/runtime/stop",
-  runtimeEmergencyStop: "/api/runtime/emergency-stop",
+  runtimeState: "/api/studio/v1/status",
+  runtime: "/api/studio/v1/runtime",
+  runtimeEmergencyStop: "/api/studio/v1/runtime/emergency-stop",
   config: "/api/config",
   configCommands: "/api/v1/config/commands",
   configSchema: "/api/config/schema",
@@ -240,7 +238,7 @@ export const API_PATHS = {
   modelJobsList: "/api/models/jobs/list",
   license: "/api/license",
   licenseActivate: "/api/license/activate",
-  statusWs: "/ws/status",
+  statusWs: "/ws/studio/v1/status",
   activity: "/api/activity",
   activityWs: "/ws/activity"
 } as const;
@@ -263,19 +261,16 @@ export function streamUrl(cacheKey: number, configVersion = 0, previewFps = 30):
   );
 }
 
-export function statusWebSocketUrl(topic?: RuntimeStatusTopic): string {
+export function statusWebSocketUrl(): string {
   const explicit = import.meta.env.VITE_NOVASIGHT_WS_BASE;
   if (explicit) {
-    const base = `${explicit.replace(/\/$/, "")}${API_PATHS.statusWs}`;
-    return topic ? `${base}?topic=${encodeURIComponent(topic)}` : base;
+    return `${explicit.replace(/\/$/, "")}${API_PATHS.statusWs}`;
   }
   if (apiBase.startsWith("http")) {
-    const base = `${apiBase.replace(/^http/, "ws")}${API_PATHS.statusWs}`;
-    return topic ? `${base}?topic=${encodeURIComponent(topic)}` : base;
+    return `${apiBase.replace(/^http/, "ws")}${API_PATHS.statusWs}`;
   }
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const base = `${protocol}//${window.location.host}${API_PATHS.statusWs}`;
-  return topic ? `${base}?topic=${encodeURIComponent(topic)}` : base;
+  return `${protocol}//${window.location.host}${API_PATHS.statusWs}`;
 }
 
 export function activityWebSocketUrl(): string {
@@ -498,23 +493,32 @@ export function getRuntimeState(
   );
 }
 
-export function startRuntimePipeline(signal?: AbortSignal, physicalOutputAcknowledged = false): Promise<void> {
-  return requestJson<void>(
-    API_PATHS.runtimeStart,
-    { method: "POST", signal, headers: physicalOutputAcknowledged ? { "X-NovaSight-Physical-Output-Ack": "confirmed" } : undefined },
+export function startRuntimePipeline(signal?: AbortSignal, physicalOutputAcknowledged = false): Promise<RuntimeState> {
+  return requestJson<RuntimeState>(
+    API_PATHS.runtime,
+    {
+      method: "PUT",
+      signal,
+      headers: { "Content-Type": "application/json" },
+      body: encodeJsonBody({
+        desired_state: "running",
+        acknowledge_physical_output: physicalOutputAcknowledged
+      })
+    },
     undefined,
-    (value) => {
-      if (value !== undefined) {
-        throw new ApiError("启动响应必须为空", 502, value);
-      }
-    }
+    decodeRuntimeState
   );
 }
 
 export function stopRuntimePipeline(signal?: AbortSignal): Promise<RuntimeState> {
   return requestJson<RuntimeState>(
-    API_PATHS.runtimeStop,
-    { method: "POST", signal },
+    API_PATHS.runtime,
+    {
+      method: "PUT",
+      signal,
+      headers: { "Content-Type": "application/json" },
+      body: encodeJsonBody({ desired_state: "stopped" })
+    },
     undefined,
     decodeRuntimeState
   );
@@ -525,16 +529,12 @@ function discardJsonCommandResponse(_value: unknown): void {
   // mutation. Do not pretend the internal RuntimeSnapshot receipt is config.
 }
 
-export function emergencyStopRuntimePipeline(signal?: AbortSignal): Promise<void> {
-  return requestJson<void>(
+export function emergencyStopRuntimePipeline(signal?: AbortSignal): Promise<RuntimeState> {
+  return requestJson<RuntimeState>(
     API_PATHS.runtimeEmergencyStop,
     { method: "POST", signal },
     undefined,
-    (value) => {
-      if (value !== undefined) {
-        throw new ApiError("紧急停止响应必须为空", 502, value);
-      }
-    }
+    decodeRuntimeState
   );
 }
 

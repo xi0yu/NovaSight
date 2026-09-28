@@ -29,7 +29,7 @@ pipeline:
   p_response_curve_shape: 1.0
   max_output_x_counts: 127.0
   max_output_y_counts: 127.0
-  # 按键持续时间未达到门槛时，不进入预测和控制算法。
+  # 触发延迟结束前，不进入预测和控制算法。
   fire_delay_enabled: false
   fire_delay_ms: 0
   velocity_history_reset_gap_ms: 80.0

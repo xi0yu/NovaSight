@@ -32,7 +32,6 @@ import {
   ConfigSchemaResponse,
   RuntimeConfigValue,
   RuntimeState,
-  RuntimeStatusTopic,
   type RuntimeVisionDetectionState,
   type RuntimeVisionTargetState,
   getCaptureCapabilities,
@@ -68,10 +67,9 @@ import {
   type ActionConfirmationRequest
 } from "./ActionConfirmationDialog";
 import { AimTargetRange } from "./AimTargetRange";
-import { activateClassPolicy, serializeClassAimRatios } from "../targeting/targetClassPolicy";
 import type { AimRole, AimRoleRatios } from "../targeting/types";
 import { ControlTracePanel } from "./ControlTracePanel";
-import { ModuleSwitch, TargetControlSwitch } from "./ControlSwitches";
+import { ModuleSwitch } from "./ControlSwitches";
 import {
   InlineNumberControl,
   InlineTextControl,
@@ -212,7 +210,6 @@ type StudioConsoleViewProps = {
   onRefresh: () => Promise<void>;
   onRuntimeConfigChange: (config: RuntimeConfig) => void;
   onRuntimeStateChange: (runtime: RuntimeState) => boolean;
-  onStatusTopicChange: (topic: RuntimeStatusTopic) => void;
 };
 
 type CapabilityChoice = {
@@ -288,6 +285,22 @@ function profileRoleRecords(value: unknown): Record<string, Record<string, AimRo
       )
     ])
   );
+}
+
+function serializeClassAimRatios(
+  roles: Record<string, AimRole>,
+  ratios: AimRoleRatios
+): string {
+  return Object.entries(roles)
+    .flatMap(([classId, role]) => {
+      const numericClassId = Number(classId);
+      return Number.isInteger(numericClassId) && numericClassId >= 0 && numericClassId <= 255
+        ? [[numericClassId, ratios[role]] as const]
+        : [];
+    })
+    .sort(([left], [right]) => left - right)
+    .map(([classId, ratio]) => `${classId}:${ratio.toFixed(2)}`)
+    .join(",");
 }
 
 function classDisplayName(value: string, classId: number): string {
@@ -542,6 +555,40 @@ function runtimeConfigsEqual(left: RuntimeConfig | null, right: RuntimeConfig | 
   return runtimeConfigValuesEqual(left, right);
 }
 
+function collapseClassProfiles(config: RuntimeConfig): RuntimeConfig {
+  const next = structuredClone(config) as RuntimeConfig;
+  const inference = asRecord(next.inference);
+  const profile = readString(inference.detection_class_profile, "default");
+  const profiles = recordList(inference.detection_class_profiles);
+  const priorities = recordStrings(inference.detection_class_priorities);
+  const filters = recordStrings(inference.detection_class_filters);
+  const control = asRecord(next.control);
+  const aim = nestedRecord(control, "aim");
+  const roles = profileRoleRecords(aim.class_roles);
+  const classes = profiles[profile] ?? profiles.default ?? [];
+  const priority = priorities[profile]
+    ?? readString(inference.detection_class_priority, "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15");
+  const filter = filters[profile] ?? readString(inference.detection_class_filter, "all");
+
+  next.inference = {
+    ...inference,
+    detection_class_profile: "default",
+    detection_class_profiles: { default: classes },
+    detection_class_priority: priority,
+    detection_class_priorities: { default: priority },
+    detection_class_filter: filter,
+    detection_class_filters: { default: filter }
+  } as RuntimeConfig[string];
+  next.control = {
+    ...control,
+    aim: {
+      ...aim,
+      class_roles: { default: roles[profile] ?? roles.default ?? {} }
+    }
+  } as RuntimeConfig[string];
+  return next;
+}
+
 function parameterPageFieldChanges(
   baseline: RuntimeConfig,
   draft: RuntimeConfig
@@ -558,7 +605,7 @@ function parameterPageFieldChanges(
 
   const baselineControl = asRecord(baseline.control);
   const draftControl = asRecord(draft.control);
-  const supportedControlKeys = new Set(["trigger_mode", "recoil", "aim"]);
+  const supportedControlKeys = new Set(["recoil", "aim"]);
   const unsupportedControlKeys = Array.from(new Set([
     ...Object.keys(baselineControl),
     ...Object.keys(draftControl)
@@ -569,16 +616,6 @@ function parameterPageFieldChanges(
     throw new Error(`参数页包含不支持保存的控制字段：${unsupportedControlKeys.join("、")}`);
   }
 
-  const triggerChange = runtimeConfigValuesEqual(
-    baselineControl.trigger_mode,
-    draftControl.trigger_mode
-  )
-    ? null
-    : {
-        section: "control" as const,
-        key: "trigger_mode",
-        value: draftControl.trigger_mode as RuntimeConfigValue
-      };
   const recoilChange = runtimeConfigValuesEqual(baselineControl.recoil, draftControl.recoil)
     ? null
     : {
@@ -623,20 +660,11 @@ function parameterPageFieldChanges(
     }));
 
   const changes: ParameterPageFieldChange[] = [];
-  // Entering hardware-gated mode closes the live path before any less
-  // restrictive algorithm edits are installed. Returning to direct trigger
-  // happens last, after the rest of the saved parameter set is effective.
-  if (triggerChange?.value === "hardware") {
-    changes.push(triggerChange);
-  }
   if (aimChange) changes.push(aimChange);
   changes.push(...inferenceChanges);
   changes.push(...pipelineChanges);
   if (recoilChange) {
     changes.push(recoilChange);
-  }
-  if (triggerChange?.value !== "hardware" && triggerChange) {
-    changes.push(triggerChange);
   }
   return changes;
 }
@@ -687,15 +715,13 @@ export function StudioConsoleView({
   onLicenseChange,
   onRefresh,
   onRuntimeConfigChange,
-  onRuntimeStateChange,
-  onStatusTopicChange
+  onRuntimeStateChange
 }: StudioConsoleViewProps) {
   const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
   const serverActivityEvents = useActivityStream();
   const studioLayout = useStudioLayout();
   const overviewModules = modulesForPage(studioLayout, "overview");
   const captureModules = modulesForPage(studioLayout, "capture");
-  const parameterModules = modulesForPage(studioLayout, "params");
   const captureModuleOrder = moduleOrderForPage(studioLayout, "capture");
   const parameterModuleOrder = moduleOrderForPage(studioLayout, "params");
   const activityModules = moduleOrderForPage(studioLayout, "activity");
@@ -706,17 +732,15 @@ export function StudioConsoleView({
   const pageScrollPositionsRef = useRef<Partial<Record<ConsolePage, number>>>({});
 
   useEffect(() => {
-    if (activePage === "infer" || activePage === "control" || activePage === "latency" || activePage === "capture") {
-      onStatusTopicChange(activePage);
-      if (activePage === "infer") void loadModelManagerDialog();
+    if (activePage === "infer") {
+      void loadModelManagerDialog();
       return;
     }
     if (activePage === "models" || activePage === "management") {
       void import("../models/ModelWorkspace");
       void onEnsureProjects(false).catch(() => undefined);
     }
-    onStatusTopicChange("summary");
-  }, [activePage, onEnsureProjects, onStatusTopicChange]);
+  }, [activePage, onEnsureProjects]);
   const [device, setDevice] = useState(
     readString(nestedRecord(runtimeConfig, "capture").device, runtime?.capture?.device ?? "/dev/video0")
   );
@@ -755,8 +779,6 @@ export function StudioConsoleView({
   const [confirmationRequest, setConfirmationRequest] = useState<ActionConfirmationRequest | null>(null);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [confirmationError, setConfirmationError] = useState<string | null>(null);
-  const [newClassProfileName, setNewClassProfileName] = useState("");
-  const [renamedClassProfileName, setRenamedClassProfileName] = useState("");
   const [previewActiveOverride, setPreviewActiveOverride] = useState<boolean | null>(null);
   const [previewTogglePending, setPreviewTogglePending] = useState(false);
   const [configDraft, setConfigDraft] = useState<RuntimeConfig | null>(() => cloneRuntimeConfig(runtimeConfig));
@@ -945,23 +967,25 @@ export function StudioConsoleView({
       await Promise.resolve();
     }
 
-    const draft = configDraftRef.current;
+    const rawDraft = configDraftRef.current;
     const baseline = configDialogBaselineRef.current;
-    if (!draft || !baseline || runtimeConfigsEqual(draft, baseline)) {
-      configDraftRef.current = baseline ?? draft;
-      setConfigDraft(baseline ?? draft);
+    if (!rawDraft || !baseline || runtimeConfigsEqual(rawDraft, baseline)) {
+      configDraftRef.current = baseline ?? rawDraft;
+      setConfigDraft(baseline ?? rawDraft);
       finishConfigDialog(dialog);
       return;
     }
+    const draft = dialog === "class-config" ? collapseClassProfiles(rawDraft) : rawDraft;
 
-    const outputIsActive = runtime?.vision?.control?.output_enabled === true
-      || readBoolean(asRecord((runtimeConfigLatestRef.current ?? baseline).control).output_enabled, false);
+    const outputIsActive = runtime?.presentation?.lifecycle?.can_stop === true
+      && (runtime?.vision?.control?.output_enabled === true
+        || readBoolean(asRecord((runtimeConfigLatestRef.current ?? baseline).control).output_enabled, false));
     if (outputIsActive && !physicalOutputAcknowledged) {
       setConfirmationRequest({
         eyebrow: "应用参数",
         title: "物理输出仍开启，确认应用这些设置？",
         description: "保存后会立即更新当前运行参数，设备的控制量可能随之改变。取消后修改会继续保留在当前窗口。",
-        details: ["如需先暂停设备，请取消并关闭物理输出。"],
+        details: ["如需先暂停设备，请取消并回到首页关闭运行。"],
         confirmLabel: "确认保存并应用",
         danger: true,
         onConfirm: () => saveConfigDialog(dialog, true)
@@ -1372,7 +1396,6 @@ export function StudioConsoleView({
         : inferenceConfig.detection_class_filter),
     "all"
   );
-  const detectionProfileNames = useMemo(() => Object.keys(detectionProfiles), [detectionProfiles]);
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(
     detectionPriorityProfiles[activeDetectionProfile]
@@ -1385,9 +1408,6 @@ export function StudioConsoleView({
     () => parseClassPriority(detectionClassPriority),
     [detectionClassPriority]
   );
-  useEffect(() => {
-    setRenamedClassProfileName(activeDetectionProfile);
-  }, [activeDetectionProfile]);
   const { aimConfig, rawAimRoleRatios, recoilConfig } = useMemo(() => {
     const aim = nestedRecord(controlConfig, "aim");
     return {
@@ -1484,7 +1504,7 @@ export function StudioConsoleView({
   const fireDelayEnabled = readBoolean(rustPipelineConfig.fire_delay_enabled, false);
   const fireDelayMs = readNumber(rustPipelineConfig.fire_delay_ms, 0);
   const recoilYCounts = readNumber(recoilConfig.y_counts, 1);
-  const triggerMode = readString(controlConfig.trigger_mode, "always");
+  const hardwareTriggerRequired = readString(controlConfig.trigger_mode, "hardware") === "hardware";
   const controlAlgorithmLabel = readString(configSchema?.algorithm?.label, CONTROL_ALGORITHM_LABEL);
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
@@ -1550,11 +1570,6 @@ export function StudioConsoleView({
   const effectiveConfigRevision = configApplyPresentation.effectiveRevision;
   const kmnetRestartRequired = kmnetStatus?.restart_required === true;
   const hardwareControlLicensed = license?.valid === true && license.features.includes("hardware_control");
-  const targetControlStatus = !outputEnabled
-    ? "已关闭"
-    : runtimeMainlineRunning && kmnetRuntimeConnected
-      ? "控制中"
-      : "正在准备";
   const kmnetConfigurationState = kmnetStatus?.configuration_state
     ?? (kmnetRestartRequired ? "restart_required" : kmnetAutoConnect ? "ready" : "uncommissioned");
   const kmnetConfigurationReady = kmnetStatus?.configuration_ready === true
@@ -1762,7 +1777,7 @@ export function StudioConsoleView({
   const controlTriggerActiveRaw = control?.trigger_active ?? null;
   const controlTriggerActive = controlTriggerActiveRaw;
   const controlNoSendReason = fireDelayPending
-    ? `按键持续时间尚未超过 ${runtimeFireDelayMs.toFixed(0)} ms，控制算法未启动`
+    ? `触发延迟 ${runtimeFireDelayMs.toFixed(0)} ms 尚未结束，控制算法未启动`
     : stableRuntimeOutputTrace?.detail || (
         !controlHasTarget
           ? targetPipelineMessage || control?.selection_reason || "无目标"
@@ -1910,7 +1925,7 @@ export function StudioConsoleView({
     maxOutputYCounts,
     integerCommand: formatPoint(controlPipeline?.integer_command_x, controlPipeline?.integer_command_y, 0, "counts"),
     recoilEnabled: effectiveRecoilEnabled,
-    hardwareTriggerRequired: triggerMode === "hardware",
+    hardwareTriggerRequired,
     fireDelayEnabled,
     fireDelayConfiguredMs: runtimeFireDelayMs,
     fireDelayPending,
@@ -2084,7 +2099,7 @@ export function StudioConsoleView({
     applyModelCatalogResult,
     onRefresh,
     parserPreset,
-    physicalOutputEnabled: runtimeOutputEnabled === true || outputEnabled,
+    physicalOutputEnabled: runtimeMainlineRunning && (runtimeOutputEnabled === true || outputEnabled),
     runtimeMainlineRunning,
     selectedCatalogModel,
     setBusy,
@@ -2368,11 +2383,9 @@ export function StudioConsoleView({
   const runtimePhase = runtime?.semantic.phase ?? null;
   const mainlineLaunchPending = runtimePhase === "starting" || busy === "runtime.start";
   const runtimeStopping = runtimePhase === "stopping" || busy === "runtime.stop";
-  const runtimeControlRequested = ["starting", "waiting_model", "running", "standby"].includes(
-    runtimePhase ?? ""
-  );
+  const runtimeControlRequested = runtime?.presentation.lifecycle.can_stop === true;
   const runtimeLifecycleActive = runtimeControlRequested || runtimeStopping;
-  const diagnosticModeReady = runtimePhase === "stopped";
+  const diagnosticModeReady = runtime?.presentation.output.daemon_confirmed_safe === true;
   const runtimeControlUnavailable = runtime === null || health?.ok !== true
     || (realtimeStatus !== "connected" && realtimeStatus !== "fallback");
   const runtimeUnavailableLabel = errors.health
@@ -2412,34 +2425,6 @@ export function StudioConsoleView({
         ? "待启动"
         : "未配置");
 
-  const toggleCapture = useCallback(async () => {
-    if (runtimeLifecycleActive) {
-      await stopMainlineLaunch();
-      return;
-    }
-    if (runtimeOutputEnabled === true || outputEnabled) {
-      setConfirmationRequest({
-        eyebrow: "启动主链",
-        title: "物理输出仍开启，确认启动主链？",
-        description: "启动后可能自动连接 kmNet，并立即向物理设备发送新的控制量。取消后主链保持停止。",
-        details: [`设备：${kmnetHost || "未填写"}:${kmnetPort || "未填写"}`, "若只想预览识别和算法结果，请先到参数设置关闭物理输出。"],
-        confirmLabel: "确认启动并允许物理输出",
-        danger: true,
-        onConfirm: () => startMainlineLaunch(true)
-      });
-      return;
-    }
-    await startMainlineLaunch();
-  }, [
-    kmnetHost,
-    kmnetPort,
-    outputEnabled,
-    runtimeLifecycleActive,
-    runtimeOutputEnabled,
-    startMainlineLaunch,
-    stopMainlineLaunch
-  ]);
-
   const updateConfigField = useCallback(
     async (
       section: string,
@@ -2466,10 +2451,11 @@ export function StudioConsoleView({
         return;
       }
       if (
-        (runtimeOutputEnabled === true || outputEnabled)
+        runtimeLifecycleActive
+        && (runtimeOutputEnabled === true || outputEnabled)
         && (
           ["replay", "consumers", "limits", "capture", "inference", "hardware", "pipeline"].includes(section)
-          || (section === "control" && (key === "recoil" || (key === "trigger_mode" && value === "always")))
+          || (section === "control" && key === "recoil")
         )
         && options?.physicalOutputAcknowledged !== true
       ) {
@@ -2477,7 +2463,7 @@ export function StudioConsoleView({
           eyebrow: "运行配置",
           title: "物理输出仍开启，确认重载配置？",
           description: "该修改会重载当前主链；重载完成后仍可能向设备发送控制量。取消后配置保持不变。",
-          details: [`修改字段：${section}.${key}`, "如不希望设备继续输出，请先关闭物理输出。"],
+          details: [`修改字段：${section}.${key}`, "如不希望设备继续输出，请先回到首页关闭运行。"],
           confirmLabel: "确认重载并保持输出开启",
           danger: true,
           onConfirm: () => updateConfigField(section, key, value, { ...options, physicalOutputAcknowledged: true })
@@ -2570,23 +2556,18 @@ export function StudioConsoleView({
         }
       }
     },
-    [activePage, applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange, outputEnabled, runtimeConfig, runtimeOutputEnabled, setConfirmationRequest, setParameterPageDirtyState, stageConfigDialogDraft, stageParameterPageDraft]
+    [activePage, applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange, outputEnabled, runtimeConfig, runtimeLifecycleActive, runtimeOutputEnabled, setConfirmationRequest, setParameterPageDirtyState, stageConfigDialogDraft, stageParameterPageDraft]
   );
 
-  const requestOutputGateChange = useCallback((enabled: boolean) => {
+  const requestRuntimeChange = useCallback((enabled: boolean) => {
     if (!enabled) {
-      return updateConfigField(
-        "control",
-        "output_enabled",
-        false,
-        { immediate: true, optimistic: false, rethrow: true }
-      );
+      return stopMainlineLaunch();
     }
     if (!hardwareControlLicensed) {
       setConfirmationRequest({
-        eyebrow: "目标控制",
-        title: "当前授权不能开启目标控制",
-        description: "当前授权没有硬件控制权限。你仍可使用采集、推理和参数预览；更换授权后再开启目标控制。",
+        eyebrow: "运行总开关",
+        title: "当前授权不能开启运行",
+        description: "当前授权没有硬件控制权限。更换授权后才能启动采集、推理与控制主链。",
         confirmLabel: "查看授权",
         onConfirm: () => navigatePage("license")
       });
@@ -2594,23 +2575,23 @@ export function StudioConsoleView({
     }
     if (!kmnetHost.trim() || !kmnetUuid.trim()) {
       setConfirmationRequest({
-        eyebrow: "目标控制",
+        eyebrow: "运行总开关",
         title: "先设置控制设备",
-        description: "目标控制需要设备地址和设备编号。完成一次设置后，之后只需使用这个总开关。",
+        description: "运行主链需要设备地址和设备编号。完成一次设置后，之后只需使用首页总开关。",
         confirmLabel: "设置设备",
         onConfirm: () => navigatePage("control-test")
       });
       return false;
     }
     setConfirmationRequest({
-      eyebrow: "目标控制",
-      title: "开启目标控制？",
-      description: "NovaSight 将自动启动视觉链路、连接当前 kmNet，并开始处理新的识别结果。你不需要再逐项启动。",
+      eyebrow: "运行总开关",
+      title: "开启 NovaSight？",
+      description: "NovaSight 将启动采集、推理和控制，并连接当前控制设备。关闭后只保留 Studio 与服务通信。",
       details: [
-        `控制设备：${kmnetHost}:${kmnetPort}`,
-        "关闭总开关会立即停止新的目标计算和设备输出；被取代命令不会补发。"
+        `当前控制设备：${kmnetHost}:${kmnetPort}`,
+        "关闭总开关会停止采集、推理、目标计算和设备输出。"
       ],
-      confirmLabel: "确认开启控制",
+      confirmLabel: "确认开启",
       danger: true,
       onConfirm: async () => {
         let outputGateOpened = false;
@@ -2623,21 +2604,23 @@ export function StudioConsoleView({
               { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
             );
           }
-          await updateConfigField(
-            "control",
-            "output_enabled",
-            true,
-            { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
-          );
-          outputGateOpened = true;
+          if (!outputEnabled && runtimeOutputEnabled !== true) {
+            await updateConfigField(
+              "control",
+              "output_enabled",
+              true,
+              { immediate: true, optimistic: false, rethrow: true, physicalOutputAcknowledged: true }
+            );
+            outputGateOpened = true;
+          }
           if (!runtimeLifecycleActive) {
             const started = await startMainlineLaunch(true);
-            if (!started) throw new Error("主链没有确认启动，目标控制已自动恢复为关闭。请查看异常信息后重试。");
+            if (!started) throw new Error("服务没有确认启动，请查看异常信息后重试。");
           } else if (!kmnetRuntimeConnected) {
             await connectKmNet(undefined, true);
             await onRefresh();
           }
-          reportSuccess("目标控制已开启", "视觉链路和设备连接由 NovaSight 自动维护。", "target-control");
+          reportSuccess("NovaSight 已开启", "采集、推理、控制和设备连接由服务统一维护。", "runtime-switch");
           return true;
         } catch (error) {
           if (outputGateOpened) {
@@ -2653,7 +2636,7 @@ export function StudioConsoleView({
       }
     });
     return false;
-  }, [hardwareControlLicensed, kmnetAutoConnect, kmnetHost, kmnetPort, kmnetRuntimeConnected, kmnetUuid, navigatePage, onRefresh, runtimeLifecycleActive, startMainlineLaunch, updateConfigField]);
+  }, [hardwareControlLicensed, kmnetAutoConnect, kmnetHost, kmnetPort, kmnetRuntimeConnected, kmnetUuid, navigatePage, onRefresh, outputEnabled, runtimeLifecycleActive, runtimeOutputEnabled, startMainlineLaunch, stopMainlineLaunch, updateConfigField]);
 
   const saveParameterPageDraft = useCallback(async (physicalOutputAcknowledged = false) => {
     if (!parameterPageDirtyRef.current || parameterPageSaving) {
@@ -2715,7 +2698,7 @@ export function StudioConsoleView({
         result.restart_required ? "参数已应用，其他配置待重启" : "参数已保存并生效",
         result.restart_required
           ? "本页参数已作为一个整体应用；与本页无关的进程级配置仍等待服务重启。"
-          : "本页修改已作为一个整体写入并重新加载；目标控制开关未改变。",
+          : "本页修改已作为一个整体写入并重新加载；首页运行状态未改变。",
         "parameter-page"
       );
     } catch (error) {
@@ -2755,26 +2738,20 @@ export function StudioConsoleView({
 
   const requestSaveParameterPageDraft = useCallback(() => {
     if (!parameterPageDirtyRef.current || parameterPageSaving) return;
-    if (runtimeOutputEnabled !== true && !outputEnabled) {
+    if (!runtimeLifecycleActive || (runtimeOutputEnabled !== true && !outputEnabled)) {
       void saveParameterPageDraft();
       return;
     }
-    const baseline = parameterPageBaselineRef.current ?? runtimeConfigLatestRef.current;
-    const directTrigger = asRecord(baseline?.control).trigger_mode !== "always"
-      && asRecord(configDraftRef.current?.control).trigger_mode === "always";
     setConfirmationRequest({
       eyebrow: "运行参数",
       title: "物理输出仍开启，确认保存参数？",
       description: "保存会把修改应用到当前主链；主链运行时，设备的控制量可能立即改变。取消后修改会继续保留在当前页面。",
-      details: [
-        ...(directTrigger ? ["触发方式将改为“直接触发”，保存后不再等待按键。"] : []),
-        "若要先暂停设备，请取消并到“物理输出”区关闭输出。"
-      ],
+      details: ["若要先暂停设备，请取消并回到首页关闭运行。"],
       confirmLabel: "确认保存并保持输出开启",
       danger: true,
       onConfirm: () => saveParameterPageDraft(true)
     });
-  }, [outputEnabled, parameterPageSaving, runtimeOutputEnabled, saveParameterPageDraft]);
+  }, [outputEnabled, parameterPageSaving, runtimeLifecycleActive, runtimeOutputEnabled, saveParameterPageDraft]);
 
   const updateConfigSection = useCallback(
     async (
@@ -2870,12 +2847,12 @@ export function StudioConsoleView({
           reportError(error, { source: "capture-roi", title: "ROI 配置未保存" });
         }
       };
-      if (runtimeOutputEnabled === true || outputEnabled) {
+      if (runtimeLifecycleActive && (runtimeOutputEnabled === true || outputEnabled)) {
         setConfirmationRequest({
           eyebrow: "采集区域",
           title: "物理输出仍开启，确认调整 ROI？",
           description: "调整会重载当前运行主链；重载完成后仍可能向设备发送控制量。取消后 ROI 保持不变。",
-          details: [`新 ROI：${size} × ${size}`, "如不希望设备继续输出，请先关闭物理输出。"],
+          details: [`新 ROI：${size} × ${size}`, "如不希望设备继续输出，请先回到首页关闭运行。"],
           confirmLabel: "确认重载并保持输出开启",
           danger: true,
           onConfirm: () => applyRoi(true)
@@ -2888,6 +2865,7 @@ export function StudioConsoleView({
       configuredCaptureHeight,
       configuredCaptureWidth,
       outputEnabled,
+      runtimeLifecycleActive,
       rustControlPlane,
       runtimeOutputEnabled,
       setConfirmationRequest,
@@ -2938,6 +2916,19 @@ export function StudioConsoleView({
     },
     [updateConfigField]
   );
+
+  const updateTriggerDelay = useCallback((value: number) => {
+    const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+    const next = base ? normalizeRuntimeConfig(base) : null;
+    if (!next) return;
+    const delayMs = Math.max(0, Math.min(5000, Math.round(value)));
+    next.pipeline = {
+      ...asRecord(next.pipeline),
+      fire_delay_enabled: delayMs > 0,
+      fire_delay_ms: delayMs
+    } as RuntimeConfig[string];
+    stageParameterPageDraft(next);
+  }, [runtimeConfig, stageParameterPageDraft]);
 
   const algorithmParameterGroups = activePage === "params"
     ? buildAlgorithmParameterGroups({
@@ -3204,154 +3195,6 @@ export function StudioConsoleView({
     [activeDetectionClass, classEditorIds, orderedClassEditorIds, updateDetectionClassFilter]
   );
 
-  const persistClassProfiles = useCallback(
-    async (
-      profiles: Record<string, string[]>,
-      roleProfiles: Record<string, Record<string, AimRole>>,
-      nextActiveProfile: string
-    ) => {
-      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
-      const next = base ? normalizeRuntimeConfig(base) : null;
-      if (!next) {
-        return;
-      }
-      const activePolicy = activateClassPolicy(
-        Object.keys(profiles),
-        roleProfiles,
-        detectionPriorityProfiles,
-        detectionFilterProfiles,
-        nextActiveProfile,
-        detectionClassPriority,
-        activeDetectionClass,
-        aimRoleRatios
-      );
-      next.inference = {
-        ...asRecord(next.inference),
-        detection_class_profiles: profiles,
-        detection_class_profile: nextActiveProfile,
-        detection_class_priorities: activePolicy.priorities,
-        detection_class_priority: activePolicy.priority,
-        detection_class_filters: activePolicy.filters,
-        detection_class_filter: activePolicy.filter
-      } as RuntimeConfig[string];
-      const control = asRecord(next.control);
-      next.control = {
-        ...control,
-        aim: {
-          ...nestedRecord(control, "aim"),
-          class_roles: roleProfiles
-        }
-      } as RuntimeConfig[string];
-      if (rustControlPlane) {
-        next.pipeline = {
-          ...asRecord(next.pipeline),
-          target_class_priority: activePolicy.priority,
-          target_class_filter: activePolicy.filter,
-          target_aim_y_ratio: aimRoleRatios.other,
-          target_class_aim_y_ratios: activePolicy.aimYRatios
-        } as RuntimeConfig[string];
-      }
-      setLocalError(null);
-      stageConfigDialogDraft(next);
-    },
-    [
-      activeDetectionClass,
-      aimRoleRatios,
-      detectionClassPriority,
-      detectionFilterProfiles,
-      detectionPriorityProfiles,
-      runtimeConfig,
-      rustControlPlane,
-      stageConfigDialogDraft
-    ]
-  );
-
-  const createClassProfile = useCallback(async (copyCurrent: boolean) => {
-    const profileName = newClassProfileName.trim();
-    if (!profileName) {
-      setLocalError("请输入新的类别配置名称。");
-      return;
-    }
-    if (Object.prototype.hasOwnProperty.call(detectionProfiles, profileName)) {
-      setLocalError(`类别配置“${profileName}”已存在。`);
-      return;
-    }
-    await persistClassProfiles(
-      { ...detectionProfiles, [profileName]: copyCurrent ? [...detectionClasses] : [] },
-      copyCurrent && Object.keys(activeClassRoles).length > 0
-        ? { ...classRoleProfiles, [profileName]: { ...activeClassRoles } }
-        : { ...classRoleProfiles },
-      profileName
-    );
-    setNewClassProfileName("");
-  }, [
-    activeClassRoles,
-    classRoleProfiles,
-    detectionClasses,
-    detectionProfiles,
-    newClassProfileName,
-    persistClassProfiles
-  ]);
-
-  const renameClassProfile = useCallback(async () => {
-    const profileName = renamedClassProfileName.trim();
-    if (!profileName || profileName === activeDetectionProfile) {
-      return;
-    }
-    if (Object.prototype.hasOwnProperty.call(detectionProfiles, profileName)) {
-      setLocalError(`类别配置“${profileName}”已存在。`);
-      return;
-    }
-    const nextProfiles = Object.fromEntries(
-      Object.entries(detectionProfiles).map(([name, classes]) => [
-        name === activeDetectionProfile ? profileName : name,
-        classes
-      ])
-    );
-    const nextRoleProfiles = { ...classRoleProfiles };
-    if (Object.prototype.hasOwnProperty.call(nextRoleProfiles, activeDetectionProfile)) {
-      nextRoleProfiles[profileName] = nextRoleProfiles[activeDetectionProfile];
-      delete nextRoleProfiles[activeDetectionProfile];
-    }
-    await persistClassProfiles(nextProfiles, nextRoleProfiles, profileName);
-  }, [
-    activeDetectionProfile,
-    classRoleProfiles,
-    detectionProfiles,
-    persistClassProfiles,
-    renamedClassProfileName
-  ]);
-
-  const deleteClassProfile = useCallback(async () => {
-    if (detectionProfileNames.length <= 1) {
-      setLocalError("至少需要保留一个类别配置。");
-      return;
-    }
-    const nextProfiles = { ...detectionProfiles };
-    delete nextProfiles[activeDetectionProfile];
-    const nextRoleProfiles = { ...classRoleProfiles };
-    delete nextRoleProfiles[activeDetectionProfile];
-    const nextActiveProfile = Object.keys(nextProfiles)[0];
-    await persistClassProfiles(nextProfiles, nextRoleProfiles, nextActiveProfile);
-  }, [
-    activeDetectionProfile,
-    classRoleProfiles,
-    detectionProfileNames.length,
-    detectionProfiles,
-    persistClassProfiles
-  ]);
-
-  const requestDeleteClassProfile = useCallback(() => {
-    setConfirmationRequest({
-      eyebrow: "类别配置",
-      title: `删除类别配置“${activeDetectionProfile}”？`,
-      description: "此配置及其类别瞄点设置会从当前编辑中移除；点击“保存并应用”后才会写入设备。",
-      confirmLabel: "确认删除配置",
-      danger: true,
-      onConfirm: deleteClassProfile
-    });
-  }, [activeDetectionProfile, deleteClassProfile]);
-
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
     dy = kmnetTestDy
@@ -3429,7 +3272,7 @@ export function StudioConsoleView({
       details: [
         `将修改：${changedSections.join("、") || "没有差异"}`,
         "运行参数会立即应用；监听地址或存储根目录等进程级配置会单独提示。",
-        "物理输出开关不会随导入文件改变；如果当前已开启，运行中的主链重载后可能继续向设备输出。"
+        "导入不会改变首页运行总开关；运行中导入仍可能立即改变控制行为。"
       ],
       confirmLabel: canonicalChanged ? "按最新配置导入" : "确认导入配置",
       danger: true,
@@ -3774,30 +3617,14 @@ export function StudioConsoleView({
       </div>
 
       <main className="console-main" data-page={activePage} ref={mainRef}>
-        <StudioPageHeader
-          page={activePage}
-          action={activePage === "params" && parameterModules.has("output") ? (
-            <TargetControlSwitch
-              enabled={outputEnabled}
-              pending={busy === "control.output_enabled"}
-              status={targetControlStatus}
-              onToggle={requestOutputGateChange}
-            />
-          ) : undefined}
-        />
+        <StudioPageHeader page={activePage} />
         <StudioRuntimeBar
           page={activePage}
           runtimeAvailable={runtime !== null}
           runtimeLifecycleActive={runtimeLifecycleActive}
-          runtimeControlRequested={runtimeControlRequested}
-          runtimeStopping={runtimeStopping}
-          launchPending={mainlineLaunchPending}
           diagnosticModeReady={diagnosticModeReady}
-          busy={busy !== null}
-          runtimeControlUnavailable={runtimeControlUnavailable}
           captureStatus={captureStatusText}
           inferenceStatus={inferenceStatusText}
-          onToggle={() => void toggleCapture()}
         />
 
         {activePage === "overview" ? (
@@ -3814,7 +3641,7 @@ export function StudioConsoleView({
               runtimeStopping={runtimeStopping}
               runtimeControlUnavailable={runtimeControlUnavailable}
               onOpenErrors={() => setErrorCenterOpen(true)}
-              onToggle={() => void toggleCapture()}
+              onToggle={() => void requestRuntimeChange(!runtimeLifecycleActive)}
               moduleOrder={overviewModuleOrder}
             />
           </>
@@ -4410,7 +4237,7 @@ export function StudioConsoleView({
                   <span>X / Y 输出上限</span><b>{`${formatOptionalNumber(maxOutputXCounts, 0)} / ${formatOptionalNumber(maxOutputYCounts, 0)} counts`}</b>
                   <span>整数输出</span><b>{formatPoint(controlPipeline?.integer_command_x, controlPipeline?.integer_command_y, 0, "counts")}</b>
                   <span>独立压枪状态</span><b>{effectiveRecoilEnabled ? formatRecoilState(controlPipeline?.recoil_state, controlPipeline?.recoil_block_reason) : "关闭"}</b>
-                  <span>开火延迟</span><b>{fireDelayEnabled ? `已开启 · ${fireDelayMs.toFixed(0)} ms` : "已关闭"}</b>
+                  <span>触发延迟</span><b>{fireDelayMs > 0 ? `${fireDelayMs.toFixed(0)} ms` : "立即触发"}</b>
                   <span>压枪间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline?.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline?.recoil_y_counts, 0)} counts`}</b>
                   <span>已等待 / 剩余</span><b>{`${formatOptionalNumber(controlPipeline?.recoil_elapsed_since_output_ms, 2)} / ${formatOptionalNumber(controlPipeline?.recoil_remaining_ms, 2)} ms`}</b>
                   <span>本轮请求 / 已发送</span><b>{`${formatOptionalNumber(controlPipeline?.recoil_requested_counts_y, 0)} / ${formatOptionalNumber(controlPipeline?.recoil_emitted_counts_y, 0)} counts`}</b>
@@ -4448,7 +4275,7 @@ export function StudioConsoleView({
               </span>
               <div aria-live="polite" role="status">
                 <b>有未应用的修改</b>
-                <small>保存后整组参数立即生效；目标控制开关保持不变。</small>
+                <small>保存后整组参数立即生效；首页运行状态保持不变。</small>
               </div>
               <div className="parameter-save-bar-actions">
                 <button
@@ -4476,63 +4303,26 @@ export function StudioConsoleView({
               if (moduleId === "response") return (
             <section className="parameter-group" data-module="response" id="parameter-start-conditions" aria-labelledby="parameter-start-conditions-title" key={moduleId}>
               <header className="parameter-group-heading">
-                <span>开始</span>
-                <div><h2 id="parameter-start-conditions-title">启动条件</h2><p>设置控制在何时进入工作状态，以及是否过滤过短的按键动作。</p></div>
+                <span>触发</span>
+                <div><h2 id="parameter-start-conditions-title">触发设置</h2><p>只设置触发信号生效前的等待时间；触发按键由设备绑定负责。</p></div>
               </header>
-            <ol className="control-chain-settings" aria-label="启动条件设置">
-              <li className="console-card control-chain-setting">
-                <span className="control-chain-step" aria-hidden="true"><NovaIcon name="control" size={16} /></span>
-                <div className="control-chain-setting-title">
-                  <b>触发方式</b>
-                  <small>按键触发适合手动控制；持续运行会在总开关开启后一直处理目标。</small>
-                </div>
-                <div className="trigger-mode-options" role="group" aria-label="触发方式">
-                  <button
-                    aria-pressed={triggerMode === "hardware"}
-                    className={triggerMode === "hardware" ? "active" : ""}
-                    disabled={busy !== null}
-                    onClick={() => void updateConfigField("control", "trigger_mode", "hardware")}
-                    type="button"
-                  >
-                    按键触发
-                  </button>
-                  <button
-                    aria-pressed={triggerMode === "always"}
-                    className={triggerMode === "always" ? "active" : ""}
-                    disabled={busy !== null}
-                    onClick={() => void updateConfigField("control", "trigger_mode", "always")}
-                    type="button"
-                  >
-                    直接触发
-                  </button>
-                </div>
-                {triggerMode === "always" ? <p className="control-chain-trigger-warning">持续运行已选择。开启页面右上角总开关后，系统会持续处理新的识别结果。</p> : null}
-              </li>
-
+            <ol className="control-chain-settings" aria-label="触发设置">
               <li className="console-card control-chain-setting">
                 <span className="control-chain-step" aria-hidden="true"><NovaIcon name="clock" size={16} /></span>
                 <div className="control-chain-setting-title">
-                  <b>按键确认时间</b>
-                  <small>忽略过短的触发，避免误碰后立刻进入控制。</small>
+                  <b>触发延迟</b>
+                  <small>收到触发信号后等待多久再执行控制；设为 0 ms 时立即执行。</small>
                 </div>
                 <div className="control-chain-setting-controls">
-                  <ModuleSwitch
-                    compact
-                    label="按键持续门槛"
-                    enabled={fireDelayEnabled}
-                    onToggle={(enabled) => updateControlPipelineField("fire_delay_enabled", enabled)}
-                  />
-                  {fireDelayEnabled ? (
-                    <label className="control-chain-inline-field">
-                      <span>延迟</span>
-                      <InlineNumberControl
-                        ariaLabel="按键持续开火延迟"
-                        value={fireDelayMs}
-                        onCommit={(value) => updateControlPipelineField("fire_delay_ms", Math.max(0, Math.min(5000, Math.round(value))))}
-                      />
-                      <i>ms</i>
-                    </label>
-                  ) : null}
+                  <label className="control-chain-inline-field">
+                    <span>delay</span>
+                    <InlineNumberControl
+                      ariaLabel="触发延迟"
+                      value={fireDelayMs}
+                      onCommit={updateTriggerDelay}
+                    />
+                    <i>ms</i>
+                  </label>
                 </div>
               </li>
 
@@ -4660,8 +4450,8 @@ export function StudioConsoleView({
                       <NovaIcon name="target" size={20} strokeWidth={1.8} />
                     </div>
                     <div>
-                      <span className="class-config-eyebrow">类别方案</span>
-                      <h3>{activeDetectionProfile}</h3>
+                      <span className="class-config-eyebrow">目标类别</span>
+                      <h3>当前目标规则</h3>
                       <small>设置可选类别、优先级和各类别瞄准位置。</small>
                     </div>
                   </div>
@@ -4672,7 +4462,7 @@ export function StudioConsoleView({
                     onClick={() => openConfigDialog("class-config")}
                   >
                     <NovaIcon name="settings" size={16} />
-                    编辑类别方案
+                    编辑目标类别
                   </button>
                 </div>
 
@@ -4849,7 +4639,7 @@ export function StudioConsoleView({
                   <div className="kmnet-live-session">
                     <div>
                       <b>实时设备会话</b>
-                      <small>连接由目标控制统一维护；关闭目标控制后不会继续计算或发送新的偏移。</small>
+                      <small>连接由首页运行总开关统一维护；关闭运行后不会继续计算或发送新的偏移。</small>
                     </div>
                     <span className={kmnetRuntimeConnected ? "ui-badge success" : kmnetConnecting ? "ui-badge info" : "ui-badge neutral"}>
                       {kmnetRuntimeConnectionLabel}
@@ -4949,9 +4739,9 @@ export function StudioConsoleView({
                   </button>
                 </div>
               ) : !runtimeLifecycleActive ? (
-                <button className="console-button primary" disabled={busy !== null || runtimeControlUnavailable} onClick={() => void toggleCapture()} type="button">
-                  <NovaIcon name="start" size={15} />
-                  启动主链
+                <button className="console-button primary" onClick={() => navigatePage("overview")} type="button">
+                  <NovaIcon name="dashboard" size={15} />
+                  前往首页开启
                 </button>
               ) : undefined}
             />
@@ -5014,8 +4804,8 @@ export function StudioConsoleView({
           >
             <header className="class-config-dialog-header">
               <div>
-                <span className="class-config-eyebrow">参数设置 / 类别配置</span>
-                <h2 id="class-config-dialog-title">管理类别配置</h2>
+                <span className="class-config-eyebrow">参数设置 / 目标类别</span>
+                <h2 id="class-config-dialog-title">编辑目标类别</h2>
                 <p>raw cls 保留为模型本帧事实；这里单独定义内部名称、优先级和瞄点角色，不把类别当成永久身份。</p>
               </div>
               <button type="button"
@@ -5033,85 +4823,7 @@ export function StudioConsoleView({
               className="class-config-dialog-layout"
               {...({ inert: dialogSaving ? "" : undefined } as { inert?: string })}
             >
-              <aside className="class-profile-rail" aria-label="类别配置文件">
-                <div className="class-profile-rail-heading">
-                  <span>配置文件</span>
-                  <b>{detectionProfileNames.length}</b>
-                </div>
-                <div className="class-profile-list">
-                  {(detectionProfileNames.length > 0 ? detectionProfileNames : ["default"]).map((name) => (
-                    <button type="button"
-                      aria-current={name === activeDetectionProfile ? "page" : undefined}
-                      className={name === activeDetectionProfile ? "active" : ""}
-                      key={name}
-                      onClick={() => void persistClassProfiles(detectionProfiles, classRoleProfiles, name)}
-                    >
-                      <span>{name}</span>
-                      <small>{(detectionProfiles[name] ?? []).filter(Boolean).length} 类</small>
-                    </button>
-                  ))}
-                </div>
-                <div className="class-profile-create">
-                  <TextControl
-                    label="新建配置"
-                    detail="输入新配置名后创建空白配置，或复制当前配置作为起点。"
-                    placeholder="例如 valorant"
-                    value={newClassProfileName}
-                    disabled={configDialogSaving}
-                    onDraftChange={setNewClassProfileName}
-                    onCommit={setNewClassProfileName}
-                    onEnter={() => createClassProfile(false)}
-                  />
-                  <div className="class-profile-create-actions">
-                    <button type="button"
-                      className="console-button primary"
-                      disabled={busy !== null || newClassProfileName.trim() === ""}
-                      onClick={() => void createClassProfile(false)}
-                    >
-                      新建空白
-                    </button>
-                    <button type="button"
-                      className="console-button"
-                      disabled={busy !== null || newClassProfileName.trim() === ""}
-                      onClick={() => void createClassProfile(true)}
-                    >
-                      <NovaIcon name="copy" size={15} />
-                      复制当前
-                    </button>
-                  </div>
-                </div>
-              </aside>
-
               <div className="class-config-workspace">
-                <div className="class-config-profile-bar">
-                  <TextControl
-                    label="当前配置名称"
-                    detail="重命名会同步迁移该配置对应的类别瞄点类型映射。"
-                    value={renamedClassProfileName}
-                    disabled={configDialogSaving}
-                    onDraftChange={setRenamedClassProfileName}
-                    onCommit={setRenamedClassProfileName}
-                    onEnter={renameClassProfile}
-                  />
-                  <button type="button"
-                    className="console-button"
-                    disabled={busy !== null || renamedClassProfileName.trim() === "" || renamedClassProfileName.trim() === activeDetectionProfile}
-                    onClick={() => void renameClassProfile()}
-                  >
-                    <NovaIcon name="edit" size={15} />
-                    重命名
-                  </button>
-                  <button type="button"
-                    aria-label={`删除类别配置 ${activeDetectionProfile}`}
-                    className="console-button danger"
-                    disabled={busy !== null || detectionProfileNames.length <= 1}
-                    onClick={requestDeleteClassProfile}
-                  >
-                    <NovaIcon name="delete" size={15} />
-                    删除
-                  </button>
-                </div>
-
                 <AimTargetRange
                   disabled={configDialogSaving}
                   ratios={aimRoleRatios}
@@ -5241,7 +4953,7 @@ export function StudioConsoleView({
                     ? `处理失败 · ${dialogSaveError}`
                     : configDialogDirty
                       ? "有未保存修改 · 保存后会直接写入设备并应用。"
-                      : `未修改 · 当前配置：${activeDetectionProfile}`}
+                      : "未修改 · 使用单一目标配置"}
               </span>
               <button type="button"
                 className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}

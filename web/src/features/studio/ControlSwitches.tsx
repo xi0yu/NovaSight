@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 
-export function TargetControlSwitch({
+export function RuntimeSwitch({
+  label,
   enabled,
   pending,
+  disabled = false,
   status,
   onToggle,
 }: {
+  label: string;
   enabled: boolean;
   pending: boolean;
+  disabled?: boolean;
   status: string;
   onToggle: (enabled: boolean) => void | boolean | Promise<void | boolean>;
 }) {
@@ -15,15 +19,15 @@ export function TargetControlSwitch({
     <button
       aria-busy={pending}
       aria-checked={enabled}
-      aria-label={`目标控制，${status}`}
-      className={`target-control-switch${enabled ? " on" : ""}`}
-      disabled={pending}
+      aria-label={`${label}，${status}`}
+      className={`runtime-master-switch${enabled ? " on" : ""}`}
+      disabled={pending || disabled}
       onClick={() => void Promise.resolve(onToggle(!enabled)).catch(() => undefined)}
       role="switch"
       type="button"
     >
       <span>
-        <small>TARGET CONTROL</small>
+        <small>{label}</small>
         <b>{pending ? "正在处理" : status}</b>
       </span>
       <i aria-hidden="true"><span /></i>

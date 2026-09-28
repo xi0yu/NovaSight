@@ -8,6 +8,7 @@ import { RuntimeOverviewView } from "./RuntimeOverviewView";
 
 const runtime = {
   semantic: { daemon_instance_id: "daemon-abc123", phase: "running", snapshot_sequence: 9 },
+  presentation: { lifecycle: { can_start: false, can_stop: true }, output: { state: "armed", daemon_confirmed_safe: false } },
   capture: { running: true, available: true },
   executor: { executors: { kmnet: { runtime_connected: true } } },
   statistics: {
@@ -134,7 +135,7 @@ describe("RuntimeOverviewView", () => {
     expect(metrics).toHaveTextContent("检测结果238 FPS");
     expect(metrics).toHaveTextContent("推理耗时8.2 ms");
 
-    await userEvent.click(screen.getByRole("button", { name: "停止运行" }));
+    await userEvent.click(screen.getByRole("switch", { name: "运行总开关，运行中" }));
     expect(onToggle).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "紧急停止" })).not.toBeInTheDocument();
   });
@@ -183,7 +184,7 @@ describe("RuntimeOverviewView", () => {
 
     expect(screen.getAllByText("状态已过期").length).toBeGreaterThanOrEqual(4);
     expect(screen.getByLabelText("核心运行数据")).not.toHaveTextContent("240");
-    expect(screen.getByRole("button", { name: "停止运行" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "运行总开关，运行中" })).toBeDisabled();
     expect(screen.getByRole("heading", { name: "画面如何变成输出" }).closest("section")).not.toHaveTextContent("LIVE");
   });
 
@@ -200,11 +201,11 @@ describe("RuntimeOverviewView", () => {
         runtimeStopping
       />
     );
-    expect(screen.getByRole("button", { name: "正在停止" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "运行总开关，正在停止" })).toBeDisabled();
 
     rerender(
       <RuntimeOverviewView
-        runtime={{ ...runtime, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState}
+        runtime={{ ...runtime, presentation: { ...runtime.presentation, lifecycle: { can_start: true, can_stop: false }, output: { ...runtime.presentation.output, state: "safe", daemon_confirmed_safe: true } }, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState}
         projection={{ ...projection, lifecycle: { state: "stopped", label: "已停止", detail: "" } }}
         readiness={{ state: "action", title: "需处理", detail: "正在启动。" }}
         lastUpdated={null}
@@ -214,6 +215,6 @@ describe("RuntimeOverviewView", () => {
         launchPending
       />
     );
-    expect(screen.getByRole("button", { name: "正在启动" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "运行总开关，正在启动" })).toBeDisabled();
   });
 });

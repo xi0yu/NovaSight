@@ -116,6 +116,7 @@ export function StudioNavigation({
               aria-current={active ? "page" : undefined}
               aria-label={item.label}
               className={active ? "console-nav active" : "console-nav"}
+              data-page={item.id}
               key={item.id}
               onClick={() => onNavigate(item.id)}
               ref={active ? activeItemRef : undefined}

@@ -17,7 +17,6 @@ import {
   RuntimeConfig,
   RuntimeState,
   RuntimeStatusFrame,
-  RuntimeStatusTopic,
   decodeRuntimeStatusMessage,
   getHealth,
   getApiErrorCode,
@@ -115,14 +114,6 @@ async function getLicenseStatusWithStartupRetry(): Promise<LicenseStatus> {
       await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
     }
   }
-}
-
-function statusTopicFromPage(): RuntimeStatusTopic {
-  const page = new URLSearchParams(window.location.search).get("page");
-  if (page === "infer" || page === "control" || page === "latency" || page === "capture") {
-    return page;
-  }
-  return "summary";
 }
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {
@@ -239,7 +230,6 @@ function StudioApp() {
   const [state, setState] = useState<LoadState>(initialState);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const [realtimeStatus, setRealtimeStatus] = useState<RuntimeDeliveryStatus>("disconnected");
-  const [statusTopic, setStatusTopic] = useState<RuntimeStatusTopic>(() => statusTopicFromPage());
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine);
   const loadRequestSeqRef = useRef(0);
@@ -660,7 +650,7 @@ function StudioApp() {
       }
       let nextSocket: WebSocket;
       try {
-        nextSocket = new WebSocket(statusWebSocketUrl(statusTopic));
+        nextSocket = new WebSocket(statusWebSocketUrl());
       } catch (error) {
         failureReported = true;
         setRealtimeStatus((current) => current === "fallback" ? current : "disconnected");
@@ -773,7 +763,7 @@ function StudioApp() {
       }
       socket?.close(1000, "client suspended");
     };
-  }, [applyRuntimeFrame, applyRuntimeHeartbeat, applyRuntimeState, license?.valid, loadLicense, networkOnline, pageVisible, refreshHealth, refreshRuntime, statusTopic]);
+  }, [applyRuntimeFrame, applyRuntimeHeartbeat, applyRuntimeState, license?.valid, loadLicense, networkOnline, pageVisible, refreshHealth, refreshRuntime]);
 
   const realtimeConnected = realtimeStatus === "connected";
   const stableRealtimeStatus = useStableSemanticValue(realtimeStatus, realtimeStatus, 280);
@@ -847,7 +837,6 @@ function StudioApp() {
           onRefresh={load}
           onRuntimeConfigChange={applyRuntimeConfig}
           onRuntimeStateChange={applyRuntimeState}
-          onStatusTopicChange={setStatusTopic}
         />
       </Suspense>
       <ToastHost />

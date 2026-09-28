@@ -26,6 +26,7 @@ pub(crate) struct RuntimeStatusFrame<T> {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct RuntimeStatusState {
     pub semantic: RuntimeSemanticState,
+    pub presentation: StudioPresentationState,
     pub running: bool,
     pub source: String,
     pub active_model: Option<serde_json::Value>,
@@ -50,10 +51,44 @@ pub(crate) struct RuntimeSemanticState {
     pub snapshot_updated_at_ms: u64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct StudioPresentationState {
+    pub lifecycle: StudioLifecyclePresentation,
+    pub readiness: StudioReadinessPresentation,
+    pub perception: StudioPerceptionPresentation,
+    pub output: StudioOutputPresentation,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct StudioLifecyclePresentation {
+    pub can_start: bool,
+    pub can_stop: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct StudioReadinessPresentation {
+    pub code: &'static str,
+    pub recommended_action: Option<&'static str>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct StudioPerceptionPresentation {
+    pub state: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct StudioOutputPresentation {
+    pub state: &'static str,
+    pub reason_code: &'static str,
+    pub daemon_confirmed_safe: bool,
+}
+
 #[derive(Serialize)]
 struct RuntimeStatusPatch<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic: Option<&'a RuntimeSemanticState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presentation: Option<&'a StudioPresentationState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     running: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,6 +119,7 @@ impl RuntimeStatusPatch<'_> {
     fn empty() -> Self {
         Self {
             semantic: None,
+            presentation: None,
             running: None,
             source: None,
             active_model: None,
@@ -120,6 +156,7 @@ pub(crate) fn serialize_runtime_status_frame(
     // every frame still owns a complete top-level runtime state; omitting a
     // section here would preserve stale data in the frontend merge.
     patch.semantic = Some(&state.semantic);
+    patch.presentation = Some(&state.presentation);
     patch.running = Some(state.running);
     patch.source = Some(&state.source);
     patch.active_model = Some(&state.active_model);
@@ -828,6 +865,16 @@ impl RuntimeStatusState {
         } else {
             "unavailable"
         };
+        let presentation = studio_presentation(
+            snapshot,
+            runtime_config,
+            semantic_phase,
+            perception_phase,
+            &selected_device,
+            &output_trace,
+            fatal_error.as_ref(),
+            metadata_extractions,
+        );
 
         Self {
             semantic: RuntimeSemanticState {
@@ -838,6 +885,7 @@ impl RuntimeStatusState {
                 snapshot_sequence: snapshot.sequence,
                 snapshot_updated_at_ms: snapshot.updated_at_ms,
             },
+            presentation,
             running,
             source,
             active_model: snapshot.model.active.as_ref().map(|active| {
@@ -1176,6 +1224,165 @@ impl RuntimeStatusState {
             },
             fatal_error,
         }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn studio_presentation(
+    snapshot: &RuntimeSnapshot,
+    runtime_config: Option<&AppConfig>,
+    semantic_phase: &'static str,
+    perception_phase: &'static str,
+    selected_device: &str,
+    output_trace: &OutputTraceState,
+    fatal_error: Option<&RuntimeErrorSummary>,
+    metadata_extractions: u64,
+) -> StudioPresentationState {
+    let metrics = snapshot.perception_metrics;
+    let freshness_threshold_ms =
+        runtime_config.map(|config| config.pipeline.freshness_threshold_ms);
+    let fresh_detection = snapshot
+        .telemetry
+        .detection_data_age_ms
+        .zip(freshness_threshold_ms)
+        .is_some_and(|(age, threshold)| age <= threshold);
+    let has_inference_signal =
+        metrics.input_buffers > 0 || metadata_extractions > 0 || metrics.published_batches > 0;
+    let has_runtime_consumption = snapshot.pipeline_metrics.received_batches > 0
+        || snapshot.pipeline_metrics.targeting_batches > 0;
+
+    let readiness_code = if let Some(error) = fatal_error {
+        classify_runtime_failure(error)
+    } else {
+        match semantic_phase {
+            "starting" | "stopping" => "starting",
+            "waiting_model" => "waiting_model",
+            "faulted" => "failed",
+            "stopped" => "stopped",
+            _ if !has_inference_signal => "no_video",
+            _ if snapshot.telemetry.sample_window_ms.is_some()
+                && snapshot.telemetry.nvinfer_input_fps == Some(0.0) =>
+            {
+                "no_video"
+            }
+            _ if snapshot
+                .telemetry
+                .detection_data_age_ms
+                .zip(freshness_threshold_ms)
+                .is_some_and(|(age, threshold)| age > threshold) =>
+            {
+                "frame_latency_high"
+            }
+            _ if selected_device != "replay"
+                && snapshot.pipeline_metrics.output_gate_open
+                && !snapshot.pipeline_metrics.device_connected =>
+            {
+                "control_device_disconnected"
+            }
+            _ if has_runtime_consumption && fresh_detection => "ready",
+            _ => "starting",
+        }
+    };
+    let recommended_action = recommended_studio_action(
+        readiness_code,
+        output_trace.next_action,
+        snapshot.model.active.is_some(),
+    );
+
+    let perception_state = match perception_phase {
+        "running" if fresh_detection => "current",
+        "running" => "stale",
+        "faulted" => "faulted",
+        "waiting_model" => "waiting_model",
+        "starting" => "starting",
+        "stopped" => "stopped",
+        _ => "unavailable",
+    };
+    let daemon_confirmed_safe = semantic_phase == "stopped"
+        && output_trace.code == "runtime_stopped"
+        && !snapshot.pipeline_metrics.device_connected
+        && !snapshot.pipeline_metrics.control.emit_allowed;
+    let lifecycle_uncertain = matches!(semantic_phase, "starting" | "stopping" | "faulted")
+        || (semantic_phase == "stopped" && !daemon_confirmed_safe);
+    let output_state = if lifecycle_uncertain {
+        "unknown"
+    } else if daemon_confirmed_safe {
+        "safe"
+    } else if matches!(perception_state, "stale" | "faulted" | "unavailable") {
+        "blocked"
+    } else if snapshot.pipeline_metrics.control.emit_allowed || output_trace.code == "ready" {
+        "armed"
+    } else {
+        "blocked"
+    };
+
+    StudioPresentationState {
+        lifecycle: StudioLifecyclePresentation {
+            can_start: semantic_phase == "stopped" && daemon_confirmed_safe,
+            can_stop: semantic_phase != "stopping" && !daemon_confirmed_safe,
+        },
+        readiness: StudioReadinessPresentation {
+            code: readiness_code,
+            recommended_action,
+        },
+        perception: StudioPerceptionPresentation {
+            state: perception_state,
+        },
+        output: StudioOutputPresentation {
+            state: output_state,
+            reason_code: output_trace.code,
+            daemon_confirmed_safe,
+        },
+    }
+}
+
+fn classify_runtime_failure(error: &RuntimeErrorSummary) -> &'static str {
+    let code = error.code.to_ascii_lowercase();
+    let message = error.message.to_ascii_lowercase();
+    let contains = |needle: &str| code.contains(needle) || message.contains(needle);
+    if message.contains("no admitted batch") || contains("no_video") || contains("capture_timeout")
+    {
+        "no_video"
+    } else if ["model", "engine", "tensorrt", "nvinfer"]
+        .into_iter()
+        .any(|needle| contains(needle))
+    {
+        "model_load_failed"
+    } else if ["freshness", "frame age", "latency", "stale"]
+        .into_iter()
+        .any(|needle| contains(needle))
+    {
+        "frame_latency_high"
+    } else {
+        "failed"
+    }
+}
+
+fn recommended_studio_action(
+    readiness_code: &str,
+    output_next_action: &str,
+    has_active_model: bool,
+) -> Option<&'static str> {
+    match readiness_code {
+        "no_video" => return Some("configure_capture"),
+        "model_load_failed" | "waiting_model" => return Some("select_model"),
+        "frame_latency_high" => return Some("inspect_latency"),
+        "control_device_disconnected" => return Some("configure_device"),
+        "failed" => return Some("inspect_runtime"),
+        _ => {}
+    }
+    match output_next_action {
+        "check_model" => Some("select_model"),
+        "check_capture_or_model" if has_active_model => Some("configure_capture"),
+        "check_capture_or_model" => Some("select_model"),
+        "check_latency" => Some("inspect_latency"),
+        "enable_control" | "enable_output_gate" => Some("configure_output"),
+        "connect_kmnet" => Some("configure_device"),
+        "check_license_or_build" => Some("activate_license"),
+        "check_targeting" | "inspect_control" | "inspect_runtime_ingress" | "activate_trigger" => {
+            Some("inspect_control")
+        }
+        _ => None,
     }
 }
 
@@ -1526,6 +1733,38 @@ mod tests {
     };
 
     use super::RuntimeStatusState;
+
+    #[test]
+    fn daemon_presents_studio_readiness_and_safe_output() {
+        let stopped = serde_json::to_value(RuntimeStatusState::new(
+            &RuntimeSnapshot::default(),
+            None,
+            None,
+            true,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(stopped["presentation"]["readiness"]["code"], "stopped");
+        assert_eq!(stopped["presentation"]["lifecycle"]["can_start"], true);
+        assert_eq!(stopped["presentation"]["lifecycle"]["can_stop"], false);
+        assert_eq!(stopped["presentation"]["output"]["state"], "safe");
+        assert_eq!(
+            stopped["presentation"]["output"]["daemon_confirmed_safe"],
+            true
+        );
+
+        let mut running = RuntimeSnapshot::default();
+        running.pipeline.state = PipelineState::Running;
+        running.subsystems.inference.state = SubsystemState::Running;
+        let running =
+            serde_json::to_value(RuntimeStatusState::new(&running, None, None, false, None))
+                .unwrap();
+        assert_eq!(running["presentation"]["readiness"]["code"], "no_video");
+        assert_eq!(
+            running["presentation"]["readiness"]["recommended_action"],
+            "configure_capture"
+        );
+    }
 
     #[test]
     fn degraded_kmnet_is_disconnected_retryable_and_exposes_the_runtime_error() {

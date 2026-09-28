@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { RuntimeState } from "../../api";
 import { NovaIcon } from "../../components/visual";
 import type { RuntimeProjection, RuntimeRecoveryAction } from "../runtime/runtimeProjection";
+import { RuntimeSwitch } from "./ControlSwitches";
 import type { LaunchReadinessSummary } from "./launchReadiness";
 
 import "./runtime-overview.css";
@@ -56,18 +57,42 @@ export function RuntimeOverviewView({
 }: RuntimeOverviewViewProps) {
   if (!runtime || !projection) {
     return (
-      <section className="runtime-overview-empty" role="status">
-        <span className="runtime-overview-empty-icon" aria-hidden="true"><NovaIcon name="daemon" size={22} /></span>
-        <div>
-          <small>当前运行结论</small>
-          <strong>{runtimeControlUnavailable ? "无法确认运行状态" : "正在读取运行状态"}</strong>
-          <p>{runtimeControlUnavailable
-            ? "请检查服务连接，并在“实时日志”查看原因。收到完整状态前，硬件输出保持锁定。"
-            : "等待服务返回完整状态；此时不会推断感知或硬件输出。"}</p>
+      <section className="runtime-overview runtime-overview-offline" role="status" aria-label="当前运行结论">
+        <article className="runtime-overview-stage">
+          <header className="runtime-overview-stage-header">
+            <span><NovaIcon name="capture-card" size={16} />实时画面</span>
+          </header>
+          <div className="runtime-overview-stage-canvas">
+            <div className="runtime-overview-stage-visual" aria-hidden="true"><i /><i /><i /></div>
+            <div className="runtime-overview-stage-placeholder">
+              <span aria-hidden="true"><NovaIcon name="prediction-line" size={22} strokeWidth={1.6} /></span>
+              <strong>等待画面</strong>
+              <small>服务连接后自动显示</small>
+            </div>
+          </div>
+        </article>
+        <div className="runtime-overview-offline-actions">
+          <article>
+            <span className="runtime-overview-offline-icon" aria-hidden="true"><NovaIcon name="daemon" size={18} /></span>
+            <div>
+              <small>当前运行结论</small>
+              <strong>{runtimeControlUnavailable ? "无法确认运行状态" : "正在读取运行状态"}</strong>
+              <p>{runtimeControlUnavailable ? "检查服务连接或查看异常记录。" : "等待服务返回完整状态。"}</p>
+            </div>
+            {runtimeControlUnavailable && onOpenErrors ? (
+              <button className="console-button" onClick={onOpenErrors} type="button">查看异常信息</button>
+            ) : <span className="runtime-overview-waiting">请稍候</span>}
+          </article>
+          <article>
+            <span className="runtime-overview-offline-icon safe" aria-hidden="true"><NovaIcon name="shield-check" size={18} /></span>
+            <div>
+              <small>硬件安全</small>
+              <strong>输出保持锁定</strong>
+              <p>收到完整运行状态前，不会推断或发送硬件输出。</p>
+            </div>
+            <span className="runtime-overview-locked">已锁定</span>
+          </article>
         </div>
-        {runtimeControlUnavailable && onOpenErrors ? (
-          <button className="console-button primary" onClick={onOpenErrors} type="button">查看异常信息</button>
-        ) : null}
       </section>
     );
   }
@@ -75,13 +100,13 @@ export function RuntimeOverviewView({
   const tone = toneForProjection(projection);
   const kmnet = runtime.executor.executors.kmnet;
   const phase = runtime.semantic.phase;
-  const lifecycleActive = ["starting", "waiting_model", "running", "standby", "stopping"].includes(phase);
+  const lifecycleActive = runtime.presentation.lifecycle.can_stop || phase === "stopping";
   const stopping = phase === "stopping" || runtimeStopping;
   const starting = phase === "starting" || launchPending;
   const metricsCurrent = projection.transport === "current";
   const metricsAvailable = metricsCurrent && runtime.statistics.metrics_available === true;
   const missingMetricLabel = metricsCurrent ? "等待样本" : "状态已过期";
-  const runtimeControlLabel = stopping ? "正在停止" : starting ? "正在启动" : lifecycleActive ? "停止运行" : "运行";
+  const runtimeControlLabel = stopping ? "正在停止" : starting ? "正在启动" : lifecycleActive ? "运行中" : "已关闭";
   const chainStale = !metricsCurrent;
   const chain = [
     { label: "采集输入", value: chainStale ? "状态已过期" : runtime.capture.running ? "正在接收" : runtime.capture.available ? "待运行" : "不可用", live: metricsCurrent && runtime.capture.running },
@@ -108,15 +133,14 @@ export function RuntimeOverviewView({
           {projection.nextAction ? (
             <button className="console-button" type="button" onClick={() => onAction(projection.nextAction!)}>{projection.nextActionLabel ?? "处理问题"}</button>
           ) : null}
-          <button
-            className={lifecycleActive ? "console-button danger" : "console-button primary"}
-            disabled={controlBusy || stopping || runtimeControlUnavailable || !metricsCurrent}
-            onClick={onToggle}
-            type="button"
-          >
-            <NovaIcon name={lifecycleActive ? "stop" : "start"} size={15} />
-            {runtimeControlLabel}
-          </button>
+          <RuntimeSwitch
+            label="运行总开关"
+            enabled={lifecycleActive}
+            pending={starting || stopping}
+            disabled={controlBusy || runtimeControlUnavailable || !metricsCurrent}
+            status={runtimeControlLabel}
+            onToggle={onToggle}
+          />
         </div>
       </article>
     ),

@@ -112,7 +112,7 @@ const OUTPUT_TRACE_LABELS: Record<string, string> = {
   TARGET_INVALID: "控制目标无效",
   GEOMETRY_INVALID: "控制几何无效",
   TRIGGER_INACTIVE: "等待触发",
-  TRIGGER_DELAY_PENDING: "等待开火延迟",
+  TRIGGER_DELAY_PENDING: "等待触发延迟",
   DEAD_ZONE: "目标位于死区",
   DEMAND_OUT_OF_RANGE: "控制需求越界",
   ready: "输出链路已贯通"
@@ -318,17 +318,17 @@ function buildTriggerDelayStep(input: BuildControlTraceInput): ControlTraceStep 
   if (!input.hardwareTriggerRequired) {
     return {
       id: "trigger",
-      label: "触发与开火延迟",
+      label: "触发延迟",
       state: "ready",
-      value: "直接触发",
-      detail: "直接触发模式不等待鼠标按键持续时间。",
+      value: "无需外部触发",
+      detail: "当前运行配置不等待外部触发信号。",
       evidence: "trigger_mode=always"
     };
   }
   if (input.triggerActive !== true) {
     return {
       id: "trigger",
-      label: "触发与开火延迟",
+      label: "触发延迟",
       state: "waiting",
       value: "等待按键",
       detail: "鼠标按键未按下，控制算法保持未启动。",
@@ -338,21 +338,21 @@ function buildTriggerDelayStep(input: BuildControlTraceInput): ControlTraceStep 
   if (input.fireDelayPending) {
     return {
       id: "trigger",
-      label: "触发与开火延迟",
+      label: "触发延迟",
       state: "waiting",
-      value: "持续按住",
-      detail: "按住时间尚未超过开火延迟，预测和控制算法均未执行。",
+      value: "延迟中",
+      detail: "触发延迟尚未结束，预测和控制算法均未执行。",
       evidence: `elapsed=${formatNumber(input.fireDelayElapsedMs, 2, "ms")} · remaining=${formatNumber(input.fireDelayRemainingMs, 2, "ms")}`
     };
   }
   return {
     id: "trigger",
-    label: "触发与开火延迟",
+    label: "触发延迟",
     state: "ready",
-    value: input.fireDelayEnabled ? "门槛已通过" : "立即启动",
+    value: input.fireDelayEnabled ? "延迟已结束" : "立即启动",
     detail: input.fireDelayEnabled
-      ? "按键持续时间已超过门槛，当前最新目标可以进入控制算法。"
-      : "开火延迟已关闭，按键按下后立即启动控制算法。",
+      ? "触发延迟已结束，当前最新目标可以进入控制算法。"
+      : "触发延迟为 0 ms，收到触发信号后立即启动控制算法。",
     evidence: `configured=${formatNumber(input.fireDelayConfiguredMs, 0, "ms")}`
   };
 }

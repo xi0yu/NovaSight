@@ -132,14 +132,44 @@ test("Studio navigation moves keyboard focus to the new page heading", async ({ 
   await expect(page.getByRole("heading", { level: 1, name: "首页" })).toBeFocused();
 });
 
+test("Studio navigation uses a desktop rail and returns to a top strip on narrow screens", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await mockStudioApi(page);
+  await page.goto("/?page=overview");
+
+  const navigation = page.locator(".console-sidebar");
+  const content = page.locator(".console-main");
+  const desktopNavigation = await navigation.boundingBox();
+  const desktopContent = await content.boundingBox();
+  expect(desktopNavigation).not.toBeNull();
+  expect(desktopContent).not.toBeNull();
+  expect(desktopNavigation!.x).toBeLessThan(desktopContent!.x);
+  expect(desktopNavigation!.height).toBeGreaterThan(desktopContent!.height * 0.9);
+
+  await page.setViewportSize({ width: 760, height: 812 });
+  const narrowNavigation = await navigation.boundingBox();
+  const narrowContent = await content.boundingBox();
+  expect(narrowNavigation).not.toBeNull();
+  expect(narrowContent).not.toBeNull();
+  expect(narrowNavigation!.y).toBeLessThan(narrowContent!.y);
+  expect(narrowNavigation!.width).toBeGreaterThan(narrowContent!.width * 0.9);
+});
+
 test("service failure is not shown as first-time setup or an empty model library", async ({ page }) => {
   await mockStudioApi(page);
   await page.goto("/?page=overview");
   await expect(page.getByRole("status").filter({ hasText: "当前运行结论" })).toContainText("无法确认运行状态");
+  await expect(page.locator(".console-safety-deck")).toBeHidden();
+  await expect(page.locator(".runtime-overview-stage")).not.toContainText("服务未连接");
+  await expect(page.getByText("无法确认运行状态", { exact: true })).toHaveCount(1);
   await expect(page.getByText(/首次设置/)).toHaveCount(0);
 
   await page.goto("/?page=models");
   await expect(page.getByText("设备模型目录尚未读取成功")).toBeVisible();
+  await expect(page.locator(".console-safety-deck .console-live")).toBeHidden();
+  await expect(page.locator(".error-center-trigger > span")).toBeHidden();
+  expect((await page.locator(".error-center-trigger").boundingBox())?.width ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(44);
+  await expect(page.locator(".console-page-heading p")).toBeVisible();
   await expect(page.getByRole("button", { name: "新建文件夹" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "重试读取" })).toBeVisible();
   await expect(page.getByText(/暂无可选模型/)).toHaveCount(0);
@@ -233,13 +263,14 @@ test("parameter draft survives in-app navigation without a confirmation popup", 
   });
   await page.goto("/?page=params");
 
-  await page.getByRole("button", { name: "按键触发" }).click();
+  await page.getByRole("textbox", { name: "触发延迟" }).fill("25");
+  await page.getByRole("textbox", { name: "触发延迟" }).press("Tab");
   await expect(page.getByRole("button", { name: "保存并应用" })).toBeEnabled();
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
   await navigation.getByRole("button", { name: "首页" }).click();
   await navigation.getByRole("button", { name: "算法参数" }).click();
 
-  await expect(page.getByRole("button", { name: "按键触发" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("textbox", { name: "触发延迟" })).toHaveValue("25");
   await expect(page.getByRole("button", { name: "保存并应用" })).toBeEnabled();
   expect(dialogCount).toBe(0);
 });
@@ -255,7 +286,7 @@ test("algorithm parameters are grouped directly without the obsolete dialog", as
   });
   await page.goto("/?page=params");
 
-  await expect(page.getByRole("heading", { name: "启动条件", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "触发设置", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "移动响应", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "目标锁定", exact: true })).toBeVisible();
   await expect(page.locator(".parameter-save-bar")).toHaveCount(0);
@@ -498,10 +529,10 @@ test("model organization saves catalog metadata without switching the runtime mo
   expect(publishRequests).toBe(0);
 });
 
-test("parameter page exposes one master control in its header", async ({ page }) => {
+test("the parameter page no longer exposes a second runtime master switch", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "hardware", output_enabled: false }, pipeline: {} });
   await page.goto("/?page=params");
-  await expect(page.getByRole("switch", { name: /目标控制/ })).toBeVisible();
+  await expect(page.getByRole("switch", { name: /运行总开关/ })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "参数分区" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "是否发送到设备", exact: true })).toHaveCount(0);
 });
@@ -509,7 +540,8 @@ test("parameter page exposes one master control in its header", async ({ page })
 test("discarding parameter edits asks first, including on narrow screens", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "always" }, pipeline: {} });
   await page.goto("/?page=params");
-  await page.getByRole("button", { name: "按键触发" }).click();
+  await page.getByRole("textbox", { name: "触发延迟" }).fill("25");
+  await page.getByRole("textbox", { name: "触发延迟" }).press("Tab");
   await page.getByRole("button", { name: "放弃修改" }).click();
   const confirmation = page.getByRole("alertdialog", { name: "放弃未保存的修改？" });
   await expect(confirmation).toBeVisible();
@@ -518,7 +550,7 @@ test("discarding parameter edits asks first, including on narrow screens", async
   await expect(page.getByRole("button", { name: "放弃修改" })).toBeVisible();
 });
 
-test("saving parameters while output is enabled needs explicit consent", async ({ page }) => {
+test("saving parameters while runtime is stopped does not show an output warning", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, {
     revision: 1,
     control: { trigger_mode: "hardware", output_enabled: true },
@@ -531,16 +563,11 @@ test("saving parameters while output is enabled needs explicit consent", async (
     }
   });
   await page.goto("/?page=params");
-  await page.getByRole("button", { name: "直接触发" }).click();
+  await page.getByRole("textbox", { name: "触发延迟" }).fill("35");
+  await page.getByRole("textbox", { name: "触发延迟" }).press("Tab");
   await page.getByRole("button", { name: "保存并应用" }).click();
-  const confirmation = page.getByRole("alertdialog", { name: "物理输出仍开启，确认保存参数？" });
-  await expect(confirmation).toContainText("保存后不再等待按键");
-  expect(savedConfigs).toHaveLength(0);
-  await confirmation.getByRole("button", { name: "取消" }).click();
-  await expect(page.getByRole("button", { name: "保存并应用" })).toBeEnabled();
-  await page.getByRole("button", { name: "保存并应用" }).click();
-  await confirmation.getByRole("button", { name: "确认保存并保持输出开启" }).click();
   await expect.poll(() => savedConfigs.length).toBe(1);
+  await expect(page.getByRole("alertdialog", { name: "物理输出仍开启，确认保存参数？" })).toHaveCount(0);
   expect((savedConfigs[0].control as Record<string, unknown>).output_enabled).toBe(true);
 });
 
@@ -556,7 +583,8 @@ test("narrow Studio keeps Chinese navigation and save action reachable", async (
   const shellHeader = page.locator(".console-top");
   expect((await shellHeader.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(76);
 
-  await page.getByRole("button", { name: "按键触发" }).click();
+  await page.getByRole("textbox", { name: "触发延迟" }).fill("25");
+  await page.getByRole("textbox", { name: "触发延迟" }).press("Tab");
   const saveBar = page.locator(".parameter-save-bar");
   await expect(saveBar).toHaveCSS("position", "sticky");
   await page.locator("main.console-main").evaluate((main) => { main.scrollTop = 900; });

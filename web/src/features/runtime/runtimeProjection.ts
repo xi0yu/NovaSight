@@ -1,5 +1,4 @@
 import type { RuntimeState } from "../../api";
-import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 
 export type RuntimeTransportConfidence = "current" | "stale" | "unavailable";
 export type LifecycleProjectionState = RuntimeState["semantic"]["phase"];
@@ -37,11 +36,7 @@ const LIFECYCLE_LABELS: Record<LifecycleProjectionState, string> = {
 };
 
 export function isDaemonConfirmedSafe(runtime: RuntimeState | null): boolean {
-  if (!runtime) return false;
-  return runtime.semantic.phase === "stopped"
-    && runtime.vision.output_trace.code === "runtime_stopped"
-    && runtime.executor.executors.kmnet?.runtime_connected === false
-    && runtime.vision.control.will_emit !== true;
+  return runtime?.presentation.output.daemon_confirmed_safe === true;
 }
 
 function perceptionProjection(
@@ -56,7 +51,7 @@ function perceptionProjection(
     };
   }
 
-  const phase = runtime.semantic.perception_phase;
+  const phase = runtime.presentation.perception.state;
   if (phase === "faulted") {
     return { state: "faulted", label: "感知故障", detail: runtime.inference.detail || runtime.inference.reason || "推理链发生故障。" };
   }
@@ -75,7 +70,7 @@ function perceptionProjection(
 
   const age = runtime.statistics.detection_data_age_ms;
   const threshold = runtime.statistics.detection_freshness_threshold_ms;
-  if (age === null || threshold === null || age > threshold) {
+  if (phase === "stale") {
     return {
       state: "stale",
       label: "感知数据过期",
@@ -84,33 +79,29 @@ function perceptionProjection(
         : `最新结果帧龄 ${age.toFixed(1)} ms，超过安全阈值 ${threshold.toFixed(1)} ms。`,
     };
   }
-  return { state: "current", label: "感知数据新鲜", detail: `最新结果帧龄 ${age.toFixed(1)} ms。` };
+  return {
+    state: "current",
+    label: "感知数据新鲜",
+    detail: age === null ? "守护进程已确认当前感知数据有效。" : `最新结果帧龄 ${age.toFixed(1)} ms。`,
+  };
 }
 
-function recoveryAction(runtime: RuntimeState): Pick<RuntimeProjection, "nextAction" | "nextActionLabel"> {
-  if (getRuntimeMainlineStatus(runtime).readinessCode === "no_video") {
-    return { nextAction: "open-capture", nextActionLabel: "检查采集" };
-  }
-  switch (runtime.vision.output_trace.next_action) {
-    case "check_model":
+export function recoveryAction(runtime: RuntimeState): Pick<RuntimeProjection, "nextAction" | "nextActionLabel"> {
+  switch (runtime.presentation.readiness.recommended_action) {
+    case "select_model":
       return { nextAction: "open-model-manager", nextActionLabel: "检查模型" };
-    case "check_capture_or_model":
-      return runtime.active_model
-        ? { nextAction: "open-capture", nextActionLabel: "检查采集" }
-        : { nextAction: "open-model-manager", nextActionLabel: "配置模型" };
-    case "check_latency":
+    case "configure_capture":
+      return { nextAction: "open-capture", nextActionLabel: "检查采集" };
+    case "inspect_latency":
       return { nextAction: "open-latency", nextActionLabel: "检查延迟" };
-    case "enable_control":
-    case "enable_output_gate":
+    case "configure_output":
       return { nextAction: "open-params", nextActionLabel: "开启控制" };
-    case "connect_kmnet":
+    case "configure_device":
       return { nextAction: "open-kmnet-test", nextActionLabel: "检查 kmNet" };
-    case "check_license_or_build":
+    case "activate_license":
       return { nextAction: "open-license", nextActionLabel: "检查授权" };
-    case "check_targeting":
+    case "inspect_runtime":
     case "inspect_control":
-    case "inspect_runtime_ingress":
-    case "activate_trigger":
       return { nextAction: "open-control", nextActionLabel: "查看控制" };
     default:
       return {};
@@ -124,19 +115,15 @@ export function projectRuntimeState(
   if (!runtime) return null;
   const daemonConfirmedSafe = isDaemonConfirmedSafe(runtime);
   const perception = perceptionProjection(runtime, transport);
-  const lifecycleUncertain = ["starting", "stopping", "faulted"].includes(runtime.semantic.phase)
-    || (runtime.semantic.phase === "stopped" && !daemonConfirmedSafe);
   const output: RuntimeProjection["output"] = transport !== "current"
     ? { state: "unknown", label: "输出状态未知", detail: "实时状态不可用，不能推断硬件输出是否安全。" }
-    : lifecycleUncertain
-      ? { state: "unknown", label: "输出状态未知", detail: "生命周期异常或停止证据不完整，不能推断硬件输出状态。" }
-      : perception.state === "stale" || perception.state === "faulted" || perception.state === "unavailable"
-        ? { state: "blocked", label: "输出已阻止", detail: "感知状态不可用或已过期，输出必须保持阻止。" }
-        : daemonConfirmedSafe
-          ? { state: "safe", label: "已确认安全", detail: "运行态已停止、kmNet 已断开，且不存在待发送输出。" }
-          : runtime.vision.control.will_emit === true || runtime.vision.output_trace.code === "ready"
-            ? { state: "armed", label: "输出已具备条件", detail: runtime.vision.output_trace.detail || "当前样本满足输出门控条件。" }
-            : { state: "blocked", label: "输出已阻止", detail: runtime.vision.output_trace.detail || "当前输出门控未满足。" };
+    : runtime.presentation.output.state === "safe"
+      ? { state: "safe", label: "已确认安全", detail: "运行态已停止、设备已断开，且输出门保持关闭。" }
+      : runtime.presentation.output.state === "armed"
+        ? { state: "armed", label: "输出已具备条件", detail: runtime.vision.output_trace.detail || "当前样本满足输出门控条件。" }
+        : runtime.presentation.output.state === "blocked"
+          ? { state: "blocked", label: "输出已阻止", detail: runtime.vision.output_trace.detail || "当前输出门控未满足。" }
+          : { state: "unknown", label: "输出状态未知", detail: "守护进程尚未确认硬件输出状态。" };
   const lifecycle = {
     state: runtime.semantic.phase,
     label: LIFECYCLE_LABELS[runtime.semantic.phase],

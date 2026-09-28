@@ -520,7 +520,7 @@ export function ModelSelectionPanel({
               : selectedModel.kind !== "engine"
                 ? "这个文件不能直接用于当前主链；请选择 .engine 文件。"
                 : selectedIsActive
-                  ? activeLoaded ? "此文件已部署且运行中已装载，无需重复切换。" : "此文件已部署，但当前尚未装载；请到运行总览启动主链。"
+                  ? activeLoaded ? "此文件已部署且运行中已装载，无需重复切换。" : "此文件已部署，但当前尚未装载；请到首页开启运行。"
                   : "此文件尚未部署；只有完成验证并切换后才会改变运行模型。"}
           </p>
           <div className="model-selection-action">

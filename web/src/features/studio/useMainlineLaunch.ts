@@ -46,10 +46,10 @@ export function formatMainlineLaunchError(error: unknown): string {
     getApiErrorCode(error) === "LICENSE_FEATURE_REQUIRED"
     && errorDetail?.required_feature === "hardware_control"
   ) {
-    return "启动主链失败：当前授权不包含硬件控制。已保存配置开启了物理输出；如需先运行采集、推理和算法预览，请在“控制 → 输出”关闭“发送鼠标偏移”，或使用包含硬件控制权限的正式许可证。";
+    return "开启运行失败：当前授权不包含硬件控制。请使用包含硬件控制权限的正式许可证后，再从首页开启运行。";
   }
   const detail = getErrorMessage(error);
-  return `启动主链失败：请求 NovaSight 使用已保存配置进入运行态 · ${detail} · 建议：查看异常信息中的后端原因后重试。`;
+  return `开启运行失败：NovaSight 未能使用已保存配置进入运行态 · ${detail} · 建议：查看异常信息中的后端原因后重试。`;
 }
 
 export function useMainlineLaunch({
@@ -94,7 +94,11 @@ export function useMainlineLaunch({
     try {
       let requestError: unknown = null;
       try {
-        await startRuntimePipeline(controller.signal, physicalOutputAcknowledged);
+        const runtime = await startRuntimePipeline(controller.signal, physicalOutputAcknowledged);
+        if (!mountedRef.current) {
+          return false;
+        }
+        onRuntimeStateChange(runtime);
       } catch (error) {
         if (controller.signal.aborted) {
           return false;
@@ -133,7 +137,7 @@ export function useMainlineLaunch({
 
       if (!acceptedByRuntime) {
         setLocalError(formatMainlineLaunchError(requestError));
-        reportError(requestError, { source: "mainline-launch", title: "启动主链失败" });
+        reportError(requestError, { source: "mainline-launch", title: "开启运行失败" });
       }
 
       try {
@@ -240,7 +244,11 @@ export function useMainlineLaunch({
     try {
       let requestError: unknown = null;
       try {
-        await emergencyStopRuntimePipeline(controller.signal);
+        const runtime = await emergencyStopRuntimePipeline(controller.signal);
+        if (!mountedRef.current) {
+          return;
+        }
+        onRuntimeStateChange(runtime);
       } catch (error) {
         if (controller.signal.aborted) {
           return;

@@ -386,8 +386,35 @@ export interface RuntimeSemanticState {
   snapshot_updated_at_ms: number;
 }
 
+export type StudioRecommendedAction =
+  | "configure_capture"
+  | "select_model"
+  | "inspect_latency"
+  | "configure_device"
+  | "inspect_runtime"
+  | "configure_output"
+  | "activate_license"
+  | "inspect_control";
+
+export interface StudioRuntimePresentation {
+  lifecycle: { can_start: boolean; can_stop: boolean };
+  readiness: {
+    code: "stopped" | "starting" | "waiting_model" | "ready" | "no_video" | "control_device_disconnected" | "model_load_failed" | "frame_latency_high" | "failed";
+    recommended_action: StudioRecommendedAction | null;
+  };
+  perception: {
+    state: "unavailable" | "stopped" | "starting" | "waiting_model" | "current" | "stale" | "faulted";
+  };
+  output: {
+    state: "safe" | "blocked" | "armed" | "unknown";
+    reason_code: string;
+    daemon_confirmed_safe: boolean;
+  };
+}
+
 export interface RuntimeState {
   semantic: RuntimeSemanticState;
+  presentation: StudioRuntimePresentation;
   running: boolean;
   source: string;
   active_model: ActiveModel | null;
@@ -783,6 +810,30 @@ function assertRuntimeState(value: unknown, path: string): void {
   expectNullable(semantic.epoch, `${path}.semantic.epoch`, expectUnsignedInteger);
   expectUnsignedInteger(semantic.snapshot_sequence, `${path}.semantic.snapshot_sequence`);
   expectUnsignedInteger(semantic.snapshot_updated_at_ms, `${path}.semantic.snapshot_updated_at_ms`);
+  const presentation = expectRecord(record.presentation, `${path}.presentation`);
+  const lifecycle = expectRecord(presentation.lifecycle, `${path}.presentation.lifecycle`);
+  expectBoolean(lifecycle.can_start, `${path}.presentation.lifecycle.can_start`);
+  expectBoolean(lifecycle.can_stop, `${path}.presentation.lifecycle.can_stop`);
+  const readiness = expectRecord(presentation.readiness, `${path}.presentation.readiness`);
+  expectLiteral(readiness.code, `${path}.presentation.readiness.code`, new Set([
+    "stopped", "starting", "waiting_model", "ready", "no_video", "control_device_disconnected",
+    "model_load_failed", "frame_latency_high", "failed"
+  ]));
+  expectNullable(readiness.recommended_action, `${path}.presentation.readiness.recommended_action`, (item, itemPath) =>
+    expectLiteral(item, itemPath, new Set([
+      "configure_capture", "select_model", "inspect_latency", "configure_device", "inspect_runtime",
+      "configure_output", "activate_license", "inspect_control"
+    ])));
+  const perception = expectRecord(presentation.perception, `${path}.presentation.perception`);
+  expectLiteral(perception.state, `${path}.presentation.perception.state`, new Set([
+    "unavailable", "stopped", "starting", "waiting_model", "current", "stale", "faulted"
+  ]));
+  const output = expectRecord(presentation.output, `${path}.presentation.output`);
+  expectLiteral(output.state, `${path}.presentation.output.state`, new Set([
+    "safe", "blocked", "armed", "unknown"
+  ]));
+  expectString(output.reason_code, `${path}.presentation.output.reason_code`);
+  expectBoolean(output.daemon_confirmed_safe, `${path}.presentation.output.daemon_confirmed_safe`);
   expectBoolean(record.running, `${path}.running`);
   expectString(record.source, `${path}.source`);
   expectNullable(record.active_model, `${path}.active_model`, assertActiveModel);

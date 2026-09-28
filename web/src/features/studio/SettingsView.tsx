@@ -57,7 +57,7 @@ export function SettingsView({
           <h2>恢复设置</h2>
           <p>{parameterChangesPending
             ? "算法参数还有未应用的修改。先决定保存或放弃，回来后即可继续恢复。"
-            : "选择备份后先预览会改变的部分，确认后才会写入设备；目标控制开关不会被备份改变。"}</p>
+            : "选择备份后先预览会改变的部分，确认后才会写入设备；首页运行状态不属于配置备份。"}</p>
         </div>
         {parameterChangesPending ? (
           <button className="console-button attention" onClick={() => onNavigate("params")} type="button">先处理参数</button>
@@ -98,7 +98,6 @@ export function SettingsView({
     <section className="settings-view" aria-labelledby="settings-transfer-title">
       <header className="settings-hero">
         <div>
-          <span>设置文件</span>
           <h2 id="settings-transfer-title">备份与恢复</h2>
           <p>日常调整留在各自页面。这里仅处理整套设备设置的备份、迁移和恢复。</p>
         </div>

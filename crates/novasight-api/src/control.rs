@@ -15,7 +15,7 @@ use axum::{
     middleware,
     middleware::Next,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use futures_util::{Sink, Stream, StreamExt};
 use novasight_core::{
@@ -154,6 +154,13 @@ pub fn build_control_router_with_platform_queries(
         .route("/api/runtime/stop", post(runtime_stop))
         .route("/api/runtime/emergency-stop", post(runtime_emergency_stop))
         .route("/ws/status", get(runtime_events))
+        .route("/api/studio/v1/status", get(runtime_status))
+        .route("/api/studio/v1/runtime", put(studio_runtime))
+        .route(
+            "/api/studio/v1/runtime/emergency-stop",
+            post(studio_runtime_emergency_stop),
+        )
+        .route("/ws/studio/v1/status", get(studio_runtime_events))
         .route("/ws/activity", get(activity_events))
         .route("/api/activity", get(activity_history))
         .route("/api/v1/status", get(status))
@@ -782,6 +789,7 @@ fn is_license_open_path(method: &Method, path: &str) -> bool {
                 path,
                 "/api/runtime/stop"
                     | "/api/runtime/emergency-stop"
+                    | "/api/studio/v1/runtime/emergency-stop"
                     | "/api/v1/runtime/stop"
                     | "/api/v1/runtime/emergency-stop"
                     | "/api/v1/daemon/shutdown"
@@ -804,6 +812,7 @@ fn required_license_feature(method: &Method, path: &str) -> Option<&'static str>
         });
     }
     if path.starts_with("/api/runtime/")
+        || path.starts_with("/api/studio/v1/")
         || path.starts_with("/api/v1/runtime/")
         || path == "/api/v1/status"
         || path == "/api/v1/events"
@@ -832,6 +841,69 @@ async fn health(State(state): State<ControlState>) -> Json<RuntimeHealth> {
 async fn runtime_status(State(state): State<ControlState>) -> Json<RuntimeStatusState> {
     let snapshot = state.runtime.snapshot();
     Json(runtime_state(&state, &snapshot).await)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StudioRuntimeRequest {
+    desired_state: StudioDesiredRuntimeState,
+    #[serde(default)]
+    acknowledge_physical_output: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StudioDesiredRuntimeState {
+    Running,
+    Stopped,
+}
+
+async fn studio_runtime(
+    State(state): State<ControlState>,
+    Json(request): Json<StudioRuntimeRequest>,
+) -> Result<Json<RuntimeStatusState>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let snapshot = match request.desired_state {
+        StudioDesiredRuntimeState::Running => {
+            let current = state.runtime.snapshot();
+            if matches!(
+                current.pipeline.state,
+                PipelineState::Starting | PipelineState::Running | PipelineState::Standby
+            ) {
+                current
+            } else {
+                ensure_runtime_license(&state).await?;
+                require_physical_output_acknowledgement(
+                    &state,
+                    request.acknowledge_physical_output,
+                )
+                .await?;
+                prepare_config_for_start(&state).await?;
+                state.runtime.start().await?
+            }
+        }
+        StudioDesiredRuntimeState::Stopped => {
+            let current = state.runtime.snapshot();
+            if runtime_snapshot_confirms_safe(&current) {
+                current
+            } else {
+                let stopped = state.runtime.stop().await?;
+                if runtime_snapshot_confirms_safe(&stopped) {
+                    stopped
+                } else {
+                    emergency_stop_locked(&state).await?
+                }
+            }
+        }
+    };
+    Ok(Json(runtime_state(&state, &snapshot).await))
+}
+
+async fn studio_runtime_emergency_stop(
+    State(state): State<ControlState>,
+) -> Result<Json<RuntimeStatusState>, ControlApiError> {
+    let snapshot = emergency_stop_with_lifecycle_barrier(&state).await?;
+    Ok(Json(runtime_state(&state, &snapshot).await))
 }
 
 async fn runtime_start(
@@ -1346,10 +1418,22 @@ async fn require_physical_output_ack(
     state: &ControlState,
     headers: &HeaderMap,
 ) -> Result<(), ControlApiError> {
+    let acknowledged = headers
+        .get(PHYSICAL_OUTPUT_ACK_HEADER)
+        .and_then(|value| value.to_str().ok())
+        == Some("confirmed");
+    require_physical_output_acknowledgement(state, acknowledged).await
+}
+
+async fn require_physical_output_acknowledgement(
+    state: &ControlState,
+    acknowledged: bool,
+) -> Result<(), ControlApiError> {
     if state.hardware_output_enabled
         && (state.config.is_none() || hardware_output_requested(state).await)
+        && !acknowledged
     {
-        require_physical_output_ack_header(headers)?;
+        return Err(ControlApiError::PhysicalOutputAcknowledgementRequired);
     }
     Ok(())
 }
@@ -1641,6 +1725,32 @@ async fn runtime_events(
     State(state): State<ControlState>,
     trusted_local_control: Option<Extension<TrustedLocalControl>>,
     headers: HeaderMap,
+) -> Response {
+    runtime_events_response(websocket, state, trusted_local_control, headers, query).await
+}
+
+async fn studio_runtime_events(
+    websocket: WebSocketUpgrade,
+    State(state): State<ControlState>,
+    trusted_local_control: Option<Extension<TrustedLocalControl>>,
+    headers: HeaderMap,
+) -> Response {
+    runtime_events_response(
+        websocket,
+        state,
+        trusted_local_control,
+        headers,
+        RuntimeStatusQuery::default(),
+    )
+    .await
+}
+
+async fn runtime_events_response(
+    websocket: WebSocketUpgrade,
+    state: ControlState,
+    trusted_local_control: Option<Extension<TrustedLocalControl>>,
+    headers: HeaderMap,
+    query: RuntimeStatusQuery,
 ) -> Response {
     if let Some(license) = state.license.as_ref() {
         match run_license_operation(license.clone(), |repository| repository.status()).await {
@@ -2636,6 +2746,50 @@ mod tests {
         let generated = rejected_id.headers()["x-request-id"].to_str().unwrap();
         assert_eq!(generated.len(), 49);
         assert!(!generated.contains("untrusted-value"));
+        runtime.shutdown_daemon().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn studio_runtime_contract_returns_authoritative_state() {
+        use super::*;
+        use novasight_runtime::RuntimeSupervisor;
+        use tower::ServiceExt;
+
+        let (_supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+        let app = build_control_router(runtime.clone());
+        let status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/studio/v1/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(status.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let state: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(state["presentation"]["readiness"]["code"], "stopped");
+        assert_eq!(
+            state["presentation"]["output"]["daemon_confirmed_safe"],
+            true
+        );
+
+        let stopped = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/studio/v1/runtime")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"desired_state":"stopped"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stopped.status(), StatusCode::OK);
         runtime.shutdown_daemon().await.unwrap();
     }
 

@@ -327,6 +327,7 @@ fn required_permission(method: &Method, path: &str) -> Option<&'static str> {
         && [
             "/api/license",
             "/api/runtime",
+            "/api/studio/v1",
             "/api/config",
             "/api/capture",
             "/api/executors",
@@ -337,6 +338,7 @@ fn required_permission(method: &Method, path: &str) -> Option<&'static str> {
             "/api/v1/runtime",
             "/api/activity",
             "/ws/status",
+            "/ws/studio/v1",
             "/ws/activity",
         ]
         .iter()
@@ -346,6 +348,7 @@ fn required_permission(method: &Method, path: &str) -> Option<&'static str> {
     }
     for (prefix, permission) in [
         ("/api/runtime", "runtime:operate"),
+        ("/api/studio/v1/runtime", "runtime:operate"),
         ("/api/v1/runtime", "runtime:operate"),
         ("/api/config", "configuration:write"),
         ("/api/v1/config", "configuration:write"),
