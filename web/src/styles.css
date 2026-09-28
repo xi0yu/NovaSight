@@ -2443,6 +2443,8 @@ tbody tr:hover {
   margin-top: 10px;
 }
 
+.console-action-row .console-button { min-height: 44px; }
+
 .launch-readiness-panel {
   margin: 0 0 12px;
   padding: 12px;
