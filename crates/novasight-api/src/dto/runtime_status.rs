@@ -1345,12 +1345,12 @@ fn classify_runtime_failure(error: &RuntimeErrorSummary) -> &'static str {
         "no_video"
     } else if ["model", "engine", "tensorrt", "nvinfer"]
         .into_iter()
-        .any(|needle| contains(needle))
+        .any(&contains)
     {
         "model_load_failed"
     } else if ["freshness", "frame age", "latency", "stale"]
         .into_iter()
-        .any(|needle| contains(needle))
+        .any(contains)
     {
         "frame_latency_high"
     } else {
