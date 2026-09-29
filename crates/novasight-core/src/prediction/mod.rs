@@ -155,17 +155,22 @@ impl SingleTargetPredictor {
             return self.unavailable();
         };
 
-        let allowed = estimate.reference_dt_ms.is_finite() && estimate.reference_dt_ms > 0.0;
-        let horizon_ms = if allowed {
-            observation.observation_age_ms
-                + self.config.actuation_delay_ms
-                + self.config.lead_ms.max(0.0)
+        let timing_valid = estimate.reference_dt_ms.is_finite() && estimate.reference_dt_ms > 0.0;
+        let allowed = timing_valid && estimate.motion_state != PredictionMotionState::Unstable;
+        let horizon_ms = if timing_valid {
+            // Keep the requested physical time intact. Safety limits constrain the
+            // displacement, never silently move the prediction back into the past.
+            observation.observation_age_ms + self.config.actuation_delay_ms + self.config.lead_ms
         } else {
             0.0
         };
         let raw_offset = estimate.velocity.scale(horizon_ms);
         let allowed_cap = self.allowed_cap();
-        let safe_offset = clamp_vector_magnitude(raw_offset, allowed_cap);
+        let safe_offset = if allowed {
+            clamp_vector_magnitude(raw_offset, allowed_cap)
+        } else {
+            Vector2::zero()
+        };
 
         let projection = AxisPredictionProjection {
             estimate,
@@ -294,7 +299,17 @@ impl RobustAimVelocityEstimator {
         let latest_dt_ms = intervals_ms[2];
         let window_dt_ms = intervals_ms.iter().sum::<f64>();
         let reference_dt_ms = window_dt_ms / 3.0;
-        let motion_state = if medoid_velocity.magnitude() <= f64::EPSILON {
+        let latest = velocities[2];
+        let previous = velocities[1];
+        // A robust median must not vote away a newly observed stop or reversal.
+        // ponytail: keep the small robust estimator; acceleration modelling needs
+        // calibrated capture/control traces, not another unmeasured tuning knob.
+        let direction_changed = latest.x * previous.x + latest.y * previous.y < 0.0
+            || (medoid_velocity.magnitude() > f64::EPSILON
+                && latest.x * medoid_velocity.x + latest.y * medoid_velocity.y <= 0.0);
+        let motion_state = if direction_changed {
+            PredictionMotionState::Unstable
+        } else if medoid_velocity.magnitude() <= f64::EPSILON {
             PredictionMotionState::Stationary
         } else {
             PredictionMotionState::Continuous
@@ -538,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn latest_reverse_does_not_override_the_medoid() {
+    fn latest_reverse_suppresses_the_old_direction() {
         let prediction = feed_points(
             high_cap_config(),
             &[
@@ -549,17 +564,18 @@ mod tests {
             ],
         );
 
-        assert_eq!(prediction.x.motion_state, PredictionMotionState::Continuous);
+        assert_eq!(prediction.x.motion_state, PredictionMotionState::Unstable);
         assert_eq!(
             prediction.x.velocity_samples,
             [Some(1.0), Some(1.0), Some(-0.5)]
         );
         assert!((prediction.x.velocity - 1.0).abs() < 1e-12);
-        assert!(prediction.x.safe_offset > 0.0);
+        assert!(!prediction.x.allowed);
+        assert_eq!(prediction.x.safe_offset, 0.0);
     }
 
     #[test]
-    fn repeated_direction_is_selected_by_the_medoid() {
+    fn alternating_direction_does_not_predict_a_consensus_that_is_not_there() {
         let prediction = feed_points(
             high_cap_config(),
             &[
@@ -570,13 +586,14 @@ mod tests {
             ],
         );
 
-        assert_eq!(prediction.x.motion_state, PredictionMotionState::Continuous);
+        assert_eq!(prediction.x.motion_state, PredictionMotionState::Unstable);
         assert_eq!(
             prediction.x.velocity_samples,
             [Some(1.0), Some(-1.0), Some(1.0)]
         );
         assert_eq!(prediction.x.velocity, 1.0);
-        assert!(prediction.x.safe_offset > 0.0);
+        assert!(!prediction.x.allowed);
+        assert_eq!(prediction.x.safe_offset, 0.0);
     }
 
     #[test]
@@ -641,5 +658,71 @@ mod tests {
         assert!((prediction.x.horizon_ms - 12.0).abs() < 1e-12);
         assert!((prediction.x.raw_offset - 2.4).abs() < 1e-12);
         assert!(prediction.x.safe_offset > 0.0);
+    }
+
+    #[test]
+    fn horizon_is_not_silently_clipped_by_frame_rate() {
+        for dt in [4, 8, 16, 33] {
+            let mut predictor = SingleTargetPredictor::new(high_cap_config());
+            for i in 0..4 {
+                let mut observation = observation_at(i * dt, i as f64 * dt as f64 * 0.1, 0.0);
+                observation.observation_age_ms = 20.0;
+                let prediction = predictor.predict(observation);
+                if i == 3 {
+                    assert_eq!(prediction.x.horizon_ms, 34.0);
+                    assert!((prediction.x.safe_offset - 3.4).abs() < 1e-10);
+                    // Same future-time truth for prediction on/off, not final settling.
+                    let truth = observation.aim_x + 3.4;
+                    let predicted_error =
+                        (observation.aim_x + prediction.x.safe_offset - truth).abs();
+                    let unpredicted_error = (observation.aim_x - truth).abs();
+                    assert!(predicted_error < unpredicted_error * 0.01);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zero_horizon_does_not_invent_a_future_frame() {
+        let mut predictor = SingleTargetPredictor::new(SingleTargetPredictionConfig {
+            actuation_delay_ms: 0.0,
+            lead_ms: 0.0,
+            ..config()
+        });
+        for i in 0..4 {
+            let mut observation = observation_at(i * 10, i as f64, 0.0);
+            observation.observation_age_ms = 0.0;
+            let result = predictor.predict(observation);
+            assert_eq!(result.x.horizon_ms, 0.0);
+            assert_eq!(result.x.safe_offset, 0.0);
+        }
+    }
+
+    #[test]
+    fn stop_blocks_old_velocity_and_consistent_reversal_recovers() {
+        let stopped = feed_points(
+            high_cap_config(),
+            &[
+                (0, 0.0, 0.0),
+                (10, 1.0, 0.0),
+                (20, 2.0, 0.0),
+                (30, 2.0, 0.0),
+            ],
+        );
+        assert_eq!(stopped.x.motion_state, PredictionMotionState::Unstable);
+        assert!(!stopped.x.allowed);
+        assert_eq!(stopped.x.safe_offset, 0.0);
+        let reversed = feed_points(
+            high_cap_config(),
+            &[
+                (0, 0.0, 0.0),
+                (10, 1.0, 0.0),
+                (20, 2.0, 0.0),
+                (30, 1.0, 0.0),
+                (40, 0.0, 0.0),
+            ],
+        );
+        assert!(reversed.x.allowed);
+        assert!(reversed.x.safe_offset < 0.0);
     }
 }

@@ -271,16 +271,6 @@ export type RuntimeOutputDeliveryState =
   | "sent"
   | "send_failed";
 
-export type RuntimeRecoilState = "IDLE" | "WAITING" | "READY" | "APPLIED";
-
-export type RuntimeRecoilBlockReason =
-  | "RECOIL_DISABLED"
-  | "FIRING_INACTIVE"
-  | "TARGET_REQUIRED"
-  | "INTERVAL_PENDING"
-  | "OUTPUT_SATURATED"
-  | "";
-
 export interface RuntimeControlPipelineState {
   control_mode: "continuous_atan_medoid_v2";
   movement_strategy: "latest_replace";
@@ -333,18 +323,6 @@ export interface RuntimeControlPipelineState {
   fire_delay_pending: boolean;
   fire_delay_elapsed_ms: number | null;
   fire_delay_remaining_ms: number | null;
-  recoil_mode: "interval_additive" | "target_guarded_interval_additive";
-  recoil_enabled: boolean;
-  recoil_active: boolean;
-  recoil_state: RuntimeRecoilState;
-  recoil_interval_ms: number;
-  recoil_y_counts: number;
-  recoil_elapsed_since_output_ms: number | null;
-  recoil_remaining_ms: number;
-  recoil_requested_counts_y: number;
-  recoil_emitted_counts_y: number;
-  recoil_source_generation: number | null;
-  recoil_block_reason: RuntimeRecoilBlockReason;
 }
 
 export interface RuntimeVisionControlState {
@@ -765,10 +743,10 @@ function assertControlPipeline(value: unknown, path: string): void {
     "prediction_allowed_cap_y", "prediction_safe_offset_y", "observed_error_x_px", "observed_error_y_px",
     "predicted_error_x_px", "predicted_error_y_px", "full_error_counts_x", "full_error_counts_y",
     "float_demand_x", "float_demand_y", "quantizer_residual_x", "quantizer_residual_y",
-    "fire_delay_elapsed_ms", "fire_delay_remaining_ms", "recoil_elapsed_since_output_ms"
+    "fire_delay_elapsed_ms", "fire_delay_remaining_ms"
   ];
   nullableNumbers.forEach((key) => expectNullable(record[key], `${path}.${key}`, expectFiniteNumber));
-  ["history_position_count", "recoil_source_generation"]
+  ["history_position_count"]
     .forEach((key) => expectNullable(record[key], `${path}.${key}`, expectUnsignedInteger));
   ["integer_command_x", "integer_command_y"]
     .forEach((key) => expectNullable(record[key], `${path}.${key}`, expectInteger));
@@ -778,20 +756,11 @@ function assertControlPipeline(value: unknown, path: string): void {
     expectNullable(record[key], `${path}.${key}`, (item, itemPath) =>
       expectLiteral(item, itemPath, new Set(["continuous", "stationary", "unstable", "unavailable"]))));
   expectNullable(record.block_reason, `${path}.block_reason`, expectString);
-  ["fire_delay_enabled", "fire_delay_pending", "recoil_enabled", "recoil_active"].forEach((key) =>
+  ["fire_delay_enabled", "fire_delay_pending"].forEach((key) =>
     expectBoolean(record[key], `${path}.${key}`));
-  ["fire_delay_configured_ms", "recoil_interval_ms"].forEach((key) =>
+  ["fire_delay_configured_ms"].forEach((key) =>
     expectUnsignedInteger(record[key], `${path}.${key}`));
-  ["recoil_y_counts", "recoil_requested_counts_y", "recoil_emitted_counts_y"].forEach((key) =>
-    expectInteger(record[key], `${path}.${key}`));
-  expectFiniteNumber(record.recoil_remaining_ms, `${path}.recoil_remaining_ms`);
-  expectLiteral(record.recoil_mode, `${path}.recoil_mode`, new Set([
-    "interval_additive", "target_guarded_interval_additive"
-  ]));
-  expectLiteral(record.recoil_state, `${path}.recoil_state`, new Set(["IDLE", "WAITING", "READY", "APPLIED"]));
-  expectLiteral(record.recoil_block_reason, `${path}.recoil_block_reason`, new Set([
-    "RECOIL_DISABLED", "FIRING_INACTIVE", "TARGET_REQUIRED", "INTERVAL_PENDING", "OUTPUT_SATURATED", ""
-  ]));
+
 }
 
 function assertRuntimeState(value: unknown, path: string): void {

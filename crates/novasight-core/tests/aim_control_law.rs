@@ -11,8 +11,6 @@ fn prediction_is_applied_before_projection_and_nonlinear_response() {
         projection_fov_x_deg: 90.0,
         projection_counts_per_360: std::f64::consts::TAU * 100.0,
         response_scale: 0.25,
-        response_boost: 0.0,
-        response_curve_shape: 1.0,
     };
     let law = AimControlLaw::new(parameters).expect("valid control law");
 
@@ -36,6 +34,34 @@ fn prediction_is_applied_before_projection_and_nonlinear_response() {
     let expected_y = 0.25 * 256.0 * (expected_counts.y / 256.0).atan();
     assert!((result.demand_counts.x - expected_x).abs() < 1e-12);
     assert!((result.demand_counts.y - expected_y).abs() < 1e-12);
-    assert_eq!(result.response_multiplier, 1.0);
     assert_eq!(result.effective_gain, 0.25);
+
+    // Kp is constant at every distance; changing Y must not boost X.
+    for kp in [0.0, 0.2, 0.8] {
+        let law = AimControlLaw::new(AimControlParameters {
+            response_scale: kp,
+            ..parameters
+        })
+        .unwrap();
+        let mut previous_x = None;
+        for y in [0.0, 10.0, -1000.0, 10000.0] {
+            let result = law
+                .evaluate(AimControlInput {
+                    measured_error_px: AxisPair::new(32.0, y),
+                    predicted_offset_px: AxisPair::default(),
+                })
+                .unwrap();
+            assert_eq!(result.effective_gain, kp);
+            for (counts, demand) in [
+                (result.projected_error_counts.x, result.demand_counts.x),
+                (result.projected_error_counts.y, result.demand_counts.y),
+            ] {
+                assert!((demand - kp * 256.0 * (counts / 256.0).atan()).abs() < 1e-12);
+            }
+            if let Some(x) = previous_x {
+                assert_eq!(result.demand_counts.x, x);
+            }
+            previous_x = Some(result.demand_counts.x);
+        }
+    }
 }

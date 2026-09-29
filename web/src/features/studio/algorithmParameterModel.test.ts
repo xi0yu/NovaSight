@@ -40,7 +40,7 @@ describe("target decision parameter model", () => {
       path: `pipeline.${key}`,
       label: key,
       type: key === "prediction_enabled" || key === "fire_delay_enabled" ? "bool" as const
-        : key === "target_class_priority" || key === "target_class_filter" || key === "target_class_aim_y_ratios" ? "string" as const
+        : key === "target_class_priority" || key === "target_class_weights" || key === "target_class_aim_x_ratios" || key === "target_class_filter" || key === "target_class_aim_y_ratios" ? "string" as const
           : "float" as const,
       apply_mode: "hot_update" as const,
       restart_required: false
@@ -49,7 +49,7 @@ describe("target decision parameter model", () => {
       version: 1,
       algorithm: {
         id: "continuous_atan_medoid_v2", label: "连续 Atan 控制",
-        response: { formula: "", radial_multiplier_formula: "", atan_scale_counts: 256 },
+        response: { formula: "", atan_scale_counts: 256 },
         prediction: { model: "", aim_history_points: 4, velocity_segments: 3 }
       },
       values: {},

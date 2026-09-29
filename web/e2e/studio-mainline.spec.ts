@@ -261,7 +261,6 @@ test("parameter draft survives in-app navigation without a confirmation popup", 
     revision: 1,
     control: {
       trigger_mode: "always",
-      recoil: { enabled: false, require_target: true, interval_ms: 16, y_counts: 1 },
     },
     pipeline: {},
   });
@@ -289,7 +288,6 @@ test("algorithm parameters are grouped directly without the obsolete dialog", as
     revision: 1,
     control: {
       trigger_mode: "always",
-      recoil: { enabled: false, require_target: true, interval_ms: 16, y_counts: 1 },
     },
     pipeline: {},
   });

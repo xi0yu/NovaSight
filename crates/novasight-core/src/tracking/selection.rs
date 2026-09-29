@@ -76,7 +76,7 @@ fn score(
     observation_center: (f64, f64),
     config: &TargetingConfig,
 ) -> f64 {
-    let class_score = classification::preference_score(class_id, &config.class_priority);
+    let class_score = classification::preference_score(class_id, config);
     let distance = euclidean(aim.0, aim.1, observation_center.0, observation_center.1);
     let radius = config.target_fov_radius_px.max(1e-6);
     let distance_score = 1.0 - (distance / radius).clamp(0.0, 1.0);

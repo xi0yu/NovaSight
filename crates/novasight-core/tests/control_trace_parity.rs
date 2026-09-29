@@ -96,7 +96,11 @@ fn continuous_control_decision_matches_contract_per_record() {
         !records.is_empty(),
         "continuous-control-control.jsonl must contain records"
     );
-    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    // Legacy fixture checks the steady-state law, independently of entry timing.
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig {
+        entry_ramp_ms: 0.0,
+        ..Default::default()
+    });
     for record in &records {
         let observation = observation_from_value(&record["observation"]);
         let decision = control.step(observation);
@@ -120,7 +124,8 @@ fn first_observation_has_zero_velocity_and_predicted_offset() {
         trigger_active: true,
     };
     let decision = control.step(observation);
-    assert!(decision.emit_allowed);
+    assert!(!decision.emit_allowed);
+    assert_eq!(decision.block_reason, BlockReason::EntryRampPending);
     assert_eq!(decision.velocity_x, 0.0);
     assert_eq!(decision.velocity_y, 0.0);
     assert_eq!(decision.predicted_offset_x, 0.0);
@@ -129,7 +134,10 @@ fn first_observation_has_zero_velocity_and_predicted_offset() {
 
 #[test]
 fn rust_feedback_matches_the_continuous_projection_and_atan_reference() {
-    let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
+    let mut control = AimAlgorithm::new(AimAlgorithmConfig {
+        entry_ramp_ms: 0.0,
+        ..Default::default()
+    });
     let decision = control.step(AimSample {
         generation: 1,
         target_id: 1,

@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use novasight_core::controller::recoil::{RecoilBlockReason, RecoilState};
 use novasight_core::controller::{BlockReason, ControlMode};
 use novasight_core::prediction::PredictionMotionState;
 use novasight_core::tracking::{LockReason, TargetSelection};
@@ -518,18 +517,6 @@ pub(crate) struct ControlPipelineState {
     pub fire_delay_pending: bool,
     pub fire_delay_elapsed_ms: Option<f64>,
     pub fire_delay_remaining_ms: Option<f64>,
-    pub recoil_mode: &'static str,
-    pub recoil_enabled: bool,
-    pub recoil_active: bool,
-    pub recoil_state: RecoilState,
-    pub recoil_interval_ms: u64,
-    pub recoil_y_counts: i32,
-    pub recoil_elapsed_since_output_ms: Option<f64>,
-    pub recoil_remaining_ms: f64,
-    pub recoil_requested_counts_y: i32,
-    pub recoil_emitted_counts_y: i32,
-    pub recoil_source_generation: Option<u64>,
-    pub recoil_block_reason: RecoilBlockReason,
 }
 
 impl RuntimeStatusState {
@@ -1192,33 +1179,6 @@ impl RuntimeStatusState {
                             .pipeline_metrics
                             .trigger_delay
                             .remaining_ms,
-                        recoil_mode: config.map_or("interval_additive", |config| {
-                            if config.control.recoil.require_target {
-                                "target_guarded_interval_additive"
-                            } else {
-                                "interval_additive"
-                            }
-                        }),
-                        recoil_enabled: config.is_some_and(|config| config.control.recoil.enabled),
-                        recoil_active: snapshot.pipeline_metrics.recoil.engaged(),
-                        recoil_state: snapshot.pipeline_metrics.recoil.state,
-                        recoil_interval_ms: snapshot.pipeline_metrics.recoil.interval_ms,
-                        recoil_y_counts: snapshot.pipeline_metrics.recoil.configured_y_counts,
-                        recoil_elapsed_since_output_ms: snapshot
-                            .pipeline_metrics
-                            .recoil
-                            .elapsed_since_output_ms,
-                        recoil_remaining_ms: snapshot.pipeline_metrics.recoil.remaining_ms,
-                        recoil_requested_counts_y: snapshot
-                            .pipeline_metrics
-                            .recoil
-                            .requested_counts_y,
-                        recoil_emitted_counts_y: snapshot.pipeline_metrics.recoil.emitted_counts_y,
-                        recoil_source_generation: snapshot
-                            .pipeline_metrics
-                            .recoil
-                            .source_generation,
-                        recoil_block_reason: snapshot.pipeline_metrics.recoil.block_reason,
                     },
                 },
             },
@@ -1675,6 +1635,7 @@ const fn block_reason_label(reason: BlockReason) -> &'static str {
         BlockReason::GeometryInvalid => "GEOMETRY_INVALID",
         BlockReason::TriggerInactive => "TRIGGER_INACTIVE",
         BlockReason::TriggerDelayPending => "TRIGGER_DELAY_PENDING",
+        BlockReason::EntryRampPending => "ENTRY_RAMP_PENDING",
         BlockReason::DeadZone => "DEAD_ZONE",
         BlockReason::DemandOutOfRange => "DEMAND_OUT_OF_RANGE",
         BlockReason::None => "",
@@ -1723,7 +1684,6 @@ fn serialized_label(value: &impl Serialize) -> String {
 #[cfg(test)]
 mod tests {
     use novasight_core::Generation;
-    use novasight_core::controller::recoil::{RecoilBlockReason, RecoilDecision, RecoilState};
     use novasight_core::controller::{AimResult, BlockReason, ControlMode};
     use novasight_core::prediction::PredictionMotionState;
     use novasight_core::tracking::{LockReason, TargetSelection, TrackId};
@@ -1890,17 +1850,6 @@ mod tests {
             quantizer_residual_y: -0.1,
             ..AimResult::default()
         };
-        snapshot.pipeline_metrics.recoil = RecoilDecision {
-            state: RecoilState::Applied,
-            interval_ms: 16,
-            configured_y_counts: 2,
-            elapsed_since_output_ms: Some(17.0),
-            remaining_ms: 0.0,
-            requested_counts_y: 2,
-            emitted_counts_y: 2,
-            source_generation: Some(9),
-            block_reason: RecoilBlockReason::None,
-        };
         snapshot.pipeline_metrics.targeting_batches = 1;
         snapshot.pipeline.state = PipelineState::Running;
         snapshot.subsystems.inference.state = SubsystemState::Running;
@@ -1990,13 +1939,13 @@ mod tests {
         assert_eq!(pipeline["integer_command_x"], 12);
         assert_eq!(pipeline["quantizer_residual_y"], -0.1);
         assert_eq!(pipeline["block_reason"], "");
-        assert_eq!(pipeline["recoil_state"], "APPLIED");
-        assert_eq!(pipeline["recoil_active"], true);
-        assert_eq!(pipeline["recoil_interval_ms"], 16);
-        assert_eq!(pipeline["recoil_y_counts"], 2);
-        assert_eq!(pipeline["recoil_emitted_counts_y"], 2);
-        assert_eq!(pipeline["recoil_source_generation"], 9);
-        assert_eq!(pipeline["recoil_block_reason"], "");
+        assert!(
+            pipeline
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|key| !key.starts_with("recoil_"))
+        );
     }
 
     #[test]

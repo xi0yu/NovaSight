@@ -25,8 +25,7 @@ frame_age_ms: f64
 
 Capture and control timestamps use the host monotonic nanosecond domain.
 `target_id` is null when the controller had no current valid target.
-`emitted_counts_*` are the controller's integer tracking demand before recoil
-composition and the final fixed device clamp.
+`emitted_counts_*` are the controller's integer tracking demand before the final fixed device clamp.
 
 ## Live delivery evidence
 

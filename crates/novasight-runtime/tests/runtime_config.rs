@@ -86,8 +86,8 @@ fn compose_pipeline_config_uses_continuous_response_fields() {
     let mut revision = 0;
     for (key, value) in [
         ("p_response_scale", 0.42),
-        ("p_response_boost", 0.60),
-        ("p_response_curve_shape", 1.50),
+        ("entry_ramp_ms", 250.0),
+        ("response_reference_hz", 60.0),
     ] {
         let config = YamlConfigRepository::new(&path)
             .save_field(
@@ -104,8 +104,8 @@ fn compose_pipeline_config_uses_continuous_response_fields() {
     let pipeline = compose_pipeline_config(&with_test_capture(config), None).unwrap();
 
     assert_eq!(pipeline.control.response_scale, 0.42);
-    assert_eq!(pipeline.control.response_boost, 0.60);
-    assert_eq!(pipeline.control.response_curve_shape, 1.50);
+    assert_eq!(pipeline.control.entry_ramp_ms, 250.0);
+    assert_eq!(pipeline.control.response_reference_hz, 60.0);
 }
 
 #[test]
@@ -122,6 +122,8 @@ fn compose_pipeline_config_wires_target_decision_policy() {
     config.pipeline.target_selection_continuity_weight = 0.5;
     config.pipeline.target_selection_motion_weight = 0.6;
     config.pipeline.target_selection_motion_horizon_ms = 45.0;
+    config.pipeline.target_class_weights = "0:0.8,1:0.4".into();
+    config.pipeline.target_class_aim_x_ratios = "0:0.3,1:0.7".into();
 
     let pipeline = compose_pipeline_config(&with_test_capture(config), None).unwrap();
 
@@ -133,4 +135,7 @@ fn compose_pipeline_config_wires_target_decision_policy() {
     assert_eq!(pipeline.targeting.selection_weights.continuity, 0.5);
     assert_eq!(pipeline.targeting.selection_weights.motion, 0.6);
     assert_eq!(pipeline.targeting.selection_motion_horizon_ms, 45.0);
+    assert_eq!(pipeline.targeting.class_weights[&0], 0.8);
+    assert_eq!(pipeline.targeting.class_weights[&1], 0.4);
+    assert_eq!(pipeline.targeting.class_aim_x_ratios[&0], 0.3);
 }

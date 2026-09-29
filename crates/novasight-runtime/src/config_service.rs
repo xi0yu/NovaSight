@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use novasight_core::SelectedCaptureProfile;
 use novasight_store::config::{
     AppConfig, CaptureConfig, CapturePreference, ConfigError, ConfigRepository,
-    RecoilConfig as ConfigRecoilConfig, TriggerMode as ConfigTriggerMode, YamlConfigRepository,
+    TriggerMode as ConfigTriggerMode, YamlConfigRepository,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -128,48 +128,6 @@ impl PersistedTriggerMode<'_> {
                 "trigger mode persisted and applied to the live runtime".to_owned()
             } else {
                 "trigger mode applied live; other configuration remains pending daemon restart"
-                    .to_owned()
-            },
-        }
-    }
-}
-
-pub(crate) struct PersistedRecoil<'a> {
-    _update_guard: MutexGuard<'a, ()>,
-    current_guard: RwLockWriteGuard<'a, AppConfig>,
-    effective_revision: &'a AtomicU64,
-    effective_config: &'a std::sync::RwLock<AppConfig>,
-    config: AppConfig,
-    advance_effective_revision: bool,
-}
-
-impl PersistedRecoil<'_> {
-    pub(crate) fn commit(mut self) -> ConfigUpdate {
-        *self.current_guard = self.config.clone();
-        if self.advance_effective_revision {
-            *self
-                .effective_config
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.config.clone();
-            self.effective_revision
-                .store(self.config.revision, Ordering::Release);
-        } else {
-            self.effective_config
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .control
-                .recoil = self.config.control.recoil.clone();
-        }
-        ConfigUpdate {
-            config: self.config,
-            apply_mode: ConfigApplyMode::HotUpdate,
-            restart_required: !self.advance_effective_revision,
-            applied: true,
-            rolled_back: false,
-            message: if self.advance_effective_revision {
-                "recoil configuration persisted and applied to the live runtime".to_owned()
-            } else {
-                "recoil configuration applied live; other configuration remains pending daemon restart"
                     .to_owned()
             },
         }
@@ -503,10 +461,7 @@ impl ConfigService {
     ) -> Result<ConfigUpdate, ConfigServiceError> {
         let _update_guard = self.inner.update_lock.lock().await;
         let coordinated_control_update = update.section == "control"
-            && matches!(
-                update.key.as_str(),
-                "output_enabled" | "trigger_mode" | "recoil"
-            );
+            && matches!(update.key.as_str(), "output_enabled" | "trigger_mode");
         if coordinated_control_update {
             return Err(ConfigServiceError::HotUpdateTransactionRequired);
         }
@@ -714,14 +669,6 @@ impl ConfigService {
             .await
     }
 
-    pub async fn update_recoil(
-        &self,
-        runtime: &RuntimeHandle,
-        update: ConfigFieldUpdate,
-    ) -> Result<ConfigUpdate, ConfigServiceError> {
-        runtime.update_recoil_config(self.clone(), update).await
-    }
-
     pub async fn update_pipeline(
         &self,
         runtime: &RuntimeHandle,
@@ -750,16 +697,6 @@ impl ConfigService {
         }
         serde_json::from_value(update.value.clone())
             .map_err(|_| ConfigServiceError::TriggerModeUpdateInvalid)
-    }
-
-    pub(crate) fn recoil_value(
-        update: &ConfigFieldUpdate,
-    ) -> Result<ConfigRecoilConfig, ConfigServiceError> {
-        if update.section != "control" || update.key != "recoil" {
-            return Err(ConfigServiceError::RecoilUpdateInvalid);
-        }
-        serde_json::from_value(update.value.clone())
-            .map_err(|_| ConfigServiceError::RecoilUpdateInvalid)
     }
 
     pub(crate) async fn persist_output_gate(
@@ -883,50 +820,6 @@ impl ConfigService {
         .and_then(|result| result.map_err(ConfigServiceError::Config))?;
 
         Ok(PersistedTriggerMode {
-            _update_guard,
-            current_guard,
-            effective_revision: &self.inner.effective_revision,
-            effective_config: &self.inner.effective_config,
-            config,
-            advance_effective_revision,
-        })
-    }
-
-    pub(crate) async fn persist_recoil(
-        &self,
-        update: ConfigFieldUpdate,
-        recoil: ConfigRecoilConfig,
-    ) -> Result<PersistedRecoil<'_>, ConfigServiceError> {
-        let _ = Self::recoil_value(&update)?;
-        let _update_guard = self.inner.update_lock.lock().await;
-        let current_guard = self.inner.current.write().await;
-        let current = current_guard.clone();
-        let effective_revision = self.effective_revision();
-        let advance_effective_revision = current.revision == effective_revision;
-        let expected_revision = update.expected_revision.unwrap_or(current.revision);
-        if expected_revision != current.revision {
-            return Err(ConfigError::RevisionConflict {
-                path: self.inner.repository.path().to_owned(),
-                expected: expected_revision,
-                actual: current.revision,
-            }
-            .into());
-        }
-
-        let mut candidate = current;
-        candidate.control.recoil = recoil;
-        candidate
-            .validate_configured_adapters()
-            .map_err(ConfigServiceError::RecoilValidation)?;
-        let repository = self.inner.repository.clone();
-        let config = tokio::task::spawn_blocking(move || {
-            repository.save_config(&candidate, expected_revision)
-        })
-        .await
-        .map_err(ConfigServiceError::SaveTask)
-        .and_then(|result| result.map_err(ConfigServiceError::Config))?;
-
-        Ok(PersistedRecoil {
             _update_guard,
             current_guard,
             effective_revision: &self.inner.effective_revision,
@@ -1096,14 +989,10 @@ pub enum ConfigServiceError {
     TriggerModeUpdateInvalid,
     #[error("trigger mode update is incompatible with the current configuration: {0}")]
     TriggerModeValidation(novasight_store::config::ConfigValidationError),
-    #[error("recoil update must target control.recoil with a valid recoil object")]
-    RecoilUpdateInvalid,
-    #[error("recoil update is incompatible with the current configuration: {0}")]
-    RecoilValidation(novasight_store::config::ConfigValidationError),
     #[error("pipeline update must target the pipeline section")]
     PipelineUpdateInvalid,
     #[error(
-        "control.output_enabled, control.trigger_mode, and control.recoil require the coordinated runtime configuration transaction"
+        "control.output_enabled and control.trigger_mode require the coordinated runtime configuration transaction"
     )]
     HotUpdateTransactionRequired,
     #[error(
@@ -1159,8 +1048,6 @@ impl ConfigServiceError {
             Self::OutputGateValidation(_) => "CONFIG_VALIDATION_ERROR",
             Self::TriggerModeUpdateInvalid => "CONFIG_FIELD_VALUE_INVALID",
             Self::TriggerModeValidation(_) => "CONFIG_VALIDATION_ERROR",
-            Self::RecoilUpdateInvalid => "CONFIG_FIELD_VALUE_INVALID",
-            Self::RecoilValidation(_) => "CONFIG_VALIDATION_ERROR",
             Self::PipelineUpdateInvalid => "CONFIG_FIELD_VALUE_INVALID",
             Self::HotUpdateTransactionRequired => "CONFIG_HOT_UPDATE_TRANSACTION_REQUIRED",
             Self::OutputGateDisabledButNotPersisted { .. } => {

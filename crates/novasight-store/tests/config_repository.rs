@@ -7,7 +7,200 @@ use serde_yaml::Value;
 
 static NEXT_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn response_reference_defaults_off_and_validates_saved_updates() {
+    let directory = TempDirectory::new();
+    let path = directory.join("response-time.yaml");
+    fs::write(
+        &path,
+        "schema_version: 17\npipeline:\n  p_response_scale: 0.42\n",
+    )
+    .unwrap();
+    let loaded = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(loaded.pipeline.response_reference_hz, 0.0);
+    let repository = YamlConfigRepository::new(&path);
+    for value in [-1.0, 241.0] {
+        assert!(
+            repository
+                .save_field(
+                    "pipeline",
+                    "response_reference_hz",
+                    Value::from(value),
+                    loaded.revision
+                )
+                .is_err()
+        );
+    }
+    repository
+        .save_field(
+            "pipeline",
+            "response_reference_hz",
+            Value::from(60.0),
+            loaded.revision,
+        )
+        .unwrap();
+    let saved = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(saved.pipeline.response_reference_hz, 60.0);
+    assert_eq!(saved.pipeline.p_response_scale, 0.42);
+}
+
+#[test]
+fn retired_distance_gain_is_removed_without_changing_kp_or_ramp() {
+    let directory = TempDirectory::new();
+    let path = directory.join("distance-gain.yaml");
+    fs::write(&path, "schema_version: 17\npipeline:\n  p_response_scale: 0.42\n  entry_ramp_ms: 100\n  p_response_boost: 2.0\n  p_response_curve_shape: 1.5\n").unwrap();
+    let loaded = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(loaded.pipeline.p_response_scale, 0.42);
+    assert_eq!(loaded.pipeline.entry_ramp_ms, 100.0);
+    let repository = YamlConfigRepository::new(&path);
+    let before = fs::read(&path).unwrap();
+    for key in ["p_response_boost", "p_response_curve_shape"] {
+        assert!(!loaded.pipeline.extra.contains_key(key));
+        assert!(
+            repository
+                .save_field("pipeline", key, Value::from(1.0), loaded.revision)
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+    repository
+        .save_field(
+            "pipeline",
+            "entry_ramp_ms",
+            Value::from(100.0),
+            loaded.revision,
+        )
+        .unwrap();
+    let document = fs::read_to_string(&path).unwrap();
+    assert!(!document.contains("p_response_boost"));
+    assert!(!document.contains("p_response_curve_shape"));
+    let saved = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(saved.pipeline.p_response_scale, 0.42);
+    assert_eq!(saved.pipeline.entry_ramp_ms, 100.0);
+}
+
+#[test]
+fn retired_recoil_is_removed_but_legacy_trigger_delay_survives() {
+    for canonical in [false, true] {
+        let directory = TempDirectory::new();
+        let path = directory.join("retired-recoil.yaml");
+        let pipeline = if canonical {
+            "pipeline:\n  fire_delay_enabled: false\n  fire_delay_ms: 12\n"
+        } else {
+            ""
+        };
+        fs::write(&path, format!(
+            "schema_version: 17\n{pipeline}control:\n  recoil:\n    enabled: true\n    interval_ms: 0\n    y_counts: -1\n    fire_delay_enabled: true\n    fire_delay_ms: 40\n"
+        )).unwrap();
+        let repository = YamlConfigRepository::new(&path);
+        let loaded = YamlConfigRepository::load(&path).unwrap();
+        assert!(!loaded.control.extra.contains_key("recoil"));
+        assert_eq!(loaded.pipeline.fire_delay_enabled, !canonical);
+        assert_eq!(
+            loaded.pipeline.fire_delay_ms,
+            if canonical { 12 } else { 40 }
+        );
+        let before = fs::read(&path).unwrap();
+        let error = repository
+            .save_field("control", "recoil", Value::Null, loaded.revision)
+            .unwrap_err();
+        assert_eq!(error.code(), "CONFIG_UNSUPPORTED_CONFIG_KEY");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let saved = repository
+            .save_field(
+                "pipeline",
+                "target_range_scale",
+                Value::from(1.5),
+                loaded.revision,
+            )
+            .unwrap();
+        assert_eq!(saved.pipeline.fire_delay_ms, loaded.pipeline.fire_delay_ms);
+        assert!(!fs::read_to_string(&path).unwrap().contains("recoil:"));
+        let reloaded = YamlConfigRepository::load(&path).unwrap();
+        assert_eq!(
+            reloaded.pipeline.fire_delay_ms,
+            loaded.pipeline.fire_delay_ms
+        );
+    }
+}
+
+#[test]
+fn capsule_settings_round_trip_and_reject_invalid_values() {
+    let directory = TempDirectory::new();
+    let path = directory.join("capsule.yaml");
+    fs::write(
+        &path,
+        "schema_version: 17\npipeline:\n  target_fov_radius_px: 180.0\n  target_range_shape: circle\ncontrol:\n  recoil:\n    require_target: false\n",
+    )
+    .unwrap();
+    let original = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(original.pipeline.target_range_scale, 1.0);
+    assert!(!original.pipeline.extra.contains_key("target_range_shape"));
+    assert!(!original.control.extra.contains_key("recoil"));
+    let repository = YamlConfigRepository::new(&path);
+    let revision = YamlConfigRepository::load(&path).unwrap().revision;
+    repository
+        .save_field("pipeline", "target_range_scale", Value::from(5.0), revision)
+        .unwrap();
+    let saved = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(saved.pipeline.target_range_scale, 5.0);
+    for invalid in [0.0, 5.1, f64::NAN] {
+        assert!(
+            repository
+                .save_field(
+                    "pipeline",
+                    "target_range_scale",
+                    Value::from(invalid),
+                    saved.revision
+                )
+                .is_err()
+        );
+    }
+    assert!(
+        repository
+            .save_field(
+                "pipeline",
+                "target_range_shape",
+                Value::from("triangle"),
+                saved.revision
+            )
+            .is_err()
+    );
+    let unchanged = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(unchanged.revision, saved.revision);
+    assert_eq!(unchanged.pipeline.target_range_scale, 5.0);
+}
+
 struct TempDirectory(PathBuf);
+
+#[test]
+fn class_values_persist_and_reject_malformed_pairs() {
+    let directory = TempDirectory::new();
+    let path = directory.join("classes.yaml");
+    YamlConfigRepository::initialize_default(&path).unwrap();
+    let repository = YamlConfigRepository::new(&path);
+    for key in [
+        "target_class_weights",
+        "target_class_aim_x_ratios",
+        "target_class_aim_y_ratios",
+    ] {
+        let revision = YamlConfigRepository::load(&path).unwrap().revision;
+        let saved = repository
+            .save_field("pipeline", key, Value::from("0:0.8,1:0.4"), revision)
+            .unwrap();
+        for invalid in ["0:1.1", "0:NaN", "-1:0.4", "0:0.4,0:0.8"] {
+            assert!(
+                repository
+                    .save_field("pipeline", key, Value::from(invalid), saved.revision)
+                    .is_err()
+            );
+        }
+    }
+    let loaded = YamlConfigRepository::load(&path).unwrap();
+    assert_eq!(loaded.pipeline.target_class_weights, "0:0.8,1:0.4");
+    assert_eq!(loaded.pipeline.target_class_aim_x_ratios, "0:0.8,1:0.4");
+    assert_eq!(loaded.pipeline.target_class_aim_y_ratios, "0:0.8,1:0.4");
+}
 
 impl TempDirectory {
     fn new() -> Self {
@@ -41,8 +234,6 @@ fn bundled_runtime_config_loads_current_algorithm_defaults() {
 
     assert_eq!(config.schema_version, 17);
     assert_eq!(config.pipeline.p_response_scale, 0.20);
-    assert_eq!(config.pipeline.p_response_boost, 0.50);
-    assert_eq!(config.pipeline.p_response_curve_shape, 1.0);
     assert_eq!(config.pipeline.max_output_x_counts, 127.0);
     assert_eq!(config.pipeline.max_output_y_counts, 127.0);
     assert_eq!(config.pipeline.prediction_lead_ms, 16.0);
@@ -83,7 +274,6 @@ pipeline:
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(persisted["schema_version"], 17);
     assert_eq!(persisted["pipeline"]["prediction_lead_ms"], 16.0);
-    assert_eq!(persisted["pipeline"]["p_response_boost"], 0.5);
     assert_eq!(persisted["pipeline"]["prediction_cap_px"], 10.0);
     assert!(persisted["pipeline"]["atan_scale_counts"].is_null());
 }

@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use novasight_core::tracking::{KalmanConfig, SelectionWeights, TargetingConfig};
+use novasight_core::tracking::{
+    KalmanConfig, SelectionWeights, TargetingConfig, default_target_range_scale,
+};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
@@ -74,7 +76,6 @@ impl AppConfig {
 
     pub fn validate_configured_adapters(&self) -> Result<(), ConfigValidationError> {
         self.pipeline.validate()?;
-        self.control.recoil.validate()?;
         if let Some(capture) = &self.capture {
             capture.validate()?;
         }
@@ -130,7 +131,6 @@ impl AppConfig {
         &self,
     ) -> Result<VisionAdapterConfig<'_>, ConfigValidationError> {
         self.pipeline.validate()?;
-        self.control.recoil.validate()?;
         if self.limits.stream_fps == 0 {
             return Err(ConfigValidationError::new(
                 "limits.stream_fps",
@@ -210,8 +210,6 @@ pub struct RustControlConfig {
     pub output_enabled: bool,
     #[serde(default)]
     pub trigger_mode: TriggerMode,
-    #[serde(default)]
-    pub recoil: RecoilConfig,
     #[serde(default, flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -224,60 +222,6 @@ pub enum TriggerMode {
     #[default]
     Always,
     Hardware,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RecoilConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_recoil_require_target")]
-    pub require_target: bool,
-    #[serde(default = "default_recoil_interval_ms")]
-    pub interval_ms: u64,
-    #[serde(default = "default_recoil_y_counts")]
-    pub y_counts: i32,
-    #[serde(default, flatten)]
-    pub extra: BTreeMap<String, Value>,
-}
-
-impl Default for RecoilConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            require_target: default_recoil_require_target(),
-            interval_ms: default_recoil_interval_ms(),
-            y_counts: default_recoil_y_counts(),
-            extra: BTreeMap::new(),
-        }
-    }
-}
-
-impl RecoilConfig {
-    fn validate(&self) -> Result<(), ConfigValidationError> {
-        if !(1..=5_000).contains(&self.interval_ms) {
-            return Err(ConfigValidationError::new(
-                "control.recoil.interval_ms",
-                "must be within 1..=5000 ms",
-            ));
-        }
-        if !(1..=i16::MAX as i32).contains(&self.y_counts) {
-            return Err(ConfigValidationError::new(
-                "control.recoil.y_counts",
-                "must be within 1..=32767 positive-Y counts",
-            ));
-        }
-        Ok(())
-    }
-}
-
-const fn default_recoil_require_target() -> bool {
-    true
-}
-const fn default_recoil_interval_ms() -> u64 {
-    16
-}
-const fn default_recoil_y_counts() -> i32 {
-    1
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -338,10 +282,10 @@ pub struct PipelineRuntimeConfig {
     pub projection_counts_per_360: f64,
     #[serde(default = "default_p_response_scale")]
     pub p_response_scale: f64,
-    #[serde(default = "default_p_response_boost")]
-    pub p_response_boost: f64,
-    #[serde(default = "default_response_curve_shape")]
-    pub p_response_curve_shape: f64,
+    #[serde(default)]
+    pub response_reference_hz: f64,
+    #[serde(default = "default_entry_ramp_ms")]
+    pub entry_ramp_ms: f64,
     #[serde(default = "default_max_output_counts")]
     pub max_output_x_counts: f64,
     #[serde(default = "default_max_output_counts")]
@@ -362,6 +306,8 @@ pub struct PipelineRuntimeConfig {
     pub prediction_cap_px: f64,
     #[serde(default = "default_target_fov_radius_px")]
     pub target_fov_radius_px: f64,
+    #[serde(default = "default_target_range_scale")]
+    pub target_range_scale: f64,
     #[serde(default = "default_target_min_confidence")]
     pub target_min_confidence: f32,
     #[serde(default = "default_target_track_max_lost_age_ms")]
@@ -398,6 +344,10 @@ pub struct PipelineRuntimeConfig {
     pub tracker_kalman_nis_hard_reject: f64,
     #[serde(default = "default_target_class_priority")]
     pub target_class_priority: String,
+    #[serde(default)]
+    pub target_class_weights: String,
+    #[serde(default)]
+    pub target_class_aim_x_ratios: String,
     #[serde(default = "default_target_class_filter")]
     pub target_class_filter: String,
     #[serde(default = "default_target_selection_distance_weight")]
@@ -444,8 +394,8 @@ impl Default for PipelineRuntimeConfig {
             projection_fov_x_deg: default_projection_fov_x_deg(),
             projection_counts_per_360: default_projection_counts_per_360(),
             p_response_scale: default_p_response_scale(),
-            p_response_boost: default_p_response_boost(),
-            p_response_curve_shape: default_response_curve_shape(),
+            response_reference_hz: 0.0,
+            entry_ramp_ms: default_entry_ramp_ms(),
             max_output_x_counts: default_max_output_counts(),
             max_output_y_counts: default_max_output_counts(),
             fire_delay_enabled: false,
@@ -455,6 +405,7 @@ impl Default for PipelineRuntimeConfig {
             prediction_lead_ms: default_prediction_lead_ms(),
             prediction_cap_px: default_prediction_cap_px(),
             target_fov_radius_px: default_target_fov_radius_px(),
+            target_range_scale: default_target_range_scale(),
             target_min_confidence: default_target_min_confidence(),
             target_track_max_lost_age_ms: default_target_track_max_lost_age_ms(),
             tracker_max_match_distance: default_tracker_max_match_distance(),
@@ -473,6 +424,8 @@ impl Default for PipelineRuntimeConfig {
             tracker_kalman_nis_threshold: default_tracker_kalman_nis_threshold(),
             tracker_kalman_nis_hard_reject: default_tracker_kalman_nis_hard_reject(),
             target_class_priority: default_target_class_priority(),
+            target_class_weights: String::new(),
+            target_class_aim_x_ratios: String::new(),
             target_class_filter: default_target_class_filter(),
             target_selection_distance_weight: default_target_selection_distance_weight(),
             target_selection_class_weight: default_target_selection_class_weight(),
@@ -496,14 +449,6 @@ impl Default for PipelineRuntimeConfig {
 }
 
 impl PipelineRuntimeConfig {
-    pub fn continuous_response(&self) -> ContinuousResponseRuntimeConfig {
-        ContinuousResponseRuntimeConfig {
-            scale: self.p_response_scale,
-            boost: self.p_response_boost,
-            curve_shape: self.p_response_curve_shape,
-        }
-    }
-
     fn validate(&self) -> Result<(), ConfigValidationError> {
         validate_finite_range(
             "pipeline.freshness_threshold_ms",
@@ -530,18 +475,6 @@ impl PipelineRuntimeConfig {
             100.0,
         )?;
         validate_finite_range(
-            "pipeline.p_response_boost",
-            self.p_response_boost,
-            0.0,
-            100.0,
-        )?;
-        validate_finite_range(
-            "pipeline.p_response_curve_shape",
-            self.p_response_curve_shape,
-            0.5,
-            4.0,
-        )?;
-        validate_finite_range(
             "pipeline.max_output_x_counts",
             self.max_output_x_counts,
             1.0,
@@ -552,6 +485,13 @@ impl PipelineRuntimeConfig {
             self.max_output_y_counts,
             1.0,
             f64::from(i16::MAX),
+        )?;
+        validate_finite_range("pipeline.entry_ramp_ms", self.entry_ramp_ms, 0.0, 2000.0)?;
+        validate_finite_range(
+            "pipeline.response_reference_hz",
+            self.response_reference_hz,
+            0.0,
+            240.0,
         )?;
         if self.fire_delay_ms > 5_000 {
             return Err(ConfigValidationError::new(
@@ -582,6 +522,12 @@ impl PipelineRuntimeConfig {
             self.target_fov_radius_px,
             0.000_001,
             100_000.0,
+        )?;
+        validate_finite_range(
+            "pipeline.target_range_scale",
+            self.target_range_scale,
+            0.1,
+            5.0,
         )?;
         if !self.target_min_confidence.is_finite()
             || !(0.0..=1.0).contains(&self.target_min_confidence)
@@ -699,6 +645,11 @@ impl PipelineRuntimeConfig {
             1_000_000.0,
         )?;
         parse_target_class_priority(&self.target_class_priority)?;
+        parse_class_values(&self.target_class_weights, "pipeline.target_class_weights")?;
+        parse_class_values(
+            &self.target_class_aim_x_ratios,
+            "pipeline.target_class_aim_x_ratios",
+        )?;
         parse_target_class_filter(&self.target_class_filter)?;
         for (field, value) in [
             (
@@ -788,13 +739,6 @@ impl PipelineRuntimeConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ContinuousResponseRuntimeConfig {
-    pub scale: f64,
-    pub boost: f64,
-    pub curve_shape: f64,
-}
-
 pub fn parse_target_class_priority(value: &str) -> Result<Vec<u32>, ConfigValidationError> {
     let mut classes = Vec::new();
     for item in value.split(',') {
@@ -858,35 +802,33 @@ pub fn parse_target_class_filter(
 pub fn parse_target_class_aim_y_ratios(
     value: &str,
 ) -> Result<BTreeMap<u32, f64>, ConfigValidationError> {
+    parse_class_values(value, "pipeline.target_class_aim_y_ratios")
+}
+
+pub fn parse_class_values(
+    value: &str,
+    field: &'static str,
+) -> Result<BTreeMap<u32, f64>, ConfigValidationError> {
     let mut ratios = BTreeMap::new();
     if value.trim().is_empty() {
         return Ok(ratios);
     }
     for item in value.split(',') {
         let (class_id, ratio) = item.trim().split_once(':').ok_or_else(|| {
-            ConfigValidationError::new(
-                "pipeline.target_class_aim_y_ratios",
-                "must use class_id:ratio pairs separated by commas",
-            )
+            ConfigValidationError::new(field, "must use class_id:ratio pairs separated by commas")
         })?;
         let class_id = class_id.trim().parse::<u32>().map_err(|_| {
-            ConfigValidationError::new(
-                "pipeline.target_class_aim_y_ratios",
-                "class ids must be unsigned integers",
-            )
+            ConfigValidationError::new(field, "class ids must be unsigned integers")
         })?;
         let ratio = ratio.trim().parse::<f64>().map_err(|_| {
-            ConfigValidationError::new(
-                "pipeline.target_class_aim_y_ratios",
-                "ratios must be finite numbers within 0..=1",
-            )
+            ConfigValidationError::new(field, "ratios must be finite numbers within 0..=1")
         })?;
         if !ratio.is_finite()
             || !(0.0..=1.0).contains(&ratio)
             || ratios.insert(class_id, ratio).is_some()
         {
             return Err(ConfigValidationError::new(
-                "pipeline.target_class_aim_y_ratios",
+                field,
                 "class ids must be unique and ratios must be finite within 0..=1",
             ));
         }
@@ -921,16 +863,12 @@ const fn default_projection_counts_per_360() -> f64 {
     9_980.0
 }
 
-const fn default_response_curve_shape() -> f64 {
-    1.0
+const fn default_entry_ramp_ms() -> f64 {
+    200.0
 }
 
 const fn default_p_response_scale() -> f64 {
     0.20
-}
-
-const fn default_p_response_boost() -> f64 {
-    0.50
 }
 
 const fn default_velocity_history_reset_gap_ms() -> f64 {
@@ -1806,22 +1744,6 @@ mod tests {
     }
 
     #[test]
-    fn continuous_response_uses_canonical_fields() {
-        let config = PipelineRuntimeConfig {
-            p_response_scale: 0.42,
-            p_response_boost: 0.60,
-            p_response_curve_shape: 1.50,
-            ..PipelineRuntimeConfig::default()
-        };
-
-        let response = config.continuous_response();
-
-        assert_eq!(response.scale, 0.42);
-        assert_eq!(response.boost, 0.60);
-        assert_eq!(response.curve_shape, 1.50);
-    }
-
-    #[test]
     fn target_priority_rejects_duplicates_before_runtime_composition() {
         let config = PipelineRuntimeConfig {
             target_class_priority: "0,1,0".to_owned(),
@@ -1912,21 +1834,13 @@ mod tests {
     }
 
     #[test]
-    fn recoil_and_fire_delay_configuration_are_typed_and_bounded() {
-        let mut config: AppConfig = serde_yaml::from_str(
-            "pipeline:\n  fire_delay_enabled: true\n  fire_delay_ms: 40\ncontrol:\n  recoil:\n    enabled: true\n    interval_ms: 20\n    y_counts: 3\n",
-        )
-        .unwrap();
-        assert!(config.control.recoil.enabled);
-        assert_eq!(config.control.recoil.interval_ms, 20);
+    fn fire_delay_configuration_is_typed() {
+        let config: AppConfig =
+            serde_yaml::from_str("pipeline:\n  fire_delay_enabled: true\n  fire_delay_ms: 40\n")
+                .unwrap();
         assert!(config.pipeline.fire_delay_enabled);
         assert_eq!(config.pipeline.fire_delay_ms, 40);
-        assert_eq!(config.control.recoil.y_counts, 3);
         config.validate_configured_adapters().unwrap();
-
-        config.control.recoil.y_counts = 0;
-        let error = config.validate_configured_adapters().unwrap_err();
-        assert_eq!(error.field, "control.recoil.y_counts");
     }
 
     #[test]

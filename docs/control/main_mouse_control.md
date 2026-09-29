@@ -24,7 +24,6 @@ latest DetectionBatch
 -> continuous counts-domain Atan response
 -> truncating device-count quantizer
 -> capacity-one latest-replace slot
--> recoil composition
 -> fixed X/Y device-boundary clamp
 -> PointerDevice::send
 -> at most one move(dx, dy) per output tick
@@ -65,25 +64,33 @@ source_error = e_ctrl * roi_size / observation_size
 theta = atan(source_error / focal_length)
 full_counts = theta * counts_per_360 / (2*pi)
 
-rho = hypot(full_counts_x, full_counts_y)
 S = 256 counts
-r = rho / S
-curve = 1 - exp(-(r ^ response_curve_shape))
-R = 1 + response_boost * curve
-response_gain = response_scale * R
-u = response_gain * S * atan(full_counts / S)
+q = clamp((t - entry_start) / entry_ramp_ms, 0, 1)
+a = 3*q*q - 2*q*q*q; entry_ramp_ms=0: a=1
+b = response_reference_hz == 0 ? 1 : min(control_dt_ms, 50) * response_reference_hz / 1000
+u = b * a * response_scale * S * atan(full_counts / S)
 tracking = truncating_quantize(u)
 out_x = clamp(tracking_x, -max_output_x_counts, max_output_x_counts)
-out_y = clamp(tracking_y + recoil_y, -max_output_y_counts, max_output_y_counts)
+out_y = clamp(tracking_y, -max_output_y_counts, max_output_y_counts)
 ```
 
-`response_scale` is the base response strength. `response_boost` controls how
-much extra strength appears as error grows. `response_curve_shape` controls when
-that extra strength appears. Prediction changes only the future aim point and
-does not modify response gain.
+`response_scale` is Kp, the constant normal response gain.
+`entry_ramp_ms` is the time to rise smoothly from zero to that gain, not a
+delay before movement. There is no additional distance-dependent gain.
+`response_reference_hz` defaults to zero (legacy per-observation demand). A
+positive value calibrates Kp at that controller frequency, scaling demand by
+elapsed controller time, capped at 50 ms. The first eligible sample establishes
+the clock with zero demand. Trigger release, invalid/stale observations, target
+switches and capture discontinuities discard elapsed-time debt. Changing the
+reference frequency resets entry state. This is approximate rate normalization,
+not exact closed-loop equivalence: nonlinear response, quantization, latency,
+output limits and latest-slot replacement still affect delivered motion.
+The Studio response illustration uses editable draft values and synthetic
+constant-error inputs; it does not send device commands or estimate accuracy.
+Prediction changes only the future aim point.
 `S` is an internal fixed Atan scale and is not a user-facing configuration field.
 Prediction is bounded before projection; fixed per-axis limits own the final
-device output ceiling after recoil is composed.
+device output ceiling.
 
 ## Quantization And Latest-Replace Delivery
 
@@ -95,7 +102,7 @@ accumulator -= integer_count
 
 The quantizer owns integer conversion and fractional residual. Direction
 changes clear opposite-direction residual. The only count ceiling is the final
-fixed X/Y clamp after recoil composition.
+fixed X/Y clamp.
 Trigger-inactive or blocked observations clear the limiter and cannot bank
 historical movement.
 
@@ -110,8 +117,7 @@ range. It does not merge pending counts or split one command into a trajectory.
 schema_version: 17
 pipeline:
   p_response_scale: 0.20
-  p_response_boost: 0.50
-  p_response_curve_shape: 1.0
+  response_reference_hz: 0.0
   max_output_x_counts: 127.0
   max_output_y_counts: 127.0
   fire_delay_enabled: false
@@ -139,7 +145,7 @@ delivery state and block reason.
 
 ## Calibration Boundary
 
-FOV, `counts_per_360`, response strength, response curve, Atan scale,
-per-update limits and recoil counts need Jetson + kmNet + game trace
+FOV, `counts_per_360`, response strength, entry ramp duration,
+per-update limits need Jetson + kmNet + game trace
 calibration. These values must be evaluated independently from capture/inference
 latency and transport capacity.

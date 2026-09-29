@@ -145,7 +145,7 @@ real dependency.
 | Capture and YOLO inference | `novasight-platform-jetson`, `novasight-tensorrt`, and `native/` own frame preparation and model execution. | Target ranking, class-role interpretation, movement demand |
 | Detection-result production | TensorRT/CUDA decode and NMS plus `novasight-tensorrt/src/gpu.rs` validate a bounded final result and publish `novasight-core::DetectionBatch` through `PipelineIngress`. | CPU tensor reinterpretation, internal target policy, physical output |
 | Target and control algorithms | `novasight-core::tracking`, `prediction`, and `controller` consume validated detections and produce a target choice and `AimResult`. `raw class_id` remains detector fact; internal preferences are separate policy. | TensorRT, HTTP, database, kmNet transport |
-| Algorithm-output receiver | The private `TargetedObservation` and `OutputPlan` handoffs and device worker in `novasight-pipeline` combine recoil, limits, current gates, and freshness before `PointerDevice::send`. | YOLO parsing, target-class scoring, frontend state |
+| Algorithm-output receiver | The private `TargetedObservation` and `OutputPlan` handoffs and device worker in `novasight-pipeline` combine limits, current gates, and freshness before `PointerDevice::send`. | YOLO parsing, target-class scoring, frontend state |
 | Runtime authority | `novasight-runtime::RuntimeSupervisor` composes the above areas and owns lifecycle/configuration transactions. | A second selection algorithm or a second physical-output authority |
 
 Keep the existing `DetectionBatch`, `TargetSelection`, `AimResult`, and

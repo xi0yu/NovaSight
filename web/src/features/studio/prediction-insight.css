@@ -1,0 +1,60 @@
+.prediction-insight {
+  --prediction-observed: var(--signal-info);
+  --prediction-future: var(--ns-red-500);
+  --prediction-delay: var(--signal-attention);
+  display: grid;
+  grid-template-columns: minmax(200px, .8fr) minmax(0, 1.6fr);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.prediction-story { background: var(--bg-app); display: flex; flex-direction: column; justify-content: center; }
+.prediction-story img { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; object-fit: contain; }
+.prediction-story > div { padding: 0 20px 20px; }
+.prediction-insight h3 { font-size: 14px; font-weight: 600; margin: 8px 0; color: var(--text-primary); }
+.prediction-story p { font-size: 12px; line-height: 1.7; color: var(--text-secondary); margin: 0; }
+.prediction-edit-state { font-size: 11px; color: var(--text-secondary); }
+.prediction-measurement { padding: 20px; min-width: 0; }
+.prediction-measurement header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.prediction-measurement header h3 { margin: 0; }
+.prediction-measurement header > span { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.prediction-insight[data-tone="active"] header h3 { color: var(--prediction-observed); }
+.prediction-insight[data-tone="attention"] header h3 { color: var(--prediction-delay); }
+.prediction-vector-row { display: grid; grid-template-columns: minmax(0, 1fr) 128px; gap: 16px; align-items: center; }
+.prediction-vector-row figure { margin: 8px 0 16px; min-width: 0; }
+.prediction-vector-row svg { display: block; width: 100%; max-height: 180px; }
+.prediction-grid { fill: none; stroke: var(--border-subtle); }
+.prediction-envelope { fill: none; stroke: var(--border-default); stroke-dasharray: 2 6; }
+.prediction-raw { stroke: var(--prediction-delay); stroke-width: 2; stroke-dasharray: 4 4; }
+.prediction-applied { stroke: var(--prediction-future); stroke-width: 2; }
+.prediction-destination { fill: var(--prediction-future); }
+.prediction-origin { fill: var(--prediction-observed); stroke: var(--bg-surface); stroke-width: 2; }
+.prediction-vector-row figcaption { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; font-size: 10px; color: var(--text-muted); }
+.prediction-observed-key { color: var(--prediction-observed); }
+.prediction-future-key { color: var(--prediction-future); }
+.prediction-raw-key { color: var(--prediction-delay); }
+.prediction-vector-row dl { display: grid; gap: 12px; margin: 12px 0; }
+.prediction-vector-row dt { font-size: 11px; color: var(--text-secondary); }
+.prediction-vector-row dd { font-size: 16px; font-weight: 550; margin: 4px 0 0; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+.prediction-time-bar { display: flex; height: 5px; border-radius: 4px; overflow: hidden; background: var(--border-subtle); }
+.prediction-time-bar i { min-width: 0; background: var(--prediction-observed); }
+.prediction-time-bar i[data-part="1"] { background: var(--prediction-delay); }
+.prediction-time-bar i[data-part="2"] { background: var(--prediction-future); }
+.prediction-time-labels { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 8px; font-size: 11px; color: var(--text-secondary); }
+.prediction-time-labels b { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+.prediction-explanation { font-size: 12px; line-height: 1.7; color: var(--text-secondary); margin: 12px 0 0; }
+@media (max-width: 1000px) {
+  .prediction-insight { grid-template-columns: 1fr; }
+  .prediction-story { flex-direction: row; align-items: center; justify-content: flex-start; }
+  .prediction-story img { width: 144px; flex-shrink: 0; }
+  .prediction-story > div { padding: 12px 16px; }
+}
+@media (max-width: 480px) {
+  .prediction-measurement { padding: 16px; }
+  .prediction-vector-row { grid-template-columns: 1fr; gap: 0; }
+  .prediction-vector-row dl { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .prediction-vector-row dd { font-size: 14px; }
+  .prediction-story img { width: 104px; }
+}

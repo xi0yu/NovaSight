@@ -1247,7 +1247,6 @@ async fn apply_config_field_update(
 ) -> Result<ConfigUpdate, ControlApiError> {
     let hot_output_gate = update.section == "control" && update.key == "output_enabled";
     let hot_trigger_mode = update.section == "control" && update.key == "trigger_mode";
-    let hot_recoil = update.section == "control" && update.key == "recoil";
     let hot_pipeline = hot_pipeline_config_update(&update);
     if hot_output_gate && update.value.as_bool() == Some(true) {
         ensure_hardware_control_license(state).await?;
@@ -1255,15 +1254,13 @@ async fn apply_config_field_update(
             require_physical_output_ack_header(headers)?;
         }
     }
-    if (hot_trigger_mode && update.value.as_str() == Some("always")) || hot_recoil || hot_pipeline {
+    if (hot_trigger_mode && update.value.as_str() == Some("always")) || hot_pipeline {
         require_physical_output_ack(state, headers).await?;
     }
     let result = if hot_output_gate {
         service.update_output_gate(&state.runtime, update).await?
     } else if hot_trigger_mode {
         service.update_trigger_mode(&state.runtime, update).await?
-    } else if hot_recoil {
-        service.update_recoil(&state.runtime, update).await?
     } else if hot_pipeline {
         apply_pipeline_config_update(state, service, update).await?
     } else if runtime_reconfigurable_config_update(&update) {

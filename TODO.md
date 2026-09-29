@@ -12,7 +12,6 @@ DetectionBatch latest-only
 -> frame age + actuation delay + lead
 -> 连续 Atan 控制
 -> 整数 counts 量化
--> 压枪 +Y 合成
 -> 固定 X/Y 设备限幅
 -> generation / trigger / output gate 复核
 -> kmNet move(dx, dy)
@@ -23,7 +22,7 @@ DetectionBatch latest-only
 
 ## 当前开发顺序
 
-1. 保持参数页面与上述链路同序：触发延迟、预测/算法、压枪和固定限幅；
+1. 保持参数页面与上述链路同序：触发延迟、预测/算法和固定限幅；
    运行总开关只在首页出现。
 2. 普通页面只保留能够解释实际产品行为的参数；Tracker/Kalman 标定项
    只能进入专家区域，回放实现细节不得成为产品参数。
@@ -46,12 +45,12 @@ DetectionBatch latest-only
 
   ```text
   out_x = clamp(tracking_x, -max_x, max_x)
-  out_y = clamp(tracking_y + recoil_y, -max_y, max_y)
+  out_y = clamp(tracking_y, -max_y, max_y)
   ```
 
 - kmNet 硬件触发释放后不存在漏发；最新 generation 以外的命令不会到达
   设备。
-- 记录真实静态目标、横向移动、纵向移动、遮挡和压枪手感，再校准 FOV、
+- 记录真实静态目标、横向移动、纵向移动和遮挡，再校准 FOV、
   counts/360、响应参数与执行延迟。
 
 ## 完成边界

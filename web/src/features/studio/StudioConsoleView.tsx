@@ -67,13 +67,14 @@ import {
   ActionConfirmationDialog,
   type ActionConfirmationRequest
 } from "./ActionConfirmationDialog";
-import { AimTargetRange } from "./AimTargetRange";
-import type { AimRole, AimRoleRatios } from "../targeting/types";
+import { TargetClassEditor, parseClassValues, setClassValue } from "./TargetClassEditor";
+import { TargetRangeControls } from "./TargetRangeControls";
+import { PredictionInsight, ResponseExperiment } from "./PredictionInsight";
+import type { AimRole } from "../targeting/types";
 import { ControlTracePanel } from "./ControlTracePanel";
 import { ModuleSwitch } from "./ControlSwitches";
 import {
   InlineNumberControl,
-  InlineTextControl,
   ParameterNumberControl,
   ParameterPresetControl,
   TextControl
@@ -119,6 +120,7 @@ import {
 import { buildControlTrace } from "./controlTrace";
 import { persistRuntimeConfigField } from "./runtimeConfigPersistence";
 import "./studio-settings.css";
+import "./algorithm-workspace.css";
 
 const CONTROL_ALGORITHM_LABEL = "连续 Atan 控制";
 const CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX = "配置 schema 与 Studio 参数不一致";
@@ -252,7 +254,6 @@ const ARTIFACT_KIND_RANK: Record<string, number> = {
   onnx: 1
 };
 const EMPTY_RECORD: Record<string, unknown> = Object.freeze({});
-const EMPTY_AIM_ROLES: Record<string, AimRole> = Object.freeze({});
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -294,27 +295,6 @@ function profileRoleRecords(value: unknown): Record<string, Record<string, AimRo
       )
     ])
   );
-}
-
-function serializeClassAimRatios(
-  roles: Record<string, AimRole>,
-  ratios: AimRoleRatios
-): string {
-  return Object.entries(roles)
-    .flatMap(([classId, role]) => {
-      const numericClassId = Number(classId);
-      return Number.isInteger(numericClassId) && numericClassId >= 0 && numericClassId <= 255
-        ? [[numericClassId, ratios[role]] as const]
-        : [];
-    })
-    .sort(([left], [right]) => left - right)
-    .map(([classId, ratio]) => `${classId}:${ratio.toFixed(2)}`)
-    .join(",");
-}
-
-function classDisplayName(value: string, classId: number): string {
-  const normalized = value.trim().replace(new RegExp(`^${classId}\\s*[-:：]\\s*`), "");
-  return normalized || `未知类别（cls ${classId}）`;
 }
 
 function parseClassPriority(value: string): number[] {
@@ -359,34 +339,6 @@ function clampNumber(value: number, min: number, max: number): number {
 
 function readString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
-}
-
-function formatRecoilBlockReason(value: unknown): string {
-  const reason = readString(value);
-  const labels: Record<string, string> = {
-    RECOIL_DISABLED: "关闭",
-    FIRING_INACTIVE: "等待真实左键",
-    TARGET_REQUIRED: "等待有效目标",
-    INTERVAL_PENDING: "等待压枪间隔",
-    OUTPUT_SATURATED: "设备范围已饱和"
-  };
-  return labels[reason] ?? (reason || "等待真实左键或有效目标");
-}
-
-function formatRecoilState(stateValue: unknown, reasonValue: unknown): string {
-  const state = readString(stateValue);
-  const completedLabels: Record<string, string> = {
-    READY: "本轮压枪已就绪",
-    APPLIED: "本轮压枪已叠加"
-  };
-  if (completedLabels[state]) {
-    return completedLabels[state];
-  }
-  const reason = readString(reasonValue);
-  if (reason) {
-    return formatRecoilBlockReason(reason);
-  }
-  return state === "IDLE" ? "待机" : state || NO_SAMPLE;
 }
 
 const NO_SAMPLE = "—";
@@ -629,7 +581,7 @@ function parameterPageFieldChanges(
 
   const baselineControl = asRecord(baseline.control);
   const draftControl = asRecord(draft.control);
-  const supportedControlKeys = new Set(["recoil", "aim"]);
+  const supportedControlKeys = new Set(["aim"]);
   const unsupportedControlKeys = Array.from(new Set([
     ...Object.keys(baselineControl),
     ...Object.keys(draftControl)
@@ -640,13 +592,6 @@ function parameterPageFieldChanges(
     throw new Error(`参数页包含不支持保存的控制字段：${unsupportedControlKeys.join("、")}`);
   }
 
-  const recoilChange = runtimeConfigValuesEqual(baselineControl.recoil, draftControl.recoil)
-    ? null
-    : {
-        section: "control" as const,
-        key: "recoil",
-        value: draftControl.recoil as RuntimeConfigValue
-      };
   const aimChange = runtimeConfigValuesEqual(baselineControl.aim, draftControl.aim)
     ? null
     : {
@@ -687,9 +632,6 @@ function parameterPageFieldChanges(
   if (aimChange) changes.push(aimChange);
   changes.push(...inferenceChanges);
   changes.push(...pipelineChanges);
-  if (recoilChange) {
-    changes.push(recoilChange);
-  }
   return changes;
 }
 
@@ -747,7 +689,7 @@ export function StudioConsoleView({
   const overviewModules = modulesForPage(studioLayout, "overview");
   const captureModules = modulesForPage(studioLayout, "capture");
   const captureModuleOrder = moduleOrderForPage(studioLayout, "capture");
-  const parameterModuleOrder = moduleOrderForPage(studioLayout, "params");
+  const [algorithmSection, setAlgorithmSection] = useState<"response" | "targeting" | "motion">("response");
   const activityModules = moduleOrderForPage(studioLayout, "activity");
   const overviewModuleOrder = moduleOrderForPage(studioLayout, "overview");
   const settingsModules = moduleOrderForPage(studioLayout, "settings");
@@ -1408,51 +1350,21 @@ export function StudioConsoleView({
       ?? (rustControlPlane
         ? rustPipelineConfig.target_class_priority
         : inferenceConfig.detection_class_priority),
-    "1,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+    "0,1"
   );
   const classPriorityIds = useMemo(
     () => parseClassPriority(detectionClassPriority),
     [detectionClassPriority]
   );
-  const { aimConfig, rawAimRoleRatios, recoilConfig } = useMemo(() => {
-    const aim = nestedRecord(controlConfig, "aim");
-    return {
-      aimConfig: aim,
-      rawAimRoleRatios: nestedRecord(aim, "role_y_ratios"),
-      recoilConfig: nestedRecord(controlConfig, "recoil")
-    };
-  }, [controlConfig]);
   const rustOtherAimRatio = readNumber(
     rustControlPlane ? rustPipelineConfig.target_aim_y_ratio : undefined,
     0.22
   );
-  // Memoize so downstream `===` checks (e.g. onEditingChange guards, the
-  // P0-A short-circuit, the Slider draftValue external-change detection) stay
-  // stable across partial WebSocket frames that don't actually change aim.
-  const aimRoleRatios: AimRoleRatios = useMemo(
-    () => ({
-      head: clampNumber(readNumber(rawAimRoleRatios.head, 0.22), 0, 1),
-      body: clampNumber(readNumber(rawAimRoleRatios.body, 0.22), 0, 1),
-      other: clampNumber(
-        rustControlPlane
-          ? rustOtherAimRatio
-          : readNumber(rawAimRoleRatios.other, 0.22),
-        0,
-        1
-      )
-    }),
-    [rawAimRoleRatios, rustControlPlane, rustOtherAimRatio]
-  );
-  const classRoleProfiles = useMemo(
-    () => profileRoleRecords(aimConfig.class_roles),
-    [aimConfig.class_roles]
-  );
-  const activeClassRoles = classRoleProfiles[activeDetectionProfile] ?? EMPTY_AIM_ROLES;
   const targetFovRadiusPx = readNumber(rustPipelineConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(rustPipelineConfig.candidate_max_aspect_ratio, 6);
   const targetSelectionWeights = [
     { key: "target_selection_distance_weight", label: "距离", className: "distance", value: readNumber(rustPipelineConfig.target_selection_distance_weight, 0.45), detail: "越靠近准星，候选分越高。" },
-    { key: "target_selection_class_weight", label: "内部类别", className: "class", value: readNumber(rustPipelineConfig.target_selection_class_weight, 0.20), detail: "使用当前模型配置中的类别优先顺序；raw cls 本身不锁定身份。" },
+    { key: "target_selection_class_weight", label: "内部类别", className: "class", value: readNumber(rustPipelineConfig.target_selection_class_weight, 0.20), detail: "使用各 cls 的优先权重；它只参与候选评分，不锁定身份。" },
     { key: "target_selection_confidence_weight", label: "置信度", className: "confidence", value: readNumber(rustPipelineConfig.target_selection_confidence_weight, 0.15), detail: "本帧 YOLO 置信度越高，候选分越高。" },
     { key: "target_selection_size_weight", label: "大小", className: "size", value: readNumber(rustPipelineConfig.target_selection_size_weight, 0.05), detail: "画面中更大的目标获得少量加分。" },
     { key: "target_selection_continuity_weight", label: "连续性", className: "continuity", value: readNumber(rustPipelineConfig.target_selection_continuity_weight, 0.10), detail: "最近稳定关联过的目标获得加分。" },
@@ -1481,8 +1393,6 @@ export function StudioConsoleView({
   const controlFovX = readNumber(rustPipelineConfig.projection_fov_x_deg, 105);
   const controlCountsPer360 = readNumber(rustPipelineConfig.projection_counts_per_360, 9980);
   const pResponseScale = readNumber(rustPipelineConfig.p_response_scale, 0.20);
-  const pResponseBoost = readNumber(rustPipelineConfig.p_response_boost, 0.50);
-  const pResponseCurveShape = readNumber(rustPipelineConfig.p_response_curve_shape, 1);
   const maxOutputXCounts = readNumber(rustPipelineConfig.max_output_x_counts, 127);
   const maxOutputYCounts = readNumber(rustPipelineConfig.max_output_y_counts, 127);
   const controlPredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, true);
@@ -1504,12 +1414,8 @@ export function StudioConsoleView({
   const trackerKalmanNisThreshold = readNumber(rustPipelineConfig.tracker_kalman_nis_threshold, 9.21);
   const trackerKalmanNisHardReject = readNumber(rustPipelineConfig.tracker_kalman_nis_hard_reject, 16);
   const targetSelectionMotionHorizonMs = readNumber(rustPipelineConfig.target_selection_motion_horizon_ms, 30);
-  const recoilEnabled = readBoolean(recoilConfig.enabled, false);
-  const recoilRequireTarget = readBoolean(recoilConfig.require_target, true);
-  const recoilIntervalMs = readNumber(recoilConfig.interval_ms, 16);
   const fireDelayEnabled = readBoolean(rustPipelineConfig.fire_delay_enabled, false);
   const fireDelayMs = readNumber(rustPipelineConfig.fire_delay_ms, 0);
-  const recoilYCounts = readNumber(recoilConfig.y_counts, 1);
   const hardwareTriggerRequired = readString(controlConfig.trigger_mode, "hardware") === "hardware";
   const controlAlgorithmLabel = readString(configSchema?.algorithm?.label, CONTROL_ALGORITHM_LABEL);
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
@@ -1698,12 +1604,19 @@ export function StudioConsoleView({
     [runtimeDetectionItems]
   );
   const classEditorIds = useMemo(() => Array.from(new Set([
+    ...Array.from({ length: 16 }, (_, classId) => classId),
     ...detectionClasses.map((_, classId) => classId),
     ...classPriorityIds,
+    ...Object.keys(parseClassValues(rustPipelineConfig.target_class_weights)).map(Number),
+    ...Object.keys(parseClassValues(rustPipelineConfig.target_class_aim_x_ratios)).map(Number),
+    ...Object.keys(parseClassValues(rustPipelineConfig.target_class_aim_y_ratios)).map(Number),
     ...runtimeDetectionClassIds,
     ...(activeRuntimeClassId !== null ? [activeRuntimeClassId] : [])
   ])).filter((classId) => classId >= 0 && classId <= 255).sort((left, right) => left - right), [
     activeRuntimeClassId,
+    rustPipelineConfig.target_class_weights,
+    rustPipelineConfig.target_class_aim_x_ratios,
+    rustPipelineConfig.target_class_aim_y_ratios,
     classPriorityIds,
     detectionClasses,
     runtimeDetectionClassIds
@@ -1745,8 +1658,6 @@ export function StudioConsoleView({
   const runtimeFireDelayMs = controlPipeline?.fire_delay_configured_ms ?? fireDelayMs;
   const fireDelayElapsedMs = controlPipeline?.fire_delay_elapsed_ms ?? null;
   const fireDelayRemainingMs = controlPipeline?.fire_delay_remaining_ms ?? null;
-  const runtimeRecoilEnabled = controlPipeline?.recoil_enabled ?? null;
-  const effectiveRecoilEnabled = runtimeRecoilEnabled ?? recoilEnabled;
   const mouseObservation = control?.mouse_observation;
   const controlHasSample = control?.global_state === "CALCULATED";
   const controlHasTarget = target !== null && target !== undefined;
@@ -1930,18 +1841,12 @@ export function StudioConsoleView({
     maxOutputXCounts,
     maxOutputYCounts,
     integerCommand: formatPoint(controlPipeline?.integer_command_x, controlPipeline?.integer_command_y, 0, "counts"),
-    recoilEnabled: effectiveRecoilEnabled,
     hardwareTriggerRequired,
     fireDelayEnabled,
     fireDelayConfiguredMs: runtimeFireDelayMs,
     fireDelayPending,
     fireDelayElapsedMs,
     fireDelayRemainingMs,
-    recoilState: controlPipeline?.recoil_state ?? "",
-    recoilStatus: formatRecoilState(controlPipeline?.recoil_state, controlPipeline?.recoil_block_reason),
-    recoilRemainingMs: controlPipeline?.recoil_remaining_ms ?? null,
-    recoilRequestedY: controlPipeline?.recoil_requested_counts_y ?? null,
-    recoilEmittedY: controlPipeline?.recoil_emitted_counts_y ?? null,
     outputEnabled: runtimeOutputEnabled ?? outputEnabled,
     willEmit: controlWillEmit,
     triggerActive: controlTriggerActive,
@@ -2482,7 +2387,6 @@ export function StudioConsoleView({
         && (runtimeOutputEnabled === true || outputEnabled)
         && (
           ["replay", "consumers", "limits", "capture", "inference", "hardware", "pipeline"].includes(section)
-          || (section === "control" && key === "recoil")
         )
         && options?.physicalOutputAcknowledged !== true
       ) {
@@ -2908,19 +2812,6 @@ export function StudioConsoleView({
     [activeDetectionProfile, detectionFilterProfiles, rustControlPlane, updateConfigField]
   );
 
-  const updateControlGroupField = useCallback(
-    async (group: "aim" | "recoil", key: string, value: RuntimeConfigValue) => {
-      const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
-      const control = nestedRecord(base, "control");
-      const groupValue = {
-        ...nestedRecord(control, group),
-        [key]: value
-      };
-      await updateConfigField("control", group, groupValue as RuntimeConfigValue);
-    },
-    [runtimeConfig, updateConfigField]
-  );
-
   const updatePipelineField = useCallback(
     async (key: TargetingPipelineField, value: RuntimeConfigValue) => {
       await updateConfigField("pipeline", key, value);
@@ -2951,8 +2842,8 @@ export function StudioConsoleView({
   const algorithmParameterGroups = activePage === "params"
     ? buildAlgorithmParameterGroups({
       pResponseScale,
-      pResponseBoost,
-      pResponseCurveShape,
+      responseReferenceHz: readNumber(rustPipelineConfig.response_reference_hz, 0),
+      entryRampMs: readNumber(rustPipelineConfig.entry_ramp_ms, 200),
       predictionActuationDelayMs,
       controlPredictionLeadMs,
       controlPredictionHistoryResetGapMs,
@@ -2982,7 +2873,7 @@ export function StudioConsoleView({
       step={parameter.step}
       unit={parameter.unit}
       kind={parameter.kind}
-      applyMode={parameter.applyMode ?? "live"}
+      applyMode={activePage === "params" ? "save" : parameter.applyMode ?? "live"}
       riskLevel={parameter.riskLevel}
       onCommit={(value) => updateControlPipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
       onEditingChange={handleParameterEditingChange}
@@ -3034,7 +2925,7 @@ export function StudioConsoleView({
       step={parameter.step}
       unit={parameter.unit}
       kind={parameter.kind}
-      applyMode={parameter.applyMode ?? "live"}
+      applyMode="save"
       riskLevel={parameter.riskLevel}
       onCommit={(value) => updatePipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
       onEditingChange={handleParameterEditingChange}
@@ -3056,142 +2947,15 @@ export function StudioConsoleView({
     [activeDetectionProfile, detectionClasses, detectionProfiles, updateConfigField]
   );
 
-  const updateAimRoleRatio = useCallback(
-    async (role: AimRole, ratio: number) => {
-      const nextRatios = {
-        ...aimRoleRatios,
-        [role]: clampNumber(Number(ratio.toFixed(2)), 0, 1)
-      };
-      if (rustControlPlane) {
-        const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
-        const next = base ? normalizeRuntimeConfig(base) : null;
-        if (!next) {
-          return;
-        }
-        const control = asRecord(next.control);
-        const aim = nestedRecord(control, "aim");
-        next.control = {
-          ...control,
-          aim: { ...aim, role_y_ratios: nextRatios }
-        } as RuntimeConfig[string];
-        next.pipeline = {
-          ...asRecord(next.pipeline),
-          target_aim_y_ratio: nextRatios.other,
-          target_class_aim_y_ratios: serializeClassAimRatios(
-            activeClassRoles,
-            nextRatios
-          )
-        } as RuntimeConfig[string];
-        stageConfigDialogDraft(next);
-        return;
-      }
-      await updateControlGroupField(
-        "aim",
-        "role_y_ratios",
-        nextRatios as RuntimeConfigValue
-      );
-    },
-    [
-      activeClassRoles,
-      aimRoleRatios,
-      runtimeConfig,
-      rustControlPlane,
-      stageConfigDialogDraft,
-      updateControlGroupField
-    ]
-  );
-
-  const updateClassAimRole = useCallback(
-    async (classId: number, role: AimRole) => {
-      const nextProfiles = {
-        ...classRoleProfiles,
-        [activeDetectionProfile]: {
-          ...activeClassRoles,
-          [String(classId)]: role
-        }
-      };
-      if (rustControlPlane) {
-        const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
-        const next = base ? normalizeRuntimeConfig(base) : null;
-        if (!next) {
-          return;
-        }
-        const control = asRecord(next.control);
-        const aim = nestedRecord(control, "aim");
-        next.control = {
-          ...control,
-          aim: { ...aim, class_roles: nextProfiles }
-        } as RuntimeConfig[string];
-        next.pipeline = {
-          ...asRecord(next.pipeline),
-          target_class_aim_y_ratios: serializeClassAimRatios(
-            nextProfiles[activeDetectionProfile] ?? {},
-            aimRoleRatios
-          )
-        } as RuntimeConfig[string];
-        stageConfigDialogDraft(next);
-        return;
-      }
-      await updateControlGroupField("aim", "class_roles", nextProfiles as RuntimeConfigValue);
-    },
-    [
-      activeClassRoles,
-      activeDetectionProfile,
-      aimRoleRatios,
-      classRoleProfiles,
-      runtimeConfig,
-      rustControlPlane,
-      stageConfigDialogDraft,
-      updateControlGroupField
-    ]
-  );
-
-  const setClassPriorityPosition = useCallback(
-    async (classId: number, targetIndex: number) => {
-      const current = [...orderedClassEditorIds];
-      const index = current.indexOf(classId);
-      if (index < 0 || index === targetIndex) {
-        return;
-      }
-      current.splice(index, 1);
-      current.splice(clampNumber(targetIndex, 0, current.length), 0, classId);
-      if (rustControlPlane) {
-        const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
-        const next = base ? normalizeRuntimeConfig(base) : null;
-        if (!next) {
-          return;
-        }
-        next.inference = {
-          ...asRecord(next.inference),
-          detection_class_priority: current.join(","),
-          detection_class_priorities: {
-            ...detectionPriorityProfiles,
-            [activeDetectionProfile]: current.join(",")
-          }
-        } as RuntimeConfig[string];
-        next.pipeline = {
-          ...asRecord(next.pipeline),
-          target_class_priority: current.join(",")
-        } as RuntimeConfig[string];
-        stageConfigDialogDraft(next);
-        return;
-      }
-      await updateConfigField("inference", "detection_class_priorities", {
-        ...detectionPriorityProfiles,
-        [activeDetectionProfile]: current.join(",")
-      } as RuntimeConfigValue);
-      await updateConfigField("inference", "detection_class_priority", current.join(","));
-    },
-    [
-      orderedClassEditorIds,
-      activeDetectionProfile,
-      detectionPriorityProfiles,
-      runtimeConfig,
-      rustControlPlane,
-      stageConfigDialogDraft,
-      updateConfigField
-    ]
-  );
+  const updateClassValues = (classId: number, changes: Record<string, number>) => {
+    const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+    if (!base) return;
+    const next = normalizeRuntimeConfig(base);
+    const pipeline = { ...asRecord(next.pipeline) };
+    for (const [key, value] of Object.entries(changes)) pipeline[key] = setClassValue(pipeline[key], classId, value);
+    next.pipeline = pipeline as RuntimeConfig[string];
+    stageConfigDialogDraft(next);
+  };
 
   const toggleDetectionClass = useCallback(
     async (classId: number) => {
@@ -4315,11 +4079,7 @@ export function StudioConsoleView({
                   <span>Atan 浮点需求</span><b>{formatPoint(controlPipeline?.float_demand_x, controlPipeline?.float_demand_y, 2)}</b>
                   <span>X / Y 输出上限</span><b>{`${formatOptionalNumber(maxOutputXCounts, 0)} / ${formatOptionalNumber(maxOutputYCounts, 0)} counts`}</b>
                   <span>整数输出</span><b>{formatPoint(controlPipeline?.integer_command_x, controlPipeline?.integer_command_y, 0, "counts")}</b>
-                  <span>独立压枪状态</span><b>{effectiveRecoilEnabled ? formatRecoilState(controlPipeline?.recoil_state, controlPipeline?.recoil_block_reason) : "关闭"}</b>
                   <span>触发延迟</span><b>{fireDelayMs > 0 ? `${fireDelayMs.toFixed(0)} ms` : "立即触发"}</b>
-                  <span>压枪间隔 / +Y</span><b>{`${formatOptionalNumber(controlPipeline?.recoil_interval_ms, 0)} ms / ${formatOptionalNumber(controlPipeline?.recoil_y_counts, 0)} counts`}</b>
-                  <span>已等待 / 剩余</span><b>{`${formatOptionalNumber(controlPipeline?.recoil_elapsed_since_output_ms, 2)} / ${formatOptionalNumber(controlPipeline?.recoil_remaining_ms, 2)} ms`}</b>
-                  <span>本轮请求 / 已发送</span><b>{`${formatOptionalNumber(controlPipeline?.recoil_requested_counts_y, 0)} / ${formatOptionalNumber(controlPipeline?.recoil_emitted_counts_y, 0)} counts`}</b>
                   <span>控制预算</span><b>{formatPoint(control?.dx, control?.dy, 0, "counts")}</b>
                 </div>
               </div>
@@ -4377,53 +4137,62 @@ export function StudioConsoleView({
               </div>
             </div> : null}
             {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
+            <div className="algorithm-workspace">
+              <div className="algorithm-flow" data-running={runtimeMainlineRunning}>
+                <span><i /><strong>{runtime === null ? "等待连接" : runtimeMainlineRunning ? "主链运行中" : runtimeLifecycleActive ? "主链状态切换中" : "主链已停止"}</strong></span>
+                <span>首页总开关管理采集、推理与控制</span>
+                <span>无目标 / 范围外 → 不输出</span>
+              </div>
+              <nav className="algorithm-tabs" aria-label="算法调校分区">
+                {([{ id: "response", label: "范围与触发" }, { id: "targeting", label: "目标与瞄点" }, { id: "motion", label: "移动与输出" }] as const).map((item) => (
+                  <button key={item.id} data-section={item.id} type="button" aria-pressed={algorithmSection === item.id} onClick={() => setAlgorithmSection(item.id)}><i aria-hidden="true" />{item.label}</button>
+                ))}
+              </nav>
             <div className="parameter-workspace">
-            {parameterModuleOrder.map((moduleId) => {
+            {[algorithmSection].map((moduleId) => {
               if (moduleId === "response") return (
-            <section className="parameter-group" data-module="response" id="parameter-start-conditions" aria-labelledby="parameter-start-conditions-title" key={moduleId}>
-              <header className="parameter-group-heading">
-                <span>触发</span>
-                <div><h2 id="parameter-start-conditions-title">触发设置</h2><p>只设置触发信号生效前的等待时间；触发按键由设备绑定负责。</p></div>
-              </header>
-            <ol className="control-chain-settings" aria-label="触发设置">
-              <li className="console-card control-chain-setting">
-                <span className="control-chain-step" aria-hidden="true"><NovaIcon name="clock" size={16} /></span>
-                <div className="control-chain-setting-title">
-                  <b>触发延迟</b>
-                  <small>收到触发信号后等待多久再执行控制；设为 0 ms 时立即执行。</small>
+                <div key={moduleId}>
+                  <TargetRangeControls
+                    scale={readNumber(rustPipelineConfig.target_range_scale, 1)}
+                    onScaleCommit={(value) => updatePipelineField("target_range_scale", value)}
+                    onEditingChange={handleParameterEditingChange}
+                  />
+                  <section className="algorithm-entry-delay">
+                    <div><h3>触发延迟</h3><p>按住触发键后等待多久开始控制，0 ms 表示立即响应。</p></div>
+                    <label className="control-chain-inline-field"><InlineNumberControl ariaLabel="触发延迟" value={fireDelayMs} onCommit={updateTriggerDelay} /><i>ms</i></label>
+                  </section>
                 </div>
-                <div className="control-chain-setting-controls">
-                  <label className="control-chain-inline-field">
-                    <span>delay</span>
-                    <InlineNumberControl
-                      ariaLabel="触发延迟"
-                      value={fireDelayMs}
-                      onCommit={updateTriggerDelay}
-                    />
-                    <i>ms</i>
-                  </label>
-                </div>
-              </li>
-
-            </ol>
-            </section>
-            );
+              );
               if (moduleId === "motion") return (
             <section className="parameter-group" data-module="motion" id="parameter-motion-response" aria-labelledby="parameter-motion-response-title" key={moduleId}>
               <header className="parameter-group-heading">
                 <span>移动</span>
-                <div><h2 id="parameter-motion-response-title">移动响应</h2><p>调整移动速度、提前量、补偿和单次输出边界。</p></div>
+                <div><h2 id="parameter-motion-response-title">移动响应</h2><p>先试算响应，再观察运行数据；编辑后保存并应用到设备。</p></div>
               </header>
+              <PredictionInsight
+                sample={controlPipeline}
+                configuredEnabled={controlPredictionEnabled}
+                live={runtimeMainlineRunning && controlHasSample && controlHasTarget
+                  && (realtimeStatus === "connected" || realtimeStatus === "fallback")
+                  && controlFrameAgeMs !== null && controlFrameAgeMs >= 0 && controlFrameAgeMs <= freshnessThresholdMs}
+              />
             <ol className="control-chain-settings" aria-label="移动响应设置">
               <li className="console-card control-chain-setting parameter-expanded-setting">
                 <span className="control-chain-step" aria-hidden="true"><NovaIcon name="prediction-line" size={16} /></span>
                 <div className="control-chain-setting-title">
                   <b>移动手感</b>
-                  <small>基础响应决定整体速度；远距增强决定偏差较大时的追赶力度。</small>
+                  <small>Kp 决定跟随力度，入场时长决定多久升到完整力度；基准频率用于时间换算，不是额外增强。</small>
                 </div>
                 <div className="parameter-inline-grid">
                   {responseParameters.map(renderAlgorithmNumberParameter)}
                 </div>
+              </li>
+              <li>
+                <ResponseExperiment
+                  kp={pResponseScale}
+                  rampMs={readNumber(rustPipelineConfig.entry_ramp_ms, 200)}
+                  referenceHz={readNumber(rustPipelineConfig.response_reference_hz, 0)}
+                />
               </li>
 
               <li className="console-card control-chain-setting parameter-expanded-setting">
@@ -4446,40 +4215,6 @@ export function StudioConsoleView({
                         .map(renderAlgorithmNumberParameter)}
                       {predictionCapParameters.map(renderAlgorithmNumberParameter)}
                     </div>
-                  ) : null}
-                </div>
-              </li>
-
-              <li className="console-card control-chain-setting">
-                <span className="control-chain-step" aria-hidden="true"><NovaIcon name="auto-tune" size={16} /></span>
-                <div className="control-chain-setting-title">
-                  <b>压枪</b>
-                  <small>在主控制量之外独立叠加向下补偿。</small>
-                </div>
-                <div className="control-chain-setting-controls recoil">
-                  <ModuleSwitch compact label="启用压枪" enabled={recoilEnabled} onToggle={(enabled) => updateControlGroupField("recoil", "enabled", enabled)} />
-                  <ModuleSwitch compact label="仅有目标时" enabled={recoilRequireTarget} onToggle={(enabled) => updateControlGroupField("recoil", "require_target", enabled)} />
-                  {recoilEnabled ? (
-                    <>
-                      <label className="control-chain-inline-field">
-                        <span>间隔</span>
-                        <InlineNumberControl
-                          ariaLabel="压枪叠加间隔"
-                          value={recoilIntervalMs}
-                          onCommit={(value) => updateControlGroupField("recoil", "interval_ms", Math.max(1, Math.min(5000, Math.round(value))))}
-                        />
-                        <i>ms</i>
-                      </label>
-                      <label className="control-chain-inline-field">
-                        <span>每次 +Y</span>
-                        <InlineNumberControl
-                          ariaLabel="每次压枪叠加 Y"
-                          value={recoilYCounts}
-                          onCommit={(value) => updateControlGroupField("recoil", "y_counts", Math.max(1, Math.min(32767, Math.round(value))))}
-                        />
-                        <i>counts</i>
-                      </label>
-                    </>
                   ) : null}
                 </div>
               </li>
@@ -4546,19 +4281,6 @@ export function StudioConsoleView({
                 </div>
 
                 <div className="parameter-inline-grid parameter-target-basics">
-                  <ParameterNumberControl
-                    label="可选目标范围"
-                    detail="只在准星周围这个半径内选择目标；调小更专注，调大覆盖更多候选。"
-                    value={targetFovRadiusPx}
-                    min={0.000001}
-                    max={100000}
-                    recommendedMin={1}
-                    recommendedMax={640}
-                    step={1}
-                    unit="px"
-                    onCommit={(value) => updatePipelineField("target_fov_radius_px", value)}
-                    onEditingChange={handleParameterEditingChange}
-                  />
                   {targetAdvancedParameters.map(renderTargetingNumberParameter)}
                 </div>
 
@@ -4610,6 +4332,20 @@ export function StudioConsoleView({
                       .filter((parameter) => parameter.key !== "prediction_lead_ms")
                       .map(renderAlgorithmNumberParameter)}
                     {calibrationParameters.map(renderAlgorithmNumberParameter)}
+                  <ParameterNumberControl
+                    label="搜索半径上限"
+                    detail="外层保护上限；即使胶囊很大，瞄准点也不能超过此距离。通常不需要调整。"
+                    value={targetFovRadiusPx}
+                    min={0.000001}
+                    max={100000}
+                    recommendedMin={1}
+                    recommendedMax={640}
+                    step={1}
+                    unit="px"
+                    onCommit={(value) => updatePipelineField("target_fov_radius_px", value)}
+                    onEditingChange={handleParameterEditingChange}
+                  />
+
                   </div>
                 </section>
                 <section>
@@ -4630,6 +4366,7 @@ export function StudioConsoleView({
             );
               return null;
             })}
+            </div>
             </div>
           </>
           ) : (
@@ -4885,7 +4622,7 @@ export function StudioConsoleView({
               <div>
                 <span className="class-config-eyebrow">参数设置 / 目标类别</span>
                 <h2 id="class-config-dialog-title">编辑目标类别</h2>
-                <p>raw cls 保留为模型本帧事实；这里单独定义内部名称、优先级和瞄点角色，不把类别当成永久身份。</p>
+                <p>为每个 cls 设置框内瞄点和优先权重；只保存一套配置，不加载人物模型或图片。</p>
               </div>
               <button type="button"
                 aria-label="关闭类别配置"
@@ -4902,125 +4639,18 @@ export function StudioConsoleView({
               className="class-config-dialog-layout"
               {...({ inert: dialogSaving ? "" : undefined } as { inert?: string })}
             >
-              <div className="class-config-workspace">
-                <AimTargetRange
-                  disabled={configDialogSaving}
-                  ratios={aimRoleRatios}
-                  onCommit={updateAimRoleRatio}
+              <div className="class-config-workspace class-point-workspace-shell">
+                <TargetClassEditor
+                  ids={classEditorIds} names={detectionClasses} selected={selectedDetectionClassIds}
+                  weights={Object.fromEntries(classEditorIds.map((id) => [id, parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? (classPriorityIds.includes(id) ? 0.5 ** classPriorityIds.indexOf(id) : 0)]))}
+                  xs={parseClassValues(rustPipelineConfig.target_class_aim_x_ratios)}
+                  ys={parseClassValues(rustPipelineConfig.target_class_aim_y_ratios)}
+                  defaultY={rustOtherAimRatio} disabled={dialogSaving}
+                  onPoint={(id, x, y) => updateClassValues(id, { target_class_aim_x_ratios: x, target_class_aim_y_ratios: y })}
+                  onWeight={(id, weight) => updateClassValues(id, { target_class_weights: weight })}
+                  onToggle={(id) => void toggleDetectionClass(id)}
+                  onName={updateDetectionClassName}
                 />
-
-                <section className="class-filter-section" aria-labelledby="class-filter-title">
-                  <div className="class-filter-heading">
-                    <span>
-                      <b id="class-filter-title">参与目标选择的类别</b>
-                      <small>可同时选择多个类别；高亮卡片会进入候选目标计算。</small>
-                    </span>
-                    <div className="class-filter-actions">
-                      <span>{selectedDetectionClassIds.size}/{classEditorIds.length} 已选择</span>
-                      <button type="button"
-                        className="console-button secondary"
-                        disabled={busy !== null || selectedDetectionClassIds.size === classEditorIds.length}
-                        onClick={() => void updateDetectionClassFilter("all")}
-                      >
-                        全部选择
-                      </button>
-                      <button type="button"
-                        className="console-button"
-                        disabled={busy !== null || selectedDetectionClassIds.size === 0}
-                        onClick={() => void updateDetectionClassFilter("none")}
-                      >
-                        全部取消
-                      </button>
-                    </div>
-                  </div>
-                  <div className="class-filter-options" role="group" aria-label="目标类别多选">
-                    {classEditorIds.map((classId) => {
-                      const selected = selectedDetectionClassIds.has(classId);
-                      const configuredName = detectionClasses[classId] ?? "";
-                      return (
-                        <button type="button"
-                          aria-pressed={selected}
-                          className={selected ? "selected" : ""}
-                          disabled={busy !== null}
-                          key={`class-filter-${classId}`}
-                          onClick={() => void toggleDetectionClass(classId)}
-                        >
-                          <span className="class-filter-check" aria-hidden="true">{selected ? "✓" : ""}</span>
-                          <b>cls {classId}</b>
-                          <small>{configuredName ? classDisplayName(configuredName, classId) : `未知类别（cls ${classId}）`}</small>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-
-                <div className="class-editor" role="table" aria-label="模型类别与瞄点设置">
-                  <div className="class-editor-head" role="row">
-                    <span>目标</span><span>类别名称</span><span>目标优先级</span><span>瞄点类型</span>
-                  </div>
-                  {orderedClassEditorIds.map((classId) => {
-                    const configuredName = detectionClasses[classId] ?? "";
-                    const displayName = configuredName ? classDisplayName(configuredName, classId) : "";
-                    const priorityIndex = orderedClassEditorIds.indexOf(classId);
-                    return (
-                      <div className="class-editor-row" role="row" key={`class-editor-${classId}`}>
-                        <button type="button"
-                          aria-label={`${selectedDetectionClassIds.has(classId) ? "取消" : "允许"} cls ${classId} 参与目标选择`}
-                          aria-pressed={selectedDetectionClassIds.has(classId)}
-                          className={`class-role-select ${selectedDetectionClassIds.has(classId) ? "selected" : ""}`}
-                          disabled={busy !== null}
-                          onClick={() => void toggleDetectionClass(classId)}
-                        >
-                          <i aria-hidden="true">{selectedDetectionClassIds.has(classId) ? "✓" : ""}</i>
-                          <b>cls {classId}</b>
-                        </button>
-                        <InlineTextControl
-                          ariaLabel={`cls ${classId} 类别名称`}
-                          value={displayName}
-                          placeholder={`未知类别（cls ${classId}）`}
-                          onCommit={(value) => updateDetectionClassName(classId, value)}
-                        />
-                        <div className="class-priority-control" aria-label={`cls ${classId} 目标优先级，第 ${priorityIndex + 1} 位`}>
-                          <span className="class-priority-rank">#{priorityIndex + 1}</span>
-                          <button type="button"
-                            aria-label={`提高 cls ${classId} 目标优先级`}
-                            className="class-priority-button up"
-                            disabled={busy !== null || priorityIndex <= 0}
-                            onClick={() => void setClassPriorityPosition(classId, priorityIndex - 1)}
-                            title="上移"
-                          >
-                            <NovaIcon name="expand" size={14} />
-                          </button>
-                          <button type="button"
-                            aria-label={`降低 cls ${classId} 目标优先级`}
-                            className="class-priority-button down"
-                            disabled={busy !== null || priorityIndex >= orderedClassEditorIds.length - 1}
-                            onClick={() => void setClassPriorityPosition(classId, priorityIndex + 1)}
-                            title="下移"
-                          >
-                            <NovaIcon name="expand" size={14} />
-                          </button>
-                        </div>
-                        <div className="class-role-segmented" role="group" aria-label={`cls ${classId} 瞄点类型`}>
-                          {(["head", "body", "other"] as AimRole[]).map((role) => (
-                            <button type="button"
-                              aria-pressed={(activeClassRoles[String(classId)] ?? "other") === role}
-                              className={`${role} ${(activeClassRoles[String(classId)] ?? "other") === role ? "active" : ""}`}
-                              disabled={busy !== null}
-                              key={role}
-                              onClick={() => void updateClassAimRole(classId, role)}
-                            >
-                              {role === "head" ? "头部" : role === "body" ? "身体" : "其他"}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <p className="console-field-hint">
-                  未知 class id 会显示为“未知类别（cls N）”并使用“其他”瞄点类型；人物靶只负责展示比例，实际值仍相对于各自 bbox。
-                </p>
               </div>
             </div>
 

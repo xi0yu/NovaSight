@@ -24,7 +24,6 @@ latest valid DetectionBatch
 -> calibrated full correction counts
 -> continuous counts-domain Atan response
 -> truncating fractional device-count quantizer
--> recoil composition
 -> fixed X/Y device-boundary clamp
 -> capacity-one latest-replace slot
 -> MouseCommandExecutor validation
@@ -46,26 +45,24 @@ focal_x = (source_width / 2) / tan(FOV_x / 2)
 theta = atan(source_error / focal_x)
 full_counts = theta * counts_per_360 / (2*pi)
 
-rho = hypot(full_counts_x, full_counts_y)
 S_counts = 256
-r = rho / S_counts
-curve = 1 - exp(-(r ^ response_curve_shape))
-R = 1 + response_boost * curve
-K = response_scale * R
-u = K * S_counts * atan(full_counts / S_counts)
+q = clamp((t - entry_start) / entry_ramp_ms, 0, 1)
+a = 3*q*q - 2*q*q*q; entry_ramp_ms=0: a=1
+u = a * response_scale * S_counts * atan(full_counts / S_counts)
 ```
 
 The first Atan converts image displacement into view angle. The second is the
 nonlinear response curve that compresses large device corrections. It is not a
 derivative controller: no historical difference participates in `u`.
 
-`response_scale` is the base response strength. `response_boost` controls the
-bounded amount of extra strength available as normalized error grows.
-`response_curve_shape` controls how early or late that extra strength appears.
-Prediction changes the predicted error only; it does not modify this gain.
+`response_scale` is Kp, the constant normal response gain.
+`entry_ramp_ms` controls how long it takes to rise from zero to Kp; zero
+disables the ramp. The internal factor a is computed, not configurable.
+There is no distance-dependent gain enhancement. Prediction changes only the
+predicted error, not Kp.
 `S_counts` is the fixed internal Atan scale and is not user configurable.
 `max_output_x_counts` and `max_output_y_counts` are fixed device-boundary limits
-applied after recoil; they are not part of prediction.
+applied after quantization; they are not part of prediction.
 `prediction_cap_px` is a vector cap on future aim-point displacement; it is not a
 mouse-count limiter.
 
@@ -95,11 +92,7 @@ and does not split it into a trajectory. `MouseCommandExecutor` rechecks the
 trigger snapshot, freshness deadline, generation and signed 16-bit device range
 before invoking the driver.
 
-Shared recoil is independent from target prediction. When its configured time
-interval is due, it adds one integer `+Y` contribution to the newest safe
-observation's tracking demand, including a zero tracking demand. It never
-creates a second move, accumulates missed intervals, or owns a fractional
-residual.
+Zero tracking demand does not produce a device move, even while a trigger is held.
 
 ## Configuration Contract
 
@@ -116,16 +109,16 @@ residual.
   time horizon, then vector-capped. Detection confidence only admits or rejects
   a target upstream; it never rescales an admitted prediction.
 - Runtime telemetry separates measured aim, predicted aim, prediction horizon,
-  tracking command, recoil contribution, final fixed clamp and device receipt.
+  tracking command, final fixed clamp and device receipt.
 
 The tuning surface is therefore limited to target/aim selection, projection
-calibration, response strength, response curve, prediction time/cap, fixed X/Y
-output limits and optional recoil. The Atan scale and quantizer residual are
+calibration, response strength, entry ramp duration, prediction time/cap, fixed X/Y
+output limits. The Atan scale and quantizer residual are
 internal invariants, not user parameters.
 
 ## Physical Calibration Boundary
 
-`counts_per_360`, FOV, response strength, response curve, prediction time,
-fixed X/Y limits and recoil counts require Jetson + kmNet + game trace
+`counts_per_360`, FOV, response strength, entry ramp duration, prediction time,
+fixed X/Y limits require Jetson + kmNet + game trace
 calibration. Transport capacity must not silently change controller authority,
 and prediction must not be used to mask a base-control problem.

@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { LicenseStatus, RuntimeState } from "../../api";
 import { SafetyOperationProvider } from "../runtime/SafetyOperationContext";
-import { DEFAULT_STUDIO_LAYOUT } from "../../contracts/studioLayout";
 import { StudioConsoleView } from "./StudioConsoleView";
 
 const profile = { pixel_format: "MJPG", width: 1920, height: 1080, fps: 240 };
@@ -135,6 +134,8 @@ it("opens control parameters from the live control chain", async () => {
 
 it("asks before discarding unsaved parameter edits", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "移动与输出" }));
+  expect(screen.queryByText(/压枪/)).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: /预测移动目标/ }));
   await userEvent.click(screen.getByRole("button", { name: "放弃修改" }));
   expect(screen.getByRole("alertdialog", { name: "放弃未保存的修改？" })).toBeVisible();
@@ -148,6 +149,7 @@ it("asks before discarding unsaved parameter edits", async () => {
 
 it("keeps a selection-weight edit on the page until the user applies it", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByText("目标偏好", { selector: "b" }));
   const value = screen.getByRole("slider", { name: "距离权重 滑块" });
   fireEvent.change(value, { target: { value: "0.7" } });
@@ -158,6 +160,7 @@ it("keeps a selection-weight edit on the page until the user applies it", async 
 
 it("keeps a typed selection weight visible while editing the page", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByText("目标偏好", { selector: "b" }));
   const value = screen.getByRole("textbox", { name: "距离权重 数值" });
   fireEvent.change(value, { target: { value: "0.7" } });
@@ -166,21 +169,18 @@ it("keeps a typed selection weight visible while editing the page", async () => 
   await waitFor(() => expect(screen.getByText("有未应用的修改")).toBeVisible());
 });
 
-it("renders parameter modules in the configured order", async () => {
-  const layout = {
-    ...DEFAULT_STUDIO_LAYOUT,
-    pages: DEFAULT_STUDIO_LAYOUT.pages.map((page) => page.id === "params"
-      ? { ...page, modules: ["targeting", "motion", "response", "output"] }
-      : page),
-  };
-  vi.stubGlobal("fetch", vi.fn((url) => String(url).endsWith("/studio-layout.json")
-    ? Promise.resolve(new Response(JSON.stringify(layout), { status: 200, headers: { "content-type": "application/json" } }))
-    : new Promise(() => {})));
-
+it("shows one parameter workspace at a time and exposes entry ramp tuning", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
-
-  await waitFor(() => expect(Array.from(document.querySelectorAll(".parameter-workspace > [data-module]"))
-    .map((module) => module.getAttribute("data-module"))).toEqual(["targeting", "motion", "response"]));
+  expect(screen.getByRole("region", { name: "胶囊范围调校" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "移动与输出" }));
+  expect(screen.queryByRole("region", { name: "胶囊范围调校" })).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "入场渐升时长 数值" })).toHaveValue("200");
+  expect(screen.getByRole("textbox", { name: "跟随力度 Kp 数值" })).toBeVisible();
+  expect(screen.queryByText("远距离追赶力度")).not.toBeInTheDocument();
+  expect(screen.queryByText("加速介入时机")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "目标与瞄点" }));
+  expect(screen.getByRole("button", { name: "编辑目标类别" })).toBeVisible();
+  expect(screen.queryByRole("textbox", { name: "入场渐升时长 数值" })).not.toBeInTheDocument();
 });
 
 it("does not expose the removed visual-crosshair learning workflow", async () => {
@@ -390,6 +390,7 @@ it("shows one target-class configuration without profile management", async () =
     detection_class_profiles: { default: ["enemy"], secondary: ["enemy"] },
   } };
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
   expect(within(dialog).queryByText("配置文件")).not.toBeInTheDocument();
@@ -418,13 +419,14 @@ it("saves a class aim-point edit without reporting unsupported control.aim", asy
     return Promise.resolve(new Response(JSON.stringify({ config: current, apply_mode: payload.section ? "hot_update" : "epoch_reload", restart_required: false, applied: true, rolled_back: false, message: "ok" }), { status: 200, headers: { "content-type": "application/json" } }));
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
-  await userEvent.click(within(within(dialog).getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "编辑目标类别" })).not.toBeInTheDocument());
   expect(writes).toHaveLength(1);
-  expect(writes[0]).toMatchObject({ control: { output_enabled: false, aim: { class_roles: { default: { "0": "head" } } } } });
+  expect(writes[0]).toMatchObject({ pipeline: { target_class_aim_x_ratios: "0:0.5", target_class_aim_y_ratios: "0:0.5" }, control: { output_enabled: false } });
 });
 
 it("collapses legacy class profiles into one configuration when saving", async () => {
@@ -447,9 +449,10 @@ it("collapses legacy class profiles into one configuration when saving", async (
     return Promise.resolve(new Response(JSON.stringify({ config: { ...submitted, revision: 26 }, apply_mode: "epoch_reload", restart_required: false, applied: true, rolled_back: false, message: "ok" }), { status: 200, headers: { "content-type": "application/json" } }));
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
-  await userEvent.click(within(within(dialog).getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "编辑目标类别" })).not.toBeInTheDocument());
   expect(submitted).toMatchObject({
@@ -460,7 +463,8 @@ it("collapses legacy class profiles into one configuration when saving", async (
       detection_class_priorities: { default: "0" },
       detection_class_filters: { default: "0" },
     },
-    control: { aim: { class_roles: { default: { "0": "head" } } } },
+    pipeline: { target_class_aim_x_ratios: "0:0.5", target_class_aim_y_ratios: "0:0.5" },
+    control: { aim: { class_roles: { default: {} } } },
   });
   const writes = vi.mocked(fetch).mock.calls.filter(([url, init]) => String(url).endsWith("/api/config") && init?.method === "POST");
   expect(writes).toHaveLength(1);
@@ -479,16 +483,17 @@ it("retains a rejected class edit inside the dialog", async () => {
       : new Response(JSON.stringify({ code: "CLASS_CONFIG_REJECTED", message: "invalid class role" }), { status: 422, headers: { "content-type": "application/json" } }));
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
-  await userEvent.click(within(within(dialog).getByRole("group", { name: "cls 0 瞄点类型" })).getByRole("button", { name: "头部" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
   await waitFor(() => expect(within(dialog).getByText(/invalid class role/)).toBeVisible());
   expect(dialog).toBeVisible();
   expect(within(dialog).getByRole("button", { name: "保存并应用" })).toBeEnabled();
 });
 
-it("applies trigger delay and target preference edits from the same page save", async () => {
+it("applies response timing, trigger delay and target preference edits from the same page save", async () => {
   const configured = {
     ...props.runtimeConfig,
     control: { ...props.runtimeConfig.control, trigger_mode: "always" },
@@ -518,10 +523,18 @@ it("applies trigger delay and target preference edits from the same page save", 
   const triggerDelay = screen.getByRole("textbox", { name: "触发延迟" });
   fireEvent.change(triggerDelay, { target: { value: "35" } });
   fireEvent.blur(triggerDelay);
+  await userEvent.click(screen.getByRole("button", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByText("目标偏好", { selector: "b" }));
   const distanceWeight = screen.getByRole("textbox", { name: "距离权重 数值" });
   fireEvent.change(distanceWeight, { target: { value: "0.7" } });
   fireEvent.blur(distanceWeight);
+  await userEvent.click(screen.getByRole("button", { name: "移动与输出" }));
+  const reference = screen.getByRole("textbox", { name: "力度基准频率 数值" });
+  expect(reference).toHaveValue("0");
+  fireEvent.change(reference, { target: { value: "60" } });
+  fireEvent.blur(reference);
+  fireEvent.change(screen.getByRole("combobox", { name: "模拟控制频率" }), { target: { value: "120" } });
+  expect(screen.getByRole("region", { name: "响应试算" })).toHaveTextContent("×0.50");
   const save = screen.getByRole("button", { name: "保存并应用" });
   await waitFor(() => expect(save).toBeEnabled());
   await userEvent.click(save);
@@ -532,6 +545,7 @@ it("applies trigger delay and target preference edits from the same page save", 
       fire_delay_enabled: true,
       fire_delay_ms: 35,
       target_selection_distance_weight: 0.7,
+      response_reference_hz: 60,
     }),
   });
   expect(screen.queryByRole("button", { name: "按键触发" })).not.toBeInTheDocument();
@@ -558,6 +572,7 @@ it("keeps the whole parameter draft when the atomic save is rejected", async () 
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
 
+  await userEvent.click(screen.getByRole("button", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByText("目标偏好", { selector: "b" }));
   const distanceWeight = screen.getByRole("textbox", { name: "距离权重 数值" });
   fireEvent.change(distanceWeight, { target: { value: "0.7" } });

@@ -23,10 +23,10 @@ pipeline:
   freshness_threshold_ms: 55.0
   projection_fov_x_deg: 105.0
   projection_counts_per_360: 9980.0
-  # 连续响应模型：K_base * R(r) * S * atan(e/S)，S 固定为内部常量 256 counts。
+  # 连续响应模型：a(t) * Kp * S * atan(e/S)，S 固定为内部常量 256 counts。
   p_response_scale: 0.20
-  p_response_boost: 0.50
-  p_response_curve_shape: 1.0
+  response_reference_hz: 0.0
+  entry_ramp_ms: 200.0
   max_output_x_counts: 127.0
   max_output_y_counts: 127.0
   # 触发延迟结束前，不进入预测和控制算法。
@@ -37,6 +37,7 @@ pipeline:
   prediction_lead_ms: 16.0
   prediction_cap_px: 10.0
   target_fov_radius_px: 180.0
+  target_range_scale: 1.0
   target_min_confidence: 0.5
   target_track_max_lost_age_ms: 120.0
   tracker_max_match_distance: 1.5
@@ -51,6 +52,8 @@ pipeline:
   tracker_kalman_max_predict_missing_ms: 80.0
   tracker_kalman_max_predict_steps: 5
   target_class_priority: "0,1"
+  target_class_weights: ""
+  target_class_aim_x_ratios: ""
   target_class_filter: all
   # 六项权重会自动归一化；raw cls 只参与类别偏好，不决定内部身份。
   target_selection_distance_weight: 0.45
@@ -66,19 +69,12 @@ pipeline:
   target_aim_y_ratio: 0.22
   target_class_aim_y_ratios: ""
   candidate_max_aspect_ratio: 6.0
-  # 成功发送后，等待设备运动有机会反映到采集帧；实际门控还会加一帧测量周期。
+  # 标定的命令到可见响应延迟；只参与预测时域，不是发送等待门控。
   prediction_actuation_delay_ms: 4.0
 control:
   output_enabled: false
   # always: 有效目标即可输出；hardware: 仅在设备按钮按下时输出。
   trigger_mode: hardware
-  recoil:
-    enabled: false
-    # true: 要求当前有效目标或仍在 Tracker 丢失保持期；false: 无目标时也允许压枪量组成当轮 move。
-    require_target: true
-    # 启动控制算法后先等待一个完整间隔；之后在下一张安全新画面中合成一次 +Y，不补发旧间隔。
-    interval_ms: 16
-    y_counts: 1
 # Capture is commissioned from Studio after the operator selects a real device
 # and one of the profiles reported by that device.
 inference:

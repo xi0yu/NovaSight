@@ -1,5 +1,4 @@
 use novasight_core::controller::AimAlgorithmConfig;
-use novasight_core::controller::recoil::RecoilConfig;
 use novasight_core::tracking::{KalmanConfig, SelectionWeights, TargetingConfig};
 use novasight_pipeline::{OutputLimitConfig, PipelineConfig, TriggerMode};
 use novasight_store::config::{
@@ -20,10 +19,10 @@ pub fn compose_pipeline_config(
     if !adapters.inference.enabled {
         return Err("inference.enabled must be true for the live runtime".to_owned());
     }
-    let response = adapters.pipeline.continuous_response();
     Ok(PipelineConfig {
         targeting: TargetingConfig {
             target_fov_radius_px: adapters.pipeline.target_fov_radius_px,
+            target_range_scale: adapters.pipeline.target_range_scale,
             min_confidence: adapters.pipeline.target_min_confidence,
             track_max_lost_age_ms: adapters.pipeline.target_track_max_lost_age_ms,
             tracker_max_match_distance: adapters.pipeline.tracker_max_match_distance,
@@ -44,6 +43,16 @@ pub fn compose_pipeline_config(
                 nis_hard_reject: adapters.pipeline.tracker_kalman_nis_hard_reject,
                 ..KalmanConfig::default()
             },
+            class_weights: novasight_store::config::parse_class_values(
+                &adapters.pipeline.target_class_weights,
+                "pipeline.target_class_weights",
+            )
+            .map_err(|error| error.to_string())?,
+            class_aim_x_ratios: novasight_store::config::parse_class_values(
+                &adapters.pipeline.target_class_aim_x_ratios,
+                "pipeline.target_class_aim_x_ratios",
+            )
+            .map_err(|error| error.to_string())?,
             class_priority: parse_target_class_priority(&adapters.pipeline.target_class_priority)
                 .map_err(|error| error.to_string())?,
             allowed_class_ids: parse_target_class_filter(&adapters.pipeline.target_class_filter)
@@ -73,9 +82,9 @@ pub fn compose_pipeline_config(
             freshness_threshold_ms: adapters.pipeline.freshness_threshold_ms,
             projection_fov_x_deg: adapters.pipeline.projection_fov_x_deg,
             projection_counts_per_360: adapters.pipeline.projection_counts_per_360,
-            response_scale: response.scale,
-            response_boost: response.boost,
-            response_curve_shape: response.curve_shape,
+            response_scale: adapters.pipeline.p_response_scale,
+            response_reference_hz: adapters.pipeline.response_reference_hz,
+            entry_ramp_ms: adapters.pipeline.entry_ramp_ms,
             velocity_history_reset_gap_ms: adapters.pipeline.velocity_history_reset_gap_ms,
             prediction_enabled: adapters.pipeline.prediction_enabled,
             prediction_actuation_delay_ms: adapters.pipeline.prediction_actuation_delay_ms,
@@ -100,12 +109,6 @@ pub fn compose_pipeline_config(
         trigger_mode: match config.control.trigger_mode {
             novasight_store::config::TriggerMode::Always => TriggerMode::Always,
             novasight_store::config::TriggerMode::Hardware => TriggerMode::Hardware,
-        },
-        recoil: RecoilConfig {
-            enabled: config.control.recoil.enabled,
-            require_target: config.control.recoil.require_target,
-            interval_ms: config.control.recoil.interval_ms,
-            y_counts: config.control.recoil.y_counts,
         },
         ..PipelineConfig::default()
     })

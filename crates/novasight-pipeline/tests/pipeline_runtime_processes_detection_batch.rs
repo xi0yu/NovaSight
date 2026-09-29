@@ -5,7 +5,6 @@ use std::sync::{
 use std::thread;
 use std::time::{Duration, Instant};
 
-use novasight_core::controller::recoil::{RecoilConfig, RecoilState};
 use novasight_core::{
     Clock, Detection, DetectionBatch, FrameStamp, MonotonicNanos, RecordingPointerDevice,
     RuntimeEpoch,
@@ -16,6 +15,16 @@ use novasight_pipeline::{
 
 #[derive(Debug)]
 struct ManualClock(AtomicU64);
+
+// These delivery/prediction fixtures keep their moving targets inside a broad
+// capsule. Dedicated no-target and capsule-exit cases verify suppression.
+fn broad_capsule_config() -> PipelineConfig {
+    let mut config = PipelineConfig::default();
+    config.targeting.target_range_scale = 3.0;
+    // Delivery fixtures isolate transport from the separately simulated entry ramp.
+    config.control.entry_ramp_ms = 0.0;
+    config
+}
 
 impl ManualClock {
     fn new(now_ns: u64) -> Self {
@@ -50,7 +59,7 @@ fn perception_failure_retires_pending_control_before_supervisor_cleanup() {
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            ..PipelineConfig::default()
+            ..broad_capsule_config()
         },
         clock,
         device.clone(),
@@ -68,7 +77,7 @@ fn perception_failure_retires_pending_control_before_supervisor_cleanup() {
         FrameStamp::new(epoch, 1, 1_000_000_000),
         640,
         640,
-        vec![Detection::new(1, 0, 380.0, 330.0, 40.0, 40.0, 0.95).unwrap()],
+        vec![Detection::new(1, 0, 340.0, 330.0, 40.0, 40.0, 0.95).unwrap()],
     )
     .unwrap();
     assert!(ingress.try_submit(batch).is_err());
@@ -87,7 +96,7 @@ fn suspended_control_gate_skips_targeting_until_reopened() {
     let (mut runtime, ingress) = PipelineRuntime::start_suspended(
         PipelineConfig {
             epoch,
-            ..PipelineConfig::default()
+            ..broad_capsule_config()
         },
         clock,
         pointer,
@@ -99,7 +108,7 @@ fn suspended_control_gate_skips_targeting_until_reopened() {
             FrameStamp::new(epoch, generation, 1_000_000_000),
             640,
             640,
-            vec![Detection::new(generation, 0, 380.0, 330.0, 40.0, 40.0, 0.95).unwrap()],
+            vec![Detection::new(generation, 0, 340.0, 330.0, 40.0, 40.0, 0.95).unwrap()],
         )
         .unwrap()
     };
@@ -136,13 +145,13 @@ fn pipeline_runtime_drives_current_algorithms_and_device_on_owned_threads() {
     let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
     let config = PipelineConfig {
         epoch,
-        ..PipelineConfig::default()
+        ..broad_capsule_config()
     };
     let (mut runtime, ingress) =
         PipelineRuntime::start(config, clock, pointer).expect("pipeline starts");
     ingress.set_trigger_active(true);
 
-    let detection = Detection::new(41, 0, 380.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection");
+    let detection = Detection::new(41, 0, 340.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection");
     let batch = DetectionBatch::new(
         FrameStamp::new(epoch, 1, 1_000_000_000),
         640,
@@ -170,13 +179,13 @@ fn pipeline_runtime_drives_current_algorithms_and_device_on_owned_threads() {
     assert!(control.sample_available);
     assert_eq!(control.generation, 1);
     assert_eq!(control.observation_width, 640);
-    assert_eq!(control.observed_error_x, 80.0);
+    assert_eq!(control.observed_error_x, 40.0);
     assert_eq!(control.dx, receipts[0].delta_x_counts);
     assert!(control.full_error_counts_x.is_finite());
     assert!(control.float_demand_x.is_finite());
     assert_eq!(live_metrics.target_selection.target_class_id, Some(0));
     assert_eq!(live_metrics.target_selection.target_track_id.unwrap().0, 1);
-    assert_eq!(live_metrics.target_selection.target_box_x, Some(380.0));
+    assert_eq!(live_metrics.target_selection.target_box_x, Some(340.0));
     assert_eq!(live_metrics.target_selection.target_aim_y, Some(338.8));
     assert_eq!(
         live_metrics.detections.generation.map(|value| value.0),
@@ -204,7 +213,7 @@ fn smooth_detection_motion_keeps_one_identity_through_control_and_device_output(
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            ..PipelineConfig::default()
+            ..broad_capsule_config()
         },
         daemon_clock,
         pointer,
@@ -212,7 +221,7 @@ fn smooth_detection_motion_keeps_one_identity_through_control_and_device_output(
     .expect("pipeline starts");
     ingress.set_trigger_active(true);
 
-    for (index, x) in [340.0_f32, 356.0, 372.0, 388.0, 404.0]
+    for (index, x) in [308.0_f32, 316.0, 324.0, 332.0, 340.0]
         .into_iter()
         .enumerate()
     {
@@ -270,7 +279,7 @@ fn live_prediction_config_update_reaches_running_control_worker() {
         Arc::new(RecordingPointerDevice::default());
     let mut config = PipelineConfig {
         epoch,
-        ..PipelineConfig::default()
+        ..broad_capsule_config()
     };
     config.control.prediction_enabled = true;
     config.control.prediction_lead_ms = 0.0;
@@ -278,7 +287,7 @@ fn live_prediction_config_update_reaches_running_control_worker() {
         PipelineRuntime::start(config.clone(), daemon_clock, pointer).expect("pipeline starts");
     ingress.set_trigger_active(true);
 
-    for (generation, x) in [(1, 340.0), (2, 350.0), (3, 360.0), (4, 370.0)] {
+    for (generation, x) in [(1, 300.0), (2, 310.0), (3, 320.0), (4, 330.0)] {
         let captured_at_ns = 1_000_000_000 + (generation - 1) * 50_000_000;
         clock.0.store(captured_at_ns + 8_000_000, Ordering::Release);
         ingress
@@ -302,7 +311,7 @@ fn live_prediction_config_update_reaches_running_control_worker() {
     let before = runtime.metrics().control;
     assert_eq!(before.history_position_count, 4);
     assert_eq!(before.prediction_lead_ms, 0.0);
-    assert!((before.prediction_horizon_ms - 12.0).abs() < 1e-6);
+    assert!((before.prediction_horizon_ms - 50.0).abs() < 1e-6);
 
     let mut live = PipelineLiveConfig::from(&config);
     live.control.prediction_lead_ms = 40.0;
@@ -317,7 +326,7 @@ fn live_prediction_config_update_reaches_running_control_worker() {
                 FrameStamp::new(epoch, generation, captured_at_ns),
                 640,
                 640,
-                vec![Detection::new(generation, 0, 380.0, 300.0, 40.0, 40.0, 0.95).unwrap()],
+                vec![Detection::new(generation, 0, 340.0, 300.0, 40.0, 40.0, 0.95).unwrap()],
             )
             .unwrap(),
         )
@@ -331,8 +340,8 @@ fn live_prediction_config_update_reaches_running_control_worker() {
     assert_eq!(after.generation, generation);
     assert_eq!(after.prediction_lead_ms, 40.0);
     assert!(
-        after.prediction_horizon_ms > before.prediction_horizon_ms + 39.0,
-        "running control worker must use the new prediction lead without restarting"
+        (after.prediction_horizon_ms - 52.0).abs() < 1e-6,
+        "live lead uses age + actuation + lead when longer than one measured frame"
     );
     assert_eq!(runtime.metrics().status, PipelineStatus::Running);
 
@@ -347,7 +356,7 @@ fn detection_telemetry_is_bounded_without_dropping_the_runtime_batch() {
         Arc::new(RecordingPointerDevice::default());
     let config = PipelineConfig {
         epoch,
-        ..PipelineConfig::default()
+        ..broad_capsule_config()
     };
     let (mut runtime, ingress) =
         PipelineRuntime::start(config, clock, pointer).expect("pipeline starts");
@@ -391,7 +400,7 @@ fn pipeline_hot_trigger_mode_blocks_until_trigger_is_explicitly_active() {
         PipelineConfig {
             epoch,
             trigger_mode: TriggerMode::Always,
-            ..PipelineConfig::default()
+            ..broad_capsule_config()
         },
         clock,
         pointer,
@@ -400,7 +409,7 @@ fn pipeline_hot_trigger_mode_blocks_until_trigger_is_explicitly_active() {
     assert_eq!(ingress.trigger_mode(), TriggerMode::Always);
     ingress.set_trigger_mode(TriggerMode::Hardware);
     assert_eq!(ingress.trigger_mode(), TriggerMode::Hardware);
-    let detection = Detection::new(42, 0, 380.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection");
+    let detection = Detection::new(42, 0, 340.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection");
     ingress
         .submit(
             DetectionBatch::new(
@@ -427,7 +436,7 @@ fn pipeline_hot_trigger_mode_blocks_until_trigger_is_explicitly_active() {
                 640,
                 640,
                 vec![
-                    Detection::new(42, 0, 380.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection"),
+                    Detection::new(42, 0, 340.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection"),
                 ],
             )
             .expect("valid batch"),
@@ -450,14 +459,14 @@ fn control_lane_rejects_an_observation_that_aged_while_waiting_for_control() {
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            ..PipelineConfig::default()
+            ..broad_capsule_config()
         },
         clock,
         pointer,
     )
     .expect("pipeline starts");
     ingress.set_trigger_active(true);
-    let detection = Detection::new(43, 0, 380.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection");
+    let detection = Detection::new(43, 0, 340.0, 330.0, 40.0, 40.0, 0.95).expect("valid detection");
     ingress
         .submit(
             DetectionBatch::new(
@@ -490,84 +499,14 @@ fn control_lane_rejects_an_observation_that_aged_while_waiting_for_control() {
 }
 
 #[test]
-fn recoil_is_added_to_an_existing_tracking_command_after_its_interval() {
-    let epoch = RuntimeEpoch(14);
-    let clock = Arc::new(ManualClock::new(1_008_000_000));
-    let daemon_clock: Arc<dyn Clock> = clock.clone();
-    let device = Arc::new(RecordingPointerDevice::default());
-    let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
-    let (mut runtime, ingress) = PipelineRuntime::start(
-        PipelineConfig {
-            epoch,
-            recoil: RecoilConfig {
-                enabled: true,
-                require_target: true,
-                interval_ms: 8,
-                y_counts: 2,
-            },
-            ..PipelineConfig::default()
-        },
-        daemon_clock,
-        pointer,
-    )
-    .unwrap();
-    ingress.set_trigger_active(true);
-    ingress
-        .submit(
-            DetectionBatch::new(
-                FrameStamp::new(epoch, 1, 1_000_000_000),
-                640,
-                640,
-                vec![Detection::new(1, 0, 310.0, 311.2, 40.0, 40.0, 0.95).unwrap()],
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while device.receipts().is_empty() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(device.receipts()[0].delta_y_counts, 0);
-
-    clock.0.store(1_078_000_000, Ordering::Release);
-    ingress
-        .submit(
-            DetectionBatch::new(
-                FrameStamp::new(epoch, 2, 1_070_000_000),
-                640,
-                640,
-                vec![Detection::new(1, 0, 310.0, 311.2, 40.0, 40.0, 0.95).unwrap()],
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while device.receipts().len() < 2 && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(1));
-    }
-    let receipts = device.receipts();
-    assert_eq!(receipts.len(), 2);
-    assert_eq!(receipts[1].delta_y_counts, 2);
-    let telemetry = runtime.metrics().recoil;
-    assert_eq!(telemetry.state, RecoilState::Applied);
-    assert_eq!(telemetry.source_generation, Some(2));
-    assert_eq!(telemetry.emitted_counts_y, 2);
-
-    clock.0.store(1_100_000_000, Ordering::Release);
-    thread::sleep(Duration::from_millis(20));
-    assert_eq!(device.receipts().len(), 2);
-    runtime.shutdown().unwrap();
-}
-
-#[test]
-fn due_recoil_emits_when_tracking_demand_is_zero() {
+fn zero_tracking_demand_never_emits_even_while_trigger_is_held() {
     let epoch = RuntimeEpoch(15);
     let clock = Arc::new(ManualClock::new(1_008_000_000));
     let daemon_clock: Arc<dyn Clock> = clock.clone();
     let device = Arc::new(RecordingPointerDevice::default());
     let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
     let control = novasight_core::controller::AimAlgorithmConfig {
+        entry_ramp_ms: 0.0,
         prediction_enabled: true,
         ..Default::default()
     };
@@ -575,13 +514,7 @@ fn due_recoil_emits_when_tracking_demand_is_zero() {
         PipelineConfig {
             epoch,
             control,
-            recoil: RecoilConfig {
-                enabled: true,
-                require_target: true,
-                interval_ms: 8,
-                y_counts: 2,
-            },
-            ..PipelineConfig::default()
+            ..broad_capsule_config()
         },
         daemon_clock,
         pointer,
@@ -609,18 +542,13 @@ fn due_recoil_emits_when_tracking_demand_is_zero() {
     clock.0.store(1_078_000_000, Ordering::Release);
     ingress.submit(centered_batch(2, 1_070_000_000)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(1);
-    while device.receipts().is_empty() && Instant::now() < deadline {
+    while runtime.metrics().control_decisions < 2 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
+    assert_eq!(runtime.metrics().control_decisions, 2);
+    assert!(device.receipts().is_empty());
 
-    let receipts = device.receipts();
-    assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].delta_x_counts, 0);
-    assert_eq!(receipts[0].delta_y_counts, 2);
-    assert_eq!(runtime.metrics().recoil.state, RecoilState::Applied);
-
-    // A later nonzero tracking demand must still be emitted independently of
-    // the earlier recoil-only send.
+    // A later nonzero tracking demand must still be emitted.
     clock.0.store(1_079_000_000, Ordering::Release);
     ingress
         .submit(
@@ -634,17 +562,17 @@ fn due_recoil_emits_when_tracking_demand_is_zero() {
         )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(1);
-    while device.receipts().len() < 2 && Instant::now() < deadline {
+    while device.receipts().is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
     let receipts = device.receipts();
-    assert_eq!(receipts.len(), 2);
-    assert!(receipts[1].delta_y_counts > 0);
+    assert_eq!(receipts.len(), 1);
+    assert!(receipts[0].delta_y_counts > 0);
     runtime.shutdown().unwrap();
 }
 
 #[test]
-fn recoil_without_target_uses_fresh_observations_when_target_guard_is_disabled() {
+fn never_outputs_without_a_current_target() {
     let epoch = RuntimeEpoch(16);
     let clock = Arc::new(ManualClock::new(1_008_000_000));
     let daemon_clock: Arc<dyn Clock> = clock.clone();
@@ -653,13 +581,7 @@ fn recoil_without_target_uses_fresh_observations_when_target_guard_is_disabled()
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            recoil: RecoilConfig {
-                enabled: true,
-                require_target: false,
-                interval_ms: 8,
-                y_counts: 2,
-            },
-            ..PipelineConfig::default()
+            ..broad_capsule_config()
         },
         daemon_clock,
         pointer,
@@ -686,20 +608,73 @@ fn recoil_without_target_uses_fresh_observations_when_target_guard_is_disabled()
     clock.0.store(1_078_000_000, Ordering::Release);
     ingress.submit(empty_batch(2, 1_070_000_000)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
-    while device.receipts().is_empty() && Instant::now() < deadline {
+    while runtime.metrics().control_decisions < 2 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
 
     let receipts = device.receipts();
-    assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].target_object_id, 0);
-    assert_eq!(receipts[0].delta_x_counts, 0);
-    assert_eq!(receipts[0].delta_y_counts, 2);
+    assert_eq!(runtime.metrics().control_decisions, 2);
+    assert!(receipts.is_empty());
     runtime.shutdown().unwrap();
 }
 
 #[test]
-fn target_guard_uses_the_existing_tracker_loss_grace_without_predicted_control() {
+fn leaving_capsule_stops_tracking_commands() {
+    let epoch = RuntimeEpoch(19);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(RecordingPointerDevice::default());
+    let (mut runtime, ingress) = PipelineRuntime::start(
+        PipelineConfig {
+            epoch,
+            ..PipelineConfig::default()
+        },
+        clock.clone(),
+        device.clone(),
+    )
+    .unwrap();
+    ingress.set_trigger_active(true);
+    // The default ramp starts at zero, then admits two outputs, then exits.
+    for (generation, x) in [(1, 300.0), (2, 300.0), (3, 300.0), (4, 321.0), (5, 300.0)] {
+        let captured = 1_000_000_000 + (generation - 1) * 60_000_000;
+        clock.0.store(captured + 8_000_000, Ordering::Release);
+        ingress
+            .submit(
+                DetectionBatch::new(
+                    FrameStamp::new(epoch, generation, captured),
+                    640,
+                    640,
+                    vec![Detection::new(generation, 0, x, 280.0, 40.0, 80.0, 0.95).unwrap()],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while (runtime.metrics().control_decisions < generation
+            || ((2..=3).contains(&generation) && device.receipts().len() < generation as usize - 1))
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(runtime.metrics().control_decisions, generation);
+        if generation == 1 || generation == 5 {
+            assert_eq!(
+                runtime.metrics().control.block_reason,
+                novasight_core::controller::BlockReason::EntryRampPending
+            );
+        }
+    }
+    runtime.shutdown().unwrap();
+    let receipts = device.receipts();
+    assert_eq!(receipts.len(), 2);
+    assert!(
+        receipts
+            .iter()
+            .all(|receipt| (2..=3).contains(&receipt.generation.0))
+    );
+}
+
+#[test]
+fn retained_lost_identity_never_authorizes_output() {
     let epoch = RuntimeEpoch(18);
     let clock = Arc::new(ManualClock::new(1_008_000_000));
     let daemon_clock: Arc<dyn Clock> = clock.clone();
@@ -708,13 +683,7 @@ fn target_guard_uses_the_existing_tracker_loss_grace_without_predicted_control()
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            recoil: RecoilConfig {
-                enabled: true,
-                require_target: true,
-                interval_ms: 8,
-                y_counts: 2,
-            },
-            ..PipelineConfig::default()
+            ..broad_capsule_config()
         },
         daemon_clock,
         pointer,
@@ -738,9 +707,7 @@ fn target_guard_uses_the_existing_tracker_loss_grace_without_predicted_control()
         thread::sleep(Duration::from_millis(1));
     }
 
-    // One missed observation retains the locked identity for the configured
-    // tracker grace. Tracking emits no predicted-only command, while recoil
-    // remains authorized long enough to avoid amplifying the visual loss.
+    // Retaining an identity does not authorize any output after a missed frame.
     clock.0.store(1_078_000_000, Ordering::Release);
     ingress
         .submit(
@@ -754,20 +721,18 @@ fn target_guard_uses_the_existing_tracker_loss_grace_without_predicted_control()
         )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
-    while device.receipts().is_empty() && Instant::now() < deadline {
+    while runtime.metrics().control_decisions < 2 && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(1));
     }
     let receipts = device.receipts();
-    assert_eq!(receipts.len(), 1);
-    assert_eq!(receipts[0].target_object_id, 0);
-    assert_eq!(receipts[0].delta_y_counts, 2);
+    assert_eq!(runtime.metrics().control_decisions, 2);
+    assert!(receipts.is_empty());
     assert_eq!(
         runtime.metrics().control.block_reason,
         novasight_core::controller::BlockReason::TargetInvalid
     );
 
-    // Once the existing 120 ms tracker grace expires, the target requirement
-    // closes again and no further recoil-only move is authorized.
+    // Expiring the retained identity also remains silent.
     clock.0.store(1_258_000_000, Ordering::Release);
     ingress
         .submit(
@@ -785,12 +750,12 @@ fn target_guard_uses_the_existing_tracker_loss_grace_without_predicted_control()
         thread::sleep(Duration::from_millis(1));
     }
     thread::sleep(Duration::from_millis(10));
-    assert_eq!(device.receipts().len(), 1);
+    assert!(device.receipts().is_empty());
     runtime.shutdown().unwrap();
 }
 
 #[test]
-fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
+fn predicted_tracking_reaches_device_without_added_y_movement() {
     let epoch = RuntimeEpoch(17);
     let clock = Arc::new(ManualClock::new(1_008_000_000));
     let daemon_clock: Arc<dyn Clock> = clock.clone();
@@ -800,16 +765,11 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
         PipelineConfig {
             epoch,
             control: novasight_core::controller::AimAlgorithmConfig {
+                entry_ramp_ms: 0.0,
                 prediction_enabled: true,
                 ..Default::default()
             },
-            recoil: RecoilConfig {
-                enabled: true,
-                require_target: true,
-                interval_ms: 8,
-                y_counts: 2,
-            },
-            ..PipelineConfig::default()
+            ..broad_capsule_config()
         },
         daemon_clock,
         pointer,
@@ -833,7 +793,7 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
         .unwrap()
     };
 
-    // Warm the real X/Y predictor before checking the composed final command.
+    // Warm the real X/Y predictor before checking the final command.
     for generation in 1..=4_u64 {
         clock.0.store(
             1_008_000_000 + generation.saturating_sub(1) * 20_000_000,
@@ -857,8 +817,7 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
         }
     }
     let deadline = Instant::now() + Duration::from_secs(3);
-    while (device.receipts().last().map(|item| item.generation.0) != Some(7)
-        || runtime.metrics().recoil.state != RecoilState::Applied)
+    while device.receipts().last().map(|item| item.generation.0) != Some(7)
         && Instant::now() < deadline
     {
         thread::sleep(Duration::from_millis(1));
@@ -866,20 +825,14 @@ fn prediction_and_recoil_compose_once_without_mutating_the_predicted_aim() {
 
     let metrics = runtime.metrics();
     let control = metrics.control;
-    let recoil = metrics.recoil;
     assert_eq!(control.generation, 7);
     assert!(control.predicted_offset_y > 0.0);
-    assert_eq!(recoil.state, RecoilState::Applied);
-    assert_eq!(recoil.emitted_counts_y, 2);
     let final_command = device
         .receipts()
         .last()
         .copied()
         .expect("generation 7 move");
     assert_eq!(final_command.generation.0, 7);
-    assert_eq!(
-        final_command.delta_y_counts,
-        control.dy + recoil.emitted_counts_y
-    );
+    assert_eq!(final_command.delta_y_counts, control.dy);
     runtime.shutdown().unwrap();
 }

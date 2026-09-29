@@ -13,7 +13,6 @@ DetectionBatch
 -> TargetingCore
 -> AimAlgorithm
 -> capacity-one OutputPlan slot
--> recoil composition
 -> fixed X/Y device clamp
 -> generation / gate / trigger recheck
 -> PointerDevice::send
@@ -38,7 +37,6 @@ trajectory or accumulate a queue of pending counts.
 The pipeline device worker owns:
 
 - current trigger, output-gate and generation rechecks;
-- recoil +Y composition;
 - one final fixed per-axis clamp;
 - the actual `PointerDevice::send` call;
 - typed output-delivery state.
@@ -47,7 +45,7 @@ The final device formula is:
 
 ```text
 out_x = clamp(tracking_x, -max_output_x_counts, max_output_x_counts)
-out_y = clamp(tracking_y + recoil_y, -max_output_y_counts, max_output_y_counts)
+out_y = clamp(tracking_y, -max_output_y_counts, max_output_y_counts)
 ```
 
 ## Parameters that do not intervene
@@ -73,8 +71,6 @@ to `AimSample` and do not multiply controller demand.
   prediction state.
 - Fire delay is sampled on each hardware-trigger rising edge and prevents
   `AimAlgorithm::step` until the continuous hold duration exceeds the threshold.
-- Recoil configuration is versioned independently and applied without restarting
-  capture or inference.
 - Saved YAML and live runtime use the same canonical `pipeline.*` fields.
 
 ## UI contract
@@ -82,7 +78,7 @@ to `AimSample` and do not multiply controller demand.
 The main parameter page follows:
 
 ```text
-触发方式 -> 开火延迟 -> 预测/算法 -> 压枪 -> 固定限幅 -> 输出
+触发方式 -> 开火延迟 -> 预测/算法 -> 固定限幅 -> 输出
 ```
 
 Ordinary target behavior exposes minimum confidence, switch delay and
@@ -93,10 +89,10 @@ The control status page mirrors the runtime boundary as one compact sequence:
 
 ```text
 target input -> trigger/fire delay -> prediction -> continuous control
--> recoil composition -> fixed X/Y clamp -> command output
+-> fixed X/Y clamp -> command output
 ```
 
-The displayed integer control demand is the tracking command before recoil and
+The displayed integer control demand is the tracking command before
 the final device clamp. Only the latest device receipt is evidence of a command
 that actually crossed that boundary; the UI must not present those two samples
 as the same synchronous fact.

@@ -22,7 +22,6 @@ struct ConfigAlgorithmSchema {
 #[derive(Clone, Debug, Serialize)]
 struct ConfigAlgorithmResponseSchema {
     formula: &'static str,
-    radial_multiplier_formula: &'static str,
     atan_scale_counts: f64,
 }
 
@@ -68,12 +67,11 @@ impl ConfigSchemaResponse {
                 id: "continuous_atan_medoid_v2",
                 label: "连续 Atan 控制",
                 response: ConfigAlgorithmResponseSchema {
-                    formula: "u = K_base * R(r) * S * atan(e_pred / S)",
-                    radial_multiplier_formula: "R = 1 + B * (1 - exp(-(r ^ gamma)))",
+                    formula: "a = smoothstep(clamp((t-t0)/T,0,1)); T=0: a=1; b = reference_hz=0 ? 1 : min(control_dt_ms,50)*reference_hz/1000; u = b * a * Kp * S * atan(e_pred / S)",
                     atan_scale_counts: DEFAULT_ATAN_SCALE_COUNTS,
                 },
                 prediction: ConfigAlgorithmPredictionSchema {
-                    model: "four-point vector medoid velocity",
+                    model: "four-point vector medoid velocity; horizon = age + actuation + lead",
                     aim_history_points: 4,
                     velocity_segments: 3,
                 },
@@ -137,28 +135,6 @@ impl ConfigSchemaResponse {
                     ],
                 ),
                 hot_section(
-                    "control.recoil",
-                    "独立压枪",
-                    vec![
-                        boolean("control.recoil.enabled", "启用独立 Y 轴压枪"),
-                        boolean("control.recoil.require_target", "只在存在目标时压枪"),
-                        integer(
-                            "control.recoil.interval_ms",
-                            "压枪叠加间隔",
-                            1.0,
-                            5_000.0,
-                            Some("ms"),
-                        ),
-                        integer(
-                            "control.recoil.y_counts",
-                            "每次叠加 +Y",
-                            1.0,
-                            i16::MAX as f64,
-                            Some("counts"),
-                        ),
-                    ],
-                ),
-                hot_section(
                     "pipeline",
                     "Rust 实时控制",
                     vec![
@@ -183,20 +159,20 @@ impl ConfigSchemaResponse {
                             1_000_000.0,
                             Some("count"),
                         ),
+                        float("pipeline.p_response_scale", "跟随力度 Kp", 0.0, 100.0, None),
                         float(
-                            "pipeline.p_response_scale",
-                            "基础响应 K_base",
+                            "pipeline.response_reference_hz",
+                            "力度基准频率",
                             0.0,
-                            100.0,
-                            None,
+                            240.0,
+                            Some("Hz"),
                         ),
-                        float("pipeline.p_response_boost", "动态增强 B", 0.0, 100.0, None),
                         float(
-                            "pipeline.p_response_curve_shape",
-                            "过渡形状 gamma",
-                            0.5,
-                            4.0,
-                            None,
+                            "pipeline.entry_ramp_ms",
+                            "入场渐升时长",
+                            0.0,
+                            2000.0,
+                            Some("ms"),
                         ),
                         float(
                             "pipeline.max_output_x_counts",
@@ -244,10 +220,17 @@ impl ConfigSchemaResponse {
                         ),
                         float(
                             "pipeline.target_fov_radius_px",
-                            "目标选择半径",
+                            "搜索半径上限",
                             0.000_001,
                             100_000.0,
                             Some("px"),
+                        ),
+                        float(
+                            "pipeline.target_range_scale",
+                            "胶囊范围比例",
+                            0.1,
+                            5.0,
+                            Some("×"),
                         ),
                         float(
                             "pipeline.target_min_confidence",
@@ -369,6 +352,8 @@ impl ConfigSchemaResponse {
                             None,
                         ),
                         string("pipeline.target_class_priority", "目标类别优先级"),
+                        string("pipeline.target_class_weights", "类别优先权重"),
+                        string("pipeline.target_class_aim_x_ratios", "按类别水平瞄点比例"),
                         string("pipeline.target_class_filter", "参与目标选择的类别"),
                         float(
                             "pipeline.target_selection_distance_weight",
@@ -790,7 +775,6 @@ mod tests {
             4.0
         );
         assert_eq!(value["values"]["pipeline"]["prediction_lead_ms"], 16.0);
-        assert_eq!(value["values"]["pipeline"]["p_response_boost"], 0.5);
         assert_eq!(value["values"]["pipeline"]["max_output_x_counts"], 127.0);
         assert_eq!(value["values"]["pipeline"]["max_output_y_counts"], 127.0);
         assert_eq!(value["values"]["pipeline"]["prediction_cap_px"], 10.0);
@@ -802,15 +786,13 @@ mod tests {
                         && field["options"] == serde_json::json!(["deepstream_nvinfer"])
                 })
         }));
-        assert!(value["sections"].as_array().unwrap().iter().any(|section| {
-            section["id"] == "control.recoil"
-                && section["fields"].as_array().unwrap().iter().any(|field| {
-                    field["path"] == "control.recoil.interval_ms"
-                        && field["min"] == 1.0
-                        && field["max"] == 5_000.0
-                        && field["restart_required"] == false
-                })
-        }));
+        assert!(
+            value["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|section| section["id"] != "control.recoil")
+        );
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
             section["id"] == "pipeline"
                 && section["fields"].as_array().unwrap().iter().any(|field| {
@@ -843,8 +825,6 @@ mod tests {
             "pipeline.projection_fov_x_deg",
             "pipeline.projection_counts_per_360",
             "pipeline.p_response_scale",
-            "pipeline.p_response_boost",
-            "pipeline.p_response_curve_shape",
             "pipeline.max_output_x_counts",
             "pipeline.max_output_y_counts",
             "pipeline.prediction_enabled",
@@ -853,6 +833,7 @@ mod tests {
             "pipeline.prediction_cap_px",
             "pipeline.prediction_actuation_delay_ms",
             "pipeline.target_fov_radius_px",
+            "pipeline.target_range_scale",
             "pipeline.target_min_confidence",
             "pipeline.target_track_max_lost_age_ms",
             "pipeline.tracker_max_match_distance",
@@ -870,6 +851,8 @@ mod tests {
             "pipeline.tracker_kalman_max_predict_steps",
             "pipeline.tracker_kalman_nis_threshold",
             "pipeline.tracker_kalman_nis_hard_reject",
+            "pipeline.target_class_weights",
+            "pipeline.target_class_aim_x_ratios",
             "pipeline.target_class_priority",
             "pipeline.target_class_filter",
             "pipeline.target_selection_distance_weight",

@@ -1,7 +1,7 @@
 //! Converts continuous controller demand into integer device counts.
 //!
 //! This module retains only sub-count residuals. Fixed X/Y output limits are
-//! applied once, after recoil composition, at the final device boundary.
+//! applied once at the final device boundary.
 
 use serde::{Deserialize, Serialize};
 

@@ -1615,7 +1615,6 @@
   align-items: center;
   gap: var(--space-2);
 }
-.control-chain-setting-controls.recoil { grid-template-columns: repeat(2, minmax(132px, 1fr)); }
 
 .trigger-mode-options {
   display: grid;
@@ -1735,7 +1734,6 @@
   .parameter-expanded-controls,
   .parameter-expanded-setting > .parameter-inline-grid { width: 100%; grid-column: 2; }
   .control-chain-setting-controls,
-  .control-chain-setting-controls.recoil,
   .parameter-inline-grid { grid-template-columns: minmax(0, 1fr); }
   .class-config-summary-card { align-items: stretch; flex-direction: column; }
   .class-config-summary-card .console-button { width: 100%; }

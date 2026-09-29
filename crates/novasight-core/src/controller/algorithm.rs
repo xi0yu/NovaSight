@@ -5,8 +5,8 @@
 //! nonlinear response math to `control_law`, and integer conversion to
 //! `quantizer`.
 //!
-//! * `dx`/`dy` are integer tracking demand. Recoil composition and the single
-//!   fixed X/Y output limit are applied later at the device boundary.
+//! * `dx`/`dy` are integer tracking demand. The fixed X/Y output limits
+//!   are applied once, later at the device boundary.
 //! * `emit_allowed` is `true` only when the algorithm produced an
 //!   emit-eligible decision. Triggers and target validity gate the
 //!   state machine; stale or non-monotonic observations are rejected
@@ -45,6 +45,8 @@ pub enum BlockReason {
     /// Hardware trigger is held but has not yet crossed its configured
     /// continuous-hold threshold. The algorithm was not executed.
     TriggerDelayPending,
+    /// First valid entry sample has zero gain and cannot emit movement.
+    EntryRampPending,
     /// No device count is actionable at the current position.
     DeadZone,
     /// Demand converted to a count out of signed 32-bit range.
@@ -59,8 +61,10 @@ pub struct AimAlgorithmConfig {
     pub projection_fov_x_deg: f64,
     pub projection_counts_per_360: f64,
     pub response_scale: f64,
-    pub response_boost: f64,
-    pub response_curve_shape: f64,
+    /// Zero preserves per-observation response; otherwise Kp is calibrated at this Hz.
+    #[serde(default)]
+    pub response_reference_hz: f64,
+    pub entry_ramp_ms: f64,
     pub velocity_history_reset_gap_ms: f64,
     pub prediction_enabled: bool,
     /// Command-to-visible-response delay used by target prediction.
@@ -81,8 +85,8 @@ impl Default for AimAlgorithmConfig {
             projection_fov_x_deg: 105.0,
             projection_counts_per_360: 9_980.0,
             response_scale: 0.20,
-            response_boost: 0.50,
-            response_curve_shape: 1.0,
+            response_reference_hz: 0.0,
+            entry_ramp_ms: 200.0,
             velocity_history_reset_gap_ms: 80.0,
             prediction_enabled: true,
             prediction_actuation_delay_ms: 4.0,
@@ -108,8 +112,6 @@ impl AimAlgorithmConfig {
             projection_fov_x_deg: self.projection_fov_x_deg,
             projection_counts_per_360: self.projection_counts_per_360,
             response_scale: self.response_scale,
-            response_boost: self.response_boost,
-            response_curve_shape: self.response_curve_shape,
         }
     }
 
@@ -268,6 +270,8 @@ pub struct AimAlgorithm {
     last_generation: Option<u64>,
     last_capture_ts_ns: Option<u64>,
     target_id: Option<u64>,
+    entry_start_ns: Option<u64>,
+    last_response_ns: Option<u64>,
     prediction: SingleTargetPredictor,
 }
 
@@ -280,6 +284,8 @@ impl AimAlgorithm {
             last_generation: None,
             last_capture_ts_ns: None,
             target_id: None,
+            entry_start_ns: None,
+            last_response_ns: None,
             prediction: SingleTargetPredictor::new(config.prediction_config()),
         }
     }
@@ -290,6 +296,11 @@ impl AimAlgorithm {
         }
         let control_changed = self.config.control_parameters() != config.control_parameters();
         let prediction_changed = self.config.prediction_config() != config.prediction_config();
+        if self.config.entry_ramp_ms != config.entry_ramp_ms
+            || self.config.response_reference_hz != config.response_reference_hz
+        {
+            self.release_trigger();
+        }
         self.config = config;
         if control_changed {
             self.control_law = AimControlLaw::new(config.control_parameters());
@@ -300,7 +311,7 @@ impl AimAlgorithm {
     }
 
     pub fn reset(&mut self) {
-        self.quantizer.reset();
+        self.release_trigger();
         self.last_generation = None;
         self.last_capture_ts_ns = None;
         self.target_id = None;
@@ -309,6 +320,8 @@ impl AimAlgorithm {
 
     pub fn release_trigger(&mut self) {
         self.quantizer.reset();
+        self.entry_start_ns = None;
+        self.last_response_ns = None;
     }
 
     /// Clear target-relative state while preserving observation sequence
@@ -346,6 +359,14 @@ impl AimAlgorithm {
         if capture_timestamp_discontinuity {
             self.prediction.reset(self.target_id);
         }
+        if capture_timestamp_discontinuity
+            || self.last_capture_ts_ns.is_some_and(|previous| {
+                observation.capture_ts_ns.saturating_sub(previous) as f64 / 1_000_000.0
+                    > self.config.velocity_history_reset_gap_ms
+            })
+        {
+            self.release_trigger();
+        }
 
         if self
             .target_id
@@ -362,7 +383,12 @@ impl AimAlgorithm {
             self.release_trigger();
             return AimResult::blocked(BlockReason::TargetInvalid);
         }
-        if !self.prediction.config_valid() {
+        if !self.prediction.config_valid()
+            || !self.config.entry_ramp_ms.is_finite()
+            || !(0.0..=2000.0).contains(&self.config.entry_ramp_ms)
+            || !self.config.response_reference_hz.is_finite()
+            || !(0.0..=240.0).contains(&self.config.response_reference_hz)
+        {
             self.release_trigger();
             return AimResult::blocked(BlockReason::GeometryInvalid);
         }
@@ -397,8 +423,39 @@ impl AimAlgorithm {
         let filtered_error_y = control_result.predicted_error_px.y;
         let full_x = control_result.projected_error_counts.x;
         let full_y = control_result.projected_error_counts.y;
-        let demand_x = control_result.demand_counts.x;
-        let demand_y = control_result.demand_counts.y;
+        let entry_gain = if !observation.trigger_active {
+            0.0
+        } else if self.config.entry_ramp_ms == 0.0 {
+            1.0
+        } else {
+            let start = self
+                .entry_start_ns
+                .get_or_insert(observation.control_now_ns);
+            if observation.control_now_ns < *start {
+                *start = observation.control_now_ns;
+                self.quantizer.reset();
+            }
+            let q = ((observation.control_now_ns - *start) as f64
+                / (self.config.entry_ramp_ms * 1_000_000.0))
+                .clamp(0.0, 1.0);
+            q * q * (3.0 - 2.0 * q)
+        };
+        // Use controller time, not capture time: queued captures must not create a burst.
+        // Never repay more than 50 ms of missed updates; gate resets discard time debt.
+        let time_scale = if self.config.response_reference_hz == 0.0 {
+            1.0
+        } else {
+            self.last_response_ns
+                .and_then(|last| observation.control_now_ns.checked_sub(last))
+                .map_or(0.0, |dt| (dt as f64 / 1_000_000.0).min(50.0))
+                * self.config.response_reference_hz
+                / 1000.0
+        };
+        if observation.trigger_active {
+            self.last_response_ns = Some(observation.control_now_ns);
+        }
+        let demand_x = control_result.demand_counts.x * entry_gain * time_scale;
+        let demand_y = control_result.demand_counts.y * entry_gain * time_scale;
 
         let (dx, dy, block_reason) = if observation.trigger_active {
             let quantized = match self.quantizer.quantize(demand_x, demand_y) {
@@ -410,7 +467,9 @@ impl AimAlgorithm {
             };
             let dx = quantized.dx;
             let dy = quantized.dy;
-            let reason = if dx == 0 && dy == 0 {
+            let reason = if entry_gain == 0.0 {
+                BlockReason::EntryRampPending
+            } else if dx == 0 && dy == 0 {
                 BlockReason::DeadZone
             } else {
                 BlockReason::None
@@ -637,6 +696,6 @@ mod tests {
         let decision = decision.expect("triggered decision");
         assert!((decision.velocity_x - 0.4).abs() < 1e-12);
         assert!(decision.predicted_offset_x > 0.0);
-        assert!(decision.emit_allowed);
+        assert_eq!(decision.block_reason, super::BlockReason::EntryRampPending);
     }
 }

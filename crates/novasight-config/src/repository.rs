@@ -28,6 +28,9 @@ const CONFIG_LOCK_WAIT: Duration = Duration::from_millis(250);
 const CONFIG_LOCK_RETRY: Duration = Duration::from_millis(2);
 const DEFAULT_RUNTIME_CONFIG: &str = include_str!("bootstrap.yaml");
 const RETIRED_PIPELINE_FIELDS: &[&str] = &[
+    "p_response_boost",
+    "p_response_curve_shape",
+    "target_range_shape",
     "projection_invert_y",
     "atan_scale_counts",
     "velocity_change_base_px_ms",
@@ -461,10 +464,11 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
 
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     let schema_version = config.schema_version;
-    let interval_recoil_explicit =
-        nested_section_has_fields(document, "control", "recoil", &["interval_ms", "y_counts"]);
     let removed_humanized_motion = config.control.extra.remove("humanized_motion").is_some();
+    config.pipeline.extra.remove("p_response_boost");
+    config.pipeline.extra.remove("p_response_curve_shape");
     config.pipeline.extra.remove("projection_invert_y");
+    config.pipeline.extra.remove("target_range_shape");
     config.pipeline.extra.remove("target_debounce_distance_px");
     config.pipeline.extra.remove("max_command_age_ms");
     config.pipeline.extra.remove("output_interval_ms");
@@ -480,27 +484,7 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     ] {
         config.pipeline.extra.remove(retired_key);
     }
-    let mut removed_retired_recoil = false;
-    for field in [
-        "base_rate_counts_s",
-        "max_rate_counts_s",
-        "startup_ms",
-        "positive_deadzone_norm",
-        "negative_deadzone_norm",
-        "full_brake_error_norm",
-        "fast_add_gain_counts_s",
-        "max_fast_add_ratio",
-        "stale_threshold_ms",
-    ] {
-        removed_retired_recoil |= config.control.recoil.extra.remove(field).is_some();
-    }
-    // Physical output migration must follow the fields that are actually present,
-    // not a missing or incorrectly declared schema version. A retired rate-based
-    // profile has no safe, behavior-preserving conversion to interval/count steps.
-    let recoil_requires_recommission = removed_retired_recoil && !interval_recoil_explicit;
-    if recoil_requires_recommission {
-        config.control.recoil.enabled = false;
-    }
+    config.control.extra.remove("recoil");
     let retired_class_ratio_present = config
         .pipeline
         .extra
@@ -543,24 +527,6 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     }
     remove_section_fields(document, "paths", &["python_executable"]);
     remove_section_fields(document, "pipeline", RETIRED_PIPELINE_FIELDS);
-    remove_nested_section_fields(
-        document,
-        "control",
-        "recoil",
-        &[
-            "base_rate_counts_s",
-            "max_rate_counts_s",
-            "startup_ms",
-            "positive_deadzone_norm",
-            "negative_deadzone_norm",
-            "full_brake_error_norm",
-            "fast_add_gain_counts_s",
-            "max_fast_add_ratio",
-            "stale_threshold_ms",
-            "fire_delay_enabled",
-            "fire_delay_ms",
-        ],
-    );
     remove_section_fields(
         document,
         "hardware",
@@ -611,20 +577,7 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         .or_insert_with(|| Value::Mapping(Default::default()));
     if let Value::Mapping(control) = control {
         control.remove(Value::String("humanized_motion".to_owned()));
-        let recoil = control
-            .entry(Value::String("recoil".to_owned()))
-            .or_insert_with(|| Value::Mapping(Default::default()));
-        if let Value::Mapping(recoil) = recoil {
-            if recoil_requires_recommission {
-                recoil.insert(Value::String("enabled".to_owned()), Value::Bool(false));
-            }
-            recoil
-                .entry(Value::String("interval_ms".to_owned()))
-                .or_insert_with(|| Value::Number(config.control.recoil.interval_ms.into()));
-            recoil
-                .entry(Value::String("y_counts".to_owned()))
-                .or_insert_with(|| Value::Number(config.control.recoil.y_counts.into()));
-        }
+        control.remove(Value::String("recoil".to_owned()));
     }
 }
 
@@ -672,12 +625,12 @@ fn migrate_recoil_fire_delay(document: &mut Value) {
     let (legacy_enabled, legacy_ms) = root
         .get_mut(Value::String("control".to_owned()))
         .and_then(Value::as_mapping_mut)
-        .and_then(|control| {
-            control
-                .get_mut(Value::String("recoil".to_owned()))
-                .and_then(Value::as_mapping_mut)
+        .and_then(|control| control.remove(Value::String("recoil".to_owned())))
+        .and_then(|value| match value {
+            Value::Mapping(mapping) => Some(mapping),
+            _ => None,
         })
-        .map_or((None, None), |recoil| {
+        .map_or((None, None), |mut recoil| {
             (
                 recoil.remove(Value::String("fire_delay_enabled".to_owned())),
                 recoil.remove(Value::String("fire_delay_ms".to_owned())),
@@ -721,8 +674,8 @@ fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRunti
     );
     for (key, value) in [
         ("p_response_scale", config.p_response_scale),
-        ("p_response_boost", config.p_response_boost),
-        ("p_response_curve_shape", config.p_response_curve_shape),
+        ("response_reference_hz", config.response_reference_hz),
+        ("entry_ramp_ms", config.entry_ramp_ms),
         ("max_output_x_counts", config.max_output_x_counts),
         ("max_output_y_counts", config.max_output_y_counts),
         (
@@ -779,32 +732,6 @@ fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRunti
     }
 }
 
-fn nested_section_has_fields(
-    document: &Value,
-    section: &str,
-    nested: &str,
-    fields: &[&str],
-) -> bool {
-    let Some(root) = document.as_mapping() else {
-        return false;
-    };
-    let Some(section) = root
-        .get(Value::String(section.to_owned()))
-        .and_then(Value::as_mapping)
-    else {
-        return false;
-    };
-    let Some(nested) = section
-        .get(Value::String(nested.to_owned()))
-        .and_then(Value::as_mapping)
-    else {
-        return false;
-    };
-    fields
-        .iter()
-        .all(|field| nested.contains_key(Value::String((*field).to_owned())))
-}
-
 fn remove_section_fields(document: &mut Value, section: &str, fields: &[&str]) {
     let Value::Mapping(root) = document else {
         return;
@@ -817,27 +744,8 @@ fn remove_section_fields(document: &mut Value, section: &str, fields: &[&str]) {
     }
 }
 
-fn remove_nested_section_fields(
-    document: &mut Value,
-    section: &str,
-    nested: &str,
-    fields: &[&str],
-) {
-    let Value::Mapping(root) = document else {
-        return;
-    };
-    let Some(Value::Mapping(section)) = root.get_mut(Value::String(section.to_owned())) else {
-        return;
-    };
-    let Some(Value::Mapping(nested)) = section.get_mut(Value::String(nested.to_owned())) else {
-        return;
-    };
-    for field in fields {
-        nested.remove(Value::String((*field).to_owned()));
-    }
-}
-
 fn mark_production_fields(document: &Value, config: &mut AppConfig) {
+    // Optional capsule/class overrides retain their defaults for existing YAML.
     config.pipeline.production_fields_explicit = section_has_fields(
         document,
         "pipeline",
@@ -846,8 +754,6 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "projection_fov_x_deg",
             "projection_counts_per_360",
             "p_response_scale",
-            "p_response_boost",
-            "p_response_curve_shape",
             "max_output_x_counts",
             "max_output_y_counts",
             "fire_delay_enabled",
@@ -1173,6 +1079,13 @@ fn save_document_field(
 }
 
 fn validate_field_target(path: &Path, section: &str, key: &str) -> Result<(), ConfigError> {
+    if section == "control" && key == "recoil" {
+        return Err(ConfigError::UnsupportedConfigKey {
+            path: path.to_owned(),
+            section: "control",
+            key: key.to_owned(),
+        });
+    }
     let valid_component = |component: &str| {
         !component.is_empty()
             && component.len() <= 128
@@ -1363,7 +1276,7 @@ fn validate_extra_keys(path: &Path, config: &AppConfig) -> Result<(), ConfigErro
         ("consumers", &config.consumers.extra, &["preview"][..]),
         ("limits", &config.limits.extra, &["stream_fps"][..]),
         ("pipeline", &config.pipeline.extra, &[][..]),
-        ("control", &config.control.extra, &[][..]),
+        ("control", &config.control.extra, &["recoil"][..]),
     ] {
         if let Some(key) = reserved.iter().find(|key| extra.contains_key(**key)) {
             return Err(ConfigError::UnsupportedConfigKey {

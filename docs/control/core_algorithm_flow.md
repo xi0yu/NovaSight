@@ -18,7 +18,6 @@ DeepStream capture/inference
 -> aim-point velocity prediction
 -> continuous Atan control
 -> per-axis output limit
--> recoil mix
 -> kmNet / HID output
 ```
 
@@ -181,13 +180,10 @@ counts_per_360
 The proportional response is a continuous Atan response:
 
 ```text
-rho = hypot(error_counts_x, error_counts_y)
 S = 256 counts
-r = rho / S
-curve = 1 - exp(-(r ^ response_curve_shape))
-R = 1 + response_boost * curve
-gain = response_scale * R
-demand = gain * S * atan(error_counts / S)
+q = clamp((t - entry_start) / entry_ramp_ms, 0, 1)
+a = 3*q*q - 2*q*q*q; entry_ramp_ms=0: a=1
+demand = a * response_scale * S * atan(error_counts / S)
 limit_x = max_output_x_counts
 limit_y = max_output_y_counts
 ```
@@ -195,9 +191,9 @@ limit_y = max_output_y_counts
 This means:
 
 ```text
-small error -> softer response
-middle error -> continuous transition
-large error -> stronger response, still compressed by Atan
+small error -> approximately proportional response
+large error -> compressed by Atan, no additional gain boost
+entry -> smoothly reach configured Kp within entry_ramp_ms
 ```
 
 There is no traditional PID loop in the current mainline:
@@ -224,7 +220,7 @@ The fractional remainder is internal conversion state, not a parameter and not
 a stop condition. There is no arrival radius, arrival hysteresis, visual
 feedback wait, or suppression of repeated `+1` / `-1` corrections.
 
-## 7. Recoil And Device Output
+## 7. Device Output
 
 The device worker receives the latest `OutputPlan`.
 
@@ -239,13 +235,8 @@ command epoch
 command generation is still latest
 ```
 
-Then recoil can be mixed into the Y axis:
-
-```text
-tracking command
-+ interval recoil command
--> one physical send
-```
+The device worker applies the final X/Y limits to the tracking command.
+A zero movement never produces a physical send.
 
 If a newer frame has already superseded the command, the device worker drops the
 old command. This preserves latest-only behavior all the way to hardware output.

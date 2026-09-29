@@ -32,8 +32,8 @@ export const CONTROL_PIPELINE_FIELDS = [
   "projection_fov_x_deg",
   "projection_counts_per_360",
   "p_response_scale",
-  "p_response_boost",
-  "p_response_curve_shape",
+  "response_reference_hz",
+  "entry_ramp_ms",
   "max_output_x_counts",
   "max_output_y_counts",
   "fire_delay_enabled",
@@ -49,6 +49,7 @@ export type ControlPipelineField = typeof CONTROL_PIPELINE_FIELDS[number];
 
 export const TARGETING_PIPELINE_FIELDS = [
   "target_fov_radius_px",
+  "target_range_scale",
   "target_min_confidence",
   "target_track_max_lost_age_ms",
   "tracker_max_match_distance",
@@ -67,6 +68,8 @@ export const TARGETING_PIPELINE_FIELDS = [
   "tracker_kalman_nis_threshold",
   "tracker_kalman_nis_hard_reject",
   "target_class_priority",
+  "target_class_weights",
+  "target_class_aim_x_ratios",
   "target_class_filter",
   "target_selection_distance_weight",
   "target_selection_class_weight",
@@ -166,7 +169,7 @@ export function validateStudioConfigSchema(schema: ConfigSchemaResponse): Studio
       issues.push({ path, reason: "Studio targeting parameter is not exposed by backend schema" });
       continue;
     }
-    const expectedType = key === "target_class_priority" || key === "target_class_filter" || key === "target_class_aim_y_ratios"
+    const expectedType = key === "target_class_priority" || key === "target_class_weights" || key === "target_class_aim_x_ratios" || key === "target_class_filter" || key === "target_class_aim_y_ratios"
       ? "string" : "number";
     if (expectedType === "string" ? field.type !== "string" : !NUMERIC_SCHEMA_TYPES.has(field.type)) {
       issues.push({ path, reason: `expected ${expectedType} schema field, got ${field.type}` });
@@ -220,8 +223,8 @@ function schemaBackedNumberParameters<Field extends string>(
 
 export type AlgorithmParameterValues = {
   pResponseScale: number;
-  pResponseBoost: number;
-  pResponseCurveShape: number;
+  responseReferenceHz?: number;
+  entryRampMs?: number;
   predictionActuationDelayMs: number;
   controlPredictionLeadMs: number;
   controlPredictionHistoryResetGapMs: number;
@@ -276,9 +279,22 @@ export function buildAlgorithmParameterGroups(
   const groups: AlgorithmParameterGroups = {
     responseParameters: [
       {
+        key: "entry_ramp_ms",
+        label: "入场渐升时长",
+        detail: "用这段时间把响应从零平滑提升到设定的 Kp，期间就会开始移动，不是等待后才启动。0 ms 表示立即使用设定力度。",
+        value: values.entryRampMs ?? 200,
+        min: 0,
+        max: 2000,
+        recommendedMin: 100,
+        recommendedMax: 400,
+        step: 10,
+        unit: "ms",
+        applyMode: "live"
+      },
+      {
         key: "p_response_scale",
-        label: "基础移动速度",
-        detail: "整体移动偏慢但轨迹稳定时小幅提高；过高会让近距离和远距离都变得过冲。",
+        label: "跟随力度 Kp",
+        detail: "决定正常跟随时的响应力度；入场结束后完整使用此值，不再随距离额外增强。过高可能导致过冲。",
         value: values.pResponseScale,
         min: 0,
         max: 100,
@@ -288,35 +304,23 @@ export function buildAlgorithmParameterGroups(
         applyMode: "live"
       },
       {
-        key: "p_response_boost",
-        label: "远距离追赶力度",
-        detail: "目标离准星较远、追赶不及时才小幅提高；过高会让中远距离移动变冲。",
-        value: values.pResponseBoost,
+        key: "response_reference_hz",
+        label: "力度基准频率",
+        detail: "0 保留按帧响应。填写调好 Kp 时的控制频率（如 60 Hz），按实际控制间隔换算输出。首次建立时钟不移动，卡顿最多计入 50 ms；不保证不同帧率完全等效。",
+        value: values.responseReferenceHz ?? 0,
         min: 0,
-        max: 100,
-        recommendedMin: 0,
-        recommendedMax: 2,
-        step: 0.001,
+        max: 240,
+        step: 10,
+        unit: "Hz",
+        kind: "stepper",
         applyMode: "live"
       },
-      {
-        key: "p_response_curve_shape",
-        label: "加速介入时机",
-        detail: "低于 1 会更早加速，高于 1 会更晚加速；它不会直接改变整体移动速度。",
-        value: values.pResponseCurveShape,
-        min: 0.5,
-        max: 4,
-        recommendedMin: 0.5,
-        recommendedMax: 2,
-        step: 0.01,
-        applyMode: "live"
-      }
     ],
     predictionCoreParameters: [
       {
         key: "prediction_lead_ms",
         label: "预测提前量",
-        detail: "跟不上移动目标时小幅增加；目标急停时容易越过目标，则应降低。",
+        detail: "在画面年龄和设备延迟之外额外预测多久，不再按帧数截断。急停或反向时暂停外推；位移仍受上限保护。",
         value: values.controlPredictionLeadMs,
         min: 0,
         max: 1000,

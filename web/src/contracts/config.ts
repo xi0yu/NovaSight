@@ -31,7 +31,6 @@ export interface ConfigSectionSchema {
 
 export interface ConfigAlgorithmResponseSchema {
   formula: string;
-  radial_multiplier_formula: string;
   atan_scale_counts: number;
 }
 
@@ -212,10 +211,6 @@ export function decodeConfigSchema(value: unknown): ConfigSchemaResponse {
       label: expectString(algorithm.label, "config_schema.algorithm.label"),
       response: {
         formula: expectString(response.formula, "config_schema.algorithm.response.formula"),
-        radial_multiplier_formula: expectString(
-          response.radial_multiplier_formula,
-          "config_schema.algorithm.response.radial_multiplier_formula"
-        ),
         atan_scale_counts: expectFiniteNumber(
           response.atan_scale_counts,
           "config_schema.algorithm.response.atan_scale_counts"

@@ -37,8 +37,6 @@ pub struct AimControlParameters {
     pub projection_fov_x_deg: f64,
     pub projection_counts_per_360: f64,
     pub response_scale: f64,
-    pub response_boost: f64,
-    pub response_curve_shape: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,7 +50,6 @@ pub struct AimControlResult {
     pub predicted_error_px: AxisPair,
     pub projected_error_counts: AxisPair,
     pub demand_counts: AxisPair,
-    pub response_multiplier: f64,
     pub effective_gain: f64,
 }
 
@@ -97,14 +94,7 @@ impl AimControlLaw {
             (predicted_error_px.x * self.source_error_scale.x).atan() * self.counts_per_rad,
             (predicted_error_px.y * self.source_error_scale.y).atan() * self.counts_per_rad,
         );
-        let normalized_error =
-            projected_error_counts.x.hypot(projected_error_counts.y) / DEFAULT_ATAN_SCALE_COUNTS;
-        let multiplier = response_multiplier(
-            normalized_error,
-            self.parameters.response_boost,
-            self.parameters.response_curve_shape,
-        );
-        let effective_gain = self.parameters.response_scale * multiplier;
+        let effective_gain = self.parameters.response_scale;
         let demand_counts = AxisPair::new(
             atan_response(projected_error_counts.x, effective_gain),
             atan_response(projected_error_counts.y, effective_gain),
@@ -120,7 +110,6 @@ impl AimControlLaw {
             predicted_error_px,
             projected_error_counts,
             demand_counts,
-            response_multiplier: multiplier,
             effective_gain,
         })
     }
@@ -138,41 +127,8 @@ fn parameters_valid(parameters: AimControlParameters) -> bool {
         && parameters.projection_counts_per_360 > 0.0
         && parameters.response_scale.is_finite()
         && parameters.response_scale >= 0.0
-        && parameters.response_boost.is_finite()
-        && parameters.response_boost >= 0.0
-        && parameters.response_curve_shape.is_finite()
-        && (0.5..=4.0).contains(&parameters.response_curve_shape)
 }
 
 fn atan_response(error_counts: f64, gain: f64) -> f64 {
     gain * DEFAULT_ATAN_SCALE_COUNTS * (error_counts / DEFAULT_ATAN_SCALE_COUNTS).atan()
-}
-
-fn response_multiplier(normalized_error: f64, boost: f64, shape: f64) -> f64 {
-    let radius = normalized_error.max(0.0);
-    let gamma = shape.clamp(0.5, 4.0);
-    1.0 + boost * (1.0 - (-radius.powf(gamma)).exp())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::response_multiplier;
-
-    #[test]
-    fn response_multiplier_approaches_configured_boost() {
-        let boosted = response_multiplier(64.0, 0.5, 1.0);
-        assert!((boosted - 1.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn response_shape_adjusts_transition_without_leaving_bounds() {
-        let early = response_multiplier(0.25, 0.5, 0.5);
-        let neutral = response_multiplier(0.25, 0.5, 1.0);
-        let late = response_multiplier(0.25, 0.5, 2.0);
-
-        assert!(early > neutral);
-        assert!(neutral > late);
-        assert!((1.0..=1.5).contains(&early));
-        assert!((1.0..=1.5).contains(&late));
-    }
 }

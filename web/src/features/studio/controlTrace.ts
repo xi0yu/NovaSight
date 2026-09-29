@@ -7,7 +7,6 @@ export type ControlTraceStepId =
   | "trigger"
   | "aim"
   | "controller"
-  | "recoil"
   | "limiter"
   | "output";
 
@@ -74,12 +73,6 @@ export type BuildControlTraceInput = {
   fireDelayPending: boolean;
   fireDelayElapsedMs: number | null;
   fireDelayRemainingMs: number | null;
-  recoilEnabled?: boolean;
-  recoilState?: string;
-  recoilStatus?: string;
-  recoilRemainingMs?: number | null;
-  recoilRequestedY?: number | null;
-  recoilEmittedY?: number | null;
   outputEnabled: boolean;
   willEmit: boolean | null;
   triggerActive: boolean | null;
@@ -113,6 +106,7 @@ const OUTPUT_TRACE_LABELS: Record<string, string> = {
   GEOMETRY_INVALID: "控制几何无效",
   TRIGGER_INACTIVE: "等待触发",
   TRIGGER_DELAY_PENDING: "等待触发延迟",
+  ENTRY_RAMP_PENDING: "入场渐升起点",
   DEAD_ZONE: "目标位于死区",
   DEMAND_OUT_OF_RANGE: "控制需求越界",
   ready: "输出链路已贯通"
@@ -259,7 +253,7 @@ function buildLimiterStep(input: BuildControlTraceInput): ControlTraceStep {
   const maxX = input.maxOutputXCounts ?? null;
   const maxY = input.maxOutputYCounts ?? null;
   const limitValue = `±${formatInteger(maxX)} / ±${formatInteger(maxY)}`;
-  const limitEvidence = `tracking=${input.integerCommand} · recoil_y=${formatInteger(input.recoilRequestedY ?? null)} · limit_x/y=${formatNumber(maxX, 0, "counts")}/${formatNumber(maxY, 0, "counts")}`;
+  const limitEvidence = `tracking=${input.integerCommand} · limit_x/y=${formatNumber(maxX, 0, "counts")}/${formatNumber(maxY, 0, "counts")}`;
   if (maxX === null || maxY === null) {
     return {
       id: "limiter",
@@ -288,8 +282,8 @@ function buildLimiterStep(input: BuildControlTraceInput): ControlTraceStep {
       state: "waiting",
       value: limitValue,
       detail: input.hardwareTriggerRequired && input.triggerActive !== true
-        ? "等待触发条件；设备 worker 尚未执行压枪叠加与最终 clamp。"
-        : "等待设备通道；设备 worker 尚未执行压枪叠加与最终 clamp。",
+        ? "等待触发条件；设备通道尚未执行最终限幅。"
+        : "等待设备通道执行最终限幅。",
       evidence: limitEvidence
     };
   }
@@ -309,7 +303,7 @@ function buildLimiterStep(input: BuildControlTraceInput): ControlTraceStep {
     state: "ready",
     stateLabel: "边界就绪",
     value: limitValue,
-    detail: "当前条件允许控制意图进入设备 worker；worker 会先叠加压枪，再执行固定轴向 clamp。",
+    detail: "当前条件允许控制意图进入设备通道；发送前执行固定轴向限幅。",
     evidence: limitEvidence
   };
 }
@@ -354,59 +348,6 @@ function buildTriggerDelayStep(input: BuildControlTraceInput): ControlTraceStep 
       ? "触发延迟已结束，当前最新目标可以进入控制算法。"
       : "触发延迟为 0 ms，收到触发信号后立即启动控制算法。",
     evidence: `configured=${formatNumber(input.fireDelayConfiguredMs, 0, "ms")}`
-  };
-}
-
-function buildRecoilStep(input: BuildControlTraceInput): ControlTraceStep {
-  if (!input.outputEnabled) {
-    return {
-      id: "recoil",
-      label: "压枪叠加",
-      state: "idle",
-      value: "未计算",
-      detail: "物理输出门关闭，设备边界不会推进压枪叠加节拍。",
-      evidence: "output_enabled=false"
-    };
-  }
-  if (input.triggerActive === false || !input.kmnetRuntimeConnected) {
-    return {
-      id: "recoil",
-      label: "压枪叠加",
-      state: "waiting",
-      value: "等待输出条件",
-      detail: input.triggerActive === false
-        ? "硬件触发条件未激活，设备边界不会计算本轮压枪叠加。"
-        : "设备通道未连接，设备边界不会计算本轮压枪叠加。",
-      evidence: `trigger=${String(input.triggerActive ?? "—")} · connected=${String(input.kmnetRuntimeConnected)}`
-    };
-  }
-  if (!input.recoilEnabled) {
-    return {
-      id: "recoil",
-      label: "压枪叠加",
-      state: "ready",
-      value: "关闭（旁路）",
-      detail: "独立压枪未启用，已准入的跟踪命令在设备边界保持不变。",
-      evidence: "recoil_enabled=false"
-    };
-  }
-  if (!input.controllerActive || !input.recoilState) {
-    return {
-      id: "recoil",
-      label: "压枪叠加",
-      state: input.hasTarget ? "waiting" : "idle",
-      value: "等待样本",
-      detail: "等待设备边界报告真实左键和压枪叠加结果。",
-      evidence: `remaining=${formatNumber(input.recoilRemainingMs ?? null, 2, "ms")}`
-    };
-  }
-  return {
-    id: "recoil",
-    label: "压枪叠加",
-    state: "ready",
-    value: input.recoilStatus || input.recoilState,
-    detail: "压枪只在控制算法启动后按独立间隔叠加 +Y。",
-    evidence: `state=${input.recoilState} · remaining=${formatNumber(input.recoilRemainingMs ?? null, 2, "ms")} · requested/emitted=${formatInteger(input.recoilRequestedY ?? null)}/${formatInteger(input.recoilEmittedY ?? null)}`
   };
 }
 
@@ -490,7 +431,6 @@ export function buildControlTrace(input: BuildControlTraceInput): ControlTraceSu
     buildTriggerDelayStep(input),
     buildAimStep(input),
     buildControllerStep(input),
-    buildRecoilStep(input),
     buildLimiterStep(input),
     buildOutputStep(input)
   ];
