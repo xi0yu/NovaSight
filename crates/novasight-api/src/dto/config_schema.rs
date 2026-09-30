@@ -67,7 +67,7 @@ impl ConfigSchemaResponse {
                 id: "continuous_atan_medoid_v2",
                 label: "连续 Atan 控制",
                 response: ConfigAlgorithmResponseSchema {
-                    formula: "a = smoothstep(clamp((t-t0)/T,0,1)); T=0: a=1; b = reference_hz=0 ? 1 : min(control_dt_ms,50)*reference_hz/1000; u = b * a * Kp * S * atan(e_pred / S)",
+                    formula: "Trigger hold delay D: no control output before D. After D, the first valid target starts a = smoothstep(clamp((t-t0)/T,0,1)); T=0: a=1; b = reference_hz=0 ? 1 : min(control_dt_ms,50)*reference_hz/1000; u = b * a * Kp * S * atan(e_pred / S)",
                     atan_scale_counts: DEFAULT_ATAN_SCALE_COUNTS,
                 },
                 prediction: ConfigAlgorithmPredictionSchema {
@@ -160,9 +160,17 @@ impl ConfigSchemaResponse {
                             240.0,
                             Some("Hz"),
                         ),
+                        boolean("pipeline.fire_delay_enabled", "启用触发等待"),
+                        integer(
+                            "pipeline.fire_delay_ms",
+                            "触发后等待时长",
+                            0.0,
+                            5_000.0,
+                            Some("ms"),
+                        ),
                         float(
                             "pipeline.entry_ramp_ms",
-                            "入场渐升时长",
+                            "力度渐增时长",
                             0.0,
                             2000.0,
                             Some("ms"),
@@ -180,14 +188,6 @@ impl ConfigSchemaResponse {
                             1.0,
                             i16::MAX as f64,
                             Some("count"),
-                        ),
-                        boolean("pipeline.fire_delay_enabled", "启用触发延迟"),
-                        integer(
-                            "pipeline.fire_delay_ms",
-                            "触发延迟",
-                            0.0,
-                            5_000.0,
-                            Some("ms"),
                         ),
                         boolean("pipeline.prediction_enabled", "启用目标速度预测"),
                         float(

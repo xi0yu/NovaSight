@@ -256,8 +256,8 @@ export function buildAlgorithmParameterGroups(
     responseParameters: [
       {
         key: "entry_ramp_ms",
-        label: "渐增时长",
-        detail: "开始辅助后，移动力度从零升到完整力度所需的时间。期间就会移动；输入 0 可关闭渐增。",
+        label: "力度渐增时长",
+        detail: "触发等待结束后，首次出现有效目标时，力度从 0 升到完整力度所需的时间；设为 0 则立即使用完整力度。",
         value: values.entryRampMs ?? 200,
         min: 0,
         max: 2000,

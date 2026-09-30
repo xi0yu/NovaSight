@@ -1296,7 +1296,7 @@ export function StudioConsoleView({
   const trackerKalmanNisThreshold = readNumber(rustPipelineConfig.tracker_kalman_nis_threshold, 9.21);
   const trackerKalmanNisHardReject = readNumber(rustPipelineConfig.tracker_kalman_nis_hard_reject, 16);
   const fireDelayEnabled = readBoolean(rustPipelineConfig.fire_delay_enabled, false);
-  const fireDelayMs = readNumber(rustPipelineConfig.fire_delay_ms, 0);
+  const fireDelayMs = fireDelayEnabled ? readNumber(rustPipelineConfig.fire_delay_ms, 0) : 0;
   const hardwareTriggerRequired = readString(controlConfig.trigger_mode, "hardware") === "hardware";
   const controlAlgorithmLabel = readString(configSchema?.algorithm?.label, CONTROL_ALGORITHM_LABEL);
   const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
@@ -4117,10 +4117,26 @@ export function StudioConsoleView({
                     onRadiusCommit={(value) => updatePipelineField("target_fov_radius_px", value)}
                     onEditingChange={handleParameterEditingChange}
                   />
-                  <section className="algorithm-entry-delay">
-                    <span className="algorithm-setting-icon" aria-hidden="true"><NovaIcon name="activity-pulse" size={20} /></span>
-                    <div><h3>触发延迟</h3><p>按住触发键后等待多久开始控制，0 ms 表示立即响应。</p></div>
-                    <label className="control-chain-inline-field"><InlineNumberControl ariaLabel="触发延迟" value={fireDelayMs} onCommit={updateTriggerDelay} /><i>ms</i></label>
+                  <section className="startup-response" aria-labelledby="startup-response-title">
+                    <header className="startup-response-heading">
+                      <span className="algorithm-setting-icon" aria-hidden="true"><NovaIcon name="activity-pulse" size={20} /></span>
+                      <div><h3 id="startup-response-title">启动响应</h3><p>按住后先等待；等待结束并出现有效目标后，再逐渐提升力度。</p></div>
+                    </header>
+                    <ol className="startup-response-timeline" aria-label="启动响应顺序">
+                      <li data-phase="delay"><b>触发等待</b><span>{fireDelayMs > 0 ? `${fireDelayMs.toFixed(0)} ms · 暂不控制` : "0 ms · 立即进入"}</span></li>
+                      <li data-phase="ramp"><b>力度渐增</b><span>{readNumber(rustPipelineConfig.entry_ramp_ms, 200) > 0 ? `${readNumber(rustPipelineConfig.entry_ramp_ms, 200).toFixed(0)} ms · 0 → 100%` : "0 ms · 立即完整力度"}</span></li>
+                      <li data-phase="hold"><b>持续跟随</b><span>渐增结束后保持完整力度</span></li>
+                    </ol>
+                    <div className="startup-response-controls">
+                      <label className="control-chain-inline-field startup-response-delay">
+                        <span>触发后等待</span>
+                        <InlineNumberControl ariaLabel="触发后等待时长" value={fireDelayMs} onCommit={updateTriggerDelay} />
+                        <i>ms</i>
+                      </label>
+                      <div className="startup-response-ramp">
+                        {responseParameters.filter((parameter) => parameter.key === "entry_ramp_ms").map(renderAlgorithmNumberParameter)}
+                      </div>
+                    </div>
                   </section>
                 </div>
               );
@@ -4138,7 +4154,7 @@ export function StudioConsoleView({
                   <small>力度越大跟随越积极；开启渐增后，开始时的力度逐渐增大。</small>
                 </div>
                 <div className="parameter-inline-grid">
-                  {responseParameters.filter((parameter) => parameter.key !== "response_reference_hz").map(renderAlgorithmNumberParameter)}
+                  {responseParameters.filter((parameter) => parameter.key === "p_response_scale").map(renderAlgorithmNumberParameter)}
                 </div>
               </li>
 
