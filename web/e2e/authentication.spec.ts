@@ -26,7 +26,7 @@ test.beforeEach(async ({ page }) => {
 
 test("anonymous LAN browser sees the welcome journey and single-code entry", { tag: "@mobile" }, async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "让视觉系统 准备好工作" })).toBeVisible();
+  await expect(page.locator(".welcome-story").getByRole("heading", { level: 1 })).toBeVisible();
   await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
   await expect(page.getByRole("list", { name: "开始使用的三个步骤" })).toBeVisible();
   await expect(page.locator("#web-access-code")).toHaveAttribute("type", "password");

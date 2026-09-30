@@ -28,11 +28,27 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+EmptyState.tsx and empty-state.css adapt the header/media/title/description/content
+composition and layout from shadcn/ui Empty into one React 18 + native CSS component.
+https://ui.shadcn.com/docs/components/empty
+https://github.com/shadcn-ui/ui/blob/main/apps/v4/registry/new-york-v4/ui/empty.tsx
+MIT License — Copyright (c) 2023 shadcn
+The MIT permission and warranty text printed above applies to this adaptation too.
+
+Nunito Latin variable font (400–800), locally bundled; no runtime font requests.
+Copyright 2014 The Nunito Project Authors (https://github.com/googlefonts/nunito).
+SIL Open Font License 1.1: full text is bundled in /nunito-OFL.txt.
+Source: https://fonts.google.com/specimen/Nunito
+
 Visual references (no component source copied):
 - beUI Range Slider: https://beui.dev/components/motion/range-slider
 - shadcn/ui Field: https://ui.shadcn.com/docs/components/field
 - Transitions: https://transitions.dev (short panel reveal and state changes)
 - Beautiful UI: https://www.beautifului.dev (compact navigation and task rows)
 
-Rare UI was reviewed but is not bundled. No paid components, third-party image
-assets, external fonts or additional runtime packages are included.
+Rare UI was reviewed but is not bundled. Its animated component interactions were
+not needed for the existing fixed navigation. No paid components, third-party
+image assets or additional runtime packages are included.
+
+NovaSight Daylight character art was generated using the built-in image tool.
+Prompt and asset provenance: src/assets/themes/nova-daylight.prompt.md.

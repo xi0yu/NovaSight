@@ -19,6 +19,7 @@ import { Button } from "../../components/ui";
 import { NovaIcon } from "../../components/visual";
 import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
+import daylightArt from "../../assets/themes/nova-daylight.webp";
 
 type AuthGateProps = {
   children: ReactNode;
@@ -183,6 +184,7 @@ export function AuthGate({ children }: AuthGateProps) {
   return (
     <main className="auth-shell welcome-shell">
       <section className="welcome-story" aria-labelledby="welcome-title">
+        <img className="welcome-character" src={daylightArt} width="1536" height="1024" alt="" aria-hidden="true" />
         <header className="welcome-brand">
           <span className="auth-brand-mark" aria-hidden="true">
             <NovaIcon name="prediction-line" size={22} strokeWidth={1.8} />
@@ -191,9 +193,9 @@ export function AuthGate({ children }: AuthGateProps) {
           <span>Edge AI Vision</span>
         </header>
         <div className="welcome-copy">
-          <span className="auth-eyebrow">专业 AI 视觉，简单开始</span>
-          <h1 id="welcome-title">让视觉系统<br />准备好工作</h1>
-          <p>连接画面、选择模型、安全运行。技术细节会在你需要时出现，不会挡在第一步前面。</p>
+          <span className="auth-eyebrow">你的视觉工作台</span>
+          <h1 id="welcome-title">你好，<br />欢迎来到 NovaSight。</h1>
+          <p>连接画面，调整到你的节奏。<br />从这里，开始新的体验。</p>
         </div>
         <ol className="welcome-sequence" aria-label="开始使用的三个步骤">
           <li><span>01</span><NovaIcon name="capture" size={18} /><strong>连接画面</strong></li>

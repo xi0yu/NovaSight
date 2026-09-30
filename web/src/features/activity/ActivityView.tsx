@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 
 import { NovaIcon } from "../../components/visual";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { getErrorMessage } from "../shared/format";
 
 import "./activity-view.css";
@@ -139,10 +140,10 @@ export function ActivityView({
             </li>
           )) : (
             <li className="activity-empty">
-              <NovaIcon name="logs" size={24} />
-              <span>{items.length > 0 ? "没有符合条件的日志" : "暂无运行记录"}</span>
-              <small>{items.length > 0 ? "试试其他关键词或日志等级。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}</small>
+              <EmptyState icon="logs" title={items.length > 0 ? "没有符合条件的日志" : "暂无运行记录"}
+                description={items.length > 0 ? "试试其他关键词或日志等级。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}>
               {items.length > 0 ? <button className="console-button" onClick={() => { setQuery(""); setFilter("all"); }} type="button">重置筛选</button> : null}
+              </EmptyState>
             </li>
           )}
         </ul>

@@ -216,7 +216,7 @@
 }
 
 .activity-empty {
-  padding: 24px;
+  padding: 12px;
   min-height: 220px;
   display: grid;
   place-items: center;

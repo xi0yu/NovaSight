@@ -8,8 +8,10 @@ import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { PreviewStates } from "./features/studio/PreviewStates";
 import { installGlobalErrorGuards } from "./lib/errorGuards";
 
+import "./design/studio-theme.css";
+
 installGlobalErrorGuards();
-document.documentElement.dataset.theme = "arena-signal";
+document.documentElement.dataset.theme = "nova-daylight";
 
 const rootElement = document.getElementById("root");
 if (rootElement) {

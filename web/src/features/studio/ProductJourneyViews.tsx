@@ -4,6 +4,7 @@ import { version as studioVersion } from "../../../package.json";
 import type { RuntimeProjection } from "../runtime/runtimeProjection";
 import type { ConsolePage } from "./StudioNavigation";
 import type { ReactNode } from "react";
+import companionArt from "../../assets/themes/nova-companion.webp";
 
 import "./product-journey.css";
 
@@ -21,6 +22,28 @@ const SETUP_STEP_COUNT = 4;
 function completedSetupSteps(state: SetupState): number {
   return [state.captureReady, state.modelReady, state.configReady, state.runtimeReady]
     .filter(Boolean).length;
+}
+
+export function HomeWelcome({ onNavigate, children }: { onNavigate: Navigate; children: ReactNode }) {
+  return <section className="home-room" aria-labelledby="home-welcome-title">
+    <header className="home-room-heading">
+      <div><span className="studio-kicker">NOVA / DAYLIGHT STUDIO</span><h2 id="home-welcome-title">今天，也请多关照。</h2></div>
+      <span className="home-theme-stamp" aria-label="星野主题">✦ 星野工作室</span>
+    </header>
+    <div className="home-room-layout">
+      <aside className="home-companion" aria-label="工作室引导">
+        <div className="companion-orbit" aria-hidden="true" />
+        <span className="companion-sticker" aria-hidden="true">HELLO, NOVA! <i>✧</i></span>
+        <img className="companion-portrait" src={companionArt} width="1024" height="1536" alt="" aria-hidden="true" />
+        <div className="companion-dialogue">
+          <span className="companion-name">NOVA <small>工作室向导</small></span>
+          <p>先调成喜欢的手感，<br />再由你决定什么时候开始。</p>
+          <button type="button" onClick={() => onNavigate("onboarding")}>带我完成设置 <span aria-hidden="true">↗</span></button>
+        </div>
+      </aside>
+      <div className="home-control-desk">{children}</div>
+    </div>
+  </section>;
 }
 
 export function HomeSetupPrompt({ state, statusKnown, onNavigate }: { state: SetupState; statusKnown: boolean; onNavigate: Navigate }) {

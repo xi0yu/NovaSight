@@ -1,0 +1,7 @@
+.ui-empty { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 32px 20px; text-align: center; text-wrap: balance; }
+.ui-empty [data-slot="empty-header"] { display: flex; max-width: 360px; flex-direction: column; align-items: center; gap: 9px; }
+.ui-empty [data-slot="empty-icon"] { position: relative; display: grid; place-items: center; width: 58px; height: 58px; margin-bottom: 5px; border: 1px solid var(--brand-border); border-radius: 20px 20px 20px 7px; background: var(--brand-soft); color: var(--brand-primary); box-shadow: 4px 4px 0 var(--art-sky); }
+.ui-empty [data-slot="empty-icon"]::after { content: "✦"; position: absolute; right: -9px; top: -9px; color: var(--signal-info); font-size: 19px; }
+.ui-empty [data-slot="empty-title"] { font-size: 14px; font-weight: 650; color: var(--text-primary); }
+.ui-empty [data-slot="empty-description"] { margin: 0; font-size: 12px; line-height: 1.7; color: var(--text-secondary); }
+.ui-empty [data-slot="empty-content"] { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }

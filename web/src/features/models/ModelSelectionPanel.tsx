@@ -9,6 +9,7 @@ import type {
   ModelVersion
 } from "../../api";
 import { StatusIndicator } from "../../components/ui";
+import { EmptyState } from "../../components/ui/EmptyState";
 import { NovaIcon } from "../../components/visual";
 import { findCatalogDirectory, flattenCatalogModels, ModelCatalogTree, type ModelSortOrder } from "./ModelCatalogTree";
 import { getErrorMessage } from "../shared/format";
@@ -498,13 +499,14 @@ export function ModelSelectionPanel({
               onSelectModel={selectModel}
             />
           ) : (
-            <div className="model-catalog-placeholder">
-              {folderPath && !filterActive
-                ? <><p>当前文件夹为空。可以在这里新建子文件夹，或将模型文件放入设备的对应目录。</p><button className="console-button" onClick={() => chooseFolder("")} type="button">返回全部文件夹</button></>
-                : models.length > 0
-                ? <><p>{filterActive ? "没有符合条件的模型文件。" : "当前文件夹没有模型文件。"}</p>{filterActive ? <button className="console-button" onClick={clearFilters} type="button">清除筛选</button> : <button className="console-button" onClick={() => chooseFolder("")} type="button">返回全部文件夹</button>}</>
-                : "暂无可选模型。可先新建文件夹，或将 .engine 文件放入设备的 models 目录后点击“刷新模型”；.onnx 文件不能直接切换到当前主链。"}
-            </div>
+            <EmptyState icon="models"
+              title={filterActive ? "没有符合条件的模型文件。" : folderPath ? "当前文件夹为空。" : "暂无可选模型"}
+              description={filterActive ? "调整筛选条件，或返回全部文件。" : folderPath
+                ? "可以在这里新建子文件夹，或将模型文件放入设备的对应目录。"
+                : "将 .engine 文件放入设备的 models 目录后，点击“刷新模型”；.onnx 文件不能直接切换到当前主链。"}>
+              {filterActive ? <button className="console-button" onClick={clearFilters} type="button">清除筛选</button>
+                : folderPath ? <button className="console-button" onClick={() => chooseFolder("")} type="button">返回全部文件夹</button> : null}
+            </EmptyState>
           )}
         </div>
 

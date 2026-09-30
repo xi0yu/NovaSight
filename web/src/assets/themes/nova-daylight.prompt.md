@@ -1,0 +1,10 @@
+# NovaSight Daylight
+
+Original decorative key visual generated with the built-in image generation tool, 2026-09-30.
+Asset: `nova-daylight.webp`, 1536 × 1024, 116,142 bytes. The source PNG remains in the generator output directory.
+WebP transcoding preserves the composition. No third-party characters, logos or game assets.
+Shared by the welcome page, home banner, guide avatar and prediction illustration; never used as a camera frame or a measured trajectory.
+
+## Prompt
+
+Create an ORIGINAL professional anime illustration for a light-themed desktop visual-computing app called NovaSight (do not render any text or letters). Landscape 1536x1024 artwork, clean premium Japanese anime cel-shading with fine warm colored linework, beautiful clear composition, not 3D, not photoreal. On the RIGHT HALF an adult anime woman age about 25, waist-up, friendly confident smile, looking toward viewer, shoulder-length soft coral-pink hair with a tiny sky-blue four-point star hairclip, blue eyes, small white headphones resting around neck, fully clothed in a tasteful white and powder-sky-blue technical jacket over a coral crew-neck top. One hand holds a small closed pastel-blue tablet. Elegant character design, natural anatomy, appealing editorial game-launcher artwork, no combat, no weapons, no logos. Background a sunny pale-ivory airy studio with very subtle mint and peach geometric orbit shapes and tiny four-point star accents, soft sky blue at far right. LEFT HALF mostly empty warm cream negative space with only very faint architectural arcs, suitable for overlaying real UI text. Palette warm porcelain #fff9f5, coral pink #e9829f, powder blue #a9d9ef, mint #d9f3e8, deep slate linework. Bright and gently saturated, NOT neon, NOT purple, NOT dark, no heavy glow, no dense details. Professional polished anime app key visual, main character occupies roughly 50% of width and 85% of height, keep face safely within right middle upper third so image can be cropped horizontally. No typography, no UI controls, no watermarks.

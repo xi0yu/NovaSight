@@ -1,53 +1,68 @@
+@font-face {
+  font-family: "Nunito";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("../assets/themes/nunito-latin.woff2") format("woff2");
+}
+
 :root {
   color-scheme: light;
 
+  /* Daylight: anime-inspired pastels for surfaces, deep ink for readable controls. */
+  --accent-lilac: #80559f;
+  --accent-teal: #227d77;
+  --accent-peach: #a56227;
+  --art-cream: #fff9f2;
+  --art-sky: #eef7fc;
+
   /* Primitive colors */
   --ns-white: #ffffff;
-  --ns-gray-25: #fff;
-  --ns-gray-50: #f8f7f4;
-  --ns-gray-100: #f0efeb;
-  --ns-gray-150: #e7e4df;
-  --ns-gray-200: #d9d5cf;
-  --ns-gray-300: #c3bdb5;
-  --ns-gray-400: #9d958c;
-  --ns-gray-500: #736c65;
-  --ns-gray-600: #544d47;
-  --ns-gray-700: #39332f;
-  --ns-gray-800: #27211e;
-  --ns-gray-900: #171311;
-  --ns-blue-50: #ebf3ff;
-  --ns-blue-100: #c9dcff;
-  --ns-blue-500: #3478f6;
-  --ns-blue-700: #245fc8;
-  --ns-brand-50: #fff0f2;
-  --ns-brand-100: #ffc8d0;
-  --ns-brand-500: #e21d42;
-  --ns-brand-600: #c91436;
-  --ns-brand-700: #a20e2b;
-  --ns-cyan-50: #e9f9fb;
-  --ns-cyan-100: #bdebf0;
-  --ns-cyan-500: #18a6b8;
-  --ns-green-50: #f2f9e8;
-  --ns-green-100: #d8ebb9;
-  --ns-green-500: #6aa500;
-  --ns-green-700: #416b00;
-  --ns-amber-50: #fff7e8;
-  --ns-amber-100: #f4d9a5;
-  --ns-amber-500: #d58a16;
-  --ns-amber-700: #9a6412;
-  --ns-red-50: #fff0f2;
-  --ns-red-100: #f6c5cb;
-  --ns-red-500: #e14b5a;
-  --ns-red-700: #b52e3d;
+  --ns-gray-25: #fffdfd;
+  --ns-gray-50: #faf7f9;
+  --ns-gray-100: #f2ecf1;
+  --ns-gray-150: #ece3ea;
+  --ns-gray-200: #e1d7e0;
+  --ns-gray-300: #c6b8c6;
+  --ns-gray-400: #948598;
+  --ns-gray-500: #746979;
+  --ns-gray-600: #655c70;
+  --ns-gray-700: #4b4357;
+  --ns-gray-800: #40374c;
+  --ns-gray-900: #353344;
+  --ns-blue-50: #eef7fc;
+  --ns-blue-100: #cce7f3;
+  --ns-blue-500: #247cac;
+  --ns-blue-700: #22668b;
+  --ns-brand-50: #fff0f4;
+  --ns-brand-100: #efc4d3;
+  --ns-brand-500: #ba4069;
+  --ns-brand-600: #a63259;
+  --ns-brand-700: #8e284a;
+  --ns-cyan-50: #edf9f8;
+  --ns-cyan-100: #c6e9e5;
+  --ns-cyan-500: #227d77;
+  --ns-green-50: #edf8f1;
+  --ns-green-100: #c3e5cf;
+  --ns-green-500: #268453;
+  --ns-green-700: #246940;
+  --ns-amber-50: #fff7e9;
+  --ns-amber-100: #efdab6;
+  --ns-amber-500: #a66c14;
+  --ns-amber-700: #865610;
+  --ns-red-50: #fff1ed;
+  --ns-red-100: #efc6bb;
+  --ns-red-500: #c74938;
+  --ns-red-700: #a23225;
 
   /* Semantic backgrounds */
-  --bg-app: #f5f4f1;
+  --bg-app: #faf8f3;
   --bg-surface: var(--ns-white);
-  --bg-subtle: #faf9f6;
-  --bg-elevated: #fff;
-  --bg-sidebar: var(--bg-app);
-  --bg-hover: #fff1f3;
-  --bg-active: #ffe3e8;
+  --bg-subtle: #f8f6f9;
+  --bg-elevated: #ffffff;
+  --bg-sidebar: #fffcf6;
+  --bg-hover: #f9edf2;
+  --bg-active: #f7e1ea;
 
   /* Semantic text */
   --text-primary: var(--ns-gray-900);
@@ -56,7 +71,7 @@
   --text-muted: var(--ns-gray-500);
   --text-disabled: var(--ns-gray-400);
   --text-inverse: var(--ns-white);
-  --text-link: #1769d2;
+  --text-link: #22668b;
 
   /* Brand and realtime */
   --brand-primary: var(--ns-brand-500);
@@ -64,41 +79,38 @@
   --brand-primary-active: var(--ns-brand-700);
   --brand-soft: var(--ns-brand-50);
   --brand-border: var(--ns-brand-100);
-  --realtime-primary: #1a73e8;
-  --realtime-soft: #edf4ff;
-  --realtime-border: #c8dcff;
+  --realtime-primary: #247cac;
+  --realtime-soft: #eef7fc;
+  --realtime-border: #cce7f3;
 
   /* Product-native signal palette. These colors encode meaning, not decoration. */
-  --signal-target: #e21d42;
-  --signal-compute: #5f9300;
-  --signal-info: #1a73e8;
-  --signal-attention: #b97800;
-  --signal-ink: #171311;
+  --signal-target: #ba4069;
+  --signal-compute: #227d77;
+  --signal-info: #247cac;
+  --signal-attention: #966211;
+  --signal-ink: #353344;
   --role-head: var(--signal-target);
   --role-head-fg: color-mix(in srgb, var(--role-head) 82%, var(--text-primary));
   --role-body: var(--signal-compute);
   --role-body-fg: color-mix(in srgb, var(--role-body) 82%, var(--text-primary));
   --role-other: var(--signal-info);
   --role-other-fg: color-mix(in srgb, var(--role-other) 82%, var(--text-primary));
-  --selection-strong-bg: #171311;
-  --selection-strong-fg: #fff8fa;
-  --selection-strong-muted: #d9cbd1;
+  --selection-strong-bg: #ba4069;
+  --selection-strong-fg: #ffffff;
+  --selection-strong-muted: #fff0f4;
 
   /* Borders and shadows */
   --border-default: var(--ns-gray-200);
-  --border-subtle: rgba(24, 32, 51, 0.1);
+  --border-subtle: #ece3ea;
   --border-strong: var(--ns-gray-300);
-  --border-focus: #e83b57;
-  --divider: #e9ecf1;
-  --shadow-card:
-    0 0 0 1px rgba(24, 32, 51, 0.025),
-    0 1px 2px rgba(24, 32, 51, 0.035);
-  --shadow-dialog:
-    0 0 0 1px rgba(24, 32, 51, 0.04),
-    0 24px 64px rgba(25, 35, 55, 0.16);
+  --border-focus: #ba4069;
+  --divider: #ece3ea;
+  --shadow-card: 3px 4px 0 #dedce947;
+  --shadow-dialog: 0 4px 12px rgba(69, 42, 68, .04), 0 24px 72px rgba(69, 42, 68, .16);
 
   /* Typography */
   --font-ui:
+    "Nunito",
     "Avenir Next",
     "SF Pro Text",
     "Segoe UI Variable",
@@ -108,6 +120,7 @@
     system-ui,
     sans-serif;
   --font-heading:
+    "Nunito",
     "Avenir Next",
     "SF Pro Display",
     "Segoe UI Variable Display",
@@ -115,8 +128,8 @@
     "PingFang SC",
     sans-serif;
   --font-mono: "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
-  --text-page-title: 42px;
-  --leading-page-title: 44px;
+  --text-page-title: 28px;
+  --leading-page-title: 36px;
   --text-section-title: 18px;
   --leading-section-title: 26px;
   --text-body: 15px;
@@ -140,10 +153,10 @@
   --space-8: 32px;
   --space-10: 40px;
   --radius-2: 4px;
-  --radius-3: 6px;
-  --radius-4: 8px;
-  --radius-5: 10px;
-  --radius-6: 12px;
+  --radius-3: 8px;
+  --radius-4: 10px;
+  --radius-5: 14px;
+  --radius-6: 18px;
   --radius-pill: 999px;
 
   /* Motion */
@@ -164,13 +177,13 @@
   --button-secondary-bg: var(--bg-surface);
   --button-secondary-border: var(--border-default);
   --button-secondary-fg: var(--text-primary);
-  --input-bg: color-mix(in srgb, var(--bg-app) 72%, var(--bg-surface));
+  --input-bg: #fffcfd;
   --input-border: var(--border-default);
   --input-focus-border: var(--border-focus);
   --input-radius: var(--radius-4);
   --card-bg: var(--bg-surface);
   --card-border: var(--border-default);
-  --card-radius: var(--radius-4);
+  --card-radius: var(--radius-5);
   --card-shadow: var(--shadow-card);
   --control-field-bg: var(--bg-subtle);
   --control-field-border: var(--border-subtle);
@@ -192,9 +205,9 @@
   --switch-off-fg: var(--text-secondary);
   --switch-on-bg: var(--brand-soft);
   --switch-on-fg: var(--control-active-fg);
-  --overlay-scrim-bg: rgba(20, 14, 18, 0.42);
-  --overlay-scrim-strong-bg: rgba(17, 21, 31, 0.58);
-  --theme-glow: rgba(232, 59, 87, 0.18);
+  --overlay-scrim-bg: rgba(53, 44, 64, 0.30);
+  --overlay-scrim-strong-bg: rgba(53, 44, 64, 0.44);
+  --theme-glow: rgba(186, 64, 105, 0.12);
   /* Status component tokens */
   --status-normal-bg: var(--ns-green-50);
   --status-normal-border: var(--ns-green-100);
@@ -208,10 +221,10 @@
   --status-running-border: var(--ns-blue-100);
   --status-running-fg: var(--ns-blue-700);
   --status-running-icon: var(--ns-blue-500);
-  --status-waiting-bg: #f1f3f6;
-  --status-waiting-border: #dce1e8;
-  --status-waiting-fg: #596273;
-  --status-waiting-icon: #7a8499;
+  --status-waiting-bg: #f2eff4;
+  --status-waiting-border: #ded5e3;
+  --status-waiting-fg: #685d74;
+  --status-waiting-icon: #83748f;
   --status-warning-bg: var(--ns-amber-50);
   --status-warning-border: var(--ns-amber-100);
   --status-warning-fg: var(--ns-amber-700);
@@ -220,10 +233,10 @@
   --status-error-border: var(--ns-red-100);
   --status-error-fg: var(--ns-red-700);
   --status-error-icon: var(--ns-red-500);
-  --status-disabled-bg: #f5f6f8;
-  --status-disabled-border: #e4e7ec;
-  --status-disabled-fg: #7a8499;
-  --status-disabled-icon: #8a92a0;
+  --status-disabled-bg: #f5f1f6;
+  --status-disabled-border: #e7dfe9;
+  --status-disabled-fg: #7b7085;
+  --status-disabled-icon: #91859a;
 
   /* Stable aliases used by existing component styles */
   --surface-1: var(--bg-elevated);
@@ -239,86 +252,6 @@
   --radius-10: 18px;
 }
 
-
-[data-theme="arena-signal"] {
-  color-scheme: dark;
-  --bg-app: #0d0f13;
-  --bg-surface: #15181e;
-  --bg-subtle: #1b1f26;
-  --bg-elevated: #20252d;
-  --bg-sidebar: #111419;
-  --bg-hover: #1d232c;
-  --bg-active: #233144;
-  --text-primary: #f3f6f8;
-  --text-secondary: #b7c0ca;
-  --text-tertiary: #87929f;
-  --text-muted: #717c88;
-  --text-disabled: #59636e;
-  --text-inverse: #ffffff;
-  --text-link: #72b8ff;
-  --brand-primary: #5aaeff;
-  --brand-primary-hover: #78bdff;
-  --brand-primary-active: #3b91df;
-  --brand-soft: #162a3d;
-  --brand-border: #2d587a;
-  --realtime-primary: #6bd89e;
-  --realtime-soft: #153025;
-  --realtime-border: #285641;
-  --signal-target: #5aaeff;
-  --signal-compute: #70d89c;
-  --signal-info: #67b7ff;
-  --signal-attention: #efb35b;
-  --signal-ink: #090b0f;
-  --selection-strong-bg: #263446;
-  --selection-strong-fg: #f7fbff;
-  --selection-strong-muted: #b7c7d8;
-  --border-default: #2c323b;
-  --border-subtle: rgba(255, 255, 255, 0.075);
-  --border-strong: #46505d;
-  --border-focus: #67b7ff;
-  --divider: #282e37;
-  --input-bg: #171b21;
-  --input-border: #353d48;
-  --status-normal-bg: #153025;
-  --status-normal-border: #285641;
-  --status-normal-fg: #9ce8b9;
-  --status-normal-icon: #70d89c;
-  --status-running-bg: #142b3d;
-  --status-running-border: #28526f;
-  --status-running-fg: #a7d8ff;
-  --status-running-icon: #67b7ff;
-  --status-waiting-bg: #1d2229;
-  --status-waiting-border: #39414c;
-  --status-waiting-fg: #b5bdc7;
-  --status-waiting-icon: #87929f;
-  --status-warning-bg: #342817;
-  --status-warning-border: #6a5025;
-  --status-warning-fg: #ffd38c;
-  --status-warning-icon: #efb35b;
-  --status-error-bg: #351b20;
-  --status-error-border: #74303d;
-  --status-error-fg: #ffb0bc;
-  --status-error-icon: #ff6d82;
-  --status-disabled-bg: #1b1f25;
-  --status-disabled-border: #303640;
-  --status-disabled-fg: #7e8894;
-  --status-disabled-icon: #66717d;
-  --button-primary-fg: #07111a;
-  --button-secondary-bg: #1b1f26;
-  --control-field-bg: #191d23;
-  --control-chip-bg: #20252d;
-  --segmented-active-bg: #2a3442;
-  --switch-on-bg: #17344b;
-  --overlay-scrim-bg: rgba(3, 5, 8, 0.68);
-  --overlay-scrim-strong-bg: rgba(3, 5, 8, 0.82);
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, .24), 0 8px 24px rgba(0, 0, 0, .12);
-  --shadow-dialog: 0 1px 0 rgba(255, 255, 255, .04), 0 28px 80px rgba(0, 0, 0, .48);
-  --theme-glow: rgba(90, 174, 255, .12);
-  --button-radius: 8px;
-  --card-radius: 10px;
-  --text-page-title: 28px;
-  --leading-page-title: 34px;
-}
 
 
 @media (prefers-reduced-motion: reduce) {

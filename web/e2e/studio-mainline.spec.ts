@@ -102,7 +102,7 @@ test("one license code establishes an authenticated and activated Studio session
   await page.addInitScript(() => localStorage.setItem("novasight.theme", "rose-white"));
   await page.goto("/");
 
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "arena-signal");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "nova-daylight");
   await expect(page.locator("#auth-code-help")).toHaveText(
     "支持正式授权码或本次启动的临时授权码；不另设接入码。",
   );

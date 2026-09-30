@@ -33,6 +33,7 @@ export function AlgorithmTabs({ value, onChange }: {
             onChange(SECTIONS[next].id);
             event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
           }}>
+          <span className="algorithm-tab-number" aria-hidden="true">0{itemIndex + 1}</span>
           <span className="algorithm-tab-icon"><NovaIcon name={item.icon} size={18} /></span>
           <span>{item.label}<small>{item.detail}</small></span>
         </button>

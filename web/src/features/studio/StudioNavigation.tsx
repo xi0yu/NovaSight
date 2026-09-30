@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 import { NovaIcon, type NovaIconName } from "../../components/visual";
 import { DEFAULT_STUDIO_LAYOUT, type StudioLayoutPage } from "../../contracts/studioLayout";
+import chibiArt from "../../assets/themes/nova-chibi.webp";
 
 import "./studio-navigation.css";
 
@@ -103,8 +104,9 @@ export function StudioNavigation({
 
   return (
     <nav className="console-navigation" aria-label="NovaSight Studio 导航">
+      <div className="studio-nav-caption" aria-hidden="true"><span>MY STUDIO</span><span>✦</span></div>
       <div className="console-primary-navigation">
-        {pages.map((configuredPage) => {
+        {pages.map((configuredPage, index) => {
           const item: NavigationItem = {
             id: configuredPage.id,
             label: configuredPage.label,
@@ -125,10 +127,16 @@ export function StudioNavigation({
             >
               <span className="console-nav-icon" aria-hidden="true"><NovaIcon name={item.icon} size={19} /></span>
               <span className="console-nav-copy"><b>{item.label}</b><small>{item.detail}</small></span>
+              <span className="console-nav-index" aria-hidden="true">{active ? "✦" : String(index + 1).padStart(2, "0")}</span>
             </button>
           );
         })}
       </div>
+      <button className="studio-guide-card" type="button" onClick={() => onNavigate("onboarding")}>
+        <img src={chibiArt} width="52" height="58" alt="" loading="lazy" />
+        <span><b>新手引导手册</b><small>从这里开启你的工作室</small></span>
+        <i aria-hidden="true">↗</i>
+      </button>
     </nav>
   );
 }

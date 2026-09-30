@@ -88,7 +88,7 @@
 .runtime-overview-metrics > div:last-child { border-right: 0; }
 .runtime-overview-metrics dt { color: var(--text-tertiary); font-size: 11px; font-weight: 400; }
 .runtime-overview-metrics dd { margin: 0; overflow: hidden; color: var(--text-primary); font-family: var(--font-ui); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
-.runtime-overview-metrics.is-live dd { color: #b8ddff; }
+.runtime-overview-metrics.is-live dd { color: var(--signal-info); }
 
 .runtime-overview-pipeline {
   height: 100%;
@@ -106,7 +106,7 @@
 
 .runtime-pipeline-list { display: grid; margin: 12px 0 0; padding: 0; list-style: none; }
 .runtime-pipeline-list li { display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; gap: 9px; padding: 8px 0; border-bottom: 1px solid var(--border-subtle); }
-.runtime-pipeline-list i { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; background: var(--brand-soft); color: #b8ddff; font-size: 10px; font-style: normal; }
+.runtime-pipeline-list i { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; background: var(--brand-soft); color: var(--signal-info); font-size: 10px; font-style: normal; }
 .runtime-pipeline-list span { display: flex; justify-content: space-between; gap: 12px; color: var(--text-tertiary); font-size: 11px; }
 .runtime-pipeline-list strong { color: var(--text-primary); }
 .runtime-pipeline-list li[data-live="true"] i { color: var(--status-success-fg); background: var(--status-success-bg); }

@@ -10,9 +10,9 @@
   overflow: hidden;
   margin-bottom: 16px;
 }
-.prediction-story { background: var(--bg-app); display: flex; flex-direction: column; justify-content: center; }
-.prediction-story img { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; object-fit: contain; }
-.prediction-story > div { padding: 0 20px 20px; }
+.prediction-story { background: var(--art-cream); display: flex; flex-direction: column; justify-content: center; }
+.prediction-story img { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; object-fit: cover; object-position: 78% 30%; }
+.prediction-story > div { padding: 16px 20px 20px; }
 .prediction-insight h3 { font-size: 14px; font-weight: 600; margin: 8px 0; color: var(--text-primary); }
 .prediction-story p { font-size: 12px; line-height: 1.7; color: var(--text-secondary); margin: 0; }
 .prediction-edit-state { font-size: 11px; color: var(--text-secondary); }

@@ -109,6 +109,7 @@ import {
   DeviceStatusView,
   HomeSetupPrompt,
   HomeShortcuts,
+  HomeWelcome,
   ManagementView,
   OnboardingView,
   type SetupState
@@ -3266,6 +3267,7 @@ export function StudioConsoleView({
 
         {activePage === "overview" ? (
           <>
+            <HomeWelcome onNavigate={navigatePage}>
             {overviewModules.has("setup") ? <HomeSetupPrompt state={setupState} statusKnown={setupStatusKnown} onNavigate={navigatePage} /> : null}
             <RuntimeOverviewView
               runtime={runtime}
@@ -3281,6 +3283,7 @@ export function StudioConsoleView({
               onToggle={() => requestRuntimeChange(!runtimeLifecycleActive)}
               moduleOrder={overviewModuleOrder}
             />
+            </HomeWelcome>
             <HomeShortcuts onNavigate={navigatePage} />
           </>
         ) : null}
