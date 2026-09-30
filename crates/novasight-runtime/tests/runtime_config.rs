@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use novasight_core::tracking::TargetPartRole;
 use novasight_runtime::compose_pipeline_config;
 use novasight_store::config::{AppConfig, CaptureConfig, YamlConfigRepository};
 
@@ -125,4 +126,25 @@ fn compose_pipeline_config_wires_target_decision_policy() {
     assert_eq!(pipeline.targeting.class_aim_x_ratios[&0], 0.3);
     assert_eq!(pipeline.targeting.min_confidence, 0.65_f32);
     assert_eq!(pipeline.control.freshness_threshold_ms, 35.0);
+}
+
+#[test]
+fn compose_pipeline_config_reuses_frontend_class_roles_for_part_handoffs() {
+    let mut config = with_test_capture(AppConfig::default());
+    config.inference = Some(Default::default());
+    config.inference.as_mut().unwrap().extra.insert(
+        "detection_class_profile".to_owned(),
+        serde_yaml::Value::String("default".to_owned()),
+    );
+    config.control.extra.insert(
+        "aim".to_owned(),
+        serde_yaml::from_str("{class_roles: {default: {'0': head, '1': body, '2': other}}}")
+            .unwrap(),
+    );
+
+    let pipeline = compose_pipeline_config(&config, None).unwrap();
+
+    assert_eq!(pipeline.targeting.class_roles[&0], TargetPartRole::Head);
+    assert_eq!(pipeline.targeting.class_roles[&1], TargetPartRole::Body);
+    assert_eq!(pipeline.targeting.class_roles[&2], TargetPartRole::Other);
 }

@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
+
 use novasight_core::controller::AimAlgorithmConfig;
-use novasight_core::tracking::{KalmanConfig, SelectionWeights, TargetingConfig};
+use novasight_core::tracking::{KalmanConfig, SelectionWeights, TargetPartRole, TargetingConfig};
 use novasight_pipeline::{OutputLimitConfig, PipelineConfig, TriggerMode};
 use novasight_store::config::{
     AppConfig, parse_target_class_aim_y_ratios, parse_target_class_filter,
@@ -18,6 +20,7 @@ pub fn compose_pipeline_config(
     if !adapters.inference.enabled {
         return Err("inference.enabled must be true for the live runtime".to_owned());
     }
+    let class_roles = parse_target_class_roles(config)?;
     Ok(PipelineConfig {
         targeting: TargetingConfig {
             target_fov_radius_px: adapters.pipeline.target_fov_radius_px,
@@ -45,6 +48,7 @@ pub fn compose_pipeline_config(
                 "pipeline.target_class_weights",
             )
             .map_err(|error| error.to_string())?,
+            class_roles,
             class_aim_x_ratios: novasight_store::config::parse_class_values(
                 &adapters.pipeline.target_class_aim_x_ratios,
                 "pipeline.target_class_aim_x_ratios",
@@ -102,4 +106,43 @@ pub fn compose_pipeline_config(
         },
         ..PipelineConfig::default()
     })
+}
+
+fn parse_target_class_roles(config: &AppConfig) -> Result<BTreeMap<u32, TargetPartRole>, String> {
+    let Some(aim) = config
+        .control
+        .extra
+        .get("aim")
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(profiles) = aim
+        .get(serde_yaml::Value::String("class_roles".to_owned()))
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let active_profile = config
+        .inference
+        .as_ref()
+        .and_then(|inference| inference.extra.get("detection_class_profile"))
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or("default");
+    let roles = profiles
+        .get(serde_yaml::Value::String(active_profile.to_owned()))
+        .or_else(|| profiles.get(serde_yaml::Value::String("default".to_owned())))
+        .cloned()
+        .ok_or_else(|| format!("control.aim.class_roles.{active_profile} must be a mapping"))?;
+    let roles: BTreeMap<String, TargetPartRole> =
+        serde_yaml::from_value(roles).map_err(|error| error.to_string())?;
+    roles
+        .iter()
+        .map(|(class_id, role)| {
+            let class_id = class_id
+                .parse::<u32>()
+                .map_err(|_| "control.aim.class_roles keys must be class IDs".to_owned())?;
+            Ok((class_id, *role))
+        })
+        .collect()
 }

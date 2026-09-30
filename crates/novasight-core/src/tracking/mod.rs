@@ -67,6 +67,14 @@ pub enum LockReason {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct TrackId(pub u64);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetPartRole {
+    Head,
+    Body,
+    Other,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Track {
     pub id: TrackId,
@@ -111,11 +119,16 @@ pub struct TargetSelection {
     pub target_object_id: Option<u64>,
     /// Stable identity allocated and associated by the Rust targeting core.
     pub target_track_id: Option<TrackId>,
+    /// Stable physical-subject identity used by control across a proven
+    /// head/body part handoff. Box-level association still uses `TrackId`.
+    pub target_subject_id: Option<u64>,
     pub target_class_id: Option<u32>,
     pub target_detection_confidence: Option<f32>,
     pub target_identity_confidence: Option<f64>,
     /// The selected identity was created or restored on this observation.
     pub target_rebuilt: bool,
+    /// The selected box changed to another configured part of the same subject.
+    pub target_part_changed: bool,
     /// Control aim point. Association continues to use the geometric center.
     pub target_aim_x: Option<f64>,
     pub target_aim_y: Option<f64>,
@@ -141,10 +154,12 @@ impl TargetSelection {
         Self {
             target_object_id: None,
             target_track_id: None,
+            target_subject_id: None,
             target_class_id: None,
             target_detection_confidence: None,
             target_identity_confidence: None,
             target_rebuilt: false,
+            target_part_changed: false,
             target_aim_x: None,
             target_aim_y: None,
             target_box_x: None,
@@ -188,6 +203,7 @@ pub struct TargetingConfig {
     /// The only class merit policy, in 0..=1. Unlisted classes score zero but
     /// remain selectable when admitted by `allowed_class_ids`.
     pub class_weights: BTreeMap<u32, f64>,
+    pub class_roles: BTreeMap<u32, TargetPartRole>,
     pub class_aim_x_ratios: BTreeMap<u32, f64>,
     /// Optional class admission allowlist. `None` admits every detector class;
     /// an empty set intentionally disables target selection.
@@ -218,6 +234,7 @@ impl Default for TargetingConfig {
             tracker_max_association_dt_ms: 150.0,
             kalman: KalmanConfig::default(),
             class_weights: BTreeMap::from([(0, 1.0), (1, 0.5)]),
+            class_roles: BTreeMap::new(),
             class_aim_x_ratios: BTreeMap::new(),
             allowed_class_ids: None,
             selection_weights: SelectionWeights::default(),
@@ -281,6 +298,8 @@ pub struct TargetingCore {
     config: TargetingConfig,
     tracks: Vec<Track>,
     locked: Option<Track>,
+    locked_subject_id: Option<u64>,
+    paired_part_id: Option<TrackId>,
     pending_switch: Option<PendingSwitch>,
     lost_count: u64,
     next_track_id: u64,
@@ -292,6 +311,8 @@ impl TargetingCore {
             config,
             tracks: Vec::new(),
             locked: None,
+            locked_subject_id: None,
+            paired_part_id: None,
             pending_switch: None,
             lost_count: 0,
             next_track_id: 1,
@@ -302,6 +323,7 @@ impl TargetingCore {
         if self.config.class_aim_x_ratios != config.class_aim_x_ratios
             || self.config.aim_y_ratio != config.aim_y_ratio
             || self.config.class_aim_y_ratios != config.class_aim_y_ratios
+            || self.config.class_roles != config.class_roles
         {
             // The same box now denotes a different aim point; old samples
             // cannot remain in a target-relative prediction history.
@@ -313,6 +335,8 @@ impl TargetingCore {
     pub fn reset(&mut self) {
         self.tracks.clear();
         self.locked = None;
+        self.locked_subject_id = None;
+        self.paired_part_id = None;
         self.pending_switch = None;
         self.lost_count = 0;
         self.next_track_id = 1;
@@ -329,6 +353,8 @@ impl TargetingCore {
     /// Release the choice at a trigger boundary without discarding identities.
     pub fn release_lock(&mut self) {
         self.locked = None;
+        self.locked_subject_id = None;
+        self.paired_part_id = None;
         self.pending_switch = None;
     }
 
@@ -400,10 +426,12 @@ impl TargetingCore {
                 dropped_by_budget: 0,
                 target_object_id: None,
                 target_track_id: None,
+                target_subject_id: None,
                 target_class_id: None,
                 target_detection_confidence: None,
                 target_identity_confidence: None,
                 target_rebuilt: false,
+                target_part_changed: false,
                 target_aim_x: None,
                 target_aim_y: None,
                 target_box_x: None,
@@ -688,6 +716,16 @@ impl TargetingCore {
             .map(|(index, _)| index)
             .expect("admissible detections produce current tracks");
 
+        let paired_part_index = switch_lock.as_ref().and_then(|locked| {
+            let paired_id = self.paired_part_id?;
+            current_indices.iter().position(|index| {
+                let candidate = &updated[*index];
+                candidate.id == paired_id
+                    && same_subject_parts(locked, candidate, &self.config.class_roles)
+            })
+        });
+        let challenger_index = paired_part_index.unwrap_or(best_index);
+
         let chosen_index = match locked_index {
             Some(index) => {
                 // Class merit is an acquisition preference, not permission to
@@ -699,11 +737,11 @@ impl TargetingCore {
                 Some(locked) => self
                     .challenger_ready(
                         locked,
-                        &updated[current_indices[best_index]],
+                        &updated[current_indices[challenger_index]],
                         observation_center,
                         captured_at_ns,
                     )
-                    .then_some(best_index),
+                    .then_some(challenger_index),
                 None => {
                     self.pending_switch = None;
                     Some(best_index)
@@ -729,8 +767,20 @@ impl TargetingCore {
             };
         };
         let track = updated[current_indices[chosen_index]].clone();
+        let target_part_changed = locked_index.is_none()
+            && paired_part_index == Some(chosen_index)
+            && switch_lock
+                .as_ref()
+                .is_some_and(|locked| locked.id != track.id);
+        let target_subject_id = if locked_index == Some(chosen_index) || target_part_changed {
+            self.locked_subject_id
+                .or_else(|| switch_lock.as_ref().map(|locked| locked.id.0))
+                .unwrap_or(track.id.0)
+        } else {
+            track.id.0
+        };
         let chosen_merit = classification::preference_score(track.class_id, &self.config);
-        let reason = if locked_index == Some(chosen_index) {
+        let reason = if locked_index == Some(chosen_index) || target_part_changed {
             LockReason::MaintainedTarget
         } else if target_rank(&track, observation_center, &self.config)
             .nearby_distance
@@ -755,6 +805,12 @@ impl TargetingCore {
 
         self.tracks = updated;
         self.tracks.append(&mut retained);
+        self.locked_subject_id = Some(target_subject_id);
+        self.paired_part_id = if target_part_changed {
+            switch_lock.as_ref().map(|locked| locked.id)
+        } else {
+            unique_sibling_part_id(&track, &self.tracks, &self.config.class_roles)
+        };
         self.locked = Some(track.clone());
         TargetSelection {
             candidates,
@@ -763,10 +819,12 @@ impl TargetingCore {
             dropped_by_budget,
             target_object_id: Some(track.object_id),
             target_track_id: Some(track.id),
+            target_subject_id: Some(target_subject_id),
             target_class_id: Some(track.class_id),
             target_detection_confidence: Some(track.confidence),
             target_identity_confidence: Some(track.identity_confidence),
             target_rebuilt: has_track_id(&rebuilt_ids, track.id),
+            target_part_changed,
             target_aim_x: Some(aim_x),
             target_aim_y: Some(aim_y),
             target_box_x: Some(f64::from(selected_detection.x())),
@@ -845,7 +903,76 @@ impl TargetingCore {
             .as_ref()
             .and_then(|locked| self.tracks.iter().find(|track| track.id == locked.id))
             .cloned();
+        if self.locked.is_none() {
+            self.locked_subject_id = None;
+            self.paired_part_id = None;
+        }
     }
+}
+
+fn unique_sibling_part_id(
+    selected: &Track,
+    tracks: &[Track],
+    class_roles: &BTreeMap<u32, TargetPartRole>,
+) -> Option<TrackId> {
+    let mut matches = tracks.iter().filter(|candidate| {
+        candidate.id != selected.id
+            && candidate.state == TrackState::Confirmed
+            && same_subject_parts(selected, candidate, class_roles)
+    });
+    let sibling = matches.next()?;
+    matches.next().is_none().then_some(sibling.id)
+}
+
+fn same_subject_parts(
+    left: &Track,
+    right: &Track,
+    class_roles: &BTreeMap<u32, TargetPartRole>,
+) -> bool {
+    let left_role = class_roles
+        .get(&left.class_id)
+        .copied()
+        .unwrap_or(TargetPartRole::Other);
+    let right_role = class_roles
+        .get(&right.class_id)
+        .copied()
+        .unwrap_or(TargetPartRole::Other);
+    let (head, body) = match (left_role, right_role) {
+        (TargetPartRole::Head, TargetPartRole::Body) => (left, right),
+        (TargetPartRole::Body, TargetPartRole::Head) => (right, left),
+        _ => return false,
+    };
+    if ![
+        head.box_x,
+        head.box_y,
+        head.width,
+        head.height,
+        body.box_x,
+        body.box_y,
+        body.width,
+        body.height,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        || head.width <= 0.0
+        || head.height <= 0.0
+        || body.width <= 0.0
+        || body.height <= 0.0
+    {
+        return false;
+    }
+    let head_center_x = head.box_x + head.width * 0.5;
+    let head_center_y = head.box_y + head.height * 0.5;
+    let body_right = body.box_x + body.width;
+    let body_lower_pairing_edge = body.box_y + body.height * 0.55;
+    // ponytail: only proven nested head/body pairs share a subject. Support
+    // disjoint part boxes only after recorded crowded scenes provide evidence.
+    head.width <= body.width
+        && head.height <= body.height
+        && head_center_x >= body.box_x
+        && head_center_x <= body_right
+        && head_center_y >= body.box_y
+        && head_center_y <= body_lower_pairing_edge
 }
 
 fn track_within_loss_grace(track: &Track, captured_at_ns: u64, config: &TargetingConfig) -> bool {

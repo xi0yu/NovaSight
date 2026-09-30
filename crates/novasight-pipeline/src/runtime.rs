@@ -1150,7 +1150,7 @@ struct TargetedObservation {
     aim_y: f64,
     crosshair_x: f64,
     crosshair_y: f64,
-    track_rebuilt: bool,
+    target_state_reset: bool,
 }
 
 /// Latest safe tracking command, fenced to its originating trigger cycle.
@@ -1645,13 +1645,15 @@ fn spawn_targeting_worker(
                     let (target_id, aim_x, aim_y) = match (
                         selection.target_object_id,
                         selection.target_track_id,
+                        selection.target_subject_id,
                         selection.target_class_id,
                         selection.target_aim_x,
                         selection.target_aim_y,
                     ) {
                         (
                             Some(object_id),
-                            Some(track_id),
+                            Some(_track_id),
+                            Some(subject_id),
                             Some(class_id),
                             Some(aim_x),
                             Some(aim_y),
@@ -1659,7 +1661,7 @@ fn spawn_targeting_worker(
                             match batch.detections().iter().find(|item| {
                                 item.object_id() == object_id && item.class_id() == class_id
                             }) {
-                                Some(_) => (Some(track_id.0), aim_x, aim_y),
+                                Some(_) => (Some(subject_id), aim_x, aim_y),
                                 None => {
                                     shared.fault(
                                         "target selection did not belong to its detection batch",
@@ -1682,7 +1684,8 @@ fn spawn_targeting_worker(
                         aim_y,
                         crosshair_x,
                         crosshair_y,
-                        track_rebuilt: selection.target_rebuilt,
+                        target_state_reset: selection.target_rebuilt
+                            || selection.target_part_changed,
                     };
                     if output.publish(observation).is_err() {
                         break;
@@ -1831,7 +1834,7 @@ fn spawn_control_worker(
                         target_valid: target.target_id.is_some(),
                         trigger_active: true,
                     };
-                    if target.track_rebuilt {
+                    if target.target_state_reset {
                         algorithm.reset_target_state();
                     }
                     let decision = algorithm.step(observation);

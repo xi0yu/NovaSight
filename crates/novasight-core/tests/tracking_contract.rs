@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use novasight_core::perception::types::Detection;
 use novasight_core::tracking::{
-    KalmanConfig, LockReason, SelectionWeights, TargetingConfig, TargetingCore,
+    KalmanConfig, LockReason, SelectionWeights, TargetPartRole, TargetingConfig, TargetingCore,
 };
 use serde_json::Value;
 
@@ -1171,6 +1171,37 @@ fn a_nested_other_class_cannot_inherit_the_selected_part_identity() {
     let fallback = core.select_at(&[head], OBSERVATION_CENTER, 1_100_000_000);
     assert_eq!(fallback.target_class_id, Some(1));
     assert_ne!(fallback.target_track_id, Some(locked));
+}
+
+#[test]
+fn proven_head_body_handoff_keeps_subject_identity_and_marks_part_change() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        class_roles: BTreeMap::from([(0, TargetPartRole::Head), (1, TargetPartRole::Body)]),
+        switch_delay_ms: 0.0,
+        switch_min_continuity_score: 0.0,
+        ..TargetingConfig::default()
+    });
+    let body = Detection::new(1, 1, 280.0, 280.0, 80.0, 160.0, 0.95).unwrap();
+    let head = Detection::new(2, 0, 295.0, 280.0, 50.0, 50.0, 0.95).unwrap();
+    core.select_at(
+        &[body.clone(), head.clone()],
+        OBSERVATION_CENTER,
+        1_000_000_000,
+    );
+    let body_lock = core.select_at(&[head.clone(), body], OBSERVATION_CENTER, 1_010_000_000);
+    let body_track = body_lock.target_track_id.expect("body part track");
+    let subject = body_lock.target_subject_id.expect("physical subject");
+    assert_eq!(body_lock.target_class_id, Some(1));
+
+    let head_handoff = core.select_at(&[head.clone()], OBSERVATION_CENTER, 1_020_000_000);
+    assert_ne!(head_handoff.target_track_id, Some(body_track));
+    assert_eq!(head_handoff.target_subject_id, Some(subject));
+    assert_eq!(head_handoff.target_class_id, Some(0));
+    assert!(head_handoff.target_part_changed);
+
+    let stable_head = core.select_at(&[head], OBSERVATION_CENTER, 1_030_000_000);
+    assert_eq!(stable_head.target_subject_id, Some(subject));
+    assert!(!stable_head.target_part_changed);
 }
 
 #[test]
