@@ -3,6 +3,51 @@ use crate::perception::types::Detection;
 use super::classification;
 use super::{TargetingConfig, Track};
 
+#[derive(Clone, Copy)]
+pub(super) struct SelectionRank {
+    pub nearby_distance: Option<f64>,
+    score: f64,
+}
+
+impl SelectionRank {
+    pub fn cmp(self, other: Self) -> std::cmp::Ordering {
+        self.nearby_distance
+            .is_some()
+            .cmp(&other.nearby_distance.is_some())
+            .then_with(|| match (self.nearby_distance, other.nearby_distance) {
+                (Some(left), Some(right)) => right.total_cmp(&left),
+                _ => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| self.score.total_cmp(&other.score))
+    }
+}
+
+fn rank(aim: (f64, f64), size: (f64, f64), center: (f64, f64), score: f64) -> SelectionRank {
+    let distance = euclidean(aim.0, aim.1, center.0, center.1);
+    // ponytail: a box-short-side neighborhood approximates local selection;
+    // calibrate against recorded scenes before replacing it with an intent model.
+    // This never enlarges the search circle or uses bbox containment as intent.
+    let radius = size.0.min(size.1) * 0.5;
+    SelectionRank {
+        nearby_distance: (radius.is_finite() && radius > 0.0 && distance <= radius)
+            .then_some(distance),
+        score,
+    }
+}
+
+pub(super) fn target_rank(
+    track: &Track,
+    observation_center: (f64, f64),
+    config: &TargetingConfig,
+) -> SelectionRank {
+    rank(
+        (track.observed_aim_x, track.observed_aim_y),
+        (track.width, track.height),
+        observation_center,
+        target_score(track, observation_center, config),
+    )
+}
+
 pub(super) fn euclidean(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     let dx = ax - bx;
     let dy = ay - by;
@@ -31,13 +76,18 @@ pub(super) fn candidate_score(
     aim: (f64, f64),
     observation_center: (f64, f64),
     config: &TargetingConfig,
-) -> f64 {
-    score(
-        detection.class_id(),
-        detection.confidence(),
+) -> SelectionRank {
+    rank(
         aim,
+        (f64::from(detection.width()), f64::from(detection.height())),
         observation_center,
-        config,
+        score(
+            detection.class_id(),
+            detection.confidence(),
+            aim,
+            observation_center,
+            config,
+        ),
     )
 }
 

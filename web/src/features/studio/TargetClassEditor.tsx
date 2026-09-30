@@ -72,24 +72,24 @@ export function TargetClassEditor({ ids, names, selected, weights, xs, ys, defau
       </div>
     </div>
     <div className="class-weight-workbench">
-      <header><h3>候选类别</h3><span>权重 0—1 · 越大越优先</span></header>
-      <p>选择类别，再调整瞄点与权重。颜色仅用于识别，不代表已检测到该类别。</p>
+      <header><h3>候选类别</h3><span>远处偏好 0—1 · 越大越优先</span></header>
+      <p>先选择参与的类别和框内瞄点。附近瞄点优先；都较远时，偏好才参与评分。</p>
       <div className="class-selector-grid" aria-label="类别选择">{ids.map((classId) => <button type="button" key={classId} style={classStyle(classId)} aria-label={`cls ${classId}`} aria-pressed={id === classId} disabled={disabled} onClick={() => setActive(classId)}>
         <span><i aria-hidden="true" />cls {classId}</span>
-        <small>{selected.has(classId) ? `× ${(weights[classId] ?? 0).toFixed(2)}` : "未参与"}</small>
+        <small>{selected.has(classId) ? `偏好 ${(weights[classId] ?? 0).toFixed(2)}` : "未参与"}</small>
       </button>)}</div>
       <div className="class-active-settings" key={id}>
         <div className="class-weight-row"><strong>cls {id}</strong>
           <InlineTextControl ariaLabel={`cls ${id} 名称`} value={names[id] ?? ""} placeholder="类别备注" onCommit={(name) => onName(id, name)} />
           <label><input type="checkbox" aria-label={`cls ${id} 参与目标选择`} checked={selected.has(id)} disabled={disabled} onChange={() => onToggle(id)} />参与</label></div>
-        <ParameterNumberControl label={`cls ${id} 优先权重`} value={weights[id] ?? 0} min={0} max={1} step={0.05} kind="slider" applyMode="save" disabled={disabled} onCommit={(n) => onWeight(id, n)} />
-        <small>权重只影响类别评分，不改变移动速度；0 不等于禁用。</small>
+        <ParameterNumberControl label={`cls ${id} 远处偏好`} value={weights[id] ?? 0} min={0} max={1} step={0.05} kind="slider" applyMode="save" disabled={disabled} onCommit={(n) => onWeight(id, n)} />
+        <small>0 仍可被选中；禁止选择请关闭“参与”。偏好不改变移动力度。</small>
       </div>
       <form className="class-add" onSubmit={(event) => { event.preventDefault(); const n = Number(newId); if (/^\d+$/.test(newId) && n >= 0 && n <= 255 && !ids.includes(n)) { onWeight(n, 0.5); setActive(n); setNewId(""); } }}>
         <label>添加 cls<input aria-label="新类别 ID" type="number" min={0} max={255} step={1} value={newId} onChange={(event) => setNewId(event.target.value)} /></label>
         <button type="submit" disabled={disabled || !/^\d+$/.test(newId) || Number(newId) > 255 || ids.includes(Number(newId))}>添加</button>
       </form>
-      <p className="class-score-note">同等条件下，cls 0 × 0.8 比 cls 1 × 0.4 更优先。最终仍结合距离、置信度和已有锁定，不会无条件抢占。</p>
+      <p className="class-score-note">选中的瞄点仍有效时保持，不因另一个类别偏好更高而跳转。按键触发时，松开再按可重新选择；当前瞄点失效时，其他候选仍需通过连续确认。</p>
     </div>
   </section>;
 }

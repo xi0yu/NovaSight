@@ -787,6 +787,7 @@ export function StudioConsoleView({
   const configFieldIndex = useMemo(() => buildConfigFieldIndex(configSchema), [configSchema]);
   const mainRef = useRef<HTMLElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
+  const lastEnabledEntryRampMs = useRef(200);
   const runtimeConfigLatestRef = useRef<RuntimeConfig | null>(runtimeConfig);
   const activeConfigDialogRef = useRef<ConfigDialogId | null>(null);
   const configDialogBaselineRef = useRef<RuntimeConfig | null>(null);
@@ -1570,6 +1571,12 @@ export function StudioConsoleView({
     "counts"
   );
   const controlWillEmitRaw = control?.will_emit ?? null;
+  const controlSelectionReason = ({
+    PREFERRED_CLASS: "按远处偏好选择",
+    FALLBACK_CLASS: "选择其他可用类别",
+    NEARBY_AIM: "选择准星附近瞄点",
+    MAINTAINED_TARGET: "保持当前目标",
+  } as Record<string, string>)[control?.selection_reason ?? ""] ?? NO_SAMPLE;
   const controlWillEmit = controlWillEmitRaw;
   const controlTriggerActiveRaw = control?.trigger_active ?? null;
   const controlTriggerActive = controlTriggerActiveRaw;
@@ -1577,7 +1584,7 @@ export function StudioConsoleView({
     ? `触发延迟 ${runtimeFireDelayMs.toFixed(0)} ms 尚未结束，控制算法未启动`
     : stableRuntimeOutputTrace?.detail || (
         !controlHasTarget
-          ? targetPipelineMessage || control?.selection_reason || "无目标"
+          ? targetPipelineMessage || (control?.selection_reason ? controlSelectionReason : "无目标")
           : controlWillEmit !== true
             ? control?.no_send_reason || control?.reason || "控制门控未通过"
             : !kmnetRuntimeConnected
@@ -2752,12 +2759,38 @@ export function StudioConsoleView({
       kind={parameter.kind}
       applyMode={activePage === "params" ? "save" : parameter.applyMode ?? "live"}
       riskLevel={parameter.riskLevel}
-      onCommit={(value) => updateControlPipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
+      onCommit={(value) => {
+        if (parameter.key === "entry_ramp_ms" && value > 0) lastEnabledEntryRampMs.current = value;
+        return updateControlPipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value);
+      }}
       onEditingChange={handleParameterEditingChange}
     />
   );
-  const renderAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) =>
-    buildAlgorithmNumberParameterControl(parameter);
+  const renderAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) => {
+    if (parameter.key !== "entry_ramp_ms") return buildAlgorithmNumberParameterControl(parameter);
+    const enabled = parameter.value > 0;
+    return <section key={parameter.key} className="entry-ramp-control" aria-label="力度渐增设置" data-enabled={enabled}>
+      <ModuleSwitch
+        compact
+        label="启用力度渐增"
+        detail={enabled ? `在 ${parameter.value} ms 内从零升到完整力度` : "已关闭 · 从开始就使用完整力度"}
+        enabled={enabled}
+        onToggle={(next) => {
+          if (enabled) lastEnabledEntryRampMs.current = parameter.value;
+          return updateControlPipelineField("entry_ramp_ms", next ? lastEnabledEntryRampMs.current : 0);
+        }}
+      />
+      <figure className="entry-ramp-preview">
+        <svg viewBox="0 0 120 64" role="img" aria-label={enabled ? `力度从零渐增，${parameter.value} ms 后达到 100%` : "力度渐增关闭，开始时即为 100%"}>
+          <path className="entry-ramp-grid" d="M10 10H110M10 50H110M10 10V50" />
+          <path className="entry-ramp-curve" d={enabled ? "M10 50C43.333 50 76.667 10 110 10" : "M10 10H110"} />
+          <circle cx="110" cy="10" r="3" />
+        </svg>
+        <figcaption><span>{enabled ? "0% → 100%" : "100% 完整力度"}</span><span>{enabled ? `${parameter.value} ms` : "不等待渐增"}</span></figcaption>
+      </figure>
+      {enabled ? buildAlgorithmNumberParameterControl(parameter) : <p className="entry-ramp-disabled-note">重新开启时使用 {lastEnabledEntryRampMs.current} ms，可再调整。</p>}
+    </section>;
+  };
 
   const targetingParameterGroups = activePage === "params"
     ? buildTargetingParameterGroups({
@@ -3858,7 +3891,7 @@ export function StudioConsoleView({
                 <SectionTitle title="选择主要目标" />
                 <div className="console-kv">
                   <span>控制状态</span><b>{controlHasSample ? control?.global_state ?? "已计算" : "未执行"}</b>
-                  <span>控制原因</span><b>{control?.reason || control?.selection_reason || NO_SAMPLE}</b>
+                  <span>控制原因</span><b>{control?.reason || controlSelectionReason}</b>
                   <span>阻断阶段</span><b>{targetPipelineStage || NO_SAMPLE}</b>
                   <span>状态代码</span><b>{targetPipelineCode || NO_SAMPLE}</b>
                   <span>状态信息</span><b>{targetPipelineMessage || NO_SAMPLE}</b>
@@ -3877,7 +3910,7 @@ export function StudioConsoleView({
                   <span>目标置信度</span><b>{formatOptionalNumber(target?.score, 3)}</b>
                   <span>Track 身份置信度</span><b>{formatOptionalNumber(target?.identity_confidence, 3)}</b>
                   <span>目标选择状态</span><b>{control?.selector_state || NO_SAMPLE}</b>
-                  <span>目标选择原因</span><b>{control?.selection_reason || NO_SAMPLE}</b>
+                  <span>目标选择原因</span><b>{controlSelectionReason}</b>
                   <span>目标框坐标</span><b>{controlHasTarget ? `${formatPoint(target?.x1, target?.y1)} -> ${formatPoint(target?.x2, target?.y2)}` : NO_SAMPLE}</b>
                   <span>目标框中心</span><b>{formatPoint(target?.box_cx ?? target?.cx, target?.box_cy ?? target?.cy, STANDARD_DECIMAL_DIGITS, "px")}</b>
                   <span>遥测说明</span><b>目标与框为最近采样快照，最多约 5Hz</b>
@@ -4026,14 +4059,14 @@ export function StudioConsoleView({
             <section className="parameter-group" data-module="motion" id="parameter-motion-response" aria-labelledby="parameter-motion-response-title" key={moduleId}>
               <header className="parameter-group-heading">
                 <span>移动</span>
-                <div><h2 id="parameter-motion-response-title">移动响应</h2><p>先调整跟随力度与入场时间。目标快速移动时，再开启预测。</p></div>
+                <div><h2 id="parameter-motion-response-title">移动响应</h2><p>先调整跟随力度与渐增时长。目标快速移动时，再开启预测。</p></div>
               </header>
             <ol className="control-chain-settings" aria-label="移动响应设置">
               <li className="console-card control-chain-setting parameter-expanded-setting">
                 <span className="control-chain-step" aria-hidden="true"><NovaIcon name="prediction-line" size={16} /></span>
                 <div className="control-chain-setting-title">
                   <b>移动手感</b>
-                  <small>力度越大跟随越积极；入场时间越长，开始时越柔和。</small>
+                  <small>力度越大跟随越积极；开启渐增后，开始时的力度逐渐增大。</small>
                 </div>
                 <div className="parameter-inline-grid">
                   {responseParameters.filter((parameter) => parameter.key !== "response_reference_hz").map(renderAlgorithmNumberParameter)}
@@ -4151,7 +4184,7 @@ export function StudioConsoleView({
                     <div>
                       <span className="class-config-eyebrow">目标类别</span>
                       <h3>当前目标规则</h3>
-                      <small>设置可选类别、优先级和各类别瞄准位置。</small>
+                      <small>设置参与类别、远处偏好和框内瞄点。</small>
                     </div>
                   </div>
                   <button
@@ -4165,16 +4198,21 @@ export function StudioConsoleView({
                   </button>
                 </div>
 
+                <ol className="target-selection-rules" aria-label="目标选择规则">
+                  <li><b>附近先选</b><span>有附近瞄点时，选择距离更近的瞄点。</span></li>
+                  <li><b>远处看偏好</b><span>没有附近瞄点时，结合类别偏好、距离和置信度选择。</span></li>
+                  <li><b>有效就保持</b><span>不因其他类别分高而跳转；按键触发时，松开再按可重新选择。</span></li>
+                </ol>
                 <ul className="algorithm-class-overview" aria-label="当前类别配置">
                   {classEditorIds.map((id) => (
                     <li key={id} style={classStyle(id)} data-enabled={selectedDetectionClassIds.has(id)}>
                       <span><i aria-hidden="true" />cls {id}<small>{selectedDetectionClassIds.has(id) ? "参与" : "未参与"}</small></span>
                       <strong>{detectionClasses[id] || "未命名类别"}</strong>
-                      <span className="algorithm-class-weight">优先权重<b>× {(parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? 0).toFixed(2)}</b></span>
+                      <span className="algorithm-class-weight">远处偏好<b>{(parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? 0).toFixed(2)}</b></span>
                     </li>
                   ))}
                 </ul>
-                <p className="console-section-note">权重不代表识别置信度，也不改变移动力度。检测置信度与重复框抑制在模型推理页面设置。</p>
+                <p className="console-section-note">附近按瞄点距离判断，不按头、身体框的包含关系判断。偏好不代表识别置信度，也不改变移动力度。</p>
               </div>
             </section>
             </div>

@@ -31,7 +31,7 @@ mod selection;
 use association::associate;
 pub use kalman::KalmanConfig;
 use kalman::KalmanState;
-use selection::{candidate_score, detection_aspect_ratio, target_score};
+use selection::{candidate_score, detection_aspect_ratio, target_rank};
 
 /// Timestamp-free replay fallback for expiring a non-matched track.
 pub const DEFAULT_TRACK_MAX_AGE: u64 = 5;
@@ -54,11 +54,14 @@ pub enum TrackState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LockReason {
-    /// First lock acquisition on a fresh frame, preferred class wins.
+    /// Acquisition by the distant-candidate merit score.
     PreferredClass,
-    /// Previous head (preferred class) left the merit order; the next
-    /// best candidate within tolerance takes over.
+    /// A lower-preference class acquired by the distant-candidate merit score.
     FallbackClass,
+    /// A nearby observed aim point overrides distant class merit.
+    NearbyAim,
+    /// A still-valid observation keeps the existing selected identity.
+    MaintainedTarget,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -177,8 +180,7 @@ pub struct TargetingConfig {
     pub tracker_position_cost_weight: f64,
     pub tracker_iou_cost_weight: f64,
     pub tracker_scale_cost_weight: f64,
-    /// Soft penalty for associating a detection whose raw model class differs
-    /// from the track's latest observation. Geometry remains authoritative.
+    /// Soft penalty for a raw class change after the cross-class overlap gate.
     pub tracker_class_cost_weight: f64,
     pub tracker_max_size_ratio: f64,
     pub tracker_max_association_dt_ms: f64,
@@ -191,6 +193,8 @@ pub struct TargetingConfig {
     /// an empty set intentionally disables target selection.
     pub allowed_class_ids: Option<BTreeSet<u32>>,
     pub selection_weights: SelectionWeights,
+    /// Legacy configuration compatibility. Valid locks no longer compete on
+    /// merit; fallback depends on continuity and capture-time confirmation.
     pub switch_min_preference_advantage: f64,
     pub switch_min_continuity_score: f64,
     pub switch_delay_ms: f64,
@@ -320,6 +324,12 @@ impl TargetingCore {
 
     pub fn locked(&self) -> Option<&Track> {
         self.locked.as_ref()
+    }
+
+    /// Release the choice at a trigger boundary without discarding identities.
+    pub fn release_lock(&mut self) {
+        self.locked = None;
+        self.pending_switch = None;
     }
 
     /// Deterministic replay entry point for tests and fixtures.
@@ -458,7 +468,7 @@ impl TargetingCore {
                 right
                     .1
                     .cmp(&left.1)
-                    .then_with(|| right.2.total_cmp(&left.2))
+                    .then_with(|| right.2.cmp(left.2))
                     .then_with(|| {
                         eligible[left.0]
                             .object_id()
@@ -670,8 +680,8 @@ impl TargetingCore {
             .max_by(|(left_index, left), (right_index, right)| {
                 let left = &updated[**left];
                 let right = &updated[**right];
-                target_score(left, observation_center, &self.config)
-                    .total_cmp(&target_score(right, observation_center, &self.config))
+                target_rank(left, observation_center, &self.config)
+                    .cmp(target_rank(right, observation_center, &self.config))
                     .then_with(|| right.id.cmp(&left.id))
                     .then_with(|| right_index.cmp(left_index))
             })
@@ -679,22 +689,11 @@ impl TargetingCore {
             .expect("admissible detections produce current tracks");
 
         let chosen_index = match locked_index {
-            Some(index) if index == best_index => {
-                self.pending_switch = None;
-                Some(best_index)
-            }
             Some(index) => {
-                let best = &updated[current_indices[best_index]];
-                if self.challenger_ready(
-                    &updated[current_indices[index]],
-                    best,
-                    observation_center,
-                    captured_at_ns,
-                ) {
-                    Some(best_index)
-                } else {
-                    Some(index)
-                }
+                // Class merit is an acquisition preference, not permission to
+                // pull an already valid lock toward another detected part.
+                self.pending_switch = None;
+                Some(index)
             }
             None => match switch_lock.as_ref() {
                 Some(locked) => self
@@ -731,7 +730,14 @@ impl TargetingCore {
         };
         let track = updated[current_indices[chosen_index]].clone();
         let chosen_merit = classification::preference_score(track.class_id, &self.config);
-        let reason = if self
+        let reason = if locked_index == Some(chosen_index) {
+            LockReason::MaintainedTarget
+        } else if target_rank(&track, observation_center, &self.config)
+            .nearby_distance
+            .is_some()
+        {
+            LockReason::NearbyAim
+        } else if self
             .config
             .class_weights
             .keys()
@@ -784,17 +790,19 @@ impl TargetingCore {
         observation_center: (f64, f64),
         captured_at_ns: u64,
     ) -> bool {
-        let advantage = target_score(challenger, observation_center, &self.config)
-            - target_score(locked, observation_center, &self.config);
+        debug_assert!(
+            locked.state == TrackState::Lost
+                || !self.config.admits(
+                    observation_center,
+                    (locked.observed_aim_x, locked.observed_aim_y)
+                )
+        );
         let continuity = if challenger.age_frames > 1 {
             challenger.identity_confidence
         } else {
             0.0
         };
-        if (locked.state != TrackState::Lost
-            && advantage < self.config.switch_min_preference_advantage)
-            || continuity < self.config.switch_min_continuity_score
-        {
+        if continuity < self.config.switch_min_continuity_score {
             self.pending_switch = None;
             return false;
         }

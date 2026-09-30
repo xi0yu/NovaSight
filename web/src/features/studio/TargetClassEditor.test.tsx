@@ -21,7 +21,7 @@ describe("class point workbench", () => {
     expect(screen.getByRole("textbox", { name: "cls 1 水平位置 数值" })).toHaveValue("50");
     fireEvent.click(screen.getByRole("button", { name: "中心" }));
     expect(screen.getByRole("textbox", { name: "cls 1 垂直位置 数值" })).toHaveValue("50");
-    const weight = screen.getByRole("slider", { name: "cls 1 优先权重 滑块" });
+    const weight = screen.getByRole("slider", { name: "cls 1 远处偏好 滑块" });
     fireEvent.change(weight, { target: { value: "0.8" } }); fireEvent.blur(weight);
     expect(onWeight).toHaveBeenCalledWith(1, 0.8);
     expect(onToggle).not.toHaveBeenCalled();
@@ -31,7 +31,7 @@ describe("class point workbench", () => {
     expect(screen.getByRole("textbox", { name: "cls 15 垂直位置 数值" })).toHaveValue("50");
     fireEvent.click(screen.getByRole("checkbox", { name: "cls 15 参与目标选择" }));
     expect(onToggle).toHaveBeenCalledWith(15);
-    expect(screen.queryByRole("slider", { name: "cls 1 优先权重 滑块" })).toBeNull();
+    expect(screen.queryByRole("slider", { name: "cls 1 远处偏好 滑块" })).toBeNull();
     expect(parseClassValues(setClassValue("0:0.8,1:0.4", 1, 0.7))).toEqual({ 0: 0.8, 1: 0.7 });
   });
 });

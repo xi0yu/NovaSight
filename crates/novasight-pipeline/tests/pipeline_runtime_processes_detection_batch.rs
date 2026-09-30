@@ -389,6 +389,64 @@ fn detection_telemetry_is_bounded_without_dropping_the_runtime_batch() {
 }
 
 #[test]
+fn a_new_hardware_trigger_reselects_without_discarding_tracked_identities() {
+    let epoch = RuntimeEpoch(8);
+    let clock = Arc::new(ManualClock::new(1_008_000_000));
+    let device = Arc::new(RecordingPointerDevice::default());
+    let mut config = delivery_config();
+    config.epoch = epoch;
+    config.trigger_mode = TriggerMode::Hardware;
+    config.targeting.aim_y_ratio = 0.5;
+    config.targeting.class_weights = std::collections::BTreeMap::from([(0, 1.0), (1, 0.0)]);
+    let (mut runtime, ingress) =
+        PipelineRuntime::start(config.clone(), clock.clone(), device.clone()).unwrap();
+    runtime.open_output_gate();
+    ingress.set_trigger_active(true);
+    for generation in 1..=4 {
+        if generation == 3 {
+            let mut live = PipelineLiveConfig::from(&config);
+            live.targeting.class_weights = std::collections::BTreeMap::from([(0, 0.0), (1, 1.0)]);
+            ingress.set_live_config(live).unwrap();
+        }
+        if generation == 4 {
+            // A release/press between frames must still end the old choice.
+            ingress.set_trigger_active(false);
+            ingress.set_trigger_active(true);
+        }
+        let captured = 1_000_000_000 + (generation - 1) * 60_000_000;
+        clock.0.store(captured + 8_000_000, Ordering::Release);
+        ingress
+            .submit(
+                DetectionBatch::new(
+                    FrameStamp::new(epoch, generation, captured),
+                    640,
+                    640,
+                    vec![
+                        Detection::new(10, 0, 350.0, 280.0, 40.0, 80.0, 0.95).unwrap(),
+                        Detection::new(20, 1, 440.0, 310.0, 20.0, 20.0, 0.95).unwrap(),
+                    ],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while (runtime.metrics().control_decisions < generation
+            || (generation >= 2
+                && device.receipts().last().map(|r| r.generation.0) != Some(generation)))
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(runtime.metrics().control_decisions, generation);
+    }
+    let receipts = device.receipts();
+    assert_eq!(receipts.len(), 3);
+    assert_eq!(receipts[0].target_object_id, receipts[1].target_object_id);
+    assert_ne!(receipts[1].target_object_id, receipts[2].target_object_id);
+    runtime.shutdown().unwrap();
+}
+
+#[test]
 fn pipeline_hot_trigger_mode_blocks_until_trigger_is_explicitly_active() {
     let epoch = RuntimeEpoch(8);
     let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(1_008_000_000));

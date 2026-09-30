@@ -1616,6 +1616,8 @@ const fn lock_reason_label(reason: LockReason) -> &'static str {
     match reason {
         LockReason::PreferredClass => "PREFERRED_CLASS",
         LockReason::FallbackClass => "FALLBACK_CLASS",
+        LockReason::NearbyAim => "NEARBY_AIM",
+        LockReason::MaintainedTarget => "MAINTAINED_TARGET",
     }
 }
 

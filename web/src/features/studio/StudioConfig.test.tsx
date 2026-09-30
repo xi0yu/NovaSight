@@ -180,7 +180,7 @@ it("shows one parameter workspace at a time and exposes entry ramp tuning", asyn
   expect(screen.getByRole("region", { name: "搜索范围调校" })).toBeVisible();
   await userEvent.click(screen.getByRole("tab", { name: "移动与输出" }));
   expect(screen.queryByRole("region", { name: "搜索范围调校" })).not.toBeInTheDocument();
-  expect(screen.getByRole("textbox", { name: "入场渐升时间 数值" })).toHaveValue("200");
+  expect(screen.getByRole("textbox", { name: "渐增时长 数值" })).toHaveValue("200");
   expect(screen.getByRole("textbox", { name: "比例增益 Kp 数值" })).toBeVisible();
   expect(screen.getByRole("textbox", { name: "单次 X 轴输出上限" })).toBeVisible();
   expect(screen.getByRole("textbox", { name: "单次 Y 轴输出上限" })).toBeVisible();
@@ -191,7 +191,7 @@ it("shows one parameter workspace at a time and exposes entry ramp tuning", asyn
   expect(screen.queryByText("加速介入时机")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("tab", { name: "目标与瞄点" }));
   expect(screen.getByRole("button", { name: "编辑目标类别" })).toBeVisible();
-  expect(screen.queryByRole("textbox", { name: "入场渐升时间 数值" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "渐增时长 数值" })).not.toBeInTheDocument();
   for (const label of ["距离权重 数值", "类别偏好权重 数值", "置信度权重 数值", "控制目标最低置信度 数值", "目标切换确认延迟 数值", "目标丢失保持 数值"]) {
     expect(screen.queryByRole("textbox", { name: label })).not.toBeInTheDocument();
   }
@@ -532,11 +532,11 @@ it("retains a rejected class edit in the shared page draft", async () => {
   expect(screen.getByRole("dialog", { name: "编辑目标类别" })).toBeVisible();
 });
 
-it("applies response timing, trigger delay and output-limit edits from the same page save", async () => {
+it("saves a disabled entry ramp as zero and restores its duration when toggled before saving", async () => {
   const configured = {
     ...props.runtimeConfig,
     control: { ...props.runtimeConfig.control, trigger_mode: "always" },
-    pipeline: { ...props.runtimeConfig.pipeline, target_selection_distance_weight: 0.2 },
+    pipeline: { ...props.runtimeConfig.pipeline, target_selection_distance_weight: 0.2, entry_ramp_ms: 0 },
   };
   let current = structuredClone(configured) as Record<string, unknown>;
   const submitted: Array<Record<string, unknown>> = [];
@@ -563,6 +563,21 @@ it("applies response timing, trigger delay and output-limit edits from the same 
   fireEvent.change(triggerDelay, { target: { value: "35" } });
   fireEvent.blur(triggerDelay);
   await userEvent.click(screen.getByRole("tab", { name: "移动与输出" }));
+  const ramp = screen.getByRole("region", { name: "力度渐增设置" });
+  expect(within(ramp).getByRole("button", { name: /启用力度渐增/ })).toHaveAttribute("aria-pressed", "false");
+  expect(within(ramp).getByRole("img", { name: "力度渐增关闭，开始时即为 100%" })).toBeVisible();
+  expect(within(ramp).queryByText("超推荐")).not.toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "渐增时长 数值" })).not.toBeInTheDocument();
+  await userEvent.click(within(ramp).getByRole("button", { name: /启用力度渐增/ }));
+  const rampTime = screen.getByRole("textbox", { name: "渐增时长 数值" });
+  expect(rampTime).toHaveValue("200");
+  fireEvent.change(rampTime, { target: { value: "350" } });
+  fireEvent.blur(rampTime);
+  await waitFor(() => expect(within(ramp).getByRole("img", { name: "力度从零渐增，350 ms 后达到 100%" })).toBeVisible());
+  await userEvent.click(within(ramp).getByRole("button", { name: /启用力度渐增/ }));
+  await userEvent.click(within(ramp).getByRole("button", { name: /启用力度渐增/ }));
+  expect(screen.getByRole("textbox", { name: "渐增时长 数值" })).toHaveValue("350");
+  await userEvent.click(within(ramp).getByRole("button", { name: /启用力度渐增/ }));
   const distanceWeight = screen.getByRole("textbox", { name: "比例增益 Kp 数值" });
   fireEvent.change(distanceWeight, { target: { value: "0.7" } });
   fireEvent.blur(distanceWeight);
@@ -588,6 +603,7 @@ it("applies response timing, trigger delay and output-limit edits from the same 
       p_response_scale: 0.7,
       target_selection_distance_weight: 0.2,
       response_reference_hz: 60,
+      entry_ramp_ms: 0,
     }),
   });
   expect(screen.queryByRole("button", { name: "按键触发" })).not.toBeInTheDocument();

@@ -99,7 +99,15 @@ Box size does not scale the radius. Outside observations may retain an identity,
 but never authorize control output. This is post-inference candidate filtering,
 not a capture or inference crop.
 
-Selection now uses three current-observation signals only:
+Acquisition first checks the current observed aim point's distance to the
+observation center. A point is considered nearby when its distance is no more
+than half the detection box's shorter side. This is an initial local-selection
+heuristic requiring recorded-scene and hardware evaluation, not an estimate of
+user intent. It is independent of the search radius and never admits an aim
+outside that circle. Among nearby points, smaller distance wins; the score below
+breaks exact distance ties. Box containment does not define a preferred part.
+
+When no nearby point exists, acquisition uses three current-observation signals:
 
 ```text
 L = hypot(observation_width / 2, observation_height / 2)
@@ -109,15 +117,24 @@ Q = current detector confidence
 score = (w_distance*D + w_class*C + w_confidence*Q) / sum(weights)
 ```
 
-Box size, association continuity, and motion direction do not add merit.
-Continuity is handled by identity association and the existing switch margin,
-confirmation time, and challenger-quality gate. Class preference is soft: a
-higher class weight does not guarantee selection over distance and confidence.
-Changing the search radius changes eligibility only, not the score or switch
-margin between already admitted candidates. Changing observation dimensions
-does change the geometric reference, as intended.
+Box size defines only the local-selection neighborhood; it does not add score
+or enlarge the search circle. Association continuity and motion direction do
+not add merit. A confirmed, currently observed lock inside the search circle
+keeps its choice regardless of another candidate's class score. Hardware trigger
+release/repress clears the choice without deleting tracked identities. Always-on
+mode keeps a valid choice until it becomes unavailable or the pipeline resets.
+An unavailable lock emits no target; a fallback must pass continuity and
+capture-time confirmation. The old preference-advantage field is retained for
+configuration compatibility, but no longer controls switching.
 
-The matching cost still includes a cross-class penalty. Its identity-quality
+Class preference remains soft for distant acquisition: a higher class weight
+does not guarantee selection over distance and confidence. Changing the search
+radius changes eligibility only, not rank among already admitted candidates.
+
+Cross-class association requires box IoU of at least 0.5 before applying the
+existing penalty. This conservatively separates nested part boxes while still
+allowing a label flicker on substantially the same box; it does not prove that
+two parts belong to the same person. Its identity-quality
 score uses geometry only, so increasing the class penalty cannot manufacture
 confidence for a same-class match. This quality score is a heuristic, not a
 calibrated probability. A cold/lagging Kalman prediction may fall back to the

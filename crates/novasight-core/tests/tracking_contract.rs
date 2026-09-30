@@ -123,7 +123,7 @@ fn explicit_class_weights_and_xy_points_reach_target_selection() {
         (second.target_aim_x, second.target_aim_y),
         (Some(330.0), Some(328.0))
     );
-    assert_eq!(second.lock_reason, Some(LockReason::PreferredClass));
+    assert_eq!(second.lock_reason, Some(LockReason::NearbyAim));
 }
 
 #[test]
@@ -265,7 +265,7 @@ fn search_radius_does_not_change_ranking_or_switching_for_admitted_targets() {
             );
             trace.push(result.target_object_id);
         }
-        assert_eq!(trace.last(), Some(&Some(2)));
+        assert_eq!(trace.last(), Some(&Some(1)));
         traces.push(trace);
 
         let mut fresh = TargetingCore::new(config);
@@ -276,7 +276,7 @@ fn search_radius_does_not_change_ranking_or_switching_for_admitted_targets() {
                 2_000_000_000 + frame * 20_000_000,
             );
             if frame == 1 {
-                assert_eq!(selected.target_object_id, Some(2));
+                assert_eq!(selected.target_object_id, Some(1));
             }
         }
     }
@@ -321,6 +321,8 @@ fn reason_from_str(value: &str) -> LockReason {
     match value {
         "preferred_class" => LockReason::PreferredClass,
         "fallback_class" => LockReason::FallbackClass,
+        "nearby_aim" => LockReason::NearbyAim,
+        "maintained_target" => LockReason::MaintainedTarget,
 
         other => panic!("unknown lock_reason {other}"),
     }
@@ -530,7 +532,7 @@ fn abrupt_jump_after_smooth_motion_cannot_reuse_identity_via_observed_position_f
 }
 
 #[test]
-fn switch_margin_holds_the_current_target_when_the_challenger_is_not_better_enough() {
+fn valid_lock_is_not_replaced_by_a_higher_merit_candidate() {
     let mut core = TargetingCore::new(TargetingConfig {
         class_weights: BTreeMap::new(),
         selection_weights: SelectionWeights {
@@ -538,7 +540,6 @@ fn switch_margin_holds_the_current_target_when_the_challenger_is_not_better_enou
             class: 0.0,
             confidence: 0.0,
         },
-        switch_min_preference_advantage: 0.30,
         switch_min_continuity_score: 0.0,
         switch_delay_ms: 0.0,
         kalman: KalmanConfig {
@@ -1035,17 +1036,17 @@ fn head_movement_keeps_the_same_stable_lock() {
     let mut core = TargetingCore::new(TargetingConfig::default());
     let frame1 = vec![Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.9).expect("d1")];
     let first = core.select(&frame1, OBSERVATION_CENTER);
-    assert_eq!(first.lock_reason, Some(LockReason::PreferredClass));
+    assert_eq!(first.lock_reason, Some(LockReason::NearbyAim));
     // Head moved 20 px, still within debounce window.
     let frame2 = vec![Detection::new(1, 0, 320.0, 300.0, 40.0, 80.0, 0.9).expect("d2")];
     let second = core.select(&frame2, OBSERVATION_CENTER);
     assert_eq!(second.target_object_id, Some(1));
-    assert_eq!(second.lock_reason, Some(LockReason::PreferredClass));
+    assert_eq!(second.lock_reason, Some(LockReason::MaintainedTarget));
 }
 
 #[test]
-fn stable_challenger_must_hold_its_advantage_for_capture_time_delay() {
-    let mut core = TargetingCore::new(TargetingConfig {
+fn fallback_after_circle_exit_requires_capture_time_confirmation() {
+    let mut config = TargetingConfig {
         selection_weights: SelectionWeights {
             distance: 0.99,
             class: 0.01,
@@ -1054,7 +1055,8 @@ fn stable_challenger_must_hold_its_advantage_for_capture_time_delay() {
         switch_min_preference_advantage: 0.01,
         switch_delay_ms: 50.0,
         ..TargetingConfig::default()
-    });
+    };
+    let mut core = TargetingCore::new(config.clone());
     let first = vec![
         Detection::new(1, 0, 270.0, 285.0, 80.0, 160.0, 0.9).expect("locked"),
         Detection::new(2, 1, 295.0, 285.0, 80.0, 160.0, 0.9).expect("challenger"),
@@ -1070,12 +1072,18 @@ fn stable_challenger_must_hold_its_advantage_for_capture_time_delay() {
         Some(1)
     );
 
+    // The existing lock stays tracked but can no longer drive control.
+    config.target_fov_radius_px = 5.0;
+    core.set_config(config);
     let challenger_wins = vec![
         Detection::new(11, 0, 288.0, 285.0, 80.0, 160.0, 0.9).expect("locked moved"),
         Detection::new(12, 1, 280.0, 285.0, 80.0, 160.0, 0.9).expect("stable challenger"),
     ];
     let pending = core.select_at(&challenger_wins, OBSERVATION_CENTER, 1_020_000_000);
-    assert_eq!(pending.target_object_id, Some(11), "delay must hold lock");
+    assert_eq!(
+        pending.target_object_id, None,
+        "outside lock must pause output"
+    );
 
     for timestamp in [1_040_000_000, 1_080_000_000, 1_120_000_000] {
         core.select_at(&challenger_wins, OBSERVATION_CENTER, timestamp);
@@ -1086,7 +1094,83 @@ fn stable_challenger_must_hold_its_advantage_for_capture_time_delay() {
         Some(12),
         "capture-time advantage held beyond 50 ms must switch"
     );
-    assert_eq!(committed.lock_reason, Some(LockReason::FallbackClass));
+    assert_eq!(committed.lock_reason, Some(LockReason::MaintainedTarget));
+}
+
+#[test]
+fn nearby_parts_override_preference_and_valid_lock_survives_until_release() {
+    for scale in [0.5, 1.0, 2.0] {
+        for preferred in [0, 1] {
+            let center = (320.0 * scale, 320.0 * scale);
+            let mut core = TargetingCore::new(TargetingConfig {
+                target_fov_radius_px: 180.0 * scale,
+                aim_y_ratio: 0.5,
+                class_weights: BTreeMap::from([(preferred, 1.0)]),
+                ..Default::default()
+            });
+            let body = Detection::new(
+                1,
+                0,
+                (300.0 * scale) as f32,
+                (300.0 * scale) as f32,
+                (40.0 * scale) as f32,
+                (160.0 * scale) as f32,
+                0.95,
+            )
+            .unwrap();
+            let head = Detection::new(
+                2,
+                1,
+                (310.0 * scale) as f32,
+                (310.0 * scale) as f32,
+                (20.0 * scale) as f32,
+                (20.0 * scale) as f32,
+                0.95,
+            )
+            .unwrap();
+            // The head is also inside the body rectangle. Selection uses aim
+            // point distance, not rectangle containment or the class label.
+            core.select_at(&[body.clone(), head.clone()], center, 1_000_000_000);
+            let acquired = core.select_at(&[head.clone(), body.clone()], center, 1_020_000_000);
+            assert_eq!(acquired.target_class_id, Some(1));
+            assert_eq!(acquired.lock_reason, Some(LockReason::NearbyAim));
+            let held = core.select_at(&[body.clone(), head.clone()], center, 1_080_000_000);
+            assert_eq!(held.target_track_id, acquired.target_track_id);
+            assert_eq!(held.lock_reason, Some(LockReason::MaintainedTarget));
+
+            core.release_lock();
+            let at_body = core.select_at(
+                &[head.clone(), body.clone()],
+                (center.0, 380.0 * scale),
+                1_100_000_000,
+            );
+            assert_eq!(at_body.target_class_id, Some(0));
+            assert_eq!(at_body.lock_reason, Some(LockReason::NearbyAim));
+
+            core.release_lock();
+            let far = core.select_at(&[body, head], (center.0, 440.0 * scale), 1_120_000_000);
+            assert_eq!(far.target_class_id, Some(preferred));
+        }
+    }
+}
+
+#[test]
+fn a_nested_other_class_cannot_inherit_the_selected_part_identity() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
+    let body = Detection::new(1, 0, 280.0, 280.0, 80.0, 160.0, 0.95).unwrap();
+    let locked = core
+        .select_at(&[body], OBSERVATION_CENTER, 1_000_000_000)
+        .target_track_id
+        .unwrap();
+    // Size and center gates alone permit this pair, but box overlap is low.
+    let head = Detection::new(2, 1, 290.0, 280.0, 60.0, 80.0, 0.95).unwrap();
+    let missing = core.select_at(&[head.clone()], OBSERVATION_CENTER, 1_020_000_000);
+    assert_eq!(missing.target_track_id, None);
+    assert_eq!(core.locked().unwrap().id, locked);
+    core.select_at(&[head.clone()], OBSERVATION_CENTER, 1_040_000_000);
+    let fallback = core.select_at(&[head], OBSERVATION_CENTER, 1_100_000_000);
+    assert_eq!(fallback.target_class_id, Some(1));
+    assert_ne!(fallback.target_track_id, Some(locked));
 }
 
 #[test]

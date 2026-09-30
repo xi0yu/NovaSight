@@ -232,6 +232,11 @@ fn association_edge(
         return None;
     }
     let overlap = track_detection_iou(track, detection);
+    // A class flicker on substantially the same box may keep its identity.
+    // A nested head/body box must not silently replace the selected part.
+    if track.class_id != detection.class_id() && overlap < 0.5 {
+        return None;
+    }
     let scale_cost = (track.width / f64::from(detection.width())).ln().abs()
         + (track.height / f64::from(detection.height())).ln().abs();
     let geometry_cost = (position_weight * normalized_distance

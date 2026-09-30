@@ -1605,6 +1605,7 @@ fn spawn_targeting_worker(
             guard_worker(&shared, "targeting", || {
                 let mut targeting = TargetingCore::new(config);
                 let mut config_version = shared.targeting_config_version.load(Ordering::Acquire);
+                let mut trigger_epoch = shared.trigger_epoch.load(Ordering::Acquire);
                 while let Some(batch) = input.wait_take() {
                     if shared.status() != PipelineStatus::Running {
                         break;
@@ -1625,6 +1626,14 @@ fn spawn_targeting_worker(
                         .targeting_batches
                         .fetch_add(1, Ordering::Relaxed);
                     let control_center = batch.center();
+                    let current_trigger_epoch = shared.trigger_epoch.load(Ordering::Acquire);
+                    if current_trigger_epoch != trigger_epoch
+                        || (shared.hardware_trigger_required.load(Ordering::Acquire)
+                            && !shared.trigger_active.load(Ordering::Acquire))
+                    {
+                        targeting.release_lock();
+                        trigger_epoch = current_trigger_epoch;
+                    }
                     let selection = targeting.select_at(
                         batch.detections(),
                         control_center,

@@ -337,7 +337,7 @@ export interface RuntimeVisionControlState {
   no_send_reason: string | null;
   candidates: number;
   selector_state: "LOCKED" | "SEARCHING";
-  selection_reason: "PREFERRED_CLASS" | "FALLBACK_CLASS" | null;
+  selection_reason: "PREFERRED_CLASS" | "FALLBACK_CLASS" | "NEARBY_AIM" | "MAINTAINED_TARGET" | null;
   candidate_filter: RuntimeCandidateFilterState;
   mouse_observation: RuntimeMouseObservationState;
   pipeline: RuntimeControlPipelineState;
@@ -702,7 +702,7 @@ function assertVisionControl(value: unknown, path: string): void {
   ["reason", "no_send_reason"].forEach((key) =>
     expectNullable(record[key], `${path}.${key}`, expectString));
   expectNullable(record.selection_reason, `${path}.selection_reason`, (item, itemPath) =>
-    expectLiteral(item, itemPath, new Set(["PREFERRED_CLASS", "FALLBACK_CLASS"])));
+    expectLiteral(item, itemPath, new Set(["PREFERRED_CLASS", "FALLBACK_CLASS", "NEARBY_AIM", "MAINTAINED_TARGET"])));
   expectUnsignedInteger(record.candidates, `${path}.candidates`);
   expectLiteral(record.selector_state, `${path}.selector_state`, new Set(["LOCKED", "SEARCHING"]));
   const candidateFilter = expectRecord(record.candidate_filter, `${path}.candidate_filter`);

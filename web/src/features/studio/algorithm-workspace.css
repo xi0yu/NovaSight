@@ -65,6 +65,19 @@
 .algorithm-workspace .module-switch.on i { justify-content: flex-start; color: var(--text-inverse); background: var(--algorithm-accent); }
 .algorithm-workspace .module-switch.on i::before { transform: translateX(26px); background: var(--text-inverse); }
 .algorithm-workspace .module-switch[aria-busy="true"] i { width: 70px; }
+.entry-ramp-control { display: grid; gap: 10px; min-width: 0; }
+.entry-ramp-preview { margin: 0; padding: 10px 14px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--bg-subtle); color: var(--text-secondary); }
+.entry-ramp-control[data-enabled="true"] .entry-ramp-preview { color: var(--algorithm-accent); border-color: color-mix(in srgb, var(--algorithm-accent) 24%, var(--border-subtle)); background: color-mix(in srgb, var(--algorithm-accent) 5%, var(--bg-surface)); }
+.entry-ramp-preview svg { display: block; width: 100%; height: 64px; }
+.entry-ramp-grid { fill: none; stroke: var(--border-subtle); stroke-width: 1; }
+.entry-ramp-curve { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
+.entry-ramp-preview circle { fill: currentColor; }
+.entry-ramp-preview figcaption { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
+.entry-ramp-disabled-note { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.target-selection-rules { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px; margin: 0 0 16px; padding: 0; }
+.target-selection-rules li { display: grid; gap: 5px; padding: 12px 14px; border: 1px solid var(--border-subtle); border-radius: 10px; background: color-mix(in srgb, var(--algorithm-accent) 5%, var(--bg-surface)); }
+.target-selection-rules b { color: var(--algorithm-accent); font-size: 12px; font-weight: 600; }
+.target-selection-rules span { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 .search-range-workbench { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(290px, 1fr); gap: 0; align-items: stretch; border: 1px solid var(--border-subtle); border-radius: 14px; overflow: hidden; background: var(--bg-surface); }
 .search-range-scene { background: radial-gradient(ellipse at 50% 32%, color-mix(in srgb, var(--algorithm-accent) 7%, transparent), transparent 70%), var(--bg-app); border-left: 1px solid var(--border-subtle); padding: 20px; }
 .search-range-scene-heading { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary); }
