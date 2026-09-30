@@ -74,10 +74,6 @@
 .entry-ramp-preview circle { fill: currentColor; }
 .entry-ramp-preview figcaption { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; }
 .entry-ramp-disabled-note { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
-.target-selection-rules { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px; margin: 0 0 16px; padding: 0; }
-.target-selection-rules li { display: grid; gap: 5px; padding: 12px 14px; border: 1px solid var(--border-subtle); border-radius: 10px; background: color-mix(in srgb, var(--algorithm-accent) 5%, var(--bg-surface)); }
-.target-selection-rules b { color: var(--algorithm-accent); font-size: 12px; font-weight: 600; }
-.target-selection-rules span { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 .search-range-workbench { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(290px, 1fr); gap: 0; align-items: stretch; border: 1px solid var(--border-subtle); border-radius: 14px; overflow: hidden; background: var(--bg-surface); }
 .search-range-scene { background: radial-gradient(ellipse at 50% 32%, color-mix(in srgb, var(--algorithm-accent) 7%, transparent), transparent 70%), var(--bg-app); border-left: 1px solid var(--border-subtle); padding: 20px; }
 .search-range-scene-heading { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary); }
@@ -142,53 +138,48 @@
 .algorithm-workspace .parameter-disclosure > summary::after { content: ""; width: 7px; height: 7px; flex-shrink: 0; margin-right: 4px; border-right: 1.5px solid var(--text-tertiary); border-bottom: 1.5px solid var(--text-tertiary); transform: rotate(45deg); }
 .algorithm-workspace .parameter-disclosure[open] > summary::after { transform: rotate(225deg); }
 .algorithm-workspace [data-module="advanced"] .parameter-disclosure.nested { margin-left: 0; }
-.target-class-editor { display: grid; grid-template-columns: minmax(220px, .85fr) minmax(300px, 1.15fr); gap: 32px; padding: 8px; color: var(--text-primary); }
-.target-class-editor header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 16px; }
-.target-class-editor h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.target-class-editor header span, .target-class-editor p, .class-weight-list small { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
-.class-point-pad { display: block; position: relative; width: min(100%, 220px); aspect-ratio: 3 / 4; margin: 0 auto; background: var(--bg-subtle); border: 1px dashed var(--signal-info); border-radius: 14px; cursor: crosshair; touch-action: none; }
+.target-class-editor { padding: 8px; color: var(--text-primary); }
+.class-table-note, .class-legacy-note { margin: 0 0 12px; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
+.class-legacy-note { padding: 10px 14px; border: 1px solid var(--border-subtle); border-left: 3px solid var(--signal-warning); border-radius: 8px; background: var(--bg-subtle); }
+.class-table-scroll { overflow-x: auto; margin-bottom: 12px; border: 1px solid var(--border-subtle); border-radius: 12px; }
+.class-edit-table { width: 100%; min-width: 850px; border-collapse: collapse; font-size: 13px; }
+.class-edit-table thead { background: var(--bg-subtle); color: var(--text-secondary); }
+.class-edit-table th, .class-edit-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border-subtle); }
+.class-edit-table thead th { font-size: 12px; font-weight: 500; }
+.class-edit-table tbody tr:last-child > * { border-bottom: 0; }
+.class-edit-table tbody tr:hover { background: color-mix(in srgb, var(--class-color) 4%, var(--bg-subtle)); }
+.class-edit-table td:first-child { width: 52px; }
+.class-edit-table td:nth-child(3) { width: 23%; min-width: 150px; }
+.class-edit-table td:nth-child(4) { width: 27%; min-width: 220px; }
+.class-edit-table input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--class-color); }
+.class-table-id { color: var(--class-color); font-weight: 600; white-space: nowrap; }
+.class-name-field { border: 0; padding: 0; margin: 0; min-width: 0; }
+.class-name-field input { width: 100%; min-width: 0; }
+.class-inline-point { display: flex; align-items: center; gap: 14px; }
+.class-inline-point > div { min-width: 150px; }
+.class-inline-point small { font-size: 11px; color: var(--text-secondary); }
+.class-point-pad { display: block; position: relative; width: 54px; height: 66px; flex-shrink: 0; background: color-mix(in srgb, var(--class-color) 5%, var(--bg-subtle)); border: 1px solid var(--class-color); border-radius: 8px; cursor: crosshair; touch-action: none; }
 .class-point-pad svg { position: absolute; inset: 0; width: 100%; height: 100%; stroke: var(--border-subtle); stroke-width: .5; fill: none; }
-.class-point-marker { position: absolute; transform: translate(-50%, -50%); font-size: 28px; color: var(--signal-info); line-height: 1; pointer-events: none; }
-.class-point-origin, .class-point-end { position: absolute; font-size: 10px; color: var(--text-muted); pointer-events: none; }
-.class-point-origin { top: 6px; left: 6px; } .class-point-end { bottom: 6px; right: 6px; }
-.class-point-presets { display: flex; gap: 8px; margin: 16px 0; }
-.class-point-presets button, .class-add button, .class-weight-row > button { min-height: 40px; padding: 8px 16px; background: var(--bg-subtle); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 6px; font: inherit; font-size: 13px; cursor: pointer; }
+.class-point-marker { position: absolute; transform: translate(-50%, -50%); font-size: 20px; color: var(--class-color); line-height: 1; pointer-events: none; }
+.class-point-presets { display: flex; gap: 4px; margin: 0 0 4px; }
+.class-point-presets button { min-height: 32px; padding: 4px 8px; background: var(--bg-subtle); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 6px; font: inherit; font-size: 12px; cursor: pointer; }
 .target-class-editor button:hover { border-color: var(--signal-info); }
 .target-class-editor button:disabled { opacity: .5; cursor: default; }
 .target-class-editor button:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }
-.class-point-numbers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.class-selector-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 20px; }
-.class-selector-grid button { padding: 10px 6px; border: 1px solid var(--border-subtle); border-radius: 6px; background: var(--bg-subtle); color: var(--text-primary); cursor: pointer; font: inherit; font-size: 12px; text-align: left; }
-.class-selector-grid button > span { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-.class-selector-grid i { width: 6px; height: 6px; border-radius: 50%; background: var(--class-color); flex-shrink: 0; }
-.class-selector-grid small { display: block; margin: 5px 0 0 12px; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.class-selector-grid button[aria-pressed="true"] { border-color: var(--class-color); background: color-mix(in srgb, var(--class-color) 12%, var(--bg-subtle)); }
-.class-selector-grid button > span { color: var(--class-color); }
-.class-selector-grid button { background: color-mix(in srgb, var(--class-color) 5%, var(--bg-subtle)); }
+.class-point-numbers { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.class-point-precision { margin: 0; font-size: 11px; color: var(--text-secondary); }
+.class-point-precision summary { cursor: pointer; padding: 4px 0; }
+.class-point-precision summary span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.class-point-precision summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .target-class-editor input[type="range"] { --range-accent: var(--class-color); }
 .algorithm-workspace #parameter-motion-response input[type="range"] { --range-accent: var(--accent-teal); }
-.class-active-settings { border-top: 2px solid var(--class-color); padding: 16px 0; }
-.class-active-settings > small { display: block; color: var(--text-secondary); font-size: 11px; margin-top: 12px; line-height: 1.6; }
-.class-weight-row strong, .class-point-workbench h3, .target-class-editor .class-point-marker { color: var(--class-color); }
-.target-class-editor .class-point-pad { border-color: var(--class-color); background: color-mix(in srgb, var(--class-color) 5%, var(--bg-subtle)); }
-.target-class-editor input[type="range"], .target-class-editor .class-weight-row input[type="checkbox"] { accent-color: var(--class-color); }
+.target-class-editor input[type="range"] { accent-color: var(--class-color); }
 .target-class-editor .parameter-control-field { padding: 0; border: 0; gap: 8px; }
-.target-class-editor .parameter-control-header > label { font-size: 12px; font-weight: 500; }
-.class-weight-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.class-weight-row > strong { flex-shrink: 0; font-variant-numeric: tabular-nums; font-size: 13px; }
-.class-weight-row > input { width: 100%; min-width: 0; }
-.class-weight-row label { display: flex; gap: 4px; align-items: center; white-space: nowrap; font-size: 12px; min-height: 40px; }
-.class-weight-row input[type="checkbox"] { accent-color: var(--signal-info); }
-.class-add { display: flex; align-items: end; gap: 12px; margin-top: 16px; }
-.class-add label { display: grid; gap: 6px; font-size: 12px; color: var(--text-secondary); }
-.class-add input { width: 120px; min-height: 40px; padding: 8px; background: var(--bg-subtle); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 6px; }
+.class-edit-table td:nth-child(4) .parameter-control-header { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-width: 760px) {
   .algorithm-class-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .algorithm-workspace button { min-height: 44px; }
-  .target-class-editor { grid-template-columns: minmax(0, 1fr); padding: 0; gap: 24px; }
-  .class-weight-list { max-height: none; overflow: visible; }
-  .class-weight-row { flex-wrap: wrap; }
-  .class-weight-row > input { flex: 1; width: 100px; }
+  .target-class-editor { padding: 0; }
   .search-range-workbench { grid-template-columns: minmax(0, 1fr); }
   .search-range-tuning { padding: 20px 16px; }
   .search-range-tuning-heading { margin-bottom: 24px; }

@@ -1485,8 +1485,9 @@ export function StudioConsoleView({
     [runtimeDetectionItems]
   );
   const classEditorIds = useMemo(() => Array.from(new Set([
-    ...Array.from({ length: 16 }, (_, classId) => classId),
-    ...detectionClasses.map((_, classId) => classId),
+    ...Array.from({ length: 8 }, (_, classId) => classId),
+    ...detectionClasses.flatMap((name, classId) => name.trim() ? [classId] : []),
+    ...Array.from(parseDetectionClassFilter(activeDetectionClass) ?? []),
     ...classPriorityIds,
     ...Object.keys(parseClassValues(rustPipelineConfig.target_class_weights)).map(Number),
     ...Object.keys(parseClassValues(rustPipelineConfig.target_class_aim_x_ratios)).map(Number),
@@ -1495,6 +1496,7 @@ export function StudioConsoleView({
     ...(activeRuntimeClassId !== null ? [activeRuntimeClassId] : [])
   ])).filter((classId) => classId >= 0 && classId <= 255).sort((left, right) => left - right), [
     activeRuntimeClassId,
+    activeDetectionClass,
     rustPipelineConfig.target_class_weights,
     rustPipelineConfig.target_class_aim_x_ratios,
     rustPipelineConfig.target_class_aim_y_ratios,
@@ -1572,7 +1574,7 @@ export function StudioConsoleView({
   );
   const controlWillEmitRaw = control?.will_emit ?? null;
   const controlSelectionReason = ({
-    PREFERRED_CLASS: "按远处偏好选择",
+    PREFERRED_CLASS: "按类别偏好选择",
     FALLBACK_CLASS: "选择其他可用类别",
     NEARBY_AIM: "选择准星附近瞄点",
     MAINTAINED_TARGET: "保持当前目标",
@@ -4184,7 +4186,7 @@ export function StudioConsoleView({
                     <div>
                       <span className="class-config-eyebrow">目标类别</span>
                       <h3>当前目标规则</h3>
-                      <small>设置参与类别、远处偏好和框内瞄点。</small>
+                      <small>设置参与类别、类别偏好和瞄点。</small>
                     </div>
                   </div>
                   <button
@@ -4198,21 +4200,16 @@ export function StudioConsoleView({
                   </button>
                 </div>
 
-                <ol className="target-selection-rules" aria-label="目标选择规则">
-                  <li><b>附近先选</b><span>有附近瞄点时，选择距离更近的瞄点。</span></li>
-                  <li><b>远处看偏好</b><span>没有附近瞄点时，结合类别偏好、距离和置信度选择。</span></li>
-                  <li><b>有效就保持</b><span>不因其他类别分高而跳转；按键触发时，松开再按可重新选择。</span></li>
-                </ol>
+                <p className="console-section-note">优先考虑准星附近的瞄点，没有附近瞄点时参考类别偏好。选中的目标有效时保持；按键触发时，松开再按可重新选择。</p>
                 <ul className="algorithm-class-overview" aria-label="当前类别配置">
-                  {classEditorIds.map((id) => (
+                  {classEditorIds.filter((id) => id <= 7).map((id) => (
                     <li key={id} style={classStyle(id)} data-enabled={selectedDetectionClassIds.has(id)}>
                       <span><i aria-hidden="true" />cls {id}<small>{selectedDetectionClassIds.has(id) ? "参与" : "未参与"}</small></span>
                       <strong>{detectionClasses[id] || "未命名类别"}</strong>
-                      <span className="algorithm-class-weight">远处偏好<b>{(parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? 0).toFixed(2)}</b></span>
+                      <span className="algorithm-class-weight">类别偏好<b>{(parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? 0).toFixed(2)}</b></span>
                     </li>
                   ))}
                 </ul>
-                <p className="console-section-note">附近按瞄点距离判断，不按头、身体框的包含关系判断。偏好不代表识别置信度，也不改变移动力度。</p>
               </div>
             </section>
             </div>
@@ -4474,7 +4471,7 @@ export function StudioConsoleView({
               <div>
                 <span className="class-config-eyebrow">参数设置 / 目标类别</span>
                 <h2 id="class-config-dialog-title">编辑目标类别</h2>
-                <p>为每个 cls 设置框内瞄点和优先权重；只保存一套配置，不加载人物模型或图片。</p>
+                <p>cls0～7 直接编辑，修改后统一保存。</p>
               </div>
               <button type="button"
                 aria-label="关闭类别配置"
@@ -4492,7 +4489,7 @@ export function StudioConsoleView({
               <div className="class-config-workspace class-point-workspace-shell">
                 <TargetClassEditor
                   ids={classEditorIds} names={detectionClasses} selected={selectedDetectionClassIds}
-                  weights={Object.fromEntries(classEditorIds.map((id) => [id, parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? 0]))}
+                  weights={parseClassValues(rustPipelineConfig.target_class_weights)}
                   xs={parseClassValues(rustPipelineConfig.target_class_aim_x_ratios)}
                   ys={parseClassValues(rustPipelineConfig.target_class_aim_y_ratios)}
                   defaultY={rustOtherAimRatio} disabled={false}

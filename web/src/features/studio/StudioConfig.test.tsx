@@ -413,7 +413,7 @@ it("shows one target-class configuration without profile management", async () =
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
   expect(within(dialog).queryByText("配置文件")).not.toBeInTheDocument();
   expect(within(dialog).queryByRole("button", { name: /删除类别配置/ })).not.toBeInTheDocument();
-  await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "cls 0 中心" }));
   const unload = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(unload);
   expect(unload.defaultPrevented).toBe(true);
@@ -454,7 +454,7 @@ it("saves a class aim-point edit without reporting unsupported control.aim", asy
   await userEvent.click(screen.getByRole("tab", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
-  await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "cls 0 中心" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "完成编辑" }));
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "保存并应用" }));
@@ -486,7 +486,7 @@ it("collapses legacy class profiles into one configuration when saving", async (
   await userEvent.click(screen.getByRole("tab", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
-  await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "cls 0 中心" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "完成编辑" }));
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "保存并应用" }));
@@ -522,7 +522,7 @@ it("retains a rejected class edit in the shared page draft", async () => {
   await userEvent.click(screen.getByRole("tab", { name: "目标与瞄点" }));
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
-  await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "cls 0 中心" }));
   await userEvent.click(within(dialog).getByRole("button", { name: "完成编辑" }));
   expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "保存并应用" }));
