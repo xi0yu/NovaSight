@@ -130,8 +130,10 @@ fn compose_pipeline_config_wires_target_decision_policy() {
 
 #[test]
 fn compose_pipeline_config_reuses_frontend_class_roles_for_part_handoffs() {
-    let mut config = with_test_capture(AppConfig::default());
-    config.inference = Some(Default::default());
+    let directory = TempDirectory::new();
+    let path = directory.join("novasight.yaml");
+    YamlConfigRepository::initialize_default(&path).unwrap();
+    let mut config = with_test_capture(YamlConfigRepository::load(&path).unwrap());
     config.inference.as_mut().unwrap().extra.insert(
         "detection_class_profile".to_owned(),
         serde_yaml::Value::String("default".to_owned()),
