@@ -148,6 +148,11 @@
 .class-edit-table thead th { font-size: 12px; font-weight: 500; }
 .class-edit-table tbody tr:last-child > * { border-bottom: 0; }
 .class-edit-table tbody tr:hover { background: color-mix(in srgb, var(--class-color) 4%, var(--bg-subtle)); }
+.class-edit-table tbody tr[data-enabled="true"] > td:first-child { box-shadow: inset 3px 0 var(--class-color); }
+.class-edit-table tbody tr[data-enabled="false"] { --class-color: var(--text-secondary) !important; background: var(--bg-subtle); color: var(--text-secondary); }
+.class-participation { display: block; margin-top: 4px; font-size: 10px; color: var(--text-secondary); white-space: nowrap; }
+.class-row-dirty { display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--signal-info); vertical-align: middle; }
+.class-row-reset { min-height: 28px; padding: 2px 0; border: 0; background: transparent; color: var(--signal-info); cursor: pointer; font: inherit; font-size: 11px; }
 .class-edit-table td:first-child { width: 52px; }
 .class-edit-table td:nth-child(3) { width: 23%; min-width: 150px; }
 .class-edit-table td:nth-child(4) { width: 27%; min-width: 220px; }
@@ -163,6 +168,7 @@
 .class-point-marker { position: absolute; transform: translate(-50%, -50%); font-size: 20px; color: var(--class-color); line-height: 1; pointer-events: none; }
 .class-point-presets { display: flex; gap: 4px; margin: 0 0 4px; }
 .class-point-presets button { min-height: 32px; padding: 4px 8px; background: var(--bg-subtle); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 6px; font: inherit; font-size: 12px; cursor: pointer; }
+.class-point-presets button[aria-pressed="true"] { background: var(--class-color); border-color: var(--class-color); color: white; }
 .target-class-editor button:hover { border-color: var(--signal-info); }
 .target-class-editor button:disabled { opacity: .5; cursor: default; }
 .target-class-editor button:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }

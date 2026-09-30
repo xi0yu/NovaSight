@@ -1516,6 +1516,21 @@ export function StudioConsoleView({
     () => configuredDetectionClassIds ?? new Set(classEditorIds),
     [classEditorIds, configuredDetectionClassIds]
   );
+  const savedClassConfig = parameterPageBaselineRef.current ?? runtimeConfigLatestRef.current;
+  const savedClassInference = asRecord(savedClassConfig?.inference);
+  const savedClassPipeline = asRecord(savedClassConfig?.pipeline);
+  const savedClassProfile = readString(savedClassInference.detection_class_profile, "default");
+  const savedClassNames = recordList(savedClassInference.detection_class_profiles);
+  const savedClassFilter = readString(recordStrings(savedClassInference.detection_class_filters)[savedClassProfile]
+    ?? (rustControlPlane ? savedClassPipeline.target_class_filter : savedClassInference.detection_class_filter), "all");
+  const savedClassSettings = {
+    names: savedClassNames[savedClassProfile] ?? savedClassNames.default ?? [],
+    selected: parseDetectionClassFilter(savedClassFilter) ?? new Set(classEditorIds),
+    weights: parseClassValues(savedClassPipeline.target_class_weights),
+    xs: parseClassValues(savedClassPipeline.target_class_aim_x_ratios),
+    ys: parseClassValues(savedClassPipeline.target_class_aim_y_ratios),
+    defaultY: readNumber(savedClassPipeline.target_aim_y_ratio, 0.22)
+  };
   const control = vision?.control;
   const targetPipeline = vision?.target_pipeline;
   const targetPipelineCode = targetPipeline?.code ?? "";
@@ -2882,6 +2897,58 @@ export function StudioConsoleView({
     },
     [activeDetectionClass, classEditorIds, orderedClassEditorIds, updateDetectionClassFilter]
   );
+
+  const resetTargetClass = (id: number) => {
+    const current = configDraftRef.current;
+    if (!current || !savedClassConfig) return;
+    const next = structuredClone(current);
+    const pipeline = { ...asRecord(next.pipeline) };
+    for (const key of ["target_class_weights", "target_class_aim_x_ratios", "target_class_aim_y_ratios"]) {
+      const values = parseClassValues(pipeline[key]);
+      const savedValues = parseClassValues(savedClassPipeline[key]);
+      if (savedValues[id] === undefined) delete values[id];
+      else values[id] = savedValues[id];
+      const entries = Object.entries(values).sort(([a], [b]) => Number(a) - Number(b));
+      if (entries.length === 0 && savedClassPipeline[key] === undefined) delete pipeline[key];
+      else pipeline[key] = entries.map(([key, value]) => `${key}:${value}`).join(",");
+    }
+    const inference = { ...asRecord(next.inference) };
+    const profiles = recordList(inference.detection_class_profiles);
+    const names = [...(profiles[activeDetectionProfile] ?? profiles.default ?? [])];
+    if ((names[id] ?? "") !== (savedClassSettings.names[id] ?? "")) {
+      while (names.length <= id) names.push("");
+      names[id] = savedClassSettings.names[id] ?? "";
+      while (names.length > savedClassSettings.names.length && names[names.length - 1] === "") names.pop();
+      inference.detection_class_profiles = { ...profiles, [activeDetectionProfile]: names };
+    }
+    if (selectedDetectionClassIds.has(id) !== savedClassSettings.selected.has(id)) {
+      const selected = new Set(selectedDetectionClassIds);
+      if (savedClassSettings.selected.has(id)) selected.add(id);
+      else selected.delete(id);
+      const filters = recordStrings(inference.detection_class_filters);
+      if (classEditorIds.every((n) => selected.has(n) === savedClassSettings.selected.has(n))) {
+        const savedFilterEntry = recordStrings(savedClassInference.detection_class_filters)[savedClassProfile];
+        if (savedFilterEntry === undefined) delete filters[activeDetectionProfile];
+        else filters[activeDetectionProfile] = savedFilterEntry;
+        if (Object.keys(filters).length === 0 && savedClassInference.detection_class_filters === undefined) delete inference.detection_class_filters;
+        else inference.detection_class_filters = filters;
+        if (savedClassInference.detection_class_filter === undefined) delete inference.detection_class_filter;
+        else inference.detection_class_filter = savedClassInference.detection_class_filter;
+        if (rustControlPlane) {
+          if (savedClassPipeline.target_class_filter === undefined) delete pipeline.target_class_filter;
+          else pipeline.target_class_filter = savedClassPipeline.target_class_filter;
+        }
+      } else {
+        const filter = selected.size === 0 ? "none" : [...selected].sort((a, b) => a - b).join(",");
+        inference.detection_class_filters = { ...filters, [activeDetectionProfile]: filter };
+        inference.detection_class_filter = filter;
+        if (rustControlPlane) pipeline.target_class_filter = filter;
+      }
+    }
+    next.inference = inference as RuntimeConfig[string];
+    next.pipeline = pipeline as RuntimeConfig[string];
+    stageConfigDialogDraft(next);
+  };
 
   const diagnosticMoveHardware = useCallback(async (
     dx = kmnetTestDx,
@@ -4497,6 +4564,7 @@ export function StudioConsoleView({
                   onWeight={(id, weight) => updateClassValues(id, { target_class_weights: weight })}
                   onToggle={(id) => void toggleDetectionClass(id)}
                   onName={updateDetectionClassName}
+                  saved={savedClassSettings} onReset={resetTargetClass}
                 />
               </div>
             </div>

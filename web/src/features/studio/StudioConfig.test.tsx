@@ -414,6 +414,11 @@ it("shows one target-class configuration without profile management", async () =
   expect(within(dialog).queryByText("配置文件")).not.toBeInTheDocument();
   expect(within(dialog).queryByRole("button", { name: /删除类别配置/ })).not.toBeInTheDocument();
   await userEvent.click(within(dialog).getByRole("button", { name: "cls 0 中心" }));
+  const changedName = within(dialog).getByRole("textbox", { name: "cls 0 名称" });
+  fireEvent.change(changedName, { target: { value: "changed" } }); fireEvent.blur(changedName);
+  const changedWeight = within(dialog).getByRole("slider", { name: "cls 0 类别偏好 滑块" });
+  fireEvent.change(changedWeight, { target: { value: "0.9" } }); fireEvent.blur(changedWeight);
+  await userEvent.click(within(dialog).getByRole("checkbox", { name: "cls 0 参与目标选择" }));
   const unload = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(unload);
   expect(unload.defaultPrevented).toBe(true);
@@ -426,6 +431,13 @@ it("shows one target-class configuration without profile management", async () =
   await userEvent.click(within(navigation).getByRole("button", { name: "算法参数" }));
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   expect(screen.getByRole("textbox", { name: "cls 0 垂直位置 数值" })).toHaveValue("50");
+  await userEvent.click(screen.getByRole("button", { name: "cls 1 下部" }));
+  await userEvent.click(screen.getByRole("button", { name: "撤销 cls 0 修改" }));
+  expect(screen.queryByRole("status", { name: "cls 0 已修改" })).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "cls 0 垂直位置 数值" })).toHaveValue("22");
+  expect(screen.getByRole("textbox", { name: "cls 0 名称" })).toHaveValue("enemy");
+  expect(screen.getByRole("checkbox", { name: "cls 0 参与目标选择" })).toBeChecked();
+  expect(screen.getByRole("textbox", { name: "cls 1 垂直位置 数值" })).toHaveValue("75");
   expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
 });
 

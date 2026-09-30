@@ -19,17 +19,23 @@ export function setClassValue(value: unknown, id: number, next: number): string 
     .sort(([a], [b]) => Number(a) - Number(b)).map(([key, n]) => `${key}:${n}`).join(",");
 }
 
-type Props = {
-  ids: number[]; names: string[]; selected: Set<number>;
+export type ClassSettings = {
+  names: string[]; selected: Set<number>;
   weights: Record<string, number>; xs: Record<string, number>; ys: Record<string, number>;
-  defaultY: number; disabled?: boolean;
+  defaultY: number;
+};
+
+type Props = ClassSettings & {
+  ids: number[]; disabled?: boolean;
   onPoint: (id: number, x: number, y: number) => void;
   onWeight: (id: number, weight: number) => void;
   onToggle: (id: number) => void;
   onName: (id: number, name: string) => void | Promise<void>;
+  saved: ClassSettings;
+  onReset: (id: number) => void;
 };
 
-export function TargetClassEditor({ ids, names, selected, weights, xs, ys, defaultY, disabled, onPoint, onWeight, onToggle, onName }: Props) {
+export function TargetClassEditor({ ids, names, selected, weights, xs, ys, defaultY, disabled, onPoint, onWeight, onToggle, onName, saved, onReset }: Props) {
   const legacyIds = ids.filter((id) => id > 7 && (selected.has(id) || names[id]?.trim() || weights[id] !== undefined || xs[id] !== undefined || ys[id] !== undefined));
   const ratio = (n: number) => Math.round(Math.max(0, Math.min(1, n)) * 100) / 100;
   const point = (id: number, event: PointerEvent<HTMLButtonElement>) => {
@@ -45,9 +51,13 @@ export function TargetClassEditor({ ids, names, selected, weights, xs, ys, defau
         <tbody>{Array.from({ length: 8 }, (_, id) => {
           const x = xs[id] ?? 0.5;
           const y = ys[id] ?? defaultY;
+          const dirty = (names[id] ?? "") !== (saved.names[id] ?? "") || selected.has(id) !== saved.selected.has(id)
+            || (weights[id] ?? 0) !== (saved.weights[id] ?? 0) || x !== (saved.xs[id] ?? 0.5) || y !== (saved.ys[id] ?? saved.defaultY);
+          const matchesPreset = (py: number) => Math.abs(x - 0.5) < 0.000001 && Math.abs(y - py) < 0.000001;
+          const preset = [0.22, 0.5, 0.75].some(matchesPreset);
           return <tr key={id} style={classStyle(id)} data-enabled={selected.has(id)}>
-            <td><input type="checkbox" aria-label={`cls ${id} 参与目标选择`} checked={selected.has(id)} disabled={disabled} onChange={() => onToggle(id)} /></td>
-            <th scope="row"><span className="class-table-id">cls{id}</span></th>
+            <td><input type="checkbox" aria-label={`cls ${id} 参与目标选择`} checked={selected.has(id)} disabled={disabled} onChange={() => onToggle(id)} /><small className="class-participation">{selected.has(id) ? "参与" : "不参与"}</small></td>
+            <th scope="row"><span className="class-table-id">cls{id}</span>{dirty && <span className="class-row-dirty" role="status" aria-label={`cls ${id} 已修改`} title="已修改，尚未保存" />}</th>
             <td><fieldset disabled={disabled} className="class-name-field"><InlineTextControl ariaLabel={`cls ${id} 名称`} value={names[id] ?? ""} placeholder="填写名称" onCommit={(name) => onName(id, name)} /></fieldset></td>
             <td><ParameterNumberControl label={`cls ${id} 类别偏好`} value={weights[id] ?? 0} min={0} max={1} step={0.05} kind="slider" applyMode="save" disabled={disabled} onCommit={(n) => onWeight(id, n)} /></td>
             <td><div className="class-inline-point">
@@ -65,12 +75,13 @@ export function TargetClassEditor({ ids, names, selected, weights, xs, ys, defau
                 <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><path d="M50 0V100 M0 50H100" /></svg>
                 <span className="class-point-marker" style={{ left: `${x * 100}%`, top: `${y * 100}%` }}>＋</span>
               </button>
-              <div><div className="class-point-presets">{[["上部", 0.22], ["中心", 0.5], ["下部", 0.75]].map(([label, py]) => <button type="button" disabled={disabled} aria-label={`cls ${id} ${label}`} key={label} onClick={() => onPoint(id, 0.5, Number(py))}>{label}</button>)}</div>
-                <small>水平 {Math.round(x * 100)}% · 垂直 {Math.round(y * 100)}%</small>
+              <div><div className="class-point-presets">{[["上部", 0.22], ["中心", 0.5], ["下部", 0.75]].map(([label, py]) => <button type="button" disabled={disabled} aria-pressed={matchesPreset(Number(py))} aria-label={`cls ${id} ${label}`} key={label} onClick={() => onPoint(id, 0.5, Number(py))}>{label}</button>)}</div>
+                <small>{!preset && "自定义 · "}水平 {Math.round(x * 100)}% · 垂直 {Math.round(y * 100)}%</small>
                 <details className="class-point-precision"><summary>精确坐标<span className="sr-only"> cls{id}</span></summary><div className="class-point-numbers">
                   <ParameterNumberControl label={`cls ${id} 水平位置`} value={Math.round(x * 100)} min={0} max={100} step={1} unit="%" applyMode="save" disabled={disabled} onCommit={(n) => onPoint(id, n / 100, y)} />
                   <ParameterNumberControl label={`cls ${id} 垂直位置`} value={Math.round(y * 100)} min={0} max={100} step={1} unit="%" applyMode="save" disabled={disabled} onCommit={(n) => onPoint(id, x, n / 100)} />
                 </div></details>
+                {dirty && <button type="button" className="class-row-reset" aria-label={`撤销 cls ${id} 修改`} disabled={disabled} onClick={() => onReset(id)}>撤销本行</button>}
               </div>
             </div></td>
           </tr>;
