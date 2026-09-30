@@ -21,6 +21,7 @@
 ```text
 NovaSight/
 ├── NovaSight
+├── NovaSight.desktop
 ├── USER_MANUAL.md
 ├── README-USER.txt
 ├── bin/
@@ -38,14 +39,18 @@ NovaSight/
 - `data/models/`：放置本机模型文件。
 - `logs/novasightd.log`：运行日志，排查问题时查看。
 - `logs/novasight-web.log`：网页认证与 API 网关日志。
+- `logs/launcher.log`：启动失败原因。
 - `run/novasightd-ready.json`：daemon Unix IPC 就绪信息。
 - `run/ready.json`：Web/API 启动成功后记录 Studio 地址。
 
 删除整个 `NovaSight/` 目录，就会同时删除 NovaSight 自己创建的数据、日志和运行状态文件。
+更新留下的 `NovaSight.previous-*` 备份在旁边的独立目录中，不会一并删除；其中也可能包含授权和配置，请妥善保管。
 
 ## 3. 第一次启动
 
-进入交付包目录，然后运行：
+Jetson 有桌面环境时，可以使用交付包里的 `NovaSight.desktop` 打开界面，不需要控制台窗口。首次可能需要在右键菜单中选择“允许启动”。快捷方式对应交付时的安装位置，移动目录后请直接运行 `NovaSight`，或让提供方重新生成快捷方式。
+
+没有桌面环境时，进入交付包目录运行：
 
 ```bash
 cd NovaSight
@@ -57,8 +62,15 @@ cd NovaSight
 - 创建缺失的 `data/`、`logs/`、`run/` 目录。
 - 启动本机 NovaSight 后端服务。
 - 等待服务就绪。
-- 固定监听 `0.0.0.0:7351`，输出 `NovaSight Studio Web UI: http://0.0.0.0:7351/` 和对应的 LAN 地址，并在有桌面浏览器时尝试自动打开。
-- 保持终端运行；按 `Ctrl+C` 会关闭包内后台服务。
+- 监听 `0.0.0.0:7351`，显示本机及局域网访问地址，并在有桌面浏览器时尝试自动打开。
+- 已经运行时直接打开现有界面，不重启、不重新编译。
+- 终端启动时保持终端运行；按 `Ctrl+C` 会关闭包内后台服务。
+
+启动应用本身不会开启采集、推理与控制，业务运行由首页总开关决定。后台重启后，物理输出会暂停，需要用户明确开启。
+
+关闭浏览器只关闭界面，不退出后台。可以使用桌面快捷方式的“退出 NovaSight”操作；也可在交付包目录运行 `./NovaSight --quit` 安全退出。若桌面启动没有成功打开界面，请查看 `logs/launcher.log`。
+
+更新前需安全退出应用。新版更新流程保留配置、模型、数据库和日志，并保留旧版本备份；运行过程中不会替换程序。
 
 如果浏览器没有自动打开，请使用终端输出的 LAN 地址，例如 `http://<Jetson-LAN-IP>:7351/`。不要把 Jetson 本机的 `127.0.0.1` 当成远程访问地址。`0.0.0.0` 代表服务监听所有网卡；远程浏览器实际访问时使用 Jetson 的局域网 IP。Jetson 没有桌面浏览器时，这是正常路径，不代表后端启动失败。
 

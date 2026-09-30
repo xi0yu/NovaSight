@@ -11,10 +11,10 @@ use tokio::time;
 
 use super::{
     LayoutMode, PROCESS_SHUTDOWN_TIMEOUT, PortableLayout, ReadyDocument,
-    create_temporary_license_access, ensure_portable_config, health_check, http_url, lifecycle,
-    log_tail, print_studio_urls, print_temporary_license_access, read_daemon_ready_file,
-    read_ready_file, request_daemon_shutdown, spawn_daemon, spawn_logged_process, spawn_web,
-    stop_child, stop_owned_daemon, tcp_port_accepts_connections,
+    create_temporary_license_access, daemon_status_succeeds, ensure_portable_config, health_check,
+    http_url, lifecycle, log_tail, open_studio, print_temporary_license_access,
+    read_daemon_ready_file, read_ready_file, request_daemon_shutdown, spawn_daemon,
+    spawn_logged_process, spawn_web, stop_child, stop_owned_daemon, tcp_port_accepts_connections,
 };
 
 const FRONTEND_READY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -22,6 +22,7 @@ const FRONTEND_READY_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     std::env::set_current_dir(&layout.root)
         .with_context(|| format!("set workspace root {}", layout.root.display()))?;
+    eprintln!("NovaSight 开发：检查配置与依赖…");
     ensure_portable_config(layout)?;
     validate_artifacts(layout)?;
     stop_preexisting_stack(layout).await?;
@@ -30,6 +31,7 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     let _ = fs::remove_file(&layout.daemon_ready_file);
     let temporary_license = create_temporary_license_access(layout)?;
 
+    eprintln!("NovaSight 开发：启动后台与界面服务…");
     let mut daemon = spawn_daemon(layout, temporary_license.as_ref())?;
     let mut web = match spawn_web(layout, true) {
         Ok(web) => web,
@@ -62,7 +64,8 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
         let _ = stop_owned_daemon(layout, &mut daemon).await;
         return Err(error);
     }
-    print_studio_urls(&studio_ready);
+    eprintln!("NovaSight 开发：界面已就绪，采集与控制需在首页开启");
+    open_studio(&studio_ready);
     print_temporary_license_access(temporary_license.as_ref());
     lifecycle::supervise(layout, daemon, web, Some(vite)).await
 }
@@ -113,26 +116,6 @@ async fn stop_preexisting_daemon(layout: &PortableLayout) -> Result<()> {
     Ok(())
 }
 
-async fn daemon_status_succeeds(layout: &PortableLayout) -> Result<bool> {
-    let status = tokio::process::Command::new(&layout.control)
-        // Runtime status is license-gated; license status remains available on
-        // the trusted local socket and is enough to prove daemon ownership.
-        .args(["license", "status"])
-        .current_dir(&layout.root)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await
-        .with_context(|| {
-            format!(
-                "inspect existing daemon through {}",
-                layout.control.display()
-            )
-        })?;
-    Ok(status.success())
-}
-
 fn validate_artifacts(layout: &PortableLayout) -> Result<()> {
     if layout.mode != LayoutMode::Developer {
         bail!("frontend development is available only from a NovaSight source workspace");
@@ -165,7 +148,8 @@ fn validate_artifacts(layout: &PortableLayout) -> Result<()> {
 }
 
 fn refresh_rust_artifacts(layout: &PortableLayout) -> Result<()> {
-    let output = StdCommand::new("cargo")
+    eprintln!("NovaSight 开发：检查并编译后台程序（正式启动包无需此步骤）…");
+    let status = StdCommand::new("cargo")
         .args([
             "build",
             "--locked",
@@ -178,14 +162,10 @@ fn refresh_rust_artifacts(layout: &PortableLayout) -> Result<()> {
         ])
         .current_dir(&layout.root)
         .stdin(Stdio::null())
-        .output()
+        .status()
         .context("refresh frontend-development Rust binaries with Cargo")?;
-    if !output.status.success() {
-        bail!(
-            "Cargo could not refresh frontend-development Rust binaries: {}\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim_end()
-        );
+    if !status.success() {
+        bail!("后台编译失败（{status}），原实例未重启；请查看上方编译信息");
     }
     Ok(())
 }
@@ -223,7 +203,7 @@ fn spawn_vite(layout: &PortableLayout) -> Result<Child> {
     .with_context(|| format!("start Vite from {}", executable.display()))
 }
 
-fn studio_ready_document() -> Result<ReadyDocument> {
+pub(super) fn studio_ready_document() -> Result<ReadyDocument> {
     let endpoint = &studio_endpoint_contract().studio;
     let address = format!("{}:{}", endpoint.host, endpoint.port);
     let parsed = address

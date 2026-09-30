@@ -1070,6 +1070,7 @@ name = "novasight"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fs2",
  "novasight-config",
  "rand 0.8.7",
  "serde",
@@ -1162,6 +1163,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "fs2",
  "serde",
  "serde_json",
 ]

@@ -60,6 +60,22 @@ The packager does all required assembly work:
 - copies the bundled DeepStream tracker config;
 - validates that the package has the required runtime files.
 
+Packaging never deletes the existing package directory. It prepares and validates
+a sibling staging directory first, carries forward the existing `data/` and
+`logs/` (including configuration, database, license and models), then replaces
+the stopped package. The complete previous version remains in a sibling
+`NovaSight.previous-*` directory. If the replacement fails, the previous directory
+is restored. Backups are not automatically deleted; they can contain private
+configuration and license state and need the same protection as the running package.
+This requires enough free space for the new package and a copy of user data.
+
+A package-local launcher holds a shared lock in the sibling `NovaSight.update.lock`
+file; the packager requires its exclusive lock before building or copying data.
+Do not remove that lock file while either process is running. A running old
+package is also rejected through its ready marker and local control socket.
+Symbolic links in copied user data are rejected rather than silently omitted;
+the existing package is left untouched on this error.
+
 The generated package is the deliverable. Do not ask users to run Cargo, pnpm,
 direct `novasightd`, or systemd commands.
 
@@ -79,15 +95,33 @@ cd NovaSight
 ./NovaSight
 ```
 
+On a Jetson desktop, the generated `NovaSight.desktop` opens the application
+without a console window. The desktop may require “Allow Launching” first.
+Its “退出 NovaSight” action requests safe shutdown through the local daemon.
+The shortcut uses the package's absolute path at packaging time: if the package
+is moved, run `NovaSight` directly; the author must regenerate the shortcut for
+the final location. Startup errors are recorded in `logs/launcher.log`.
+Debug packages still need a terminal to read their in-memory temporary license
+code when no formal license is available; the console-free shortcut is intended
+for users with formal authorization.
+
 The launcher owns startup orchestration:
 
 - ensures `data`, `logs`, and `run` exist;
+- reopens the existing Studio when its gateway and package-local daemon are healthy,
+  without rebuilding, restarting, or changing the output switch;
 - starts `bin/novasightd` as a Unix-socket-only service;
 - waits for daemon IPC readiness, then starts `bin/novasight-web` as the only
   TCP/static/API boundary;
 - prints the plain LAN address and the local and detected IPv4 network listener
   addresses, then tries to open a local desktop browser when one is available;
 - stays in the foreground so `Ctrl+C` stops both package-local services.
+
+Starting the application does not start capture, inference or physical control.
+Use the home-page master switch for the business pipeline. Physical output is
+disarmed on daemon startup and requires an explicit operator action to reopen.
+Closing the browser does not stop the daemon. Exit through the desktop action,
+`./NovaSight --quit`, or `Ctrl+C` in the owning launcher terminal.
 
 NovaSight-owned runtime files stay inside the package:
 
@@ -119,6 +153,9 @@ switch on start/restart, allowing recognition without granting hardware-control 
 Removing the `NovaSight/` directory removes NovaSight-owned state. The normal
 portable path does not install systemd units, does not require root, and does
 not write to `/etc`, `/usr`, `/var/lib`, `/var/log`, or `/run/novasight`.
+Previous-version backups are separate directories and are not removed with the
+current package. The adjacent update lock is an empty coordination file, not
+configuration or credential storage.
 
 When developing from the repository, place model assets in workspace
 `data/models` before packaging. The packager copies `.engine`, `.onnx`, and
@@ -140,10 +177,18 @@ When the launcher detects that it was started from Cargo's `out/cargo` artifact
 directory, it treats the workspace root as the runtime root and starts the
 frontend-development session. It uses source-tree `data/models`,
 `data/novasight.frontend-dev.yaml`, `logs`, and `run`. Before launch it runs a
-locked Cargo refresh for `novasightd`, `novasight-web`, and `novasightctl`,
+locked Cargo refresh for `novasightd`, `novasight-web`, and `novasightctl` on a cold start,
 verifies that Vite is already installed under `web/node_modules`, and then
 starts the Unix-only daemon, private Web/API gateway, and Vite. It does not
 install packages or create a production Web build.
+
+If a healthy session is already running, ordinary startup opens that session
+before any backend Cargo refresh. It deliberately does not apply backend source
+changes to the running process. React changes continue to use Vite HMR. To apply
+backend changes explicitly, use `out/cargo/debug/novasight --restart`: compilation
+progress is shown, and the existing session is stopped only after the build and
+artifact checks succeed. `cargo run -p novasight` still checks/builds the launcher
+itself before this reuse check; packaged users never invoke Cargo.
 
 For React HMR, the source launcher owns the daemon, Web/API gateway, and Vite as one
 development session:
@@ -158,9 +203,12 @@ keeps the authenticated Web/API at `127.0.0.1:5174`; the daemon remains on its
 Unix socket. It does not reuse or mutate
 `data/novasight.yaml`, install packages, or build Web assets. The
 launcher prints the authenticated LAN URL, one temporary license code, and
-the local and detected IPv4 network listener addresses; `Ctrl+C` stops all three
+the local and detected IPv4 network listener addresses and opens a local browser
+when available; `Ctrl+C` stops all three
 child processes. The launcher selects this development layout from its own
-artifact path; users do not pass a startup mode.
+artifact path; users do not pass a startup mode. `--restart` updates an existing
+source session; it is not accepted by the packaged application. `--quit` safely
+exits the daemon without starting a business pipeline.
 
 ## Same-Path Testing
 

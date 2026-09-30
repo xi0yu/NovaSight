@@ -21,6 +21,10 @@ pub(super) async fn supervise(
         status = daemon.wait() => {
             let status = status.context("wait for novasightd process")?;
             stop_ingress(&mut vite, &mut web).await;
+            if status.success() {
+                eprintln!("NovaSight 已安全退出");
+                return Ok(());
+            }
             bail!("novasightd exited with status {status}")
         }
         status = web.wait() => {

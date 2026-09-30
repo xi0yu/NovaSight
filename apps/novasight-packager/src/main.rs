@@ -1,10 +1,10 @@
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
@@ -71,13 +71,49 @@ fn run() -> Result<()> {
     let args = Args::parse();
     let workspace = find_workspace_root(&std::env::current_dir().context("read current dir")?)?;
     let output = resolve_output_path(&workspace, &args.output)?;
+    fs::create_dir_all(output.parent().context("package output has no parent")?)?;
+    let update_lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(output.with_extension("update.lock"))
+        .context("open package update lock")?;
+    fs2::FileExt::try_lock_exclusive(&update_lock)
+        .context("NovaSight 正在运行或更新；请先安全退出，用户数据不会被覆盖")?;
+    if output.exists() {
+        validate_package(&output).context("旧目录不是完整的 NovaSight 启动包；拒绝覆盖")?;
+    }
+    prepare_output_for_rebuild(&output)?;
     if !args.skip_build {
         build_artifacts(&workspace, args.profile)?;
     }
     validate_artifact_revision(&workspace, args.profile)?;
-    assemble_package(&workspace, args.profile, &output)?;
-    validate_package(&output)?;
+    update_package(&workspace, args.profile, &output)?;
     println!("{}", output.display());
+    Ok(())
+}
+
+fn update_package(workspace: &Path, profile: PackageProfile, output: &Path) -> Result<()> {
+    let nonce = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
+    );
+    let staging = output.with_extension(format!("staging-{nonce}"));
+    let backup = output.with_extension(format!("previous-{nonce}"));
+    eprintln!("NovaSight：准备新版本，原版本保持不变…");
+    assemble_package(workspace, profile, &staging)?;
+    if output.exists() {
+        validate_package(output).context("旧目录不是完整的 NovaSight 启动包；拒绝覆盖")?;
+        eprintln!("NovaSight：保留配置、模型、数据库和日志…");
+        for directory in ["data", "logs"] {
+            copy_runtime_web_tree(&output.join(directory), &staging.join(directory))?;
+        }
+    }
+    write_desktop_entry(&staging, output)?;
+    validate_package(&staging)?;
+    install_package(&staging, output, &backup)?;
     Ok(())
 }
 
@@ -112,14 +148,57 @@ fn resolve_output_path(workspace: &Path, output: &Path) -> Result<PathBuf> {
         bail!("package output cannot contain '..': {}", output.display());
     }
     let out_root = workspace.join("out");
-    if !output.starts_with(&out_root) {
+    if output == out_root || !output.starts_with(&out_root) {
         bail!(
             "package output must stay below {}; got {}",
             out_root.display(),
             output.display()
         );
     }
+    // Reject symlink ancestors before moving any package directory.
+    let relative = output.strip_prefix(workspace)?;
+    let mut ancestor = workspace.to_owned();
+    for component in relative.components() {
+        ancestor.push(component);
+        if fs::symlink_metadata(&ancestor).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            bail!(
+                "package output cannot traverse a symlink: {}",
+                ancestor.display()
+            );
+        }
+    }
     Ok(output)
+}
+
+fn install_package(staging: &Path, output: &Path, backup: &Path) -> Result<()> {
+    if backup.exists() {
+        bail!(
+            "backup already exists; refusing to overwrite {}",
+            backup.display()
+        );
+    }
+    prepare_output_for_rebuild(output)?;
+    let replacing = output.exists();
+    if replacing {
+        fs::rename(output, backup)
+            .with_context(|| format!("backup {} to {}", output.display(), backup.display()))?;
+    }
+    if let Err(error) = fs::rename(staging, output) {
+        if replacing {
+            fs::rename(backup, output).with_context(|| {
+                format!(
+                    "安装失败（{error}），自动恢复失败；旧版本仍在 {}，新版本仍在 {}",
+                    backup.display(),
+                    staging.display()
+                )
+            })?;
+        }
+        return Err(error).context("安装新版本失败；原版本已保留");
+    }
+    if replacing {
+        eprintln!("NovaSight：更新完成，旧版本备份：{}", backup.display());
+    }
+    Ok(())
 }
 
 fn build_artifacts(workspace: &Path, profile: PackageProfile) -> Result<()> {
@@ -205,10 +284,11 @@ where
 }
 
 fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) -> Result<()> {
-    prepare_output_for_rebuild(output)?;
     if output.exists() {
-        fs::remove_dir_all(output)
-            .with_context(|| format!("remove previous package {}", output.display()))?;
+        bail!(
+            "new package staging directory already exists: {}",
+            output.display()
+        );
     }
 
     let layout = PackageLayout::new(output);
@@ -261,9 +341,37 @@ fn assemble_package(workspace: &Path, profile: PackageProfile, output: &Path) ->
     )?;
     fs::write(
         layout.root.join("README-USER.txt"),
-        "Run ./NovaSight from this directory. NovaSight listens on 0.0.0.0:7351; open the printed LAN URL from another computer on the same network and enter one license code. Press Ctrl+C in the launcher terminal to stop NovaSight. Open USER_MANUAL.md for the user guide.\n",
+        "直接运行 NovaSight，无需 Cargo 或 pnpm。Jetson 桌面也可使用 NovaSight.desktop（首次需允许启动；该快捷方式对应打包时的位置）。重复启动只打开现有界面，不重启后台。打开首页总开关才开始采集、推理与控制。其他电脑通过 Jetson 的局域网地址访问。桌面启动失败请查看 logs/launcher.log；终端启动可用 Ctrl+C 安全退出。更新会保留 data/ 与 logs/，并保留旧版本备份。详见 USER_MANUAL.md。\n",
     )
     .with_context(|| format!("write {}", layout.root.join("README-USER.txt").display()))?;
+    Ok(())
+}
+
+fn write_desktop_entry(staging: &Path, output: &Path) -> Result<()> {
+    let executable = output
+        .join("NovaSight")
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('`', "\\`")
+        .replace('$', "\\$")
+        .replace('\\', "\\\\")
+        .replace('%', "%%");
+    if executable.contains(['\n', '\r', '=']) {
+        bail!("desktop launcher path cannot contain a newline or '='");
+    }
+    let path = staging.join("NovaSight.desktop");
+    fs::write(
+        &path,
+        format!(
+            "[Desktop Entry]\nType=Application\nName=NovaSight Studio\nComment=打开 NovaSight 界面\nExec=\"{executable}\"\nTerminal=false\nCategories=Utility;\nActions=Quit;\n\n[Desktop Action Quit]\nName=退出 NovaSight\nExec=\"{executable}\" --quit\n"
+        ),
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    }
     Ok(())
 }
 
@@ -475,6 +583,12 @@ fn copy_runtime_web_tree_from_root(source: &Path, destination: &Path) -> Result<
         let entry = entry.with_context(|| format!("read entry below {}", source.display()))?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
+        if entry.file_type()?.is_symlink() {
+            bail!(
+                "不能静默跳过符号链接 {}；原版本保持不变",
+                source_path.display()
+            );
+        }
         let metadata = entry
             .metadata()
             .with_context(|| format!("inspect {}", source_path.display()))?;
@@ -482,6 +596,11 @@ fn copy_runtime_web_tree_from_root(source: &Path, destination: &Path) -> Result<
             copy_runtime_web_tree_from_root(&source_path, &destination_path)?;
         } else if metadata.is_file() {
             copy_file(&source_path, &destination_path)?;
+        } else {
+            bail!(
+                "不支持复制特殊文件 {}；原版本保持不变",
+                source_path.display()
+            );
         }
     }
     Ok(())
@@ -509,6 +628,102 @@ fn validate_package(output: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::require_matching_revision;
+
+    #[test]
+    fn package_update_preserves_user_data_and_rolls_back_failed_installation() {
+        use super::*;
+        let workspace = std::env::temp_dir().join(format!(
+            "novasight-package-update-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for (path, contents) in [
+            ("out/cargo/debug/novasight", "old-launcher"),
+            ("out/cargo/debug/novasightd", "daemon"),
+            ("out/cargo/debug/novasight-web", "web"),
+            ("out/cargo/debug/novasightctl", "control"),
+            ("out/web/index.html", "interface"),
+            ("deploy/novasight.production.yaml", "default-config"),
+            ("deploy/deepstream-tracker-iou.yml", "tracker"),
+            ("USER_MANUAL.md", "manual"),
+        ] {
+            let destination = workspace.join(path);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::write(destination, contents).unwrap();
+        }
+        let output = workspace.join(DEFAULT_OUTPUT);
+        update_package(&workspace, PackageProfile::Debug, &output).unwrap();
+        for (path, contents) in [
+            ("data/novasight.yaml", "user-config"),
+            ("data/novasight.db", "user-database"),
+            ("data/models/user.engine", "user-model"),
+            ("logs/novasightd.log", "user-log"),
+        ] {
+            fs::write(output.join(path), contents).unwrap();
+        }
+        fs::write(workspace.join("out/cargo/debug/novasight"), "new-launcher").unwrap();
+        update_package(&workspace, PackageProfile::Debug, &output).unwrap();
+        assert_eq!(
+            fs::read_to_string(output.join("NovaSight")).unwrap(),
+            "new-launcher"
+        );
+        for (path, contents) in [
+            ("data/novasight.yaml", "user-config"),
+            ("data/novasight.db", "user-database"),
+            ("data/models/user.engine", "user-model"),
+            ("logs/novasightd.log", "user-log"),
+        ] {
+            assert_eq!(fs::read_to_string(output.join(path)).unwrap(), contents);
+        }
+        let backup = fs::read_dir(output.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("NovaSight.previous-")
+            })
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(backup.join("NovaSight")).unwrap(),
+            "old-launcher"
+        );
+        assert!(
+            install_package(
+                &workspace.join("missing-staging"),
+                &output,
+                &workspace.join("rollback-backup")
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(output.join("data/novasight.db")).unwrap(),
+            "user-database"
+        );
+        assert!(resolve_output_path(&workspace, &workspace.join("out")).is_err());
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn package_update_does_not_silently_drop_linked_user_files() {
+        let root =
+            std::env::temp_dir().join(format!("novasight-package-link-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        std::fs::write(root.join("model.engine"), "model").unwrap();
+        std::os::unix::fs::symlink(root.join("model.engine"), root.join("data/model.engine"))
+            .unwrap();
+        assert!(super::copy_runtime_web_tree(&root.join("data"), &root.join("staging")).is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("data/model.engine")).unwrap(),
+            "model"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn stale_daemon_revision_is_rejected() {

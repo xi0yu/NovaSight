@@ -60,6 +60,13 @@ enum LayoutMode {
     Developer,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StartupRequest {
+    Open,
+    Restart,
+    Quit,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 struct ReadyDocument {
     address: String,
@@ -83,37 +90,63 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("NOVASIGHT_LAUNCH_FAILED: {error:#}");
+            if let Ok(layout) = PortableLayout::discover()
+                && let Ok(_guard) = lock_package_for_run(&layout)
+            {
+                let _ = fs::create_dir_all(&layout.log_dir);
+                if let Ok(mut log) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(layout.log_dir.join("launcher.log"))
+                {
+                    let _ = writeln!(log, "NOVASIGHT_LAUNCH_FAILED: {error:#}");
+                }
+            }
             ExitCode::FAILURE
         }
     }
 }
 
 async fn run() -> Result<()> {
-    ensure_zero_arguments()?;
+    let request = parse_startup_request(&std::env::args_os().skip(1).collect::<Vec<_>>())?;
     let layout = PortableLayout::discover()?;
+    if request == StartupRequest::Restart && layout.mode != LayoutMode::Developer {
+        bail!("--restart 仅用于源码开发；正式版本请先安全退出，再更新启动包");
+    }
+    let _package_lock = lock_package_for_run(&layout)?;
+    if request == StartupRequest::Quit {
+        if daemon_status_succeeds(&layout).await? {
+            request_daemon_shutdown(&layout).await?;
+            eprintln!("NovaSight：已请求后台安全退出");
+        } else {
+            eprintln!("NovaSight：当前没有运行中的后台");
+        }
+        return Ok(());
+    }
     prepare_layout(&layout)?;
+    if request == StartupRequest::Open
+        && let Some(ready) = existing_studio(&layout).await?
+    {
+        eprintln!("NOVASIGHT_EXISTING_STACK: 已在运行，打开现有界面；不会编译或重启后台");
+        open_studio(&ready);
+        return Ok(());
+    }
     if layout.mode == LayoutMode::Developer {
         return frontend_dev::run(&layout).await;
     }
     std::env::set_current_dir(&layout.root)
         .with_context(|| format!("set bundle root {}", layout.root.display()))?;
-    if let Ok(ready) = read_ready_file(&layout.web_ready_file)
-        && health_check(&ready.address)
-    {
-        bail!(
-            "NovaSight Web/API is already running at {}; stop the existing launcher before starting another instance",
-            ready.url
-        );
-    }
-
+    eprintln!("NovaSight：检查配置…");
     remove_stale_ready_files(&layout)?;
     ensure_portable_config(&layout)?;
     let temporary_license = create_temporary_license_access(&layout)?;
+    eprintln!("NovaSight：启动后台服务…");
     let mut daemon = spawn_daemon(&layout, temporary_license.as_ref())?;
     if let Err(error) = wait_for_daemon_ready(&layout, &mut daemon, PROCESS_READY_TIMEOUT).await {
         let _ = stop_child("novasightd", &mut daemon).await;
         return Err(error);
     }
+    eprintln!("NovaSight：启动界面服务…");
     let mut web = match spawn_web(&layout, false) {
         Ok(web) => web,
         Err(error) => {
@@ -130,16 +163,87 @@ async fn run() -> Result<()> {
                 return Err(error);
             }
         };
+    eprintln!("NovaSight：界面已就绪，采集与控制需在首页开启");
     open_studio(&ready);
     print_temporary_license_access(temporary_license.as_ref());
     lifecycle::supervise(&layout, daemon, web, None).await
 }
 
-fn ensure_zero_arguments() -> Result<()> {
-    if std::env::args_os().nth(1).is_some() {
-        bail!("NovaSight does not accept startup arguments; run NovaSight directly");
+fn parse_startup_request(args: &[OsString]) -> Result<StartupRequest> {
+    match args {
+        [] => Ok(StartupRequest::Open),
+        [arg] if arg == "--restart" => Ok(StartupRequest::Restart),
+        [arg] if arg == "--quit" => Ok(StartupRequest::Quit),
+        _ => bail!("直接启动 NovaSight；安全退出使用 --quit，源码开发更新后台使用 --restart"),
     }
-    Ok(())
+}
+
+fn lock_package_for_run(layout: &PortableLayout) -> Result<Option<File>> {
+    if layout.mode != LayoutMode::Package {
+        return Ok(None);
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(layout.root.with_extension("update.lock"))
+        .context("open package update lock")?;
+    fs2::FileExt::try_lock_shared(&file).context("NovaSight 正在更新，请更新完成后再启动")?;
+    Ok(Some(file))
+}
+
+async fn existing_studio(layout: &PortableLayout) -> Result<Option<ReadyDocument>> {
+    let ready = read_ready_file(&layout.web_ready_file).ok();
+    if !ready
+        .as_ref()
+        .is_some_and(|ready| health_check(&ready.address))
+    {
+        if layout.control.is_file() && daemon_status_succeeds(layout).await? {
+            bail!(
+                "已有后台正在启动或界面异常；不会自动重启，请安全退出后重试，源码更新可使用 --restart"
+            );
+        }
+        return Ok(None);
+    }
+    if !daemon_status_succeeds(layout).await? {
+        bail!("界面端口已被占用，但本目录的后台不可达；不会接管或关闭其他实例");
+    }
+    let studio = if layout.mode == LayoutMode::Developer {
+        frontend_dev::studio_ready_document()?
+    } else {
+        ready.context("healthy gateway did not publish its address")?
+    };
+    if !health_check(&studio.address) {
+        bail!("后台已运行，但界面不可用；请安全退出原实例后重试，源码开发可使用 --restart");
+    }
+    Ok(Some(studio))
+}
+
+async fn daemon_status_succeeds(layout: &PortableLayout) -> Result<bool> {
+    // License status is available even before activation. Pin the local socket
+    // so an inherited diagnostic override cannot redirect instance ownership.
+    let status = time::timeout(
+        Duration::from_secs(3),
+        Command::new(&layout.control)
+            .args(["license", "status"])
+            .env("NOVASIGHT_CONTROL_SOCKET", layout.root.join(CONTROL_SOCKET))
+            .current_dir(&layout.root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .status(),
+    )
+    .await
+    .context("检查现有后台超时；不会重启或接管该实例")?
+    .with_context(|| {
+        format!(
+            "inspect existing daemon through {}",
+            layout.control.display()
+        )
+    })?;
+    Ok(status.success())
 }
 
 impl PortableLayout {
@@ -526,6 +630,7 @@ async fn stop_child(label: &str, child: &mut Child) -> Result<()> {
 async fn request_daemon_shutdown(layout: &PortableLayout) -> Result<()> {
     let status = Command::new(&layout.control)
         .arg("shutdown")
+        .env("NOVASIGHT_CONTROL_SOCKET", layout.root.join(CONTROL_SOCKET))
         .current_dir(&layout.root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -854,7 +959,7 @@ mod tests {
     use super::{
         CONFIG_PATH, DEVELOPMENT_CONFIG_PATH, LayoutMode, PortableLayout, ReadyDocument,
         TEMPORARY_LICENSE_ACCESS_FILE, create_temporary_license_access, ensure_portable_config,
-        parse_ifconfig_lan_ips, random_access_code, studio_ready_messages,
+        parse_ifconfig_lan_ips, parse_startup_request, random_access_code, studio_ready_messages,
     };
     use novasight_config::YamlConfigRepository;
     use serde_yaml::Value;
@@ -865,6 +970,79 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn only_explicit_restart_requests_update_the_running_development_stack() {
+        assert_eq!(
+            parse_startup_request(&[]).unwrap(),
+            super::StartupRequest::Open
+        );
+        assert_eq!(
+            parse_startup_request(&["--restart".into()]).unwrap(),
+            super::StartupRequest::Restart
+        );
+        assert_eq!(
+            parse_startup_request(&["--quit".into()]).unwrap(),
+            super::StartupRequest::Quit
+        );
+        assert!(parse_startup_request(&["--restart".into(), "--restart".into()]).is_err());
+        assert!(parse_startup_request(&["--unknown".into()]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn existing_package_is_reused_only_when_its_local_daemon_is_reachable() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = TestRoot(
+            std::env::temp_dir().join(format!("novasight-launcher-reuse-{}", random_access_code())),
+        );
+        fs::create_dir_all(root.0.join("run")).unwrap();
+        let control = root.0.join("novasightctl");
+        fs::write(&control, "#!/bin/sh\ntest \"$1 $2\" = 'license status' && test \"$NOVASIGHT_CONTROL_SOCKET\" = \"${0%/*}/run/novasightd.sock\" && test ! -f daemon-unavailable\n").unwrap();
+        fs::set_permissions(&control, fs::Permissions::from_mode(0o755)).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        fs::write(
+            root.0.join(super::WEB_READY_FILE),
+            format!(r#"{{"address":"{address}","url":"http://{address}/"}}"#),
+        )
+        .unwrap();
+        let gateway = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = stream.read(&mut [0_u8; 256]);
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                    )
+                    .unwrap();
+            }
+        });
+        let layout = PortableLayout::new(
+            LayoutMode::Package,
+            root.0.clone(),
+            root.0.join("novasightd"),
+            root.0.join("novasight-web"),
+            control,
+        );
+        assert_eq!(
+            super::existing_studio(&layout)
+                .await
+                .unwrap()
+                .unwrap()
+                .address,
+            address.to_string()
+        );
+        fs::write(root.0.join("daemon-unavailable"), "").unwrap();
+        assert!(super::existing_studio(&layout).await.is_err());
+        gateway.join().unwrap();
+        fs::remove_file(root.0.join("daemon-unavailable")).unwrap();
+        fs::remove_file(&layout.web_ready_file).unwrap();
+        assert!(super::existing_studio(&layout).await.is_err());
     }
 
     #[test]
