@@ -780,8 +780,6 @@ export function StudioConsoleView({
   }, []);
   const [configSchema, setConfigSchema] = useState<ConfigSchemaResponse | null>(null);
   const [configDialogDirty, setConfigDialogDirty] = useState(false);
-  const [configDialogSaving, setConfigDialogSaving] = useState(false);
-  const dialogSaving = configDialogSaving;
   const [parameterPageDirty, setParameterPageDirty] = useState(false);
   const [parameterPageSaving, setParameterPageSaving] = useState(false);
   const [dialogSaveError, setDialogSaveError] = useState<string | null>(null);
@@ -835,7 +833,6 @@ export function StudioConsoleView({
   );
   const classConfigDialogRef = useRef<HTMLElement | null>(null);
   const errorCenterDialogRef = useRef<HTMLElement | null>(null);
-  const dialogSavingRef = useRef(false);
 
   const setConfigDialogVisibility = useCallback((dialog: ConfigDialogId, open: boolean) => {
     if (dialog === "class-config") setClassConfigDialogOpen(open);
@@ -925,7 +922,7 @@ export function StudioConsoleView({
   }, [applyConfigSchema]);
 
   const openConfigDialog = useCallback((dialog: ConfigDialogId) => {
-    if (dialogSavingRef.current || pendingConfigWritesRef.current > 0) {
+    if (parameterPageSaving || pendingConfigWritesRef.current > 0) {
       return;
     }
     const source = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfigLatestRef.current);
@@ -940,160 +937,23 @@ export function StudioConsoleView({
     setConfigDialogDirty(false);
     setDialogSaveError(null);
     setConfigDialogVisibility(dialog, true);
-  }, [setConfigDialogVisibility]);
+  }, [parameterPageSaving, setConfigDialogVisibility]);
 
-  const saveConfigDialog = useCallback(async (
-    dialog: ConfigDialogId,
-    physicalOutputAcknowledged = false
-  ) => {
-    if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
-      return;
-    }
-
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-      await Promise.resolve();
-    }
-
-    const rawDraft = configDraftRef.current;
-    const baseline = configDialogBaselineRef.current;
-    if (!rawDraft || !baseline || runtimeConfigsEqual(rawDraft, baseline)) {
-      configDraftRef.current = baseline ?? rawDraft;
-      setConfigDraft(baseline ?? rawDraft);
-      finishConfigDialog(dialog);
-      return;
-    }
-    const draft = dialog === "class-config" ? collapseClassProfiles(rawDraft) : rawDraft;
-
-    const outputIsActive = runtime?.presentation?.lifecycle?.can_stop === true
-      && (runtime?.vision?.control?.output_enabled === true
-        || readBoolean(asRecord((runtimeConfigLatestRef.current ?? baseline).control).output_enabled, false));
-    if (outputIsActive && !physicalOutputAcknowledged) {
-      setConfirmationRequest({
-        eyebrow: "应用参数",
-        title: "物理输出仍开启，确认应用这些设置？",
-        description: "保存后会立即更新当前运行参数，设备的控制量可能随之改变。取消后修改会继续保留在当前窗口。",
-        details: ["如需先暂停设备，请取消并回到首页关闭运行。"],
-        confirmLabel: "确认保存并应用",
-        danger: true,
-        onConfirm: () => saveConfigDialog(dialog, true)
-      });
-      return;
-    }
-
-    let dialogChanges: ParameterPageFieldChange[];
-    let preservedPageChanges: ParameterPageFieldChange[] = [];
-    try {
-      dialogChanges = parameterPageFieldChanges(baseline, draft);
-      const pageBaseline = parameterPageBaselineRef.current;
-      if (pageBaseline) {
-        const dialogKeys = new Set(dialogChanges.map((change) => `${change.section}.${change.key}`));
-        preservedPageChanges = parameterPageFieldChanges(pageBaseline, baseline)
-          .filter((change) => !dialogKeys.has(`${change.section}.${change.key}`));
-      }
-    } catch (error) {
-      setDialogSaveError(getErrorMessage(error));
-      return;
-    }
-
-    dialogSavingRef.current = true;
-    setConfigDialogSaving(true);
-    setDialogSaveError(null);
-    beginPendingConfigWrite();
-    try {
-      const canonical = cloneRuntimeConfig(runtimeConfigLatestRef.current);
-      if (!canonical) {
-        throw new Error("尚未读取运行配置。");
-      }
-      const payload = preserveOutputGate(
-        applyParameterPageFieldChanges(canonical, dialogChanges),
-        canonical
-      );
-      payload.revision = canonical.revision;
-      const request = configWriteQueueRef.current.then(() =>
-        updateRuntimeConfig(payload, physicalOutputAcknowledged)
-      );
-      configWriteQueueRef.current = request.then(() => undefined, () => undefined);
-      const result = await request;
-      if (!result.applied) {
-        throw new Error(result.message || "后端未确认这些设置已经生效。");
-      }
-      const applied = normalizeRuntimeConfig(result.config);
-      finalizeRuntimeConfigWrite(applied);
-      if (preservedPageChanges.length > 0) {
-        const remaining = applyParameterPageFieldChanges(applied, preservedPageChanges);
-        remaining.revision = applied.revision;
-        parameterPageBaselineRef.current = applied;
-        configDraftRef.current = remaining;
-        setConfigDraft(remaining);
-        setParameterPageDirtyState(true);
-      } else {
-        parameterPageBaselineRef.current = null;
-        setParameterPageDirtyState(false);
-      }
-      finishConfigDialog(dialog);
-      reportSuccess(
-        "设置已保存并应用",
-        result.restart_required
-          ? "运行参数已写入；进程级基础配置将在下次启动时接管。"
-          : "后端已确认当前运行配置更新完成。",
-        "config-dialog"
-      );
-    } catch (error) {
-      const message = getErrorMessage(error);
-      setDialogSaveError(message);
-      reportError(error, {
-        source: "config-dialog",
-        title: "设置应用失败",
-        publicDetail: message,
-        popup: false
-      });
-    } finally {
-      finishPendingConfigWrite();
-      dialogSavingRef.current = false;
-      setConfigDialogSaving(false);
-    }
-  }, [
-    beginPendingConfigWrite,
-    finalizeRuntimeConfigWrite,
-    finishConfigDialog,
-    finishPendingConfigWrite,
-    runtime,
-    setParameterPageDirtyState
-  ]);
-
+  // Closing the editor keeps changes in the shared parameter draft. Only the
+  // parameter-page save writes to the device, so closing never discards edits.
   const requestDismissConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
-    if (dialogSavingRef.current || activeConfigDialogRef.current !== dialog) {
-      return;
-    }
-
+    if (activeConfigDialogRef.current !== dialog) return;
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
       await Promise.resolve();
     }
-
     const draft = configDraftRef.current;
     const baseline = configDialogBaselineRef.current;
-    if (!draft || !baseline || runtimeConfigsEqual(draft, baseline)) {
-      configDraftRef.current = baseline ?? draft;
-      setConfigDraft(baseline ?? draft);
-      finishConfigDialog(dialog);
-      return;
+    if (draft && baseline && !runtimeConfigsEqual(draft, baseline)) {
+      stageParameterPageDraft(collapseClassProfiles(draft));
     }
-
-    setConfirmationRequest({
-      eyebrow: "未保存修改",
-      title: "关闭并放弃本次修改？",
-      description: "当前窗口内的修改尚未保存。确认后会丢弃这些修改；参数页已有的未保存修改不受影响。",
-      confirmLabel: "放弃弹窗修改",
-      danger: true,
-      onConfirm: () => {
-        configDraftRef.current = baseline;
-        setConfigDraft(baseline);
-        finishConfigDialog(dialog);
-      }
-    });
-  }, [finishConfigDialog]);
+    finishConfigDialog(dialog);
+  }, [finishConfigDialog, stageParameterPageDraft]);
 
   const confirmPendingAction = useCallback(async () => {
     const request = confirmationRequest;
@@ -1127,16 +987,8 @@ export function StudioConsoleView({
   }, [confirmationRequest]);
 
   const requestClearErrorHistory = useCallback(() => {
-    const ids = errorNotices.map((notice) => notice.id);
-    if (ids.length === 0) return;
-    setConfirmationRequest({
-      eyebrow: "异常信息",
-      title: "清空历史错误记录？",
-      description: `将清除当前看到的 ${ids.length} 条历史记录，清除后无法恢复；仍在发生的运行故障会继续显示。`,
-      confirmLabel: "确认清空历史",
-      danger: true,
-      onConfirm: () => clearErrorNotices(ids)
-    });
+    // These are ephemeral browser-session notices, not the server activity log.
+    clearErrorNotices(errorNotices.map((notice) => notice.id));
   }, [clearErrorNotices, errorNotices]);
 
   const stageConfigDialogDraft = useCallback((next: RuntimeConfig) => {
@@ -1209,7 +1061,9 @@ export function StudioConsoleView({
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!parameterPageDirtyRef.current && !modelDraftDirtyRef.current) {
+      const classDraftDirty = activeConfigDialogRef.current !== null
+        && !runtimeConfigsEqual(configDialogBaselineRef.current, configDraftRef.current);
+      if (!parameterPageDirtyRef.current && !modelDraftDirtyRef.current && !classDraftDirty) {
         return;
       }
       event.preventDefault();
@@ -1254,9 +1108,7 @@ export function StudioConsoleView({
     const focusFrame = window.requestAnimationFrame(() => classConfigDialogRef.current?.focus());
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (!dialogSavingRef.current) {
-          void requestDismissConfigDialog("class-config");
-        }
+        void requestDismissConfigDialog("class-config");
       } else {
         trapDialogTabKey(event, classConfigDialogRef.current);
       }
@@ -3225,36 +3077,27 @@ export function StudioConsoleView({
     }
   };
 
-  const requestMoveModelEngine = (fromPath: string, toPath: string) => {
-    setConfirmationRequest({
-      eyebrow: "整理模型文件",
-      title: "确认移动或改名模型文件？",
-      description: "这会改变设备上未登记 Engine 的文件路径；不会加载模型或切换当前部署。",
-      details: [`原位置：${fromPath}`, `新位置：${toPath}`],
-      confirmLabel: "确认更改文件路径",
-      onConfirm: async () => {
-        setBusy("model.file.move");
-        setLocalError(null);
-        let moved = false;
-        try {
-          await moveCatalogEngine(fromPath, toPath);
-          moved = true;
-          const result = await getModelCatalog(true);
-          applyModelCatalogResult(result);
-          setSelectedModelCatalogPath(toPath);
-          setModelCatalogMessage(`模型文件已移至 ${toPath}；当前部署未改变。`);
-        } catch (error) {
-          const message = moved
-            ? `文件已移动，但列表刷新失败：${getErrorMessage(error)}。请点击“刷新模型”重新读取。`
-            : `模型文件移动失败：${getErrorMessage(error)}`;
-          setLocalError(message);
-          reportError(error, { source: "model-file-move", title: moved ? "模型目录刷新失败" : "模型文件移动失败", publicDetail: getErrorMessage(error), popup: false });
-          if (!moved) throw error;
-        } finally {
-          setBusy(null);
-        }
-      }
-    });
+  const requestMoveModelEngine = async (fromPath: string, toPath: string) => {
+    setBusy("model.file.move");
+    setLocalError(null);
+    let moved = false;
+    try {
+      await moveCatalogEngine(fromPath, toPath);
+      moved = true;
+      const result = await getModelCatalog(true);
+      applyModelCatalogResult(result);
+      setSelectedModelCatalogPath(toPath);
+      setModelCatalogMessage(`模型文件已移至 ${toPath}；当前部署未改变。`);
+    } catch (error) {
+      const message = moved
+        ? `文件已移动，但列表刷新失败：${getErrorMessage(error)}。请刷新模型列表，不要重复移动。`
+        : `模型文件移动失败：${getErrorMessage(error)}`;
+      setLocalError(message);
+      reportError(error, { source: "model-file-move", title: moved ? "模型目录刷新失败" : "模型文件移动失败", publicDetail: message, popup: false });
+      if (!moved) throw error;
+    } finally {
+      setBusy(null);
+    }
   };
 
   const requestSaveModelMetadata = (recommendation: ModelRecommendation, tags: string[]) => {
@@ -4131,7 +3974,7 @@ export function StudioConsoleView({
               </span>
               <div aria-live="polite" role="status">
                 <b>有未应用的修改</b>
-                <small>确认后一次保存所有修改，不会改变首页总开关。</small>
+                <small>一次保存所有修改，不会改变首页总开关。</small>
               </div>
               <div className="parameter-save-bar-actions">
                 <button
@@ -4311,7 +4154,7 @@ export function StudioConsoleView({
                   <button
                     type="button"
                     className="console-button"
-                    disabled={configDialogSaving}
+                    disabled={parameterPageSaving}
                     onClick={() => openConfigDialog("class-config")}
                   >
                     <NovaIcon name="settings" size={16} />
@@ -4573,13 +4416,12 @@ export function StudioConsoleView({
         <div
           className="class-config-dialog-layer"
           onClick={(event) => {
-            if (event.target === event.currentTarget && !dialogSaving) {
+            if (event.target === event.currentTarget) {
               void requestDismissConfigDialog("class-config");
             }
           }}
         >
           <section
-            aria-busy={dialogSaving}
             aria-labelledby="class-config-dialog-title"
             aria-modal="true"
             className="class-config-dialog"
@@ -4596,9 +4438,8 @@ export function StudioConsoleView({
               <button type="button"
                 aria-label="关闭类别配置"
                 className="launch-dialog-close"
-                disabled={dialogSaving}
                 onClick={() => void requestDismissConfigDialog("class-config")}
-                title={configDialogDirty ? "关闭并放弃本弹窗修改" : "关闭"}
+                title="返回参数页，保留修改"
               >
                 <NovaIcon name="x-circle" size={18} />
               </button>
@@ -4606,7 +4447,6 @@ export function StudioConsoleView({
 
             <div
               className="class-config-dialog-layout"
-              {...({ inert: dialogSaving ? "" : undefined } as { inert?: string })}
             >
               <div className="class-config-workspace class-point-workspace-shell">
                 <TargetClassEditor
@@ -4614,7 +4454,7 @@ export function StudioConsoleView({
                   weights={Object.fromEntries(classEditorIds.map((id) => [id, parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? 0]))}
                   xs={parseClassValues(rustPipelineConfig.target_class_aim_x_ratios)}
                   ys={parseClassValues(rustPipelineConfig.target_class_aim_y_ratios)}
-                  defaultY={rustOtherAimRatio} disabled={dialogSaving}
+                  defaultY={rustOtherAimRatio} disabled={false}
                   onPoint={(id, x, y) => updateClassValues(id, { target_class_aim_x_ratios: x, target_class_aim_y_ratios: y })}
                   onWeight={(id, weight) => updateClassValues(id, { target_class_weights: weight })}
                   onToggle={(id) => void toggleDetectionClass(id)}
@@ -4624,21 +4464,12 @@ export function StudioConsoleView({
             </div>
 
             <footer className="class-config-dialog-footer">
-              <span className={dialogSaveError ? "dialog-save-status error" : configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
-                {dialogSaving
-                  ? "正在保存并应用类别配置…"
-                  : dialogSaveError
-                    ? `处理失败 · ${dialogSaveError}`
-                    : configDialogDirty
-                      ? "有未保存修改 · 保存后会直接写入设备并应用。"
-                      : "未修改 · 使用单一目标配置"}
+              <span className={configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
+                关闭后保留修改，回到参数页统一保存；尚未写入设备。
               </span>
-              <button type="button"
-                className={`console-button ${configDialogDirty ? "primary dialog-save-button" : "dialog-close-button"}`}
-                disabled={dialogSaving}
-                onClick={() => void saveConfigDialog("class-config")}
-              >
-                {configDialogDirty ? "保存并应用" : "关闭"}
+              <button type="button" className="console-button primary"
+                onClick={() => void requestDismissConfigDialog("class-config")}>
+                完成编辑
               </button>
             </footer>
           </section>

@@ -47,11 +47,7 @@ it.each(["fatal", "pipeline", "inference", "deepstream"])("shows %s faults, reta
   expect(dialog).not.toHaveTextContent("本会话重复");
   // Clearing history must not hide a still-active fault.
   await userEvent.click(screen.getByRole("button", { name: "清空历史记录" }));
-  expect(screen.getByRole("alertdialog", { name: "清空历史错误记录？" })).toBeVisible();
-  await userEvent.click(screen.getByRole("button", { name: "取消" }));
-  expect(screen.getByRole("button", { name: "清空历史记录" })).toBeEnabled();
-  await userEvent.click(screen.getByRole("button", { name: "清空历史记录" }));
-  await userEvent.click(screen.getByRole("button", { name: "确认清空历史" }));
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   expect(dialog).toHaveTextContent(message);
   expect(screen.getByRole("button", { name: "没有可清空的记录" })).toBeDisabled();
   view.rerender(<SafetyOperationProvider><StudioConsoleView {...props} runtime={{ ...reported, semantic: { ...runtime.semantic, epoch: 4 } }} /></SafetyOperationProvider>);

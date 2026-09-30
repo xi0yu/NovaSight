@@ -557,7 +557,7 @@ test("an empty model library creates a folder and reads it back without switchin
   expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => document.body.clientWidth));
 });
 
-test("model file move requires confirmation and reads back the new path", async ({ page }) => {
+test("model file move saves directly and reads back the new path", async ({ page }) => {
   await mockStudioApi(page);
   let moved = false;
   let publishRequests = 0;
@@ -585,10 +585,9 @@ test("model file move requires confirmation and reads back the new path", async 
   await page.getByRole("button", { name: "移动或改名文件" }).click();
   await page.getByRole("textbox", { name: "新文件名（.engine）" }).fill("renamed");
   await page.getByRole("combobox", { name: "移到文件夹" }).selectOption("Arena");
-  await page.getByRole("button", { name: "检查并确认" }).click();
-  await expect(page.getByRole("alertdialog", { name: "确认移动或改名模型文件？" })).toBeVisible();
   expect(moved).toBe(false);
-  await page.getByRole("button", { name: "确认更改文件路径" }).click();
+  await page.getByRole("button", { name: "保存文件位置" }).click();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
   await expect(page.getByText("模型文件已移至 Arena/renamed.engine；当前部署未改变。")).toBeVisible();
   await expect(page.getByRole("button", { name: /renamed.engine，路径 Arena\/renamed.engine/ })).toBeVisible();
   expect(publishRequests).toBe(0);
@@ -610,12 +609,11 @@ test("rejected model file move keeps the draft, explains the reason, and retains
   await page.getByRole("button", { name: /model.engine，路径 model.engine/ }).click();
   await page.getByRole("button", { name: "移动或改名文件" }).click();
   await page.getByRole("textbox", { name: "新文件名（.engine）" }).fill("new");
-  await page.getByRole("button", { name: "检查并确认" }).click();
-  await page.getByRole("button", { name: "确认更改文件路径" }).click();
-  await expect(page.getByRole("alertdialog", { name: "确认移动或改名模型文件？" })).toContainText("这个模型已登记或带有验证文件，不能直接移动");
+  await page.getByRole("button", { name: "保存文件位置" }).click();
+  await expect(page.locator(".model-file-organize")).toContainText("这个模型已登记或带有验证文件，不能直接移动");
   await expect(page.getByRole("button", { name: /model.engine，路径 model.engine/ })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "新文件名（.engine）" })).toHaveValue("new");
-  await page.getByRole("alertdialog", { name: "确认移动或改名模型文件？" }).getByRole("button", { name: "取消" }).click();
+  await page.locator(".model-file-organize").getByRole("button", { name: "取消" }).click();
   await page.getByRole("button", { name: /^查看异常信息/ }).click();
   const errorCenter = page.getByRole("dialog", { name: "异常信息" });
   const moveError = errorCenter.getByRole("article").filter({ hasText: "模型文件移动失败" });

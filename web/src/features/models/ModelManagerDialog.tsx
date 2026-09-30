@@ -76,7 +76,7 @@ export function ModelManagerDialog({
             <div>
               <span className="class-config-eyebrow">模型管理</span>
               <h2 id="model-manager-dialog-title">模型库</h2>
-              <p>查找并整理设备上的模型文件；只有确认切换才会影响推理。</p>
+              <p>查找并整理设备上的模型文件；浏览不会加载模型，部署才会改变当前选择。</p>
             </div>
           </div>
           <div className={`model-manager-active-pill ${activeFile ? "" : "inactive"}`}>

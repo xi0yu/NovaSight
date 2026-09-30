@@ -193,12 +193,15 @@ export function useModelSwitchWorkflow({
     setModelDetailsRefreshKey
   ]);
 
+  const switchingRef = useRef(false);
   const performSwitch = useCallback(async (physicalOutputAcknowledged = false) => {
+    if (switchingRef.current) return;
     const model = selectedCatalogModel;
     if (!model || model.kind !== "engine") {
       setLocalError("请选择 TensorRT engine 产物。");
       return;
     }
+    switchingRef.current = true;
     setBusy("model.switch");
     setLocalError(null);
     setMessage("");
@@ -264,6 +267,7 @@ export function useModelSwitchWorkflow({
       reportError(err, { source: "model-switch", title: "模型切换结果未确认", popup: false });
       try { await onRefresh(); } catch { /* Keep the original operation error visible in the dialog. */ }
     } finally {
+      switchingRef.current = false;
       setBusy(null);
     }
   }, [
@@ -282,6 +286,10 @@ export function useModelSwitchWorkflow({
     const model = selectedCatalogModel;
     if (!model || model.kind !== "engine") {
       setLocalError("请选择 TensorRT engine 产物。");
+      return;
+    }
+    if (!runtimeMainlineRunning && !physicalOutputEnabled && typeof model.project_id === "number" && typeof model.artifact_id === "number") {
+      void performSwitch(false);
       return;
     }
     const candidatePath = model.relative_path;

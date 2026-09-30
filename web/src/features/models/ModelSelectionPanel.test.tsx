@@ -383,7 +383,7 @@ describe("ModelSelectionPanel", () => {
     await userEvent.clear(screen.getByRole("textbox", { name: "新文件名（.engine）" }));
     await userEvent.type(screen.getByRole("textbox", { name: "新文件名（.engine）" }), "renamed");
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "移到文件夹" }), "Arena");
-    await userEvent.click(screen.getByRole("button", { name: "检查并确认" }));
+    await userEvent.click(screen.getByRole("button", { name: "保存文件位置" }));
     expect(onRequestMove).toHaveBeenCalledWith("stable.engine", "Arena/renamed.engine");
     expect(onSwitch).not.toHaveBeenCalled();
   });

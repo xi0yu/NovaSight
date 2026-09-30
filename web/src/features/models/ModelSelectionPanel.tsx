@@ -95,7 +95,7 @@ export interface ModelSelectionPanelProps {
   onParserPresetChange: (preset: ParserPresetId) => void;
   onRefresh: () => void;
   onCreateFolder: (relativePath: string) => Promise<void>;
-  onRequestMove: (fromPath: string, toPath: string) => void;
+  onRequestMove: (fromPath: string, toPath: string) => Promise<void> | void;
   onSelectModel: (model: ModelCatalogModel) => void;
   onSaveMetadata: (recommendation: ModelRecommendation, tags: string[]) => void;
   onSwitch: () => void;
@@ -150,6 +150,8 @@ export function ModelSelectionPanel({
   const [moveName, setMoveName] = useState("");
   const [moveFolder, setMoveFolder] = useState("");
   const [moveError, setMoveError] = useState<string | null>(null);
+  const movePendingRef = useRef(false);
+  const [movePending, setMovePending] = useState(false);
   const folderChosenRef = useRef(false);
   const previousSelectedPathRef = useRef(selectedPath);
   const [searchTerm, setSearchTerm] = useState("");
@@ -318,8 +320,8 @@ export function ModelSelectionPanel({
     chooseFolder(model.relative_path.split("/").slice(0, -1).join("/"));
     onSelectModel(model);
   };
-  const requestMove = () => {
-    if (!selectedModel || selectedModel.kind !== "engine" || selectedModel.artifact_id != null || selectedIsActive || busy !== null || metadataDirty || pendingTagIsNew) return;
+  const requestMove = async () => {
+    if (movePendingRef.current || !selectedModel || selectedModel.kind !== "engine" || selectedModel.artifact_id != null || selectedIsActive || busy !== null || metadataDirty || pendingTagIsNew) return;
     const stem = moveName.trim();
     if (!stem || stem === "." || stem === ".." || stem.includes("/") || stem.includes("\\")) {
       setMoveError("请输入不含路径分隔符的模型名称。");
@@ -331,7 +333,17 @@ export function ModelSelectionPanel({
       return;
     }
     setMoveError(null);
-    onRequestMove(selectedModel.relative_path, toPath);
+    movePendingRef.current = true;
+    setMovePending(true);
+    try {
+      await onRequestMove(selectedModel.relative_path, toPath);
+      setMoveOpen(false);
+    } catch (error) {
+      setMoveError(getErrorMessage(error));
+    } finally {
+      movePendingRef.current = false;
+      setMovePending(false);
+    }
   };
   return (
     <div className="model-selection-panel">
@@ -544,7 +556,7 @@ export function ModelSelectionPanel({
               {switchLabel}
             </button>
             {selectedModel?.kind === "engine" ? <small>
-              {selectedIsActive ? "当前部署不会重复发布；装载状态请看页面顶部。" : canSwitch ? "运行中切换会先征求确认；失败时保留原因并尝试回滚。" : "当前文件暂不可切换；请检查文件类型和模型状态。"}
+              {selectedIsActive ? "当前部署不会重复发布；装载状态请看页面顶部。" : canSwitch ? "已登记模型在停机时直接部署；运行中切换仍会确认，失败时保留原因并尝试回滚。" : "当前文件暂不可切换；请检查文件类型和模型状态。"}
             </small> : null}
           </div>
           {selectedModel?.kind === "engine" ? <section className="model-file-organize" aria-label="整理模型文件位置">
@@ -552,15 +564,15 @@ export function ModelSelectionPanel({
             <button className="console-button secondary" disabled={busy !== null || metadataDirty || pendingTagIsNew || selectedModel.artifact_id != null || selectedIsActive || selectionHiddenByFilter}
               onClick={() => { setMoveName(selectedModel.name.replace(/\.engine$/i, "")); setMoveFolder(selectedModel.relative_path.split("/").slice(0, -1).join("/")); setMoveOpen((open) => !open); setMoveError(null); }}
               type="button">移动或改名文件</button>
-            {moveOpen ? <form className="model-folder-create" onSubmit={(event) => { event.preventDefault(); requestMove(); }}>
+            {moveOpen ? <form className="model-folder-create" onSubmit={(event) => { event.preventDefault(); void requestMove(); }}>
               <label htmlFor={moveNameId}>新文件名（.engine）</label>
               <input id={moveNameId} maxLength={200} onChange={(event) => { setMoveName(event.target.value); setMoveError(null); }} value={moveName} />
               <label htmlFor={moveFolderId}>移到文件夹</label>
               <select id={moveFolderId} onChange={(event) => { setMoveFolder(event.target.value); setMoveError(null); }} value={moveFolder}>
                 {folderOptions.map((path) => <option key={path} value={path}>{path || "全部文件夹"}</option>)}
               </select>
-              <div><button className="console-button primary" type="submit">检查并确认</button><button className="console-button secondary" onClick={() => setMoveOpen(false)} type="button">取消</button></div>
-              {moveError ? <p role="alert">{moveError}</p> : <small>只移动未登记且没有清单文件的 Engine；确认后才会更改设备文件。</small>}
+              <div><button className="console-button primary" disabled={movePending || busy !== null} type="submit">{movePending ? "正在移动…" : "保存文件位置"}</button><button className="console-button secondary" disabled={movePending} onClick={() => setMoveOpen(false)} type="button">取消</button></div>
+              {moveError ? <p role="alert">{moveError}</p> : <small>保存即更改所选文件的路径，不覆盖同名文件，也不切换当前模型。</small>}
             </form> : null}
           </section> : null}
           {selectedModel ? <dl className="model-selection-key-facts">
@@ -620,7 +632,7 @@ export function ModelSelectionPanel({
                     <option value="yolo11">YOLO v11 解析格式</option>
                     <option value="novasight_generic">NovaSight 通用解析器（内置）</option>
                   </select>
-                  <small>目录浏览不加载 Engine；确认切换后才验证真实输入输出。</small>
+                  <small>目录浏览不加载 Engine；点击部署后才验证真实输入输出。</small>
                 </dd>
               </div>
             </dl>

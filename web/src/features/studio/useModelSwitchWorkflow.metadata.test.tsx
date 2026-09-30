@@ -2,7 +2,6 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 
 import type { ModelCatalogModel, ModelCatalogResponse } from "../../api";
-import type { ActionConfirmationRequest } from "./ActionConfirmationDialog";
 import { useModelSwitchWorkflow } from "./useModelSwitchWorkflow";
 
 const api = vi.hoisted(() => ({
@@ -53,9 +52,9 @@ it("keeps the confirmed publish result if only refreshing the page fails", async
     selectedCatalogModel: { type: "model", name: "demo.engine", relative_path: "demo.engine", kind: "engine", size_bytes: 1, scan_status: "ready", scan_reason: "", recommendation: "unrated", tags: [], project_id: 1, artifact_id: 2 },
     setBusy: vi.fn(), setConfirmationRequest, setLocalError: vi.fn(), setModelCatalogMessage: vi.fn(), setModelCatalogRefreshKey: vi.fn(), setModelDetailsRefreshKey: vi.fn(), setModelManagerDialogOpen: vi.fn(), setSelectedModelArtifactId: vi.fn(), setSelectedModelProjectId: vi.fn(), setSelectedModelVersionId: vi.fn(),
   }));
-  act(() => result.current.switchModel());
-  const confirmation = setConfirmationRequest.mock.calls[0][0] as ActionConfirmationRequest;
-  await act(async () => { await confirmation.onConfirm(); });
+  await act(async () => { result.current.switchModel(); result.current.switchModel(); });
+  expect(api.publishModel).toHaveBeenCalledTimes(1);
+  expect(setConfirmationRequest).not.toHaveBeenCalled();
   expect(result.current.dialogStatus).toBe("success");
   expect(result.current.progressDetail).toContain("最新状态读取失败");
   expect(result.current.completedStages).toBe(3);

@@ -413,6 +413,20 @@ it("shows one target-class configuration without profile management", async () =
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
   expect(within(dialog).queryByText("配置文件")).not.toBeInTheDocument();
   expect(within(dialog).queryByRole("button", { name: /删除类别配置/ })).not.toBeInTheDocument();
+  await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
+  const unload = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(unload);
+  expect(unload.defaultPrevented).toBe(true);
+  fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "保存并应用" })).toBeEnabled();
+  const navigation = screen.getByRole("navigation", { name: "NovaSight Studio 导航" });
+  await userEvent.click(within(navigation).getByRole("button", { name: "首页" }));
+  await userEvent.click(within(navigation).getByRole("button", { name: "算法参数" }));
+  await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
+  expect(screen.getByRole("textbox", { name: "cls 0 垂直位置 数值" })).toHaveValue("50");
+  expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
 });
 
 it("saves a class aim-point edit without reporting unsupported control.aim", async () => {
@@ -441,7 +455,9 @@ it("saves a class aim-point edit without reporting unsupported control.aim", asy
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
   await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
-  await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "完成编辑" }));
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "保存并应用" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "编辑目标类别" })).not.toBeInTheDocument());
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({ pipeline: { target_class_aim_x_ratios: "0:0.5", target_class_aim_y_ratios: "0:0.5" }, control: { output_enabled: false } });
@@ -471,7 +487,9 @@ it("collapses legacy class profiles into one configuration when saving", async (
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
   await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
-  await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
+  await userEvent.click(within(dialog).getByRole("button", { name: "完成编辑" }));
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "保存并应用" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "编辑目标类别" })).not.toBeInTheDocument());
   expect(submitted).toMatchObject({
     revision: 25,
@@ -489,7 +507,7 @@ it("collapses legacy class profiles into one configuration when saving", async (
   expect(new Headers(writes[0][1]?.headers).get("x-novasight-physical-output-ack")).toBeNull();
 });
 
-it("retains a rejected class edit inside the dialog", async () => {
+it("retains a rejected class edit in the shared page draft", async () => {
   const configured = { ...props.runtimeConfig,
     inference: { detection_class_profile: "default", detection_class_profiles: { default: ["enemy"] } },
     control: { ...props.runtimeConfig.control, aim: { class_roles: { default: {} } } },
@@ -505,10 +523,13 @@ it("retains a rejected class edit inside the dialog", async () => {
   await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
   const dialog = screen.getByRole("dialog", { name: "编辑目标类别" });
   await userEvent.click(within(dialog).getByRole("button", { name: "中心" }));
-  await userEvent.click(within(dialog).getByRole("button", { name: "保存并应用" }));
-  await waitFor(() => expect(within(dialog).getByText(/invalid class role/)).toBeVisible());
-  expect(dialog).toBeVisible();
-  expect(within(dialog).getByRole("button", { name: "保存并应用" })).toBeEnabled();
+  await userEvent.click(within(dialog).getByRole("button", { name: "完成编辑" }));
+  expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "保存并应用" }));
+  await waitFor(() => expect(screen.getByText(/参数保存失败：.*invalid class role/)).toBeVisible());
+  expect(screen.getByRole("button", { name: "保存并应用" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
+  expect(screen.getByRole("dialog", { name: "编辑目标类别" })).toBeVisible();
 });
 
 it("applies response timing, trigger delay and output-limit edits from the same page save", async () => {
