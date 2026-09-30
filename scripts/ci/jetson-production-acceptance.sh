@@ -124,7 +124,6 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 pnpm --dir web install --frozen-lockfile
-pnpm --dir web typecheck
 pnpm --dir web test:unit:ci
 pnpm --dir web visual:audit
 pnpm --dir web build

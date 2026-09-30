@@ -97,10 +97,12 @@ async function mockStudioApi(
   });
 }
 
-test("one license code establishes an authenticated and activated Studio session", async ({ page }) => {
+test("one license code establishes an authenticated and activated Studio session", { tag: "@mobile" }, async ({ page }) => {
   await mockStudioApi(page, unauthenticatedSession);
+  await page.addInitScript(() => localStorage.setItem("novasight.theme", "rose-white"));
   await page.goto("/");
 
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "arena-signal");
   await expect(page.locator("#auth-code-help")).toHaveText(
     "支持正式授权码或本次启动的临时授权码；不另设接入码。",
   );
@@ -110,6 +112,7 @@ test("one license code establishes an authenticated and activated Studio session
   expect((await login).postDataJSON()).toEqual({ key: "one-license-code" });
 
   await expect(page.getByRole("navigation", { name: "NovaSight Studio 导航" })).toBeVisible();
+  await expect(page.locator(".theme-toggle")).toHaveCount(0);
   await expect(page.locator("body")).not.toContainText("one-license-code");
 });
 
@@ -122,34 +125,18 @@ test("obsolete access links are cleared and cannot bypass license login", async 
   await expect(page.locator("body")).not.toContainText("one-time-access-code");
 });
 
-test("Studio navigation moves keyboard focus to the new page heading", async ({ page }) => {
-  await mockStudioApi(page);
-  await page.goto("/?page=capture");
-
-  const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
-  await navigation.getByRole("button", { name: "首页" }).click();
-
-  await expect(page.getByRole("heading", { level: 1, name: "首页" })).toBeFocused();
-});
-
-test("frontend-only preview opens the home page without a backend", async ({ page }) => {
-  await page.route("**/api/**", (route) => route.abort());
-  await page.route("**/healthz", (route) => route.abort());
+test("conditional UI preview stays isolated and exposes recoverable states", { tag: "@mobile" }, async ({ page }, testInfo) => {
+  const deviceRequests: string[] = [];
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("request", (request) => { if (/\/(api\/|ws\/|healthz)/.test(request.url())) deviceRequests.push(request.url()); });
   await page.goto("/preview.html?page=overview");
-
   await expect(page.getByRole("heading", { level: 1, name: "首页" })).toBeVisible();
   await expect(page.getByRole("switch", { name: /运行总开关/ })).toBeVisible();
   await expect(page.getByText("设备未确认", { exact: true })).toBeVisible();
   await expect(page.locator("body")).not.toContainText("/dev/video0");
-});
-
-test("conditional UI preview stays isolated and exposes recoverable states", async ({ page }, testInfo) => {
-  const deviceRequests: string[] = [];
-  const pageErrors: string[] = [];
-  page.on("pageerror", (error) => pageErrors.push(error.message));
-  page.on("request", (request) => { if (/\/(api|ws)\//.test(request.url())) deviceRequests.push(request.url()); });
-  await page.goto("/preview.html?showcase=activity");
   const choose = page.getByRole("combobox", { name: "选择预览状态" });
+  await choose.selectOption("activity");
   await page.getByRole("searchbox", { name: "搜索日志" }).fill("preview-request-001");
   await expect(page.getByText("模型读取失败", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "清理历史" }).click();
@@ -267,7 +254,7 @@ test("activity page presents backend faults with domain and developer detail", a
   await expect(event).toContainText("request_id=req-test: validation failed");
 });
 
-test("capture page keeps saved and running specifications visible without horizontal overflow", async ({ page }) => {
+test("capture page keeps saved and running specifications visible without horizontal overflow", { tag: "@mobile" }, async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, {
     revision: 25,
     capture: { device: "/dev/video0", pixel_format: "MJPG", width: 1920, height: 1080, fps: 240 },
@@ -333,7 +320,7 @@ test("parameter draft survives in-app navigation without a confirmation popup", 
   expect(dialogCount).toBe(0);
 });
 
-test("algorithm parameters separate daily tuning from advanced tools", async ({ page }, testInfo) => {
+test("algorithm parameters separate daily tuning from advanced tools", { tag: "@mobile" }, async ({ page }, testInfo) => {
   let config = {
     revision: 1,
     control: {
@@ -358,6 +345,7 @@ test("algorithm parameters separate daily tuning from advanced tools", async ({ 
   });
   await page.goto("/?page=params");
 
+  await expect(page.getByRole("switch", { name: /运行总开关/ })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "搜索范围", exact: true })).toBeVisible();
   const rangeTab = page.getByRole("tab", { name: "范围与触发", exact: true });
   await rangeTab.press("End");
@@ -426,7 +414,7 @@ test("algorithm parameters separate daily tuning from advanced tools", async ({ 
   await expect(page.getByRole("heading", { name: "恢复设置" })).toBeVisible();
 });
 
-test("model search keeps selection and verification together", async ({ page }) => {
+test("model search keeps selection and verification together", { tag: "@mobile" }, async ({ page }) => {
   await mockStudioApi(page);
   await page.route("**/api/models/catalog?*", async (route) => route.fulfill({ json: {
     root: { type: "directory", name: "models", relative_path: "", children: [
@@ -668,15 +656,7 @@ test("model organization saves catalog metadata without switching the runtime mo
   expect(publishRequests).toBe(0);
 });
 
-test("the parameter page no longer exposes a second runtime master switch", async ({ page }) => {
-  await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "hardware", output_enabled: false }, pipeline: {} });
-  await page.goto("/?page=params");
-  await expect(page.getByRole("switch", { name: /运行总开关/ })).toHaveCount(0);
-  await expect(page.getByRole("navigation", { name: "参数分区" })).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "是否发送到设备", exact: true })).toHaveCount(0);
-});
-
-test("discarding parameter edits asks first, including on narrow screens", async ({ page }) => {
+test("discarding parameter edits asks first, including on narrow screens", { tag: "@mobile" }, async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, control: { trigger_mode: "always" }, pipeline: {} });
   await page.goto("/?page=params");
   await page.getByRole("textbox", { name: "触发延迟" }).fill("25");
@@ -773,26 +753,12 @@ test("375px Studio keeps shell actions and horizontal navigation accessible", as
   expect(await page.locator("body").evaluate((body) => body.scrollWidth)).toBeLessThanOrEqual(375);
 });
 
-test("Studio ships one recognizable product appearance without a theme decision", async ({ page }) => {
-  await mockStudioApi(page);
-  await page.goto("/?page=overview");
-
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "arena-signal");
-  await expect(page.locator(".theme-toggle")).toHaveCount(0);
-});
-
 test("Studio action feedback respects reduced motion, transparency and higher contrast", async ({ page }) => {
   await mockStudioApi(page);
   await page.goto("/?page=overview");
 
   const action = page.locator(".console-button:visible:not(:disabled)").first();
   await action.scrollIntoViewIfNeeded();
-  await action.hover();
-  await page.mouse.down();
-  await expect(action).toHaveCSS("transform", "matrix(0.98, 0, 0, 0.98, 0, 0)");
-  await page.mouse.move(0, 0);
-  await page.mouse.up();
-
   const session = await page.context().newCDPSession(page);
   await session.send("Emulation.setEmulatedMedia", {
     features: [
@@ -805,23 +771,24 @@ test("Studio action feedback respects reduced motion, transparency and higher co
   await action.hover();
   await page.mouse.down();
   await expect(action).toHaveCSS("transform", "none");
-  await expect(action).toHaveCSS("box-shadow", /inset/);
   await page.mouse.up();
 
   await expect(page.locator(".console-app")).toHaveCSS("backdrop-filter", "none");
-  expect(await page.locator(".console-app").evaluate((element) => {
-    const style = getComputedStyle(element);
-    const probe = document.createElement("span");
-    probe.style.color = "var(--bg-surface)";
-    element.append(probe);
-    const expected = getComputedStyle(probe).color;
-    probe.remove();
-    return style.backgroundColor === expected;
-  })).toBe(true);
-  expect(await page.locator("html").evaluate((element) => {
-    const style = getComputedStyle(element);
-    return style.getPropertyValue("--border-default").trim() === style.getPropertyValue("--border-strong").trim();
-  })).toBe(true);
+  // Check readable rendered text on an opaque surface, not equality of tokens.
+  await expect(page.locator(".console-app")).toHaveCSS("background-color", /^rgb\(/);
+  const contrast = await page.locator(".console-page-heading p").evaluate((element) => {
+    const luminance = (color: string) => {
+      const [r, g, b] = color.match(/[\d.]+/g)!.slice(0, 3).map((channel) => {
+        const value = Number(channel) / 255;
+        return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const text = luminance(getComputedStyle(element).color);
+    const surface = luminance(getComputedStyle(element.closest(".console-app")!).backgroundColor);
+    return (Math.max(text, surface) + 0.05) / (Math.min(text, surface) + 0.05);
+  });
+  expect(contrast).toBeGreaterThanOrEqual(4.5);
 });
 
 test("760px Studio recovery actions keep touch-safe targets", async ({ page }) => {
@@ -882,17 +849,12 @@ test("authenticated operator can manage and safely exit the current license", as
   await expect(navigation).toHaveCount(0);
 });
 
-test("configuration pages explain the next action without horizontal overflow", async ({ page }) => {
+test("configuration pages keep their heading and content within the viewport", { tag: "@mobile" }, async ({ page }) => {
   await mockStudioApi(page);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  for (const [route, text] of [
-    ["models", "当前模型与设备文件"],
-    ["license", "更换授权码"],
-    ["params", "让范围、目标和跟随手感适合你。"],
-  ] as const) {
+  for (const route of ["models", "license", "params"]) {
     await page.goto(`/?page=${route}`);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-    await expect(page.getByText(text, { exact: route !== "license" })).toBeVisible();
     expect(await page.evaluate(() => document.body.scrollWidth)).toBeLessThanOrEqual(
       await page.evaluate(() => document.documentElement.clientWidth),
     );

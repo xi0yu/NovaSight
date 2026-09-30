@@ -123,16 +123,13 @@ jobs:
       - name: Install locked dependencies
         run: pnpm --dir web install --frozen-lockfile
 
-      - name: Check Studio types
-        run: pnpm --dir web typecheck
-
-      - name: Run Studio unit and contract tests
+      - name: Run Studio function and component tests
         run: pnpm --dir web test:unit:ci
 
-      - name: Audit visual-system contracts
+      - name: Check icon registry and token contrast
         run: pnpm --dir web visual:audit
 
-      - name: Build Studio assets
+      - name: Type-check and build Studio assets
         run: pnpm --dir web build
 
       - name: Audit production dependencies

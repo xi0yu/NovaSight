@@ -24,7 +24,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-test("anonymous LAN browser sees the welcome journey and single-code entry", async ({ page }) => {
+test("anonymous LAN browser sees the welcome journey and single-code entry", { tag: "@mobile" }, async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "让视觉系统 准备好工作" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
@@ -41,12 +41,3 @@ test("rate-limited authentication gives one bounded recovery message", async ({ 
   await expect(page.getByRole("alert")).toContainText("请等待 60 秒");
   await expect(page.locator("body")).not.toContainText("not-a-real-code");
 });
-
-for (const savedTheme of ["rose-white", "graphite-red", "frontier-industrial"] as const) {
-  test(`${savedTheme} migrates to the product appearance before authentication paints`, async ({ page }) => {
-    await page.addInitScript((selectedTheme) => localStorage.setItem("novasight.theme", selectedTheme), savedTheme);
-    await page.goto("/");
-    await expect(page.locator("html")).toHaveAttribute("data-theme", "arena-signal");
-    await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
-  });
-}

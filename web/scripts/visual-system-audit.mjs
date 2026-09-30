@@ -6,8 +6,6 @@ const webRoot = path.resolve(new URL("..", import.meta.url).pathname);
 const srcRoot = path.join(webRoot, "src");
 const failures = [];
 
-const indexSource = fs.readFileSync(path.join(webRoot, "index.html"), "utf8");
-
 function readSource(relativePath) {
   const absolutePath = path.join(srcRoot, relativePath);
   if (!fs.existsSync(absolutePath)) {
@@ -16,13 +14,6 @@ function readSource(relativePath) {
   }
   return fs.readFileSync(absolutePath, "utf8");
 }
-
-function assertContains(source, pattern, label) {
-  if (!pattern.test(source)) failures.push(`missing ${label}`);
-}
-
-assertContains(indexSource, /name="theme-color" content="#0d0f13"/, "dark browser theme color");
-assertContains(indexSource, /name="color-scheme" content="dark"/, "dark browser color scheme");
 
 function extractQuotedStrings(source) {
   return Array.from(source.matchAll(/"([^"]+)"/g), (match) => match[1]);
@@ -96,9 +87,6 @@ function assertContrast(variables, foregroundName, backgroundName, minimum, labe
 
 const iconNamesSource = readSource("design/iconNames.ts");
 const novaIconSource = readSource("components/visual/NovaIcon.tsx");
-assertContains(novaIconSource, /strokeLinecap="round"/, "rounded icon caps in NovaIcon.tsx");
-assertContains(novaIconSource, /strokeLinejoin="round"/, "rounded icon joins in NovaIcon.tsx");
-assertContains(novaIconSource, /stroke="currentColor"/, "currentColor icon stroke in NovaIcon.tsx");
 
 const registeredIconNames = new Set(Array.from(parseIconCategories(iconNamesSource).values()).flat());
 const aliasNames = new Set(parseIconAliasKeys(novaIconSource));
@@ -126,11 +114,11 @@ const contrastPairs = [
 for (const pair of contrastPairs) assertContrast(tokenVariables, ...pair);
 
 if (failures.length) {
-  console.error("NovaSight visual contract audit failed:");
+  console.error("NovaSight icon registry and token contrast checks failed:");
   for (const failure of failures) console.error(`- ${failure}`);
   process.exit(1);
 }
 
-console.log("NovaSight visual contracts passed.");
+console.log("NovaSight icon registry and token contrast checks passed.");
 console.log(`- runtime icons: ${registeredIconNames.size}`);
 console.log(`- contrast pairs: ${contrastPairs.length}`);

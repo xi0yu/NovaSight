@@ -22,6 +22,9 @@ export default defineConfig({
     },
     {
       name: "mobile-safety",
+      // Repeat only width/touch-sensitive journeys; business-only and fixed-size
+      // cases already run in chromium. Tag new mobile coverage explicitly.
+      grep: /@mobile/,
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 375, height: 812 },
