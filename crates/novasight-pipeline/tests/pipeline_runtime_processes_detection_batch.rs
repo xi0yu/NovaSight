@@ -16,11 +16,8 @@ use novasight_pipeline::{
 #[derive(Debug)]
 struct ManualClock(AtomicU64);
 
-// These delivery/prediction fixtures keep their moving targets inside a broad
-// capsule. Dedicated no-target and capsule-exit cases verify suppression.
-fn broad_capsule_config() -> PipelineConfig {
+fn delivery_config() -> PipelineConfig {
     let mut config = PipelineConfig::default();
-    config.targeting.target_range_scale = 3.0;
     // Delivery fixtures isolate transport from the separately simulated entry ramp.
     config.control.entry_ramp_ms = 0.0;
     config
@@ -59,7 +56,7 @@ fn perception_failure_retires_pending_control_before_supervisor_cleanup() {
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            ..broad_capsule_config()
+            ..delivery_config()
         },
         clock,
         device.clone(),
@@ -96,7 +93,7 @@ fn suspended_control_gate_skips_targeting_until_reopened() {
     let (mut runtime, ingress) = PipelineRuntime::start_suspended(
         PipelineConfig {
             epoch,
-            ..broad_capsule_config()
+            ..delivery_config()
         },
         clock,
         pointer,
@@ -145,7 +142,7 @@ fn pipeline_runtime_drives_current_algorithms_and_device_on_owned_threads() {
     let pointer: Arc<dyn novasight_core::PointerDevice> = device.clone();
     let config = PipelineConfig {
         epoch,
-        ..broad_capsule_config()
+        ..delivery_config()
     };
     let (mut runtime, ingress) =
         PipelineRuntime::start(config, clock, pointer).expect("pipeline starts");
@@ -213,7 +210,7 @@ fn smooth_detection_motion_keeps_one_identity_through_control_and_device_output(
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            ..broad_capsule_config()
+            ..delivery_config()
         },
         daemon_clock,
         pointer,
@@ -279,7 +276,7 @@ fn live_prediction_config_update_reaches_running_control_worker() {
         Arc::new(RecordingPointerDevice::default());
     let mut config = PipelineConfig {
         epoch,
-        ..broad_capsule_config()
+        ..delivery_config()
     };
     config.control.prediction_enabled = true;
     config.control.prediction_lead_ms = 0.0;
@@ -311,7 +308,8 @@ fn live_prediction_config_update_reaches_running_control_worker() {
     let before = runtime.metrics().control;
     assert_eq!(before.history_position_count, 4);
     assert_eq!(before.prediction_lead_ms, 0.0);
-    assert!((before.prediction_horizon_ms - 50.0).abs() < 1e-6);
+    // Real frame age + calibrated actuation delay, not a minimum one-frame lead.
+    assert!((before.prediction_horizon_ms - 12.0).abs() < 1e-6);
 
     let mut live = PipelineLiveConfig::from(&config);
     live.control.prediction_lead_ms = 40.0;
@@ -356,7 +354,7 @@ fn detection_telemetry_is_bounded_without_dropping_the_runtime_batch() {
         Arc::new(RecordingPointerDevice::default());
     let config = PipelineConfig {
         epoch,
-        ..broad_capsule_config()
+        ..delivery_config()
     };
     let (mut runtime, ingress) =
         PipelineRuntime::start(config, clock, pointer).expect("pipeline starts");
@@ -400,7 +398,7 @@ fn pipeline_hot_trigger_mode_blocks_until_trigger_is_explicitly_active() {
         PipelineConfig {
             epoch,
             trigger_mode: TriggerMode::Always,
-            ..broad_capsule_config()
+            ..delivery_config()
         },
         clock,
         pointer,
@@ -451,6 +449,59 @@ fn pipeline_hot_trigger_mode_blocks_until_trigger_is_explicitly_active() {
 }
 
 #[test]
+fn device_lane_rechecks_capture_age_even_when_command_is_latest() {
+    struct DeviceAgeClock(u64);
+    impl Clock for DeviceAgeClock {
+        fn now(&self) -> MonotonicNanos {
+            MonotonicNanos(if thread::current().name() == Some("novasight-device") {
+                self.0
+            } else {
+                1_008_000_000
+            })
+        }
+    }
+    for (now, expired) in [
+        (1_050_000_000, false),
+        (1_050_000_001, true),
+        (999_999_999, true),
+    ] {
+        let device = Arc::new(RecordingPointerDevice::default());
+        let config = delivery_config();
+        let epoch = config.epoch;
+        let (mut runtime, ingress) =
+            PipelineRuntime::start(config, Arc::new(DeviceAgeClock(now)), device.clone()).unwrap();
+        ingress.set_trigger_active(true);
+        ingress
+            .submit(
+                DetectionBatch::new(
+                    FrameStamp::new(epoch, 1, 1_000_000_000),
+                    640,
+                    640,
+                    vec![Detection::new(1, 0, 340.0, 330.0, 40.0, 40.0, 0.95).unwrap()],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let expected = if expired {
+            novasight_pipeline::OutputDeliveryState::Expired
+        } else {
+            novasight_pipeline::OutputDeliveryState::Sent
+        };
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while runtime.metrics().output_delivery_state != expected {
+            assert!(
+                Instant::now() < deadline,
+                "device did not reach {expected:?}: {:?}",
+                runtime.metrics()
+            );
+            thread::yield_now();
+        }
+        assert_eq!(device.receipts().len(), usize::from(!expired));
+        runtime.shutdown().unwrap();
+    }
+}
+
+#[test]
 fn control_lane_rejects_an_observation_that_aged_while_waiting_for_control() {
     let epoch = RuntimeEpoch(9);
     let clock: Arc<dyn Clock> = Arc::new(LaneClock);
@@ -459,7 +510,7 @@ fn control_lane_rejects_an_observation_that_aged_while_waiting_for_control() {
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            ..broad_capsule_config()
+            ..delivery_config()
         },
         clock,
         pointer,
@@ -514,7 +565,7 @@ fn zero_tracking_demand_never_emits_even_while_trigger_is_held() {
         PipelineConfig {
             epoch,
             control,
-            ..broad_capsule_config()
+            ..delivery_config()
         },
         daemon_clock,
         pointer,
@@ -581,7 +632,7 @@ fn never_outputs_without_a_current_target() {
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            ..broad_capsule_config()
+            ..delivery_config()
         },
         daemon_clock,
         pointer,
@@ -619,13 +670,17 @@ fn never_outputs_without_a_current_target() {
 }
 
 #[test]
-fn leaving_capsule_stops_tracking_commands() {
+fn leaving_search_circle_stops_tracking_commands() {
     let epoch = RuntimeEpoch(19);
     let clock = Arc::new(ManualClock::new(1_008_000_000));
     let device = Arc::new(RecordingPointerDevice::default());
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
+            targeting: novasight_core::tracking::TargetingConfig {
+                target_fov_radius_px: 30.0,
+                ..Default::default()
+            },
             ..PipelineConfig::default()
         },
         clock.clone(),
@@ -683,7 +738,7 @@ fn retained_lost_identity_never_authorizes_output() {
     let (mut runtime, ingress) = PipelineRuntime::start(
         PipelineConfig {
             epoch,
-            ..broad_capsule_config()
+            ..delivery_config()
         },
         daemon_clock,
         pointer,
@@ -769,7 +824,7 @@ fn predicted_tracking_reaches_device_without_added_y_movement() {
                 prediction_enabled: true,
                 ..Default::default()
             },
-            ..broad_capsule_config()
+            ..delivery_config()
         },
         daemon_clock,
         pointer,

@@ -458,7 +458,7 @@ fn build_deepstream_session_config(
         probe_pad: adapters.inference.deepstream_probe_pad.clone(),
         source_id: adapters.inference.deepstream_source_id,
         inference_component_id: adapters.inference.deepstream_component_id,
-        max_batch_age_ns: Some(deadline_ns(adapters.inference.inference_input_deadline_ms)),
+        max_batch_age_ns: Some(deadline_ns(adapters.pipeline.frame_max_age_ms)),
         startup_timeout: Duration::from_millis(adapters.inference.deepstream_startup_timeout_ms),
         shutdown_timeout: Duration::from_millis(adapters.inference.deepstream_shutdown_timeout_ms),
         preview: adapters.consumers.preview.then_some(preview_hub),

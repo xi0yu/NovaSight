@@ -139,13 +139,6 @@ impl ConfigSchemaResponse {
                     "Rust 实时控制",
                     vec![
                         float(
-                            "pipeline.freshness_threshold_ms",
-                            "观测新鲜度上限",
-                            1.0,
-                            1_000.0,
-                            Some("ms"),
-                        ),
-                        float(
                             "pipeline.projection_fov_x_deg",
                             "水平视场角",
                             0.000_001,
@@ -176,22 +169,22 @@ impl ConfigSchemaResponse {
                         ),
                         float(
                             "pipeline.max_output_x_counts",
-                            "X 轴输出上限",
+                            "单次 X 轴输出上限",
                             1.0,
                             i16::MAX as f64,
                             Some("count"),
                         ),
                         float(
                             "pipeline.max_output_y_counts",
-                            "Y 轴输出上限",
+                            "单次 Y 轴输出上限",
                             1.0,
                             i16::MAX as f64,
                             Some("count"),
                         ),
-                        boolean("pipeline.fire_delay_enabled", "启用按键持续延迟"),
+                        boolean("pipeline.fire_delay_enabled", "启用触发延迟"),
                         integer(
                             "pipeline.fire_delay_ms",
-                            "开火延迟",
+                            "触发延迟",
                             0.0,
                             5_000.0,
                             Some("ms"),
@@ -212,39 +205,11 @@ impl ConfigSchemaResponse {
                             Some("ms"),
                         ),
                         float(
-                            "pipeline.prediction_cap_px",
-                            "预测位移上限",
-                            0.0,
-                            100_000.0,
-                            Some("px"),
-                        ),
-                        float(
                             "pipeline.target_fov_radius_px",
-                            "搜索半径上限",
+                            "搜索半径",
                             0.000_001,
                             100_000.0,
                             Some("px"),
-                        ),
-                        float(
-                            "pipeline.target_range_scale",
-                            "胶囊范围比例",
-                            0.1,
-                            5.0,
-                            Some("×"),
-                        ),
-                        float(
-                            "pipeline.target_min_confidence",
-                            "控制目标最低置信度",
-                            0.0,
-                            1.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.target_track_max_lost_age_ms",
-                            "丢失轨迹最长保留时间",
-                            1.0,
-                            10_000.0,
-                            Some("ms"),
                         ),
                         float(
                             "pipeline.tracker_max_match_distance",
@@ -330,13 +295,6 @@ impl ConfigSchemaResponse {
                             10_000.0,
                             Some("ms"),
                         ),
-                        integer(
-                            "pipeline.tracker_kalman_max_predict_steps",
-                            "卡尔曼连续预测步数",
-                            0.0,
-                            120.0,
-                            Some("step"),
-                        ),
                         float(
                             "pipeline.tracker_kalman_nis_threshold",
                             "卡尔曼可信 NIS 阈值",
@@ -351,59 +309,9 @@ impl ConfigSchemaResponse {
                             1_000_000.0,
                             None,
                         ),
-                        string("pipeline.target_class_priority", "目标类别优先级"),
                         string("pipeline.target_class_weights", "类别优先权重"),
                         string("pipeline.target_class_aim_x_ratios", "按类别水平瞄点比例"),
                         string("pipeline.target_class_filter", "参与目标选择的类别"),
-                        float(
-                            "pipeline.target_selection_distance_weight",
-                            "准星距离权重",
-                            0.0,
-                            100.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.target_selection_class_weight",
-                            "内部类别偏好权重",
-                            0.0,
-                            100.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.target_selection_confidence_weight",
-                            "识别置信度权重",
-                            0.0,
-                            100.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.target_selection_size_weight",
-                            "目标大小权重",
-                            0.0,
-                            100.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.target_selection_continuity_weight",
-                            "短时连续性权重",
-                            0.0,
-                            100.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.target_selection_motion_weight",
-                            "运动趋势权重",
-                            0.0,
-                            100.0,
-                            None,
-                        ),
-                        float(
-                            "pipeline.target_selection_motion_horizon_ms",
-                            "运动趋势观察窗口",
-                            0.0,
-                            1_000.0,
-                            Some("ms"),
-                        ),
                         float(
                             "pipeline.target_switch_min_preference_advantage",
                             "目标切换最小评分优势",
@@ -417,13 +325,6 @@ impl ConfigSchemaResponse {
                             0.0,
                             1.0,
                             None,
-                        ),
-                        float(
-                            "pipeline.target_switch_delay_ms",
-                            "目标切换确认延迟",
-                            0.0,
-                            10_000.0,
-                            Some("ms"),
                         ),
                         float(
                             "pipeline.target_aim_y_ratio",
@@ -535,6 +436,20 @@ impl ConfigSchemaResponse {
                     "inference",
                     "GPU 推理",
                     vec![
+                        float(
+                            "inference.confidence_threshold",
+                            "检测置信度阈值",
+                            0.0,
+                            1.0,
+                            None,
+                        ),
+                        float(
+                            "inference.nms_threshold",
+                            "重复框抑制阈值（IoU）",
+                            0.0,
+                            1.0,
+                            None,
+                        ),
                         boolean("inference.enabled", "启用推理"),
                         select("inference.backend", "推理后端", &["deepstream_nvinfer"]),
                         invariant_bool(
@@ -546,13 +461,6 @@ impl ConfigSchemaResponse {
                             "inference.allow_cpu_fallback",
                             "允许 CPU 回退",
                             "Jetson 生产路径要求为 false",
-                        ),
-                        float(
-                            "inference.inference_input_deadline_ms",
-                            "推理输入时限",
-                            f64::MIN_POSITIVE,
-                            u32::MAX as f64,
-                            Some("ms"),
                         ),
                         string("inference.deepstream_parser_library", "DeepStream 解析器库"),
                         integer(
@@ -764,7 +672,7 @@ mod tests {
         let schema = ConfigSchemaResponse::new(&AppConfig::default());
         let value = serde_json::to_value(schema).unwrap();
 
-        assert_eq!(value["version"], 17);
+        assert_eq!(value["version"], AppConfig::default().schema_version);
         assert_eq!(value["algorithm"]["id"], "continuous_atan_medoid_v2");
         assert_eq!(value["algorithm"]["response"]["atan_scale_counts"], 256.0);
         assert_eq!(value["algorithm"]["prediction"]["aim_history_points"], 4);
@@ -777,7 +685,11 @@ mod tests {
         assert_eq!(value["values"]["pipeline"]["prediction_lead_ms"], 16.0);
         assert_eq!(value["values"]["pipeline"]["max_output_x_counts"], 127.0);
         assert_eq!(value["values"]["pipeline"]["max_output_y_counts"], 127.0);
-        assert_eq!(value["values"]["pipeline"]["prediction_cap_px"], 10.0);
+        assert!(
+            value["values"]["pipeline"]
+                .get("prediction_cap_px")
+                .is_none()
+        );
         assert_eq!(value["values"]["inference"], Value::Null);
         assert!(value["sections"].as_array().unwrap().iter().any(|section| {
             section["id"] == "inference"
@@ -821,7 +733,6 @@ mod tests {
         let hot_control_paths = [
             "control.output_enabled",
             "control.trigger_mode",
-            "pipeline.freshness_threshold_ms",
             "pipeline.projection_fov_x_deg",
             "pipeline.projection_counts_per_360",
             "pipeline.p_response_scale",
@@ -830,12 +741,8 @@ mod tests {
             "pipeline.prediction_enabled",
             "pipeline.velocity_history_reset_gap_ms",
             "pipeline.prediction_lead_ms",
-            "pipeline.prediction_cap_px",
             "pipeline.prediction_actuation_delay_ms",
             "pipeline.target_fov_radius_px",
-            "pipeline.target_range_scale",
-            "pipeline.target_min_confidence",
-            "pipeline.target_track_max_lost_age_ms",
             "pipeline.tracker_max_match_distance",
             "pipeline.tracker_position_cost_weight",
             "pipeline.tracker_iou_cost_weight",
@@ -848,23 +755,13 @@ mod tests {
             "pipeline.tracker_kalman_measurement_noise_y",
             "pipeline.tracker_kalman_max_predict_dt_ms",
             "pipeline.tracker_kalman_max_predict_missing_ms",
-            "pipeline.tracker_kalman_max_predict_steps",
             "pipeline.tracker_kalman_nis_threshold",
             "pipeline.tracker_kalman_nis_hard_reject",
             "pipeline.target_class_weights",
             "pipeline.target_class_aim_x_ratios",
-            "pipeline.target_class_priority",
             "pipeline.target_class_filter",
-            "pipeline.target_selection_distance_weight",
-            "pipeline.target_selection_class_weight",
-            "pipeline.target_selection_confidence_weight",
-            "pipeline.target_selection_size_weight",
-            "pipeline.target_selection_continuity_weight",
-            "pipeline.target_selection_motion_weight",
-            "pipeline.target_selection_motion_horizon_ms",
             "pipeline.target_switch_min_preference_advantage",
             "pipeline.target_switch_min_continuity_score",
-            "pipeline.target_switch_delay_ms",
             "pipeline.target_aim_y_ratio",
             "pipeline.target_class_aim_y_ratios",
             "pipeline.candidate_max_aspect_ratio",

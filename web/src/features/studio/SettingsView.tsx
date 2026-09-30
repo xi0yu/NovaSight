@@ -11,6 +11,7 @@ export function SettingsView({
   effectiveRevision,
   restartRequired,
   configAvailable,
+  runtimeVerified = true,
   operationPending,
   parameterChangesPending,
   onExport,
@@ -22,6 +23,7 @@ export function SettingsView({
   effectiveRevision: number;
   restartRequired: boolean;
   configAvailable: boolean;
+  runtimeVerified?: boolean;
   operationPending: boolean;
   parameterChangesPending: boolean;
   onExport: () => void;
@@ -29,6 +31,9 @@ export function SettingsView({
   onNavigate: (page: ConsolePage) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const revisionStatus = !configAvailable ? "设置未读取" : !runtimeVerified ? "运行版本待确认"
+    : restartRequired ? "等待重启" : desiredRevision !== effectiveRevision ? "等待生效" : "版本一致";
+  const revisionTone = !configAvailable || !runtimeVerified ? "unknown" : revisionStatus === "版本一致" ? "" : "attention";
   const onFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -45,7 +50,7 @@ export function SettingsView({
         </div>
         <button className="console-button primary" disabled={!configAvailable || operationPending} onClick={onExport} type="button">
           <NovaIcon name="export" size={16} />
-          {operationPending ? "正在处理设置" : configAvailable ? "下载备份" : "正在读取设置"}
+          {operationPending ? "正在处理设置" : configAvailable ? "下载备份" : "设置不可用"}
         </button>
       </article>
     ),
@@ -64,7 +69,7 @@ export function SettingsView({
         ) : (
           <button className="console-button" disabled={!configAvailable || operationPending} onClick={() => fileInputRef.current?.click()} type="button">
             <NovaIcon name="import" size={16} />
-            {operationPending ? "正在处理设置" : configAvailable ? "选择备份" : "正在读取设置"}
+            {operationPending ? "正在处理设置" : configAvailable ? "选择备份" : "设置不可用"}
           </button>
         )}
         <input
@@ -85,9 +90,9 @@ export function SettingsView({
           <NovaIcon name="forward" size={16} />
         </summary>
         <dl>
-          <div><dt>保存版本</dt><dd>{desiredRevision}</dd></div>
-          <div><dt>运行版本</dt><dd>{effectiveRevision}</dd></div>
-          <div><dt>生效状态</dt><dd>{restartRequired ? "部分设置等待服务重启" : "已与当前运行状态一致"}</dd></div>
+          <div><dt>保存版本</dt><dd>{configAvailable ? desiredRevision : "—"}</dd></div>
+          <div><dt>运行版本</dt><dd>{runtimeVerified ? effectiveRevision : "—"}</dd></div>
+          <div><dt>生效状态</dt><dd>{revisionStatus}</dd></div>
           <div><dt>备份格式</dt><dd>NovaSight JSON</dd></div>
         </dl>
       </details>
@@ -101,10 +106,10 @@ export function SettingsView({
           <h2 id="settings-transfer-title">备份与恢复</h2>
           <p>日常调整留在各自页面。这里仅处理整套设备设置的备份、迁移和恢复。</p>
         </div>
-        <div className={restartRequired ? "settings-revision attention" : "settings-revision"} role="status">
+        <div className={`settings-revision ${revisionTone}`} role="status">
           <small>当前设置</small>
-          <strong>{restartRequired ? "等待重启" : "版本一致"}</strong>
-          <span>{desiredRevision} / {effectiveRevision}</span>
+          <strong>{revisionStatus}</strong>
+          <span>{configAvailable ? desiredRevision : "—"} / {runtimeVerified ? effectiveRevision : "—"}</span>
         </div>
       </header>
       <div className="settings-transfer-list">

@@ -20,6 +20,7 @@
 }
 
 .console-brand {
+  min-height: 0;
   min-width: 0;
   display: flex;
   align-items: center;
@@ -39,6 +40,9 @@
   color: var(--brand-primary);
   box-shadow: none;
 }
+
+.console-logo::before,
+.console-logo::after { content: none; }
 
 .console-brand-name {
   min-width: 0;
@@ -63,6 +67,7 @@
 .console-toolbar {
   min-width: 0;
   display: flex;
+  flex-direction: row;
   align-items: center;
   justify-content: flex-end;
   gap: 16px;
@@ -145,6 +150,7 @@
 }
 
 .console-nav {
+  --nav-accent: var(--signal-info);
   position: relative;
   min-width: 0;
   width: 100%;
@@ -159,7 +165,11 @@
   background: transparent;
   color: var(--text-tertiary);
   cursor: pointer;
+  transition: color 160ms, background-color 160ms;
 }
+.console-nav[data-page="capture"] { --nav-accent: #63d6bc; }
+.console-nav[data-page="params"] { --nav-accent: #b8a0ff; }
+.console-nav[data-page="activity"] { --nav-accent: var(--signal-attention); }
 
 .console-nav-icon {
   width: 24px;
@@ -168,7 +178,7 @@
   display: grid;
   place-items: center;
   border-radius: 6px;
-  color: inherit;
+  color: var(--nav-accent);
 }
 .console-nav-copy { min-width: 0; }
 .console-nav-copy b { display: block; color: inherit; font-size: 13px; font-weight: 650; white-space: nowrap; }
@@ -178,10 +188,12 @@
 
 .console-sidebar .console-nav.active {
   border-color: transparent;
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--nav-accent) 9%, var(--bg-sidebar));
   color: var(--text-primary);
   box-shadow: none;
 }
+
+.console-sidebar .console-nav.active::before { content: none; }
 
 .console-sidebar .console-nav.active::after {
   content: "";
@@ -191,7 +203,7 @@
   left: -8px;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: var(--brand-primary);
+  background: var(--nav-accent);
 }
 
 .console-main {

@@ -31,17 +31,19 @@
   font-size: 12px;
 }
 
+.capture-device-empty details { color: var(--text-secondary); font-size: 12px; }
+.capture-device-empty summary { min-height: 40px; display: list-item; align-content: center; cursor: pointer; }
+
 .capture-runtime-proof {
   min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 14px;
-  border: 1px solid var(--border-default);
+  padding: 4px 0 4px 14px;
+  border: 0;
   border-left: 3px solid var(--border-strong);
-  border-radius: 9px;
-  background: var(--bg-subtle);
+  background: transparent;
 }
 
 .capture-runtime-proof > div {
@@ -401,6 +403,34 @@
   gap: 10px;
   padding: 0 0 18px;
   border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Tick/bar treatment inspired by beUI Range Slider. Native input keeps the
+   existing draft/commit contract and browser keyboard/touch behavior. */
+.console-row.parameter-slider { grid-template-columns: minmax(0, 1fr) 100px; gap: 16px; align-items: start; margin: 4px 0 0; }
+.parameter-slider-track { min-width: 0; position: relative; }
+.parameter-slider-track::before { content: ""; position: absolute; pointer-events: none; left: 6px; right: 6px; top: 37px; height: 3px; background: radial-gradient(circle, var(--border-strong) 1px, transparent 1.5px) left center / 10% 3px repeat-x; }
+.parameter-slider-track input[type="range"] { display: block; height: 40px; margin: 0; background: transparent; border: 0; box-shadow: none; cursor: ew-resize; }
+.parameter-slider-track input[type="range"]::-webkit-slider-runnable-track { height: 4px; }
+.parameter-slider-track input[type="range"]::-webkit-slider-thumb { width: 10px; height: 22px; margin-top: -9px; border: 2px solid var(--bg-elevated); border-radius: 4px; background: var(--range-accent); box-shadow: 0 1px 4px #0004; transition: transform 140ms; }
+.parameter-slider-track input[type="range"]::-moz-range-thumb { width: 7px; height: 19px; border: 2px solid var(--bg-elevated); border-radius: 4px; background: var(--range-accent); box-shadow: 0 1px 4px #0004; transition: transform 140ms; }
+.parameter-slider-track input[type="range"]:active::-webkit-slider-thumb { transform: scaleY(1.12); }
+.parameter-slider-track input[type="range"]:active::-moz-range-thumb { transform: scaleY(1.12); }
+.parameter-slider-scale { display: flex; justify-content: space-between; padding: 8px 1px 0; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 10px; line-height: 1.3; }
+.parameter-number-readout { min-width: 0; display: flex; align-items: center; gap: 4px; border: 1px solid var(--input-border); border-radius: 8px; background: var(--input-bg); transition: border-color 160ms; }
+.parameter-number-readout:focus-within { border-color: var(--range-accent); }
+.parameter-number-readout > input[type="text"] { width: 100%; min-width: 0; height: 40px; padding: 8px 10px; border: 0; background: transparent; box-shadow: none; font-family: var(--font-mono); font-size: 14px; font-weight: 500; }
+.parameter-number-readout > span { flex-shrink: 0; padding-right: 10px; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 10px; }
+.parameter-number-readout:has(> span) > input[type="text"] { padding-right: 0; }
+.parameter-slider:has(input:disabled) { opacity: .6; }
+@media (max-width: 760px) {
+  .console-row.parameter-slider { grid-template-columns: minmax(0, 1fr) 90px; gap: 12px; }
+  .parameter-number-readout > input[type="text"], .parameter-slider-track input[type="range"] { height: 44px; }
+  .parameter-slider-track::before { top: 41px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .parameter-number-readout, .parameter-slider-track input[type="range"]::-webkit-slider-thumb { transition: none; }
+  .parameter-slider-track input[type="range"]::-moz-range-thumb { transition: none; }
 }
 
 .parameter-control-header {

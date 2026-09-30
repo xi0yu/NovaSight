@@ -28,7 +28,6 @@ export type TargetingNumberParameter = StudioNumberParameter<TargetingPipelineFi
 export type AlgorithmSettingsSection = "response" | "prediction" | "calibration";
 
 export const CONTROL_PIPELINE_FIELDS = [
-  "freshness_threshold_ms",
   "projection_fov_x_deg",
   "projection_counts_per_360",
   "p_response_scale",
@@ -41,7 +40,6 @@ export const CONTROL_PIPELINE_FIELDS = [
   "prediction_enabled",
   "velocity_history_reset_gap_ms",
   "prediction_lead_ms",
-  "prediction_cap_px",
   "prediction_actuation_delay_ms"
 ] as const;
 
@@ -49,9 +47,6 @@ export type ControlPipelineField = typeof CONTROL_PIPELINE_FIELDS[number];
 
 export const TARGETING_PIPELINE_FIELDS = [
   "target_fov_radius_px",
-  "target_range_scale",
-  "target_min_confidence",
-  "target_track_max_lost_age_ms",
   "tracker_max_match_distance",
   "tracker_position_cost_weight",
   "tracker_iou_cost_weight",
@@ -64,23 +59,13 @@ export const TARGETING_PIPELINE_FIELDS = [
   "tracker_kalman_measurement_noise_y",
   "tracker_kalman_max_predict_dt_ms",
   "tracker_kalman_max_predict_missing_ms",
-  "tracker_kalman_max_predict_steps",
   "tracker_kalman_nis_threshold",
   "tracker_kalman_nis_hard_reject",
-  "target_class_priority",
   "target_class_weights",
   "target_class_aim_x_ratios",
   "target_class_filter",
-  "target_selection_distance_weight",
-  "target_selection_class_weight",
-  "target_selection_confidence_weight",
-  "target_selection_size_weight",
-  "target_selection_continuity_weight",
-  "target_selection_motion_weight",
-  "target_selection_motion_horizon_ms",
   "target_switch_min_preference_advantage",
   "target_switch_min_continuity_score",
-  "target_switch_delay_ms",
   "target_aim_y_ratio",
   "target_class_aim_y_ratios",
   "candidate_max_aspect_ratio"
@@ -169,7 +154,7 @@ export function validateStudioConfigSchema(schema: ConfigSchemaResponse): Studio
       issues.push({ path, reason: "Studio targeting parameter is not exposed by backend schema" });
       continue;
     }
-    const expectedType = key === "target_class_priority" || key === "target_class_weights" || key === "target_class_aim_x_ratios" || key === "target_class_filter" || key === "target_class_aim_y_ratios"
+    const expectedType = key === "target_class_weights" || key === "target_class_aim_x_ratios" || key === "target_class_filter" || key === "target_class_aim_y_ratios"
       ? "string" : "number";
     if (expectedType === "string" ? field.type !== "string" : !NUMERIC_SCHEMA_TYPES.has(field.type)) {
       issues.push({ path, reason: `expected ${expectedType} schema field, got ${field.type}` });
@@ -228,25 +213,20 @@ export type AlgorithmParameterValues = {
   predictionActuationDelayMs: number;
   controlPredictionLeadMs: number;
   controlPredictionHistoryResetGapMs: number;
-  controlPredictionCapPx: number;
   controlFovX: number;
   controlCountsPer360: number;
-  freshnessThresholdMs: number;
 };
 
 export type AlgorithmParameterGroups = {
   responseParameters: AlgorithmNumberParameter[];
   predictionCoreParameters: AlgorithmNumberParameter[];
-  predictionCapParameters: AlgorithmNumberParameter[];
   calibrationParameters: AlgorithmNumberParameter[];
 };
 
 export type TargetingParameterValues = {
-  targetMinConfidence: number;
   candidateRatioMaxAspect: number;
   targetSwitchPreferenceAdvantage: number;
   targetSwitchContinuityScore: number;
-  targetSwitchDelayMs: number;
   trackerMaxMatchDistance: number;
   trackerPositionCostWeight: number;
   trackerIouCostWeight: number;
@@ -254,20 +234,16 @@ export type TargetingParameterValues = {
   trackerClassCostWeight: number;
   trackerMaxSizeRatio: number;
   trackerMaxAssociationDtMs: number;
-  targetLostGraceMs: number;
   trackerKalmanAccelerationNoise: number;
   trackerKalmanMeasurementNoiseX: number;
   trackerKalmanMeasurementNoiseY: number;
   trackerKalmanMaxPredictDtMs: number;
   trackerKalmanMaxPredictMissingMs: number;
-  trackerKalmanMaxPredictSteps: number;
   trackerKalmanNisThreshold: number;
   trackerKalmanNisHardReject: number;
-  targetSelectionMotionHorizonMs: number;
 };
 
 export type TargetingParameterGroups = {
-  targetAdvancedParameters: TargetingNumberParameter[];
   trackerCoreParameters: TargetingNumberParameter[];
   trackerKalmanParameters: TargetingNumberParameter[];
 };
@@ -280,8 +256,8 @@ export function buildAlgorithmParameterGroups(
     responseParameters: [
       {
         key: "entry_ramp_ms",
-        label: "入场渐升时长",
-        detail: "用这段时间把响应从零平滑提升到设定的 Kp，期间就会开始移动，不是等待后才启动。0 ms 表示立即使用设定力度。",
+        label: "入场渐升时间",
+        detail: "从零逐渐升到完整力度，期间就会移动。0 ms 表示立即使用完整力度。",
         value: values.entryRampMs ?? 200,
         min: 0,
         max: 2000,
@@ -293,8 +269,8 @@ export function buildAlgorithmParameterGroups(
       },
       {
         key: "p_response_scale",
-        label: "跟随力度 Kp",
-        detail: "决定正常跟随时的响应力度；入场结束后完整使用此值，不再随距离额外增强。过高可能导致过冲。",
+        label: "比例增益 Kp",
+        detail: "决定正常跟随的积极程度。过高可能越过目标，过低可能跟不上。",
         value: values.pResponseScale,
         min: 0,
         max: 100,
@@ -319,8 +295,8 @@ export function buildAlgorithmParameterGroups(
     predictionCoreParameters: [
       {
         key: "prediction_lead_ms",
-        label: "预测提前量",
-        detail: "在画面年龄和设备延迟之外额外预测多久，不再按帧数截断。急停或反向时暂停外推；位移仍受上限保护。",
+        label: "额外预测时间",
+        detail: "在画面与设备延迟补偿之外，再提前跟随多久。急停或反向时暂停外推。",
         value: values.controlPredictionLeadMs,
         min: 0,
         max: 1000,
@@ -333,7 +309,7 @@ export function buildAlgorithmParameterGroups(
       {
         key: "velocity_history_reset_gap_ms",
         label: "断流历史重置",
-        detail: "画面中断超过该时间后忘记旧运动方向，避免恢复时继续沿上次方向预测。",
+        detail: "只控制预测历史：画面中断后忘记旧运动方向。不会改变入场渐升时间。",
         value: values.controlPredictionHistoryResetGapMs,
         min: 0.000001,
         max: 10000,
@@ -344,25 +320,11 @@ export function buildAlgorithmParameterGroups(
         applyMode: "live"
       }
     ],
-    predictionCapParameters: [
-      {
-        key: "prediction_cap_px",
-        label: "预测位移上限",
-        detail: "限制预测最多向未来推进多少像素，防止快速目标或抖动造成过度提前。",
-        value: values.controlPredictionCapPx,
-        min: 0,
-        max: 100000,
-        recommendedMin: 0,
-        recommendedMax: 80,
-        step: 0.1,
-        unit: "px"
-      }
-    ],
     calibrationParameters: [
       {
         key: "prediction_actuation_delay_ms",
         label: "设备响应延迟",
-        detail: "命令发出到画面可观察到响应的系统延迟，只参与目标速度预测时域。",
+        detail: "命令发出到画面响应的实测延迟。它与预测提前量相加，不是第二个跟随力度；没有测量依据时不要反复调整。",
         value: values.predictionActuationDelayMs,
         min: 0,
         max: 1000,
@@ -401,25 +363,11 @@ export function buildAlgorithmParameterGroups(
         riskLevel: "calibration",
         transform: Math.round
       },
-      {
-        key: "freshness_threshold_ms",
-        label: "识别结果有效时间",
-        detail: "超过该帧龄的识别结果不会进入控制器；它是安全时效门，不是固定推理时长。",
-        value: values.freshnessThresholdMs,
-        min: 1,
-        max: 1000,
-        recommendedMin: 10,
-        recommendedMax: 120,
-        step: 0.1,
-        unit: "ms",
-        riskLevel: "calibration"
-      }
     ]
   };
   return {
     responseParameters: schemaBackedNumberParameters(schemaIndex, groups.responseParameters),
     predictionCoreParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionCoreParameters),
-    predictionCapParameters: schemaBackedNumberParameters(schemaIndex, groups.predictionCapParameters),
     calibrationParameters: schemaBackedNumberParameters(schemaIndex, groups.calibrationParameters)
   };
 }
@@ -429,59 +377,6 @@ export function buildTargetingParameterGroups(
   schemaIndex?: ConfigFieldIndex | null
 ): TargetingParameterGroups {
   const groups: TargetingParameterGroups = {
-    targetAdvancedParameters: [
-      {
-        key: "target_min_confidence",
-        label: "控制目标最低置信度",
-        detail: "低于该值的检测结果不进入控制目标选择。",
-        value: values.targetMinConfidence,
-        min: 0,
-        max: 1,
-        step: 0.01
-      },
-      {
-        key: "target_switch_delay_ms",
-        label: "目标切换确认延迟",
-        detail: "新目标持续满足切换条件多久后才接管。",
-        value: values.targetSwitchDelayMs,
-        min: 0,
-        max: 10000,
-        recommendedMin: 0,
-        recommendedMax: 500,
-        step: 1,
-        unit: "ms",
-        kind: "stepper",
-        transform: Math.round
-      },
-      {
-        key: "target_track_max_lost_age_ms",
-        label: "目标丢失保持",
-        detail: "短暂漏检时保留原目标身份的时间。",
-        value: values.targetLostGraceMs,
-        min: 1,
-        max: 10000,
-        recommendedMin: 1,
-        recommendedMax: 1000,
-        step: 1,
-        unit: "ms",
-        kind: "stepper",
-        transform: Math.round
-      },
-      {
-        key: "target_selection_motion_horizon_ms",
-        label: "运动趋势观察窗口",
-        detail: "仅用于比较候选是否正在靠近准星，不会把瞄点向未来外推。",
-        value: values.targetSelectionMotionHorizonMs,
-        min: 0,
-        max: 1000,
-        recommendedMin: 0,
-        recommendedMax: 100,
-        step: 1,
-        unit: "ms",
-        kind: "stepper",
-        transform: Math.round
-      }
-    ],
     trackerCoreParameters: [
       {
         key: "candidate_max_aspect_ratio",
@@ -660,7 +555,7 @@ export function buildTargetingParameterGroups(
       {
         key: "tracker_kalman_max_predict_missing_ms",
         label: "丢失预测窗口",
-        detail: "目标短暂漏检时，卡尔曼状态最多保留多久用于身份关联；它不直接输出鼠标提前量。",
+        detail: "按实际时间限制关联预测，不再按帧数或隐藏衰减提前到期。异常跳变或不确定性过高仍会提前拒绝；漏检期间不输出控制。",
         value: values.trackerKalmanMaxPredictMissingMs,
         min: 1,
         max: 10000,
@@ -668,21 +563,6 @@ export function buildTargetingParameterGroups(
         recommendedMax: 250,
         step: 1,
         unit: "ms",
-        kind: "stepper",
-        riskLevel: "advanced",
-        transform: Math.round
-      },
-      {
-        key: "tracker_kalman_max_predict_steps",
-        label: "连续预测步数",
-        detail: "没有新观测时最多允许连续外推多少次。调高更能跨短暂漏检，过高会增加误关联风险。",
-        value: values.trackerKalmanMaxPredictSteps,
-        min: 0,
-        max: 120,
-        recommendedMin: 0,
-        recommendedMax: 12,
-        step: 1,
-        unit: "步",
         kind: "stepper",
         riskLevel: "advanced",
         transform: Math.round
@@ -714,7 +594,6 @@ export function buildTargetingParameterGroups(
     ]
   };
   return {
-    targetAdvancedParameters: schemaBackedNumberParameters(schemaIndex, groups.targetAdvancedParameters),
     trackerCoreParameters: schemaBackedNumberParameters(schemaIndex, groups.trackerCoreParameters),
     trackerKalmanParameters: schemaBackedNumberParameters(schemaIndex, groups.trackerKalmanParameters)
   };

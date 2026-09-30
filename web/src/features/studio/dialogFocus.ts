@@ -4,6 +4,7 @@ const FOCUSABLE_SELECTOR = [
   "input:not([disabled])",
   "select:not([disabled])",
   "textarea:not([disabled])",
+  "summary",
   '[tabindex]:not([tabindex="-1"])'
 ].join(",");
 
@@ -12,7 +13,14 @@ export function trapDialogTabKey(event: KeyboardEvent, dialog: HTMLElement | nul
     return;
   }
   const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
-    .filter((element) => element.getAttribute("aria-hidden") !== "true");
+    .filter((element) => {
+      if (element.tabIndex < 0 || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      const closedDetails = element.closest("details:not([open])");
+      if (closedDetails && element !== closedDetails.querySelector("summary")) return false;
+      if (typeof element.checkVisibility === "function" && !element.checkVisibility({ checkVisibilityCSS: true })) return false;
+      const style = window.getComputedStyle(element);
+      return style.display !== "none" && style.visibility !== "hidden";
+    });
   if (focusable.length === 0) {
     event.preventDefault();
     dialog.focus();
@@ -20,7 +28,7 @@ export function trapDialogTabKey(event: KeyboardEvent, dialog: HTMLElement | nul
   }
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
-  if (document.activeElement === dialog) {
+  if (document.activeElement === dialog || !dialog.contains(document.activeElement)) {
     event.preventDefault();
     (event.shiftKey ? last : first).focus();
   } else if (event.shiftKey && document.activeElement === first) {

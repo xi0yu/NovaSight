@@ -73,6 +73,7 @@ pub enum OutputDeliveryState {
     Superseded,
     Sent,
     SendFailed,
+    Expired,
 }
 
 impl OutputDeliveryState {
@@ -86,6 +87,7 @@ impl OutputDeliveryState {
             6 => Self::Superseded,
             7 => Self::Sent,
             8 => Self::SendFailed,
+            9 => Self::Expired,
             _ => Self::Idle,
         }
     }
@@ -1299,6 +1301,7 @@ impl PipelineRuntime {
             command_slot.clone(),
             Arc::clone(&shared),
             Arc::clone(&device),
+            Arc::clone(&clock),
             DeviceWorkerConfig {
                 epoch: config.epoch,
             },
@@ -1896,6 +1899,7 @@ fn spawn_device_worker(
     input: LatestSlot<OutputPlan>,
     shared: Arc<SharedState>,
     device: Arc<dyn PointerDevice>,
+    clock: Arc<dyn Clock>,
     config: DeviceWorkerConfig,
 ) -> Result<JoinHandle<()>, PipelineError> {
     thread::Builder::new()
@@ -1971,6 +1975,21 @@ fn spawn_device_worker(
                             .superseded_commands
                             .fetch_add(1, Ordering::Relaxed);
                         shared.set_output_delivery_state(OutputDeliveryState::Superseded);
+                        continue;
+                    }
+                    // A generation can remain latest forever after capture stops.
+                    // Reuse the capture-age budget, never restart it at control time.
+                    let max_age_ms = shared
+                        .control_config
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .freshness_threshold_ms;
+                    let age_ns = clock.now().0.checked_sub(command.source_captured_at.0);
+                    if !max_age_ms.is_finite()
+                        || max_age_ms <= 0.0
+                        || !age_ns.is_some_and(|age| age as f64 / 1e6 <= max_age_ms)
+                    {
+                        shared.set_output_delivery_state(OutputDeliveryState::Expired);
                         continue;
                     }
                     match device.send(command) {

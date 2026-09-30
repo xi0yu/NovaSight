@@ -27,7 +27,7 @@ export function ResponseExperiment({ kp, rampMs, referenceHz }: { kp: number; ra
   return <section className="prediction-insight" aria-label="响应试算" data-tone="active">
     <div className="prediction-measurement">
       <header><h3>响应试算</h3><span>编辑值 · 不控制设备</span></header>
-      <p className="prediction-explanation">修改上方 Kp、入场时长和基准频率，试算同步更新。以下条件仅供演示，不写入配置。</p>
+      <p className="prediction-explanation">使用当前草稿中的跟随力度、入场时长和设备基准频率。下方模拟条件仅用于试算，不写入配置。</p>
       <div className="parameter-inline-grid">
         <label>入场经过 {elapsedMs} ms<input aria-label="试算入场时间" type="range" min="0" max={endMs} step="1" value={elapsedMs} onChange={(event) => setElapsed(Number(event.target.value))} /></label>
         <label>模拟控制频率<select aria-label="模拟控制频率" value={fps} onChange={(event) => setFps(Number(event.target.value))}>
@@ -117,9 +117,9 @@ export function PredictionInsight({ sample, live, configuredEnabled }: {
               {view.offset !== null && <><line className="prediction-applied" x1="150" y1="80" x2={endX} y2={endY} /><path className="prediction-destination" d={`M${endX} ${endY - 6}l6 6-6 6-6-6Z`} /></>}
               <circle className="prediction-origin" cx="150" cy="80" r="4" />
             </svg>
-            <figcaption><span className="prediction-observed-key">● 观测点</span><span className="prediction-future-key">◆ 预测点</span><span className="prediction-raw-key">┄ 限幅前</span><span>±{extent.toFixed(0)} px · Y 向下</span></figcaption>
+            <figcaption><span className="prediction-observed-key">● 观测点</span><span className="prediction-future-key">◆ 预测点</span><span className="prediction-raw-key">┄ 原始外推</span><span>±{extent.toFixed(0)} px · Y 向下</span></figcaption>
           </figure>
-          <dl><div><dt>实际预测偏移</dt><dd>{display(view.offset, "px")}</dd></div><div><dt>限幅前需求</dt><dd>{display(view.raw, "px")}</dd></div><div><dt>实际预测时域</dt><dd>{display(view.horizon, "ms")}</dd></div></dl>
+          <dl><div><dt>实际预测偏移</dt><dd>{display(view.offset, "px")}</dd></div><div><dt>原始外推位移</dt><dd>{display(view.raw, "px")}</dd></div><div><dt>实际预测时域</dt><dd>{display(view.horizon, "ms")}</dd></div></dl>
         </div>
         <div className="prediction-time" aria-label="预测时间构成">
           <div className="prediction-time-bar" aria-hidden="true">

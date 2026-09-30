@@ -24,7 +24,8 @@ export class AppErrorBoundary extends Component<
     reportError(error, {
       source: "react-render",
       title: "界面渲染失败",
-      publicDetail: info.componentStack || error.message
+      publicDetail: info.componentStack || error.message,
+      popup: false,
     });
   }
 
@@ -38,11 +39,12 @@ export class AppErrorBoundary extends Component<
     return (
       <main className="route-loading-shell" role="alert">
         <span className="route-loading-mark" aria-hidden="true" />
-        <strong>界面暂时无法渲染</strong>
-        <small>{error.message || "发生未知渲染异常"}</small>
+        <strong>这个页面暂时无法显示</strong>
+        <small>可以先重试打开页面。重新载入会丢失尚未保存的编辑；设备运行不会因此自动停止。</small>
+        <details><summary>查看错误详情</summary><pre>{error.message || "发生未知渲染异常"}</pre></details>
         <div className="app-error-actions">
-          <button type="button" onClick={this.retryRender}>重试渲染</button>
-          <button type="button" onClick={() => window.location.reload()}>重新载入</button>
+          <button className="console-button primary" type="button" onClick={this.retryRender}>重试打开</button>
+          <button className="console-button" type="button" onClick={() => window.location.reload()}>重新载入</button>
         </div>
       </main>
     );

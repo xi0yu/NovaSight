@@ -66,7 +66,7 @@ async function mockStudioApi(
   await page.route("**/healthz", async (route) => {
     await route.fulfill({ json: { ok: true } });
   });
-  await page.routeWebSocket("**/ws/activity", () => undefined);
+  await page.routeWebSocket("**/ws/**", () => undefined);
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/auth/session" && route.request().method() === "GET") {
@@ -143,6 +143,56 @@ test("frontend-only preview opens the home page without a backend", async ({ pag
   await expect(page.locator("body")).not.toContainText("/dev/video0");
 });
 
+test("conditional UI preview stays isolated and exposes recoverable states", async ({ page }, testInfo) => {
+  const deviceRequests: string[] = [];
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("request", (request) => { if (/\/(api|ws)\//.test(request.url())) deviceRequests.push(request.url()); });
+  await page.goto("/preview.html?showcase=activity");
+  const choose = page.getByRole("combobox", { name: "选择预览状态" });
+  await page.getByRole("searchbox", { name: "搜索日志" }).fill("preview-request-001");
+  await expect(page.getByText("模型读取失败", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "清理历史" }).click();
+  await expect(page.getByRole("alert")).toContainText("记录已保留");
+  await page.getByRole("searchbox").fill("");
+  await page.screenshot({ path: testInfo.outputPath("activity-states.png"), animations: "disabled" });
+  await choose.selectOption("settings-unavailable");
+  await expect(page.getByRole("status")).toContainText("设置未读取");
+  await choose.selectOption("models-stale");
+  await expect(page.getByRole("alert")).toContainText("显示上次读取的文件");
+  await expect(page.locator(".model-promotion-track")).toHaveCSS("list-style-type", "none");
+  await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeDisabled();
+  await page.screenshot({ path: testInfo.outputPath("model-library-state.png"), animations: "disabled" });
+  await page.getByRole("textbox", { name: "新增模型标签" }).fill("测试草稿");
+  await page.getByRole("button", { name: "关闭模型管理" }).click();
+  await expect(page.getByRole("alertdialog", { name: "放弃未保存的模型标签？" })).toBeVisible();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "新增模型标签" })).toHaveValue("测试草稿");
+  await choose.selectOption("switch-failed");
+  await expect(page.getByRole("dialog")).toContainText("不能假定切换未生效");
+  await expect(page.getByRole("dialog")).not.toContainText("%");
+  await page.screenshot({ path: testInfo.outputPath("model-switch-state.png"), animations: "disabled" });
+  await choose.selectOption("confirmation-error");
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog.getByRole("alert")).toContainText("修改仍保留");
+  expect((await dialog.boundingBox())!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  await choose.selectOption("safety");
+  await page.getByRole("button", { name: "模拟未确认" }).click();
+  await expect(page.getByText("紧急停止尚未确认", { exact: true })).toBeVisible();
+  await choose.selectOption("auth");
+  await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
+  await choose.selectOption("license");
+  await expect(page.getByText("授权有效", { exact: true })).toBeVisible();
+  for (const state of ["offline", "stale", "models-empty", "models", "settings", "switch-running", "switch-success", "confirmation", "toast"]) {
+    await choose.selectOption(state);
+    await expect(choose).toHaveValue(state);
+    await expect(page.getByText("这个页面暂时无法显示", { exact: true })).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+  expect(deviceRequests).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
+
 test("Studio navigation uses a desktop rail and returns to a top strip on narrow screens", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await mockStudioApi(page);
@@ -171,7 +221,7 @@ test("service failure is not shown as first-time setup or an empty model library
   await page.goto("/?page=overview");
   await expect(page.getByRole("status").filter({ hasText: "当前运行结论" })).toContainText("无法确认运行状态");
   await expect(page.locator(".console-safety-deck")).toBeHidden();
-  await expect(page.locator(".runtime-overview-stage")).not.toContainText("服务未连接");
+  await expect(page.locator(".runtime-overview")).not.toContainText("服务未连接");
   await expect(page.getByText("无法确认运行状态", { exact: true })).toHaveCount(1);
   await expect(page.getByText(/首次设置/)).toHaveCount(0);
 
@@ -225,7 +275,7 @@ test("capture page keeps saved and running specifications visible without horizo
   await page.goto("/?page=capture");
 
   const check = page.locator(".capture-command-header");
-  await expect(check).toContainText("等待运行验证");
+  await expect(check).toContainText("运行规格未确认");
   await expect(check.getByText("MJPEG (MJPG) / 1920x1080 / 240 FPS", { exact: true })).toBeVisible();
   await expect(page.getByText("点击一个 FPS 即自动验证并保存整组设备配置。", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "应用画面设置" })).toHaveCount(0);
@@ -283,19 +333,87 @@ test("parameter draft survives in-app navigation without a confirmation popup", 
   expect(dialogCount).toBe(0);
 });
 
-test("algorithm parameters are grouped directly without the obsolete dialog", async ({ page }) => {
-  await mockStudioApi(page, authenticatedSession, {
+test("algorithm parameters separate daily tuning from advanced tools", async ({ page }, testInfo) => {
+  let config = {
     revision: 1,
     control: {
       trigger_mode: "always",
     },
-    pipeline: {},
+    pipeline: { target_fov_radius_px: 180 },
+  };
+  await mockStudioApi(page, authenticatedSession, config);
+  const writes: typeof config[] = [];
+  await page.route("**/api/config", async (route) => {
+    if (route.request().method() === "POST") {
+      const payload = route.request().postDataJSON() as typeof config;
+      writes.push(payload);
+      config = { ...payload, revision: config.revision + 1 };
+      await route.fulfill({ json: {
+        config, apply_mode: "epoch_reload", applied: true, rolled_back: false,
+        restart_required: false, message: "applied",
+      } });
+    } else {
+      await route.fulfill({ json: config });
+    }
   });
   await page.goto("/?page=params");
 
-  await expect(page.getByRole("heading", { name: "触发设置", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "搜索范围", exact: true })).toBeVisible();
+  const rangeTab = page.getByRole("tab", { name: "范围与触发", exact: true });
+  await rangeTab.press("End");
+  await expect(page.getByRole("tab", { name: "进阶调校", exact: true })).toBeFocused();
+  await page.getByRole("tab", { name: "进阶调校", exact: true }).press("Home");
+  await expect(rangeTab).toBeFocused();
+  const radiusInput = page.getByRole("textbox", { name: "搜索半径 数值", exact: true });
+  await expect(radiusInput).toHaveValue("180");
+  await expect(page.getByRole("textbox", { name: "范围比例 数值", exact: true })).toHaveCount(0);
+  await radiusInput.fill("240");
+  await radiusInput.press("Tab");
+  expect(writes).toHaveLength(0);
+  await page.getByRole("button", { name: "保存并应用", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(1);
+  expect(writes[0].pipeline.target_fov_radius_px).toBe(240);
+  expect(writes[0].pipeline).not.toHaveProperty("target_range_scale");
+  await expect(page.locator(".parameter-save-bar")).toHaveCount(0);
+  await page.reload();
+  await expect(radiusInput).toHaveValue("240");
+  await page.screenshot({ path: testInfo.outputPath("parameter-workspace.png"), animations: "disabled" });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.locator(".search-range-scene").screenshot({ path: testInfo.outputPath("search-range.png") });
+  await expect(page.getByRole("heading", { name: "移动响应", exact: true })).toHaveCount(0);
+  await page.getByRole("tab", { name: "移动与输出", exact: true }).click();
   await expect(page.getByRole("heading", { name: "移动响应", exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "单次 X 轴输出上限", exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "单次 Y 轴输出上限", exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "预测位移上限 数值", exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const outputLimits = page.locator(".control-chain-settings > li").last();
+  await outputLimits.scrollIntoViewIfNeeded();
+  const outputX = page.getByRole("textbox", { name: "单次 X 轴输出上限", exact: true });
+  await expect(outputX).toBeInViewport();
+  await outputX.fill("96");
+  await outputX.press("Tab");
+  await page.getByRole("button", { name: "保存并应用", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1]).toMatchObject({ pipeline: { max_output_x_counts: 96 } });
+  await page.reload();
+  await page.getByRole("tab", { name: "移动与输出", exact: true }).click();
+  await expect(outputX).toHaveValue("96");
+  await outputLimits.scrollIntoViewIfNeeded();
+  await outputLimits.screenshot({ path: testInfo.outputPath("motion-output.png") });
+  await expect(page.getByRole("region", { name: "响应试算", exact: true })).toHaveCount(0);
+  await page.getByRole("tab", { name: "进阶调校", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "搜索半径上限 数值", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "响应试算", exact: true })).not.toBeVisible();
+  await page.locator("summary").filter({ hasText: "响应试算" }).click();
+  await expect(page.getByRole("region", { name: "响应试算", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "目标与瞄点", exact: true }).click();
   await expect(page.getByRole("heading", { name: "目标锁定", exact: true })).toBeVisible();
+  await expect(page.getByRole("list", { name: "当前类别配置" }).locator("li")).toHaveCount(16);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  for (const label of ["距离权重", "类别偏好权重", "置信度权重", "控制目标最低置信度", "目标切换确认延迟", "目标丢失保持", "大小权重", "连续性权重", "运动趋势权重", "运动趋势观察窗口"]) {
+    await expect(page.getByRole("textbox", { name: `${label} 数值`, exact: true })).toHaveCount(0);
+  }
   await expect(page.locator(".parameter-save-bar")).toHaveCount(0);
   await expect(page.getByText("完整配置文件", { exact: true })).toHaveCount(0);
   await expect(page.locator("main.console-main").getByRole("button", { name: "算法参数", exact: true })).toHaveCount(0);
@@ -324,6 +442,20 @@ test("model search keeps selection and verification together", async ({ page }) 
   await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeDisabled();
   await page.getByRole("button", { name: "清除筛选" }).click();
   await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
+  await page.getByRole("navigation", { name: "NovaSight Studio 导航" }).getByRole("button", { name: "首页", exact: true }).click();
+  await page.goBack();
+  await page.getByRole("textbox", { name: "新增模型标签" }).fill("未保存的标签");
+  await page.goForward();
+  const discard = page.getByRole("alertdialog", { name: "放弃未保存的模型标签？" });
+  await expect(discard).toBeVisible();
+  await discard.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(page).toHaveURL(/page=models/);
+  await expect(page.getByRole("textbox", { name: "新增模型标签" })).toHaveValue("未保存的标签");
+  await page.goForward();
+  await discard.getByRole("button", { name: "放弃修改", exact: true }).click();
+  await expect(page).toHaveURL(/page=overview/);
+  await page.goBack();
+  await expect(page.getByRole("heading", { name: "模型", exact: true })).toBeVisible();
 });
 
 test("stopped mainline asks before model registration and deployment", async ({ page }) => {
@@ -756,7 +888,7 @@ test("configuration pages explain the next action without horizontal overflow", 
   for (const [route, text] of [
     ["models", "当前模型与设备文件"],
     ["license", "更换授权码"],
-    ["params", "调整目标锁定、移动手感与安全边界。"],
+    ["params", "让范围、目标和跟随手感适合你。"],
   ] as const) {
     await page.goto(`/?page=${route}`);
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
@@ -779,7 +911,7 @@ test("Studio exposes six visible task spaces without a hidden secondary navigati
   await expect(page.getByRole("heading", { level: 1, name: "设备管理" })).toBeFocused();
   await navigation.getByRole("button", { name: "实时日志" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "实时日志" })).toBeFocused();
-  await expect(page.getByText(/件事需要注意/)).toBeVisible();
+  await expect(page.getByText(/条故障与警告记录/)).toBeVisible();
 });
 
 test("management exposes onboarding and real object pages without fake cloud controls", async ({ page }) => {
@@ -787,8 +919,8 @@ test("management exposes onboarding and real object pages without fake cloud con
   await page.goto("/?page=management");
 
   await expect(page.getByRole("heading", { level: 1, name: "资源与授权" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "管理真实对象，不管理后台术语" })).toBeVisible();
-  await expect(page.getByText(/团队、账单和多设备云端编排没有后端数据时不会伪装成可用功能/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "设备与资源" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /账单|团队|云端/ })).toHaveCount(0);
   await page.getByRole("button", { name: "查看设备状态" }).click();
   await expect(page).toHaveURL(/\?page=device$/);
   await page.goto("/?page=onboarding");

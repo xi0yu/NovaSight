@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 
 import { NovaIcon } from "../../components/visual";
+import { getErrorMessage } from "../shared/format";
 
 import "./activity-view.css";
 
@@ -37,11 +38,21 @@ export function ActivityView({
 }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [clearing, setClearing] = useState(false);
+  const [query, setQuery] = useState("");
+  const [clearError, setClearError] = useState("");
   const attentionCount = items.filter((item) => item.tone === "warn" || item.tone === "error" || item.tone === undefined).length;
   const completedCount = items.filter((item) => item.tone === "success").length;
-  const filteredItems = useMemo(() => filter === "all"
-    ? items
-    : items.filter((item) => (item.tone ?? "error") === filter), [filter, items]);
+  const filteredItems = useMemo(() => items.filter((item) =>
+    (filter === "all" || (item.tone ?? "error") === filter)
+    && [item.title, item.detail, item.tag, item.requestId, item.technicalDetail].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
+  ), [filter, items, query]);
+  const clearHistory = async () => {
+    setClearing(true);
+    setClearError("");
+    try { await onClear(); }
+    catch (error) { setClearError(getErrorMessage(error)); }
+    finally { setClearing(false); }
+  };
   const counts = useMemo(() => ({
     all: items.length,
     error: items.filter((item) => (item.tone ?? "error") === "error").length,
@@ -57,9 +68,9 @@ export function ActivityView({
           <NovaIcon name={attentionCount > 0 ? "triangle-alert" : "shield-check"} size={22} />
         </span>
         <div>
-          <span>现在</span>
-          <h2 id="activity-view-title">{attentionCount > 0 ? `${attentionCount} 件事需要注意` : completedCount > 0 ? "最近操作已完成" : items.length > 0 ? "最近有新记录" : "暂无活动记录"}</h2>
-          <p>{attentionCount > 0 ? "后端故障会在服务运行期间保留；处理建议优先展示，底层证据按需展开。" : "这里汇总后端运行事件和当前页面操作；运行结论请查看首页状态。"}</p>
+          <span>活动记录 · {items.length} 条</span>
+          <h2 id="activity-view-title">{attentionCount > 0 ? `${attentionCount} 条故障与警告记录` : completedCount > 0 ? "最近操作已完成" : items.length > 0 ? "最近有新记录" : "暂无活动记录"}</h2>
+          <p>记录不代表故障仍在发生；当前运行状态请查看首页。</p>
         </div>
         {attentionCount > 0 ? (
           <button className="console-button secondary" onClick={onOpenDetails} type="button">查看完整详情</button>
@@ -67,6 +78,13 @@ export function ActivityView({
       </header>
     ),
     filters: (
+      <>
+      <div className="activity-search-row">
+        <label className="activity-search"><NovaIcon name="search" size={16} />
+          <input aria-label="搜索日志" type="search" placeholder="搜索事件、来源或排查编号" value={query} onChange={(event) => setQuery(event.target.value)} />
+        </label>
+        <span role="status">显示 {filteredItems.length} / {items.length} 条</span>
+      </div>
       <div className="activity-toolbar">
         <nav className="activity-filters" aria-label="日志等级筛选">
           {([
@@ -86,16 +104,15 @@ export function ActivityView({
         <button
           className="console-button secondary activity-clear"
           disabled={clearing || items.length === 0}
-          onClick={() => {
-            setClearing(true);
-            void Promise.resolve(onClear()).catch(() => undefined).finally(() => setClearing(false));
-          }}
+          onClick={() => void clearHistory()}
           type="button"
         >
           <NovaIcon name="delete" size={15} />
           {clearing ? "正在清理…" : "清理历史"}
         </button>
       </div>
+      {clearError ? <div className="activity-clear-error" role="alert"><strong>历史记录未清理</strong><span>{clearError}</span><small>记录已保留，可以重试。</small></div> : null}
+      </>
     ),
     feed: (
       <section className="activity-list" aria-label="实时日志列表">
@@ -109,20 +126,23 @@ export function ActivityView({
                 <strong>{item.title}</strong>
                 <p>{item.detail}</p>
                 {(item.count ?? 1) > 1 ? <small>本次会话重复 {item.count} 次</small> : null}
-                {item.technicalDetail ? (
+                {item.technicalDetail || item.requestId ? (
                   <details>
                     <summary>原始错误与开发者详情</summary>
-                    <pre>{item.technicalDetail}</pre>
+                    {item.requestId ? <p>排查编号：{item.requestId}</p> : null}
+                    {item.technicalDetail ? <pre>{item.technicalDetail}</pre> : null}
                   </details>
                 ) : null}
               </div>
               <span className="activity-domain-tag">{item.tag || "NovaSight"}</span>
-              {item.time ? <time>{formatActivityTime(item.time)}</time> : <time>仍在发生</time>}
+              {item.time ? <time dateTime={new Date(item.time).toISOString()} title={new Date(item.time).toLocaleString("zh-CN")}>{formatActivityTime(item.time)}</time> : <time>时间未提供</time>}
             </li>
           )) : (
             <li className="activity-empty">
-              <span>{items.length > 0 ? "这个等级暂时没有日志" : "暂无运行记录"}</span>
-              <small>{items.length > 0 ? "选择其他等级继续查看。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}</small>
+              <NovaIcon name="logs" size={24} />
+              <span>{items.length > 0 ? "没有符合条件的日志" : "暂无运行记录"}</span>
+              <small>{items.length > 0 ? "试试其他关键词或日志等级。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}</small>
+              {items.length > 0 ? <button className="console-button" onClick={() => { setQuery(""); setFilter("all"); }} type="button">重置筛选</button> : null}
             </li>
           )}
         </ul>

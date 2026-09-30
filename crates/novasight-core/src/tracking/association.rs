@@ -185,24 +185,35 @@ fn association_edge(
         return None;
     }
     let center = (detection.center_x(), detection.center_y());
-    let nis = if track.kalman.prediction_valid() {
-        track
-            .kalman
-            .measurement_nis(center.0, center.1, config.kalman)
-    } else {
-        track.kalman.measurement_nis_from_position(
-            center.0,
-            center.1,
-            track.box_x + track.width * 0.5,
-            track.box_y + track.height * 0.5,
-            config.kalman,
-        )
-    };
+    let observed_center = (
+        track.box_x + track.width * 0.5,
+        track.box_y + track.height * 0.5,
+    );
+    let predicted_nis = track
+        .kalman
+        .measurement_nis(center.0, center.1, config.kalman);
+    let (nis, reference) =
+        if track.kalman.prediction_valid() && predicted_nis <= config.kalman.nis_hard_reject {
+            (predicted_nis, (track.center_x, track.center_y))
+        } else {
+            // A cold or lagging velocity estimate must not veto a valid observed
+            // displacement. Both hypotheses use the same outlier bound.
+            (
+                track.kalman.measurement_nis_from_position(
+                    center.0,
+                    center.1,
+                    observed_center.0,
+                    observed_center.1,
+                    config.kalman,
+                ),
+                observed_center,
+            )
+        };
     if !nis.is_finite() || nis > config.kalman.nis_hard_reject {
         return None;
     }
     let normalized_distance =
-        euclidean(track.center_x, track.center_y, center.0, center.1) / reference_height;
+        euclidean(reference.0, reference.1, center.0, center.1) / reference_height;
     if !normalized_distance.is_finite() || normalized_distance > config.tracker_max_match_distance {
         return None;
     }
@@ -215,19 +226,24 @@ fn association_edge(
     let iou_weight = config.tracker_iou_cost_weight.max(0.0);
     let scale_weight = config.tracker_scale_cost_weight.max(0.0);
     let class_weight = config.tracker_class_cost_weight.max(0.0);
-    let total_weight = position_weight + iou_weight + scale_weight + class_weight;
-    if !total_weight.is_finite() || total_weight <= 0.0 {
+    let geometry_weight = position_weight + iou_weight + scale_weight;
+    let total_weight = geometry_weight + class_weight;
+    if !total_weight.is_finite() || geometry_weight <= 0.0 {
         return None;
     }
     let overlap = track_detection_iou(track, detection);
     let scale_cost = (track.width / f64::from(detection.width())).ln().abs()
         + (track.height / f64::from(detection.height())).ln().abs();
-    let cost = (position_weight * normalized_distance
+    let geometry_cost = (position_weight * normalized_distance
         + iou_weight * (1.0 - overlap)
-        + scale_weight * scale_cost
+        + scale_weight * scale_cost)
+        / geometry_weight;
+    let cost = (geometry_weight * geometry_cost
         + class_weight * classification::association_cost(track.class_id, detection.class_id()))
         / total_weight;
-    Some((cost, (1.0 - cost).clamp(0.0, 1.0)))
+    // Class preference can resolve an assignment, never manufacture spatial
+    // confidence merely by adding weight to a zero same-class penalty.
+    Some((cost, (1.0 - geometry_cost).clamp(0.0, 1.0)))
 }
 
 fn symmetric_ratio(left: f64, right: f64) -> Option<f64> {

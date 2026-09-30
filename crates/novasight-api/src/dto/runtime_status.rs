@@ -484,7 +484,6 @@ pub(crate) struct ControlPipelineState {
     pub prediction_lead_ms: Option<f64>,
     pub prediction_horizon_ms: Option<f64>,
     pub prediction_raw_offset_x: Option<f64>,
-    pub prediction_allowed_cap_x: Option<f64>,
     pub prediction_safe_offset_x: Option<f64>,
     pub prediction_allowed: Option<bool>,
     pub velocity_y_1: Option<f64>,
@@ -496,7 +495,6 @@ pub(crate) struct ControlPipelineState {
     pub measurement_dt_y_s: Option<f64>,
     pub reference_dt_y_ms: Option<f64>,
     pub prediction_raw_offset_y: Option<f64>,
-    pub prediction_allowed_cap_y: Option<f64>,
     pub prediction_safe_offset_y: Option<f64>,
     pub prediction_allowed_y: Option<bool>,
     pub observed_error_x_px: Option<f64>,
@@ -920,7 +918,7 @@ impl RuntimeStatusState {
                 targeting_batch_fps: snapshot.telemetry.targeting_batch_fps,
                 detection_data_age_ms: snapshot.telemetry.detection_data_age_ms,
                 detection_freshness_threshold_ms: runtime_config
-                    .map(|config| config.pipeline.freshness_threshold_ms),
+                    .map(|config| config.pipeline.frame_max_age_ms),
                 inference_latency_ms: snapshot.telemetry.inference_latency_ms,
                 inference_latency_samples: metrics.inference_duration_samples,
                 gpu_total_latency_ms: metrics
@@ -1126,8 +1124,6 @@ impl RuntimeStatusState {
                             .then_some(control.prediction_horizon_ms),
                         prediction_raw_offset_x: control_sample
                             .then_some(control.prediction_raw_offset_x),
-                        prediction_allowed_cap_x: control_sample
-                            .then_some(control.prediction_allowed_cap_x),
                         prediction_safe_offset_x: control_sample
                             .then_some(control.predicted_offset_x),
                         prediction_allowed: control_sample.then_some(control.prediction_allowed),
@@ -1143,8 +1139,6 @@ impl RuntimeStatusState {
                         reference_dt_y_ms: control_sample.then_some(control.reference_dt_ms_y),
                         prediction_raw_offset_y: control_sample
                             .then_some(control.prediction_raw_offset_y),
-                        prediction_allowed_cap_y: control_sample
-                            .then_some(control.prediction_allowed_cap_y),
                         prediction_safe_offset_y: control_sample
                             .then_some(control.predicted_offset_y),
                         prediction_allowed_y: control_sample
@@ -1199,8 +1193,7 @@ fn studio_presentation(
     metadata_extractions: u64,
 ) -> StudioPresentationState {
     let metrics = snapshot.perception_metrics;
-    let freshness_threshold_ms =
-        runtime_config.map(|config| config.pipeline.freshness_threshold_ms);
+    let freshness_threshold_ms = runtime_config.map(|config| config.pipeline.frame_max_age_ms);
     let fresh_detection = snapshot
         .telemetry
         .detection_data_age_ms
@@ -1509,7 +1502,7 @@ impl OutputTraceProjection<'_> {
             .detection_data_age_ms
             .zip(
                 self.runtime_config
-                    .map(|config| config.pipeline.freshness_threshold_ms),
+                    .map(|config| config.pipeline.frame_max_age_ms),
             )
             .is_some_and(|(age, threshold)| age > threshold)
         {
@@ -1580,6 +1573,12 @@ impl OutputTraceProjection<'_> {
             };
         }
         match pipeline.output_delivery_state {
+            OutputDeliveryState::Expired => OutputTraceState {
+                code: "observation_expired",
+                state: "blocked",
+                detail: "观测在等待设备发送时已过期，本次输出已丢弃。",
+                next_action: "wait_next_frame",
+            },
             OutputDeliveryState::GenerationFenced => OutputTraceState {
                 code: "generation_fenced",
                 state: "waiting",
@@ -1825,7 +1824,6 @@ mod tests {
             reference_dt_ms: 8.1,
             prediction_lead_ms: 1.0,
             prediction_raw_offset_x: 2.0,
-            prediction_allowed_cap_x: 3.0,
             prediction_allowed: true,
             velocity_y: -0.10,
             velocity_samples_y: [Some(-0.08), Some(-0.12), Some(-0.10)],
@@ -1834,7 +1832,6 @@ mod tests {
             measurement_dt_ms_y: Some(8.0),
             reference_dt_ms_y: 8.1,
             prediction_raw_offset_y: -0.8,
-            prediction_allowed_cap_y: 1.5,
             prediction_allowed_y: true,
             predicted_offset_x: 1.6,
             predicted_offset_y: -0.6,

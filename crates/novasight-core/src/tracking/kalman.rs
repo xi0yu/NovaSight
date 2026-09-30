@@ -14,14 +14,11 @@ const DEFAULT_MEASUREMENT_NOISE_X: f64 = 16.0;
 const DEFAULT_MEASUREMENT_NOISE_Y: f64 = 16.0;
 const DEFAULT_MAX_PREDICT_DT_MS: f64 = 35.0;
 const DEFAULT_MAX_PREDICT_MISSING_MS: f64 = 80.0;
-const DEFAULT_MAX_PREDICT_STEPS: u32 = 5;
 const DEFAULT_NIS_THRESHOLD: f64 = 9.21;
 const DEFAULT_NIS_HARD_REJECT: f64 = 16.0;
 const DEFAULT_MAX_POSITION_SIGMA_PX: f64 = 45.0;
 const DEFAULT_MAX_COVARIANCE_TRACE: f64 = 5_000.0;
 const DEFAULT_MIN_IDENTITY_CONFIDENCE: f64 = 0.70;
-const DEFAULT_MIN_PREDICTION_CONFIDENCE: f64 = 0.35;
-const DEFAULT_PREDICTION_DECAY_TAU_MS: f64 = 45.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct KalmanConfig {
@@ -30,14 +27,11 @@ pub struct KalmanConfig {
     pub measurement_noise_y: f64,
     pub max_predict_dt_ms: f64,
     pub max_predict_missing_ms: f64,
-    pub max_predict_steps: u32,
     pub nis_threshold: f64,
     pub nis_hard_reject: f64,
     pub max_position_sigma_px: f64,
     pub max_covariance_trace: f64,
     pub min_identity_confidence: f64,
-    pub min_prediction_confidence: f64,
-    pub prediction_decay_tau_ms: f64,
 }
 
 impl Default for KalmanConfig {
@@ -48,14 +42,11 @@ impl Default for KalmanConfig {
             measurement_noise_y: DEFAULT_MEASUREMENT_NOISE_Y,
             max_predict_dt_ms: DEFAULT_MAX_PREDICT_DT_MS,
             max_predict_missing_ms: DEFAULT_MAX_PREDICT_MISSING_MS,
-            max_predict_steps: DEFAULT_MAX_PREDICT_STEPS,
             nis_threshold: DEFAULT_NIS_THRESHOLD,
             nis_hard_reject: DEFAULT_NIS_HARD_REJECT,
             max_position_sigma_px: DEFAULT_MAX_POSITION_SIGMA_PX,
             max_covariance_trace: DEFAULT_MAX_COVARIANCE_TRACE,
             min_identity_confidence: DEFAULT_MIN_IDENTITY_CONFIDENCE,
-            min_prediction_confidence: DEFAULT_MIN_PREDICTION_CONFIDENCE,
-            prediction_decay_tau_ms: DEFAULT_PREDICTION_DECAY_TAU_MS,
         }
     }
 }
@@ -67,7 +58,6 @@ pub(super) struct KalmanState {
     state_ts_ns: u64,
     last_measurement_ts_ns: u64,
     last_nis: f64,
-    prediction_steps: u32,
     estimate_valid: bool,
     initialized: bool,
 }
@@ -80,7 +70,6 @@ impl Default for KalmanState {
             state_ts_ns: 0,
             last_measurement_ts_ns: 0,
             last_nis: 0.0,
-            prediction_steps: 0,
             estimate_valid: false,
             initialized: false,
         }
@@ -106,7 +95,6 @@ impl KalmanState {
             state_ts_ns: ts_ns,
             last_measurement_ts_ns: ts_ns,
             last_nis: 0.0,
-            prediction_steps: 0,
             estimate_valid: false,
             initialized: true,
         };
@@ -116,10 +104,6 @@ impl KalmanState {
 
     pub(super) fn position(&self) -> (f64, f64) {
         (self.state[0], self.state[1])
-    }
-
-    pub(super) fn velocity(&self) -> (f64, f64) {
-        (self.state[2], self.state[3])
     }
 
     pub(super) fn prediction_valid(&self) -> bool {
@@ -141,7 +125,6 @@ impl KalmanState {
         self.state = state;
         self.covariance = covariance;
         self.state_ts_ns = ts_ns;
-        self.prediction_steps = self.prediction_steps.saturating_add(1);
         self.estimate_valid = self.computed_valid(config, identity_confidence);
         self.estimate_valid
     }
@@ -214,7 +197,6 @@ impl KalmanState {
         self.state_ts_ns = ts_ns;
         self.last_measurement_ts_ns = ts_ns;
         self.last_nis = nis;
-        self.prediction_steps = 0;
         self.estimate_valid = self.computed_valid(config, identity_confidence);
         self.estimate_valid
     }
@@ -262,25 +244,17 @@ impl KalmanState {
             .sum::<f64>();
         let sigma = ((self.covariance[0][0] + self.covariance[1][1]).max(0.0) * 0.5).sqrt();
         let missing_ms = self.state_ts_ns.saturating_sub(self.last_measurement_ts_ns) as f64 / 1e6;
-        let covariance_confidence =
-            (1.0 - sigma / config.max_position_sigma_px.max(1e-6)).clamp(0.0, 1.0);
-        let residual_confidence =
-            (1.0 - self.last_nis.max(0.0) / config.nis_threshold.max(1e-6)).clamp(0.0, 1.0);
-        let missing_decay = (-missing_ms / config.prediction_decay_tau_ms.max(1e-6)).exp();
-        let prediction_confidence = identity_confidence.clamp(0.0, 1.0)
-            * covariance_confidence
-            * residual_confidence
-            * missing_decay;
+        // One clock defines retention; independent measured-quality guards may
+        // reject earlier. A product of heuristic scores is not a probability.
         self.state.iter().all(|value| value.is_finite())
             && covariance_trace.is_finite()
             && covariance_trace <= config.max_covariance_trace
             && sigma.is_finite()
             && sigma <= config.max_position_sigma_px
             && missing_ms <= config.max_predict_missing_ms
-            && self.prediction_steps <= config.max_predict_steps
+            && identity_confidence.is_finite()
             && identity_confidence >= config.min_identity_confidence
             && self.last_nis <= config.nis_threshold
-            && prediction_confidence >= config.min_prediction_confidence
     }
 }
 
@@ -297,4 +271,41 @@ fn mahalanobis_2d(dx: f64, dy: f64, a: f64, b: f64, c: f64, d: f64) -> f64 {
         return f64::INFINITY;
     };
     dx * (inverse[0][0] * dx + inverse[0][1] * dy) + dy * (inverse[1][0] * dx + inverse[1][1] * dy)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_window_is_time_based_without_a_second_hidden_expiry() {
+        let config = KalmanConfig::default();
+        for step_ms in [4_u64, 10, 20] {
+            let mut state = KalmanState::new(320.0, 320.0, 1_000_000_000, config, 1.0);
+            for elapsed in (step_ms..=80).step_by(step_ms as usize) {
+                assert!(
+                    state.predict(1_000_000_000 + elapsed * 1_000_000, config, 1.0),
+                    "valid geometry expired at {elapsed}ms with {step_ms}ms steps"
+                );
+            }
+            assert!(!state.predict(1_081_000_000, config, 1.0));
+        }
+    }
+
+    #[test]
+    fn explicit_quality_and_uncertainty_guards_still_reject_unsafe_prediction() {
+        let config = KalmanConfig::default();
+        let state = KalmanState::new(320.0, 320.0, 1_000_000_000, config, 1.0);
+        assert!(!state.computed_valid(config, 0.69));
+        assert!(!state.computed_valid(config, f64::INFINITY));
+        let mut bad = state.clone();
+        bad.last_nis = config.nis_threshold + 0.01;
+        assert!(!bad.computed_valid(config, 1.0));
+        bad = state.clone();
+        bad.covariance[0][0] = 10_000.0;
+        assert!(!bad.computed_valid(config, 1.0));
+        bad = state;
+        bad.state[0] = f64::NAN;
+        assert!(!bad.computed_valid(config, 1.0));
+    }
 }

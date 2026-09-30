@@ -172,9 +172,6 @@ pub struct TargetingConfig {
     pub track_max_lost_age_ms: f64,
     /// Radial admission gate around the declared observation center.
     pub target_fov_radius_px: f64,
-    /// Uniform scale of the observed-box capsule, not a movement gain.
-    #[serde(default = "default_target_range_scale")]
-    pub target_range_scale: f64,
     /// Maximum center displacement measured in target-height units.
     pub tracker_max_match_distance: f64,
     pub tracker_position_cost_weight: f64,
@@ -186,20 +183,14 @@ pub struct TargetingConfig {
     pub tracker_max_size_ratio: f64,
     pub tracker_max_association_dt_ms: f64,
     pub kalman: KalmanConfig,
-    /// Descending class preference. Every listed rank participates through a
-    /// geometric 1.0, 0.5, 0.25, ... preference curve; unlisted classes score
-    /// zero but remain selectable when admitted by `allowed_class_ids`.
-    pub class_priority: Vec<u32>,
-    /// Explicit class merit overrides the legacy rank score, in 0..=1.
+    /// The only class merit policy, in 0..=1. Unlisted classes score zero but
+    /// remain selectable when admitted by `allowed_class_ids`.
     pub class_weights: BTreeMap<u32, f64>,
     pub class_aim_x_ratios: BTreeMap<u32, f64>,
     /// Optional class admission allowlist. `None` admits every detector class;
     /// an empty set intentionally disables target selection.
     pub allowed_class_ids: Option<BTreeSet<u32>>,
     pub selection_weights: SelectionWeights,
-    /// Short horizon used only to rank whether a candidate is moving toward
-    /// the observation center. It never changes the emitted aim point.
-    pub selection_motion_horizon_ms: f64,
     pub switch_min_preference_advantage: f64,
     pub switch_min_continuity_score: f64,
     pub switch_delay_ms: f64,
@@ -214,7 +205,6 @@ impl Default for TargetingConfig {
             min_confidence: 0.5,
             track_max_lost_age_ms: DEFAULT_TRACK_MAX_LOST_AGE_MS,
             target_fov_radius_px: 180.0,
-            target_range_scale: default_target_range_scale(),
             tracker_max_match_distance: 1.5,
             tracker_position_cost_weight: 0.75,
             tracker_iou_cost_weight: 0.25,
@@ -223,12 +213,10 @@ impl Default for TargetingConfig {
             tracker_max_size_ratio: 2.5,
             tracker_max_association_dt_ms: 150.0,
             kalman: KalmanConfig::default(),
-            class_priority: vec![0, 1],
-            class_weights: BTreeMap::new(),
+            class_weights: BTreeMap::from([(0, 1.0), (1, 0.5)]),
             class_aim_x_ratios: BTreeMap::new(),
             allowed_class_ids: None,
             selection_weights: SelectionWeights::default(),
-            selection_motion_horizon_ms: 30.0,
             switch_min_preference_advantage: 0.08,
             switch_min_continuity_score: 0.70,
             switch_delay_ms: 50.0,
@@ -239,58 +227,22 @@ impl Default for TargetingConfig {
     }
 }
 
-pub const fn default_target_range_scale() -> f64 {
-    1.0
-}
-
 impl TargetingConfig {
-    /// Search radius bounds selection. Every target additionally requires
-    /// the crosshair inside the latest observed box's scaled vertical capsule.
-    /// Association and prediction never move this admission region.
-    fn admits(&self, point: (f64, f64), aim: (f64, f64), bbox: [f64; 4]) -> bool {
-        let [x, y, width, height] = bbox;
-        if ![
-            point.0,
-            point.1,
-            aim.0,
-            aim.1,
-            x,
-            y,
-            width,
-            height,
-            self.target_fov_radius_px,
-            self.target_range_scale,
-        ]
-        .into_iter()
-        .all(f64::is_finite)
-            || width <= 0.0
-            || height <= 0.0
+    /// The latest observed, configured aim point must lie in the search circle.
+    /// Box size and predicted positions do not expand this admission region.
+    fn admits(&self, point: (f64, f64), aim: (f64, f64)) -> bool {
+        if ![point.0, point.1, aim.0, aim.1, self.target_fov_radius_px]
+            .into_iter()
+            .all(f64::is_finite)
             || self.target_fov_radius_px <= 0.0
-            || !(0.1..=5.0).contains(&self.target_range_scale)
         {
             return false;
         }
-        if (aim.0 - point.0).hypot(aim.1 - point.1) > self.target_fov_radius_px {
-            return false;
-        }
-        let radius = width * self.target_range_scale * 0.5;
-        let half_segment = (height - width).max(0.0) * self.target_range_scale * 0.5;
-        let dx = point.0 - (x + width * 0.5);
-        let dy = ((point.1 - (y + height * 0.5)).abs() - half_segment).max(0.0);
-        dx * dx + dy * dy <= radius * radius
+        (aim.0 - point.0).hypot(aim.1 - point.1) <= self.target_fov_radius_px
     }
 
     fn admits_detection(&self, point: (f64, f64), detection: &Detection) -> bool {
-        self.admits(
-            point,
-            detection_aim(detection, self),
-            [
-                f64::from(detection.x()),
-                f64::from(detection.y()),
-                f64::from(detection.width()),
-                f64::from(detection.height()),
-            ],
-        )
+        self.admits(point, detection_aim(detection, self))
     }
 }
 
@@ -299,9 +251,6 @@ pub struct SelectionWeights {
     pub distance: f64,
     pub class: f64,
     pub confidence: f64,
-    pub size: f64,
-    pub continuity: f64,
-    pub motion: f64,
 }
 
 impl Default for SelectionWeights {
@@ -310,9 +259,6 @@ impl Default for SelectionWeights {
             distance: 0.45,
             class: 0.20,
             confidence: 0.15,
-            size: 0.05,
-            continuity: 0.10,
-            motion: 0.05,
         }
     }
 }
@@ -389,6 +335,8 @@ impl TargetingCore {
 
     /// Production selection path. `captured_at_ns` is the admitted monotonic
     /// capture timestamp and therefore cannot be stretched by worker backlog.
+    /// `observation_center` is (width / 2, height / 2) in the zero-origin
+    /// observation coordinates; it also defines the distance-score reference.
     pub fn select_at(
         &mut self,
         detections: &[Detection],
@@ -671,7 +619,6 @@ impl TargetingCore {
                 && self.config.admits(
                     observation_center,
                     (track.observed_aim_x, track.observed_aim_y),
-                    [track.box_x, track.box_y, track.width, track.height],
                 )
             {
                 current_indices[current_count] = index;
@@ -786,9 +733,8 @@ impl TargetingCore {
         let chosen_merit = classification::preference_score(track.class_id, &self.config);
         let reason = if self
             .config
-            .class_priority
-            .iter()
-            .chain(self.config.class_weights.keys())
+            .class_weights
+            .keys()
             .all(|id| chosen_merit >= classification::preference_score(*id, &self.config))
         {
             LockReason::PreferredClass

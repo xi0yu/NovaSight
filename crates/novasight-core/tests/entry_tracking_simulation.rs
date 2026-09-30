@@ -18,6 +18,28 @@ fn sample(generation: u64, elapsed_ms: f64, error: f64) -> AimSample {
 }
 
 #[test]
+fn prediction_history_window_does_not_control_entry_ramp() {
+    for history_gap in [10.0, 500.0] {
+        let mut control = AimAlgorithm::new(AimAlgorithmConfig {
+            prediction_enabled: false,
+            entry_ramp_ms: 100.0,
+            velocity_history_reset_gap_ms: history_gap,
+            ..Default::default()
+        });
+        control.step(sample(1, 0.0, 80.0));
+        assert!(control.step(sample(2, 20.0, 80.0)).float_demand_x > 0.0);
+        // 60ms between captures is not a stale 60ms-old frame. Fresh frames
+        // must continue entry even when their period exceeds the 50ms age gate.
+        let at_80 = control.step(sample(3, 80.0, 80.0));
+        let at_140 = control.step(sample(4, 140.0, 80.0));
+        assert!(at_140.float_demand_x > at_80.float_demand_x);
+        assert!(at_80.float_demand_x > 0.0);
+        // Capture loss still resets entry, even with a generous prediction history.
+        assert_eq!(control.step(sample(5, 240.0, 80.0)).dx, 0);
+    }
+}
+
+#[test]
 fn time_normalization_preserves_constant_error_budget_and_discards_gate_debt() {
     let config = AimAlgorithmConfig {
         response_reference_hz: 60.0,
@@ -46,7 +68,7 @@ fn time_normalization_preserves_constant_error_budget_and_discards_gate_debt() {
         assert_eq!(control.step(sample(fps + 2, 1010.0, 80.0)).dx, 0);
         // Valid captures with a controller stall cannot repay more than 50 ms.
         let mut delayed = sample(fps + 3, 1020.0, 80.0);
-        delayed.control_now_ns += 50_000_000;
+        delayed.control_now_ns = delayed.capture_ts_ns + 50_000_000;
         let result = control.step(delayed);
         assert!((result.float_demand_x - full * 3.0).abs() < 1e-9);
         assert_eq!(control.step(sample(fps + 4, 1200.0, 80.0)).dx, 0);

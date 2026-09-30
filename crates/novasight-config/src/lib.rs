@@ -11,6 +11,6 @@ pub use model::{
     DeviceConfig, InferenceBackend, InferenceConfig, InferenceInputSource, LimitsConfig,
     PathConfig, PipelineRuntimeConfig, ProductionAdapterConfig, QueueLeaky, ReplayConfig,
     ServerConfig, TriggerMode, VisionAdapterConfig, parse_class_values,
-    parse_target_class_aim_y_ratios, parse_target_class_filter, parse_target_class_priority,
+    parse_target_class_aim_y_ratios, parse_target_class_filter,
 };
 pub use repository::{ConfigError, ConfigRepository, YamlConfigRepository};

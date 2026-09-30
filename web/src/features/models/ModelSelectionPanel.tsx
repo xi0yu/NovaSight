@@ -12,6 +12,7 @@ import { StatusIndicator } from "../../components/ui";
 import { NovaIcon } from "../../components/visual";
 import { findCatalogDirectory, flattenCatalogModels, ModelCatalogTree, type ModelSortOrder } from "./ModelCatalogTree";
 import { getErrorMessage } from "../shared/format";
+import "./model-workspace.css";
 import {
   artifactStatus,
   formatModelSize,
@@ -98,6 +99,7 @@ export interface ModelSelectionPanelProps {
   onSelectModel: (model: ModelCatalogModel) => void;
   onSaveMetadata: (recommendation: ModelRecommendation, tags: string[]) => void;
   onSwitch: () => void;
+  onDraftChange?: (dirty: boolean) => void;
 }
 
 export function ModelSelectionPanel({
@@ -126,7 +128,8 @@ export function ModelSelectionPanel({
   onRequestMove,
   onSelectModel,
   onSaveMetadata,
-  onSwitch
+  onSwitch,
+  onDraftChange,
 }: ModelSelectionPanelProps) {
   const folderNameId = useId();
   const moveNameId = useId();
@@ -258,6 +261,8 @@ export function ModelSelectionPanel({
   );
   const pendingTag = newTag.trim();
   const pendingTagIsNew = pendingTag !== "" && !draftTags.some((tag) => tag.toLocaleLowerCase() === pendingTag.toLocaleLowerCase());
+  useEffect(() => { onDraftChange?.(metadataDirty || pendingTagIsNew); }, [metadataDirty, pendingTagIsNew, onDraftChange]);
+  useEffect(() => () => onDraftChange?.(false), [onDraftChange]);
   const metadataEditable = selectedModel?.kind === "engine" && busy === null;
   const selectionHiddenByFilter = selectedModel !== null && !filteredModels.some((model) => model.relative_path === selectedModel.relative_path);
   const selectedProject = selectedModel?.project_name ?? (selectedModel?.kind === "engine" ? "首次保存整理或切换时登记" : "不适用");
@@ -457,6 +462,10 @@ export function ModelSelectionPanel({
               </select>
             </label>
           </div> : null}
+          {root && catalogError ? <div className="model-catalog-stale" role="alert">
+            <strong>刷新失败 · 显示上次读取的文件</strong>
+            <p>{catalogError}</p><small>重新读取成功前，暂不允许切换模型。</small>
+          </div> : null}
           {loading && root === null ? (
             <div className="model-catalog-placeholder">正在读取 models 目录...</div>
           ) : root === null ? (
@@ -527,7 +536,7 @@ export function ModelSelectionPanel({
             <span>使用此文件</span>
             <button
               className="console-button primary"
-              disabled={busy !== null || !canSwitch || selectedIsActive || selectionHiddenByFilter || metadataDirty || pendingTagIsNew}
+              disabled={busy !== null || loading || !!catalogError || !canSwitch || selectedIsActive || selectionHiddenByFilter || metadataDirty || pendingTagIsNew}
               onClick={onSwitch}
               type="button"
             >

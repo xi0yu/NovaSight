@@ -3,6 +3,18 @@
   margin: 0 auto;
 }
 
+.home-shortcuts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; max-width: 1100px; margin: 24px auto 0; }
+.home-shortcuts button { display: flex; align-items: center; gap: 12px; padding: 18px 16px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 10px; color: var(--signal-info); text-align: left; cursor: pointer; }
+.home-shortcuts button:nth-child(2) { color: #b8a0ff; }
+.home-shortcuts button:nth-child(3) { color: #63d6bc; }
+.home-shortcuts button:hover { background: var(--bg-hover); border-color: currentColor; }
+.home-shortcuts button:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }
+.home-shortcuts svg { flex-shrink: 0; }
+.home-shortcuts b { display: block; color: var(--text-primary); font-size: 13px; font-weight: 600; }
+.home-shortcuts small { display: block; color: var(--text-tertiary); font-size: 12px; margin-top: 6px; }
+.home-shortcuts i { margin-left: auto; color: var(--text-tertiary); font-style: normal; }
+@media (max-width: 760px) { .home-shortcuts { grid-template-columns: minmax(0, 1fr); gap: 8px; } }
+
 .home-setup-prompt {
   max-width: 1100px;
   display: grid;

@@ -56,6 +56,8 @@ describe("RuntimeOverviewView", () => {
       />
     );
     expect(screen.getByText("无法确认运行状态")).toBeInTheDocument();
+    expect(screen.queryByText("输出保持锁定")).not.toBeInTheDocument();
+    expect(screen.queryByText("实时画面")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "查看异常信息" }));
     expect(onOpenErrors).toHaveBeenCalledOnce();
   });
@@ -206,7 +208,7 @@ describe("RuntimeOverviewView", () => {
 
     expect(screen.getAllByText("状态已过期").length).toBeGreaterThanOrEqual(4);
     expect(screen.getByLabelText("核心运行数据")).not.toHaveTextContent("240");
-    expect(screen.getByRole("switch", { name: "运行总开关，运行中" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "运行总开关，状态待确认" })).toBeDisabled();
     expect(screen.getByRole("heading", { name: "画面如何变成输出" }).closest("section")).not.toHaveTextContent("LIVE");
   });
 

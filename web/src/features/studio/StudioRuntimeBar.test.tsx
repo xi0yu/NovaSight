@@ -4,6 +4,11 @@ import { describe, expect, it } from "vitest";
 import { StudioRuntimeBar } from "./StudioRuntimeBar";
 
 describe("StudioRuntimeBar", () => {
+  it("does not repeat the capture page's verified device status", () => {
+    render(<StudioRuntimeBar page="capture" runtimeAvailable runtimeLifecycleActive={false} diagnosticModeReady captureStatus="已停止" inferenceStatus="已停止" />);
+    expect(screen.queryByRole("region", { name: "主链运行状态" })).not.toBeInTheDocument();
+  });
+
   it("does not call an unconfirmed runtime idle", () => {
     render(
       <StudioRuntimeBar

@@ -80,7 +80,8 @@ export function LicensePanel({
         source: "license-clear",
         title: nextFailure.title,
         publicDetail: nextFailure.message,
-        exposeStatus: false
+        exposeStatus: false,
+        popup: false,
       });
     } finally {
       setClearing(false);
@@ -95,7 +96,7 @@ export function LicensePanel({
       <div className={license?.valid ? "license-hero valid" : "license-hero"}>
         <div>
           <span>使用权限</span>
-          <strong>{license?.valid ? formatTier(license.tier) : "尚未授权"}</strong>
+          <strong>{license?.valid ? formatTier(license.tier) : license ? "尚未授权" : "授权待核实"}</strong>
           <p>{license?.valid
             ? license.credential_format === "ephemeral_code"
               ? "临时授权仅在本次服务运行期间有效；重启后需要输入新授权码。"
@@ -232,7 +233,8 @@ export function LicenseActivationForm({
         source: "license-activate",
         title: nextFailure.title,
         publicDetail: nextFailure.message,
-        exposeStatus: false
+        exposeStatus: false,
+        popup: false,
       });
     } finally {
       setActivating(false);

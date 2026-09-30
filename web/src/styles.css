@@ -3136,7 +3136,8 @@ tbody tr:hover {
 
 .action-confirmation-dialog {
   width: min(520px, 100%);
-  overflow: hidden;
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
   border: 1px solid var(--border-default);
   border-radius: var(--radius-6);
   background: var(--bg-surface);
@@ -3170,7 +3171,8 @@ tbody tr:hover {
 .action-confirmation-dialog h2 {
   margin: 3px 0 5px;
   color: var(--text-primary);
-  font-size: 20px;
+  font-size: 16px;
+  font-weight: 600;
 }
 
 .action-confirmation-dialog p {
@@ -3178,6 +3180,7 @@ tbody tr:hover {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .action-confirmation-dialog ul {
@@ -4008,7 +4011,7 @@ body {
 .ui-button.primary {
   background: var(--brand-primary);
   border-color: var(--brand-primary-hover);
-  color: #fffafb;
+  color: var(--button-primary-fg);
 }
 
 .console-button.primary:hover,
@@ -4186,7 +4189,7 @@ body {
 .error-center-dialog { width: min(680px, 100%); max-height: min(720px, calc(100vh - 32px)); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--border-default); border-radius: 16px; background: var(--bg-surface); box-shadow: var(--shadow-dialog); }
 .error-center-header { display: flex; justify-content: space-between; gap: 16px; padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); }
 .error-center-header span { color: var(--signal-target); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
-.error-center-header h2 { margin: 3px 0; color: var(--text-primary); font-size: 19px; }
+.error-center-header h2 { margin: 3px 0; color: var(--text-primary); font-size: 16px; font-weight: 600; }
 .error-center-header p { margin: 0; color: var(--text-tertiary); font-size: 12px; }
 .error-center-header > button { width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 8px; background: var(--bg-subtle); color: var(--text-secondary); }
 .error-center-body { overflow: auto; display: grid; align-content: start; gap: 8px; padding: 12px; }
@@ -4236,14 +4239,13 @@ body {
 
 .model-switch-dialog-header > div { min-width: 0; }
 .model-switch-dialog-header span { color: var(--signal-target); font-size: 10px; font-weight: 800; letter-spacing: .08em; }
-.model-switch-dialog-header h2 { margin: 3px 0; color: var(--text-primary); font-size: 19px; }
+.model-switch-dialog-header h2 { margin: 3px 0; color: var(--text-primary); font-size: 16px; font-weight: 600; }
 .model-switch-dialog-header p { overflow: hidden; margin: 0; color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.model-switch-dialog-header > strong { color: var(--signal-target); font-family: var(--font-mono); font-size: 24px; font-variant-numeric: tabular-nums; }
-
-.model-switch-progress { height: 3px; overflow: hidden; background: var(--border-subtle); }
-.model-switch-progress i { height: 100%; display: block; background: var(--signal-target); transition: width 180ms cubic-bezier(0.23, 1, 0.32, 1); }
-.model-switch-dialog.success .model-switch-progress i { background: var(--status-success-icon); }
-.model-switch-dialog.failed .model-switch-progress i { background: var(--status-error-icon); }
+.model-switch-dialog-header > strong { flex-shrink: 0; padding: 5px 9px; border: 1px solid var(--brand-border); border-radius: 6px; color: var(--brand-primary); background: var(--brand-soft); font-size: 11px; font-weight: 500; }
+.model-switch-dialog.success .model-switch-dialog-header > strong { color: var(--status-success-fg); background: var(--status-success-bg); border-color: var(--status-success-border); }
+.model-switch-dialog.failed .model-switch-dialog-header > strong { color: var(--status-error-fg); background: var(--status-error-bg); border-color: var(--status-error-border); }
+.model-catalog-stale { margin: 10px; padding: 12px; border: 1px solid var(--status-warning-border); border-radius: 8px; background: var(--status-warning-bg); color: var(--status-warning-fg); font-size: 12px; overflow-wrap: anywhere; }
+.model-catalog-stale p { margin: 5px 0; }
 
 .model-switch-stage-list { display: grid; gap: 0; margin: 0; padding: 10px 18px; list-style: none; }
 .model-switch-stage-list li { position: relative; min-width: 0; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; padding: 8px 0; }
@@ -4577,14 +4579,10 @@ body {
 .toast-card.tone-error .toast-card-tag { color: var(--danger); }
 .toast-card.tone-success .toast-card-tag { color: var(--success); }
 
-.toast-card-source {
-  flex: 1 1 auto;
-  font-family: var(--font-mono, ui-monospace, "SFMono-Regular", monospace);
-  font-size: 0.7rem;
-  opacity: 0.7;
-}
-
 .toast-card-close {
+  margin-left: auto;
+  min-width: 32px;
+  min-height: 32px;
   appearance: none;
   border: 0;
   background: transparent;

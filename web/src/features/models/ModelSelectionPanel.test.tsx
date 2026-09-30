@@ -40,6 +40,15 @@ describe("ModelSelectionPanel", () => {
     expect(screen.getByText(/1 个模型 · 清除筛选后返回当前文件夹/)).toBeInTheDocument();
   });
 
+  it("reports unsaved tags and does not deploy from an expired catalog", async () => {
+    const onDraftChange = vi.fn();
+    render(<ModelSelectionPanel {...panelProps({ catalogError: "设备断连", onDraftChange })} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("显示上次读取的文件");
+    expect(screen.getByRole("button", { name: "验证并切换到所选模型" })).toBeDisabled();
+    await userEvent.type(screen.getByRole("textbox", { name: "新增模型标签" }), "新标签");
+    expect(onDraftChange).toHaveBeenLastCalledWith(true);
+  });
+
   it("explains which files are registered, need validation, or are view-only", () => {
     const registered = { ...stableModel, artifact_id: 12 };
     const viewOnly = { ...otherModel, kind: "onnx" as const, name: "preview.onnx", relative_path: "preview.onnx" };
@@ -199,7 +208,7 @@ describe("ModelSelectionPanel", () => {
   it("does not call an active but unverified model qualified", () => {
     render(<ModelWorkspace activeModelName="test" activeArtifactStatus="failed" onOpenInference={vi.fn()}
       panelProps={panelProps({ activeArtifactPath: "stable.engine", activeLoaded: true })} />);
-    expect(screen.getByRole("list", { name: "模型进入生产槽的步骤" })).toHaveTextContent("待验证");
+    expect(screen.getByRole("list", { name: "模型部署步骤" })).toHaveTextContent("待验证");
     expect(screen.queryByText("已有验证记录")).not.toBeInTheDocument();
   });
 

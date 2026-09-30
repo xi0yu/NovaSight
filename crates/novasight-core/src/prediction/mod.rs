@@ -28,7 +28,6 @@ pub struct SingleTargetPredictionConfig {
     /// prediction horizon before the optional time lead.
     pub actuation_delay_ms: f64,
     pub lead_ms: f64,
-    pub cap_px: f64,
 }
 
 impl SingleTargetPredictionConfig {
@@ -42,8 +41,6 @@ impl SingleTargetPredictionConfig {
             && self.actuation_delay_ms >= 0.0
             && self.lead_ms.is_finite()
             && (0.0..=1_000.0).contains(&self.lead_ms)
-            && self.cap_px.is_finite()
-            && self.cap_px >= 0.0
     }
 }
 
@@ -69,7 +66,6 @@ pub struct AxisPrediction {
     pub reference_dt_ms: f64,
     pub horizon_ms: f64,
     pub raw_offset: f64,
-    pub allowed_cap: f64,
     pub safe_offset: f64,
     pub allowed: bool,
 }
@@ -111,30 +107,22 @@ impl SingleTargetPredictor {
         self.velocity.reset(track_id);
     }
 
-    /// Return the configured prediction envelope without advancing history.
+    /// Return unavailable prediction without advancing history.
     /// Used when the current observation cannot safely join the time series.
     pub fn unavailable(&self) -> SingleTargetPrediction {
         if !self.config.enabled {
             return SingleTargetPrediction::default();
         }
-        let allowed_cap = self.allowed_cap();
         SingleTargetPrediction {
-            x: AxisPrediction {
-                allowed_cap,
-                ..AxisPrediction::default()
-            },
-            y: AxisPrediction {
-                allowed_cap,
-                ..AxisPrediction::default()
-            },
             history_position_count: self.velocity.history_position_count(),
             actuation_delay_ms: self.config.actuation_delay_ms,
             lead_ms: self.config.lead_ms,
+            ..SingleTargetPrediction::default()
         }
     }
 
     pub fn predict(&mut self, observation: FocusTargetObservation) -> SingleTargetPrediction {
-        if !self.config.enabled {
+        if !self.config.enabled || !self.config.is_valid() {
             return SingleTargetPrediction::default();
         }
         if !observation.aim_x.is_finite()
@@ -156,28 +144,26 @@ impl SingleTargetPredictor {
         };
 
         let timing_valid = estimate.reference_dt_ms.is_finite() && estimate.reference_dt_ms > 0.0;
-        let allowed = timing_valid && estimate.motion_state != PredictionMotionState::Unstable;
         let horizon_ms = if timing_valid {
-            // Keep the requested physical time intact. Safety limits constrain the
-            // displacement, never silently move the prediction back into the past.
+            // Compensate elapsed capture age and measured device latency before
+            // adding the user's extra lead. Do not clip valid motion to pixels.
             observation.observation_age_ms + self.config.actuation_delay_ms + self.config.lead_ms
         } else {
             0.0
         };
         let raw_offset = estimate.velocity.scale(horizon_ms);
-        let allowed_cap = self.allowed_cap();
-        let safe_offset = if allowed {
-            clamp_vector_magnitude(raw_offset, allowed_cap)
-        } else {
-            Vector2::zero()
-        };
+        if !horizon_ms.is_finite() || !raw_offset.x.is_finite() || !raw_offset.y.is_finite() {
+            self.reset(Some(observation.track_id));
+            return self.unavailable();
+        }
+        let allowed = timing_valid && estimate.motion_state != PredictionMotionState::Unstable;
+        let safe_offset = if allowed { raw_offset } else { Vector2::zero() };
 
         let projection = AxisPredictionProjection {
             estimate,
             horizon_ms,
             raw_offset,
             safe_offset,
-            allowed_cap,
             allowed,
         };
 
@@ -188,10 +174,6 @@ impl SingleTargetPredictor {
             actuation_delay_ms: self.config.actuation_delay_ms,
             lead_ms: self.config.lead_ms,
         }
-    }
-
-    fn allowed_cap(&self) -> f64 {
-        self.config.cap_px.max(0.0)
     }
 }
 
@@ -293,6 +275,10 @@ impl RobustAimVelocityEstimator {
             let displacement =
                 Vector2::new(pair[1].aim_x - pair[0].aim_x, pair[1].aim_y - pair[0].aim_y);
             velocities[index] = displacement.scale(1.0 / dt_ms);
+            if !velocities[index].x.is_finite() || !velocities[index].y.is_finite() {
+                self.reset(Some(target_id));
+                return None;
+            }
             intervals_ms[index] = dt_ms;
         }
         let medoid_velocity = medoid_vector(velocities);
@@ -331,7 +317,6 @@ struct AxisPredictionProjection {
     horizon_ms: f64,
     raw_offset: Vector2,
     safe_offset: Vector2,
-    allowed_cap: f64,
     allowed: bool,
 }
 
@@ -349,7 +334,6 @@ impl AxisPredictionProjection {
             reference_dt_ms: self.estimate.reference_dt_ms,
             horizon_ms: self.horizon_ms,
             raw_offset: axis.component(self.raw_offset),
-            allowed_cap: self.allowed_cap,
             safe_offset: axis.component(self.safe_offset),
             allowed: self.allowed,
         }
@@ -419,15 +403,6 @@ fn medoid_vector(values: [Vector2; 3]) -> Vector2 {
     }
 }
 
-fn clamp_vector_magnitude(value: Vector2, cap: f64) -> Vector2 {
-    let cap = cap.max(0.0);
-    let magnitude = value.magnitude();
-    if magnitude <= cap || magnitude <= f64::EPSILON {
-        return value;
-    }
-    value.scale(cap / magnitude)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -441,7 +416,6 @@ mod tests {
             history_reset_gap_ms: 80.0,
             actuation_delay_ms: 4.0,
             lead_ms: 10.0,
-            cap_px: 10.0,
         }
     }
 
@@ -452,13 +426,6 @@ mod tests {
             aim_y,
             capture_ts_ns: 1_000_000_000 + elapsed_ms * 1_000_000,
             observation_age_ms: 8.0,
-        }
-    }
-
-    fn high_cap_config() -> SingleTargetPredictionConfig {
-        SingleTargetPredictionConfig {
-            cap_px: 100.0,
-            ..config()
         }
     }
 
@@ -491,7 +458,7 @@ mod tests {
     #[test]
     fn stable_motion_uses_real_capture_intervals_and_time_horizon() {
         let prediction = feed_points(
-            high_cap_config(),
+            config(),
             &[
                 (0, 100.0, 100.0),
                 (8, 104.0, 98.0),
@@ -514,9 +481,33 @@ mod tests {
     }
 
     #[test]
+    fn valid_fast_motion_is_not_flattened_by_the_retired_pixel_cap() {
+        let mut recovered_error = 0.0;
+        for dt_ms in [4, 8, 16, 33] {
+            for vx in [0.1, 0.5, 2.0, -2.0] {
+                let points: Vec<_> = (0..5)
+                    .map(|i| {
+                        let t = i * dt_ms;
+                        (t, 100.0 + vx * t as f64, 100.0 + vx * 0.5 * t as f64)
+                    })
+                    .collect();
+                let result = feed_points(config(), &points);
+                let truth = (vx * 22.0, vx * 11.0);
+                assert!(result.x.allowed && result.y.allowed);
+                assert!(
+                    (result.x.safe_offset - truth.0).hypot(result.y.safe_offset - truth.1) < 1e-10
+                );
+                // Offline ablation only: measure error introduced by the former 10px limit.
+                recovered_error += (truth.0.hypot(truth.1) - 10.0).max(0.0);
+            }
+        }
+        assert!(recovered_error > 300.0);
+    }
+
+    #[test]
     fn stationary_target_produces_zero_prediction() {
         let prediction = feed_points(
-            high_cap_config(),
+            config(),
             &[
                 (0, 100.0, 100.0),
                 (10, 100.0, 100.0),
@@ -534,7 +525,7 @@ mod tests {
     #[test]
     fn stable_motion_uses_three_segment_medoid() {
         let prediction = feed_points(
-            high_cap_config(),
+            config(),
             &[
                 (0, 100.0, 100.0),
                 (10, 110.0, 100.0),
@@ -555,7 +546,7 @@ mod tests {
     #[test]
     fn latest_reverse_suppresses_the_old_direction() {
         let prediction = feed_points(
-            high_cap_config(),
+            config(),
             &[
                 (0, 100.0, 100.0),
                 (10, 110.0, 100.0),
@@ -577,7 +568,7 @@ mod tests {
     #[test]
     fn alternating_direction_does_not_predict_a_consensus_that_is_not_there() {
         let prediction = feed_points(
-            high_cap_config(),
+            config(),
             &[
                 (0, 100.0, 100.0),
                 (10, 110.0, 100.0),
@@ -599,7 +590,7 @@ mod tests {
     #[test]
     fn medoid_velocity_rejects_single_segment_outlier_as_a_vector() {
         let prediction = feed_points(
-            high_cap_config(),
+            config(),
             &[
                 (0, 100.0, 100.0),
                 (10, 110.0, 103.0),
@@ -615,11 +606,8 @@ mod tests {
     }
 
     #[test]
-    fn vector_cap_preserves_prediction_direction() {
-        let cfg = SingleTargetPredictionConfig {
-            cap_px: 5.0,
-            ..config()
-        };
+    fn prediction_preserves_distance_and_direction_without_pixel_clipping() {
+        let cfg = SingleTargetPredictionConfig { ..config() };
         let prediction = feed_points(
             cfg,
             &[
@@ -632,9 +620,8 @@ mod tests {
         );
 
         let safe_magnitude = prediction.x.safe_offset.hypot(prediction.y.safe_offset);
-        assert!((prediction.x.allowed_cap - 5.0).abs() < 1e-12);
-        assert!((prediction.y.allowed_cap - 5.0).abs() < 1e-12);
-        assert!((safe_magnitude - 5.0).abs() < 1e-12);
+        assert!((safe_magnitude - 22.0_f64.hypot(11.0)).abs() < 1e-12);
+        assert_eq!(prediction.x.safe_offset, prediction.x.raw_offset);
         assert!((prediction.x.safe_offset / prediction.y.safe_offset - 2.0).abs() < 1e-12);
     }
 
@@ -642,7 +629,6 @@ mod tests {
     fn zero_extra_lead_still_compensates_observation_and_actuation_age() {
         let mut zero_lead = config();
         zero_lead.lead_ms = 0.0;
-        zero_lead.cap_px = 100.0;
         let prediction = feed_points(
             zero_lead,
             &[
@@ -663,7 +649,7 @@ mod tests {
     #[test]
     fn horizon_is_not_silently_clipped_by_frame_rate() {
         for dt in [4, 8, 16, 33] {
-            let mut predictor = SingleTargetPredictor::new(high_cap_config());
+            let mut predictor = SingleTargetPredictor::new(config());
             for i in 0..4 {
                 let mut observation = observation_at(i * dt, i as f64 * dt as f64 * 0.1, 0.0);
                 observation.observation_age_ms = 20.0;
@@ -701,7 +687,7 @@ mod tests {
     #[test]
     fn stop_blocks_old_velocity_and_consistent_reversal_recovers() {
         let stopped = feed_points(
-            high_cap_config(),
+            config(),
             &[
                 (0, 0.0, 0.0),
                 (10, 1.0, 0.0),
@@ -713,7 +699,7 @@ mod tests {
         assert!(!stopped.x.allowed);
         assert_eq!(stopped.x.safe_offset, 0.0);
         let reversed = feed_points(
-            high_cap_config(),
+            config(),
             &[
                 (0, 0.0, 0.0),
                 (10, 1.0, 0.0),

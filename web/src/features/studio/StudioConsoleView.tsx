@@ -67,7 +67,7 @@ import {
   ActionConfirmationDialog,
   type ActionConfirmationRequest
 } from "./ActionConfirmationDialog";
-import { TargetClassEditor, parseClassValues, setClassValue } from "./TargetClassEditor";
+import { TargetClassEditor, classStyle, parseClassValues, setClassValue } from "./TargetClassEditor";
 import { TargetRangeControls } from "./TargetRangeControls";
 import { PredictionInsight, ResponseExperiment } from "./PredictionInsight";
 import type { AimRole } from "../targeting/types";
@@ -108,6 +108,7 @@ import {
   AboutView,
   DeviceStatusView,
   HomeSetupPrompt,
+  HomeShortcuts,
   ManagementView,
   OnboardingView,
   type SetupState
@@ -121,6 +122,7 @@ import { buildControlTrace } from "./controlTrace";
 import { persistRuntimeConfigField } from "./runtimeConfigPersistence";
 import "./studio-settings.css";
 import "./algorithm-workspace.css";
+import { AlgorithmTabs } from "./AlgorithmTabs";
 
 const CONTROL_ALGORITHM_LABEL = "连续 Atan 控制";
 const CONFIG_SCHEMA_CONTRACT_ERROR_PREFIX = "配置 schema 与 Studio 参数不一致";
@@ -240,10 +242,12 @@ function pageFromUrl(): ConsolePage {
 function writePageToUrl(page: ConsolePage, mode: "push" | "replace" = "push") {
   const url = new URL(window.location.href);
   url.searchParams.set("page", page);
+  const index = Number(window.history.state?.studioPageIndex ?? 0);
+  const state = { ...window.history.state, page, studioPageIndex: mode === "push" ? index + 1 : index };
   if (mode === "replace") {
-    window.history.replaceState({ page }, "", url);
+    window.history.replaceState(state, "", url);
   } else {
-    window.history.pushState({ page }, "", url);
+    window.history.pushState(state, "", url);
   }
 }
 
@@ -689,12 +693,14 @@ export function StudioConsoleView({
   const overviewModules = modulesForPage(studioLayout, "overview");
   const captureModules = modulesForPage(studioLayout, "capture");
   const captureModuleOrder = moduleOrderForPage(studioLayout, "capture");
-  const [algorithmSection, setAlgorithmSection] = useState<"response" | "targeting" | "motion">("response");
+  const [algorithmSection, setAlgorithmSection] = useState<"response" | "targeting" | "motion" | "advanced">("response");
   const activityModules = moduleOrderForPage(studioLayout, "activity");
   const overviewModuleOrder = moduleOrderForPage(studioLayout, "overview");
   const settingsModules = moduleOrderForPage(studioLayout, "settings");
   const aboutModules = moduleOrderForPage(studioLayout, "about");
   const activePageRef = useRef(activePage);
+  const historyIndexRef = useRef(Number(window.history.state?.studioPageIndex ?? 0));
+  const historyRestoredActionRef = useRef<(() => void) | null>(null);
   const pageScrollPositionsRef = useRef<Partial<Record<ConsolePage, number>>>({});
 
   useEffect(() => {
@@ -747,6 +753,18 @@ export function StudioConsoleView({
   const [modelCatalogMessage, setModelCatalogMessage] = useState("");
   const [classConfigDialogOpen, setClassConfigDialogOpen] = useState(false);
   const [confirmationRequest, setConfirmationRequest] = useState<ActionConfirmationRequest | null>(null);
+  const modelDraftDirtyRef = useRef(false);
+  const onModelDraftChange = useCallback((dirty: boolean) => { modelDraftDirtyRef.current = dirty; }, []);
+  const withModelDraftGuard = useCallback((proceed: () => void, onCancel?: () => void) => {
+    if (!modelDraftDirtyRef.current) { proceed(); return; }
+    setConfirmationRequest({
+      eyebrow: "模型整理", title: "放弃未保存的模型标签？",
+      description: "推荐状态和标签尚未保存。取消可返回继续编辑。",
+      confirmLabel: "放弃修改", danger: true,
+      onCancel,
+      onConfirm: () => { modelDraftDirtyRef.current = false; proceed(); },
+    });
+  }, []);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [confirmationError, setConfirmationError] = useState<string | null>(null);
   const [previewActiveOverride, setPreviewActiveOverride] = useState<boolean | null>(null);
@@ -1137,7 +1155,35 @@ export function StudioConsoleView({
   useEffect(() => {
     writePageToUrl(activePage, "replace");
     const onPopState = () => {
+      if (historyRestoredActionRef.current) {
+        const restored = historyRestoredActionRef.current;
+        historyRestoredActionRef.current = null;
+        restored();
+        return;
+      }
       const nextPage = pageFromUrl();
+      const nextIndex = Number(window.history.state?.studioPageIndex ?? 0);
+      const delta = historyIndexRef.current - nextIndex;
+      if (modelDraftDirtyRef.current && nextPage !== activePageRef.current && delta !== 0) {
+        historyRestoredActionRef.current = () => withModelDraftGuard(() => window.history.go(-delta));
+        window.history.go(delta);
+        return;
+      }
+      if (modelDraftDirtyRef.current && nextPage !== activePageRef.current) {
+        // Old, unindexed entries have no reliable traversal delta. On cancellation,
+        // append the editor URL instead of overwriting the target history item.
+        withModelDraftGuard(() => {
+          historyIndexRef.current = nextIndex;
+          activePageRef.current = nextPage;
+          setActivePage(nextPage);
+          restoreStudioScroll(nextPage);
+        }, () => {
+          writePageToUrl(activePageRef.current);
+          historyIndexRef.current = Number(window.history.state.studioPageIndex);
+        });
+        return;
+      }
+      historyIndexRef.current = nextIndex;
       rememberStudioScroll(activePageRef.current);
       activePageRef.current = nextPage;
       setActivePage(nextPage);
@@ -1145,22 +1191,25 @@ export function StudioConsoleView({
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [activePage, rememberStudioScroll, restoreStudioScroll]);
+  }, [activePage, rememberStudioScroll, restoreStudioScroll, withModelDraftGuard]);
 
   const navigatePage = useCallback((page: ConsolePage) => {
     if (page === activePage) {
       return;
     }
-    rememberStudioScroll(activePage);
-    activePageRef.current = page;
-    setActivePage(page);
-    writePageToUrl(page);
-    restoreStudioScroll(page);
-  }, [activePage, rememberStudioScroll, restoreStudioScroll]);
+    withModelDraftGuard(() => {
+      rememberStudioScroll(activePage);
+      activePageRef.current = page;
+      setActivePage(page);
+      writePageToUrl(page);
+      historyIndexRef.current = Number(window.history.state.studioPageIndex);
+      restoreStudioScroll(page);
+    });
+  }, [activePage, rememberStudioScroll, restoreStudioScroll, withModelDraftGuard]);
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!parameterPageDirtyRef.current) {
+      if (!parameterPageDirtyRef.current && !modelDraftDirtyRef.current) {
         return;
       }
       event.preventDefault();
@@ -1221,8 +1270,11 @@ export function StudioConsoleView({
     };
   }, [classConfigDialogOpen, requestDismissConfigDialog]);
 
+  const runtimeTransportConfidence: RuntimeTransportConfidence =
+    realtimeStatus === "connected" || realtimeStatus === "fallback" ? "current"
+      : realtimeStatus === "stale" || realtimeStatus === "paused" ? "stale" : "unavailable";
   const capture = runtime?.capture;
-  const statistics = runtime?.statistics;
+  const statistics = runtimeTransportConfidence === "current" ? runtime?.statistics : undefined;
   const config = configDraft ?? runtimeConfig;
   const {
     captureConfig,
@@ -1295,15 +1347,15 @@ export function StudioConsoleView({
     && capture.device === configuredCaptureDevice
     && selectedProfile != null
     && choiceMatchesConfig(selectedProfile, captureConfig);
-  const captureProfileState = capture?.running !== true
+  const captureProfileState = runtimeTransportConfidence !== "current" ? "unknown" : capture?.running !== true
     ? "pending"
     : configuredCaptureProfile == null || selectedProfile == null
       ? "unknown"
       : captureProfileMatches ? "matched" : "mismatch";
-  const displayCaptureProfile = configuredCaptureProfile ?? selectedProfile ?? null;
+  const displayCaptureProfile = configuredCaptureProfile ?? (runtimeTransportConfidence === "current" ? selectedProfile : null);
   const displayCaptureProfileSource = configuredCaptureProfile
     ? "已保存配置"
-    : selectedProfile?.source === "configured"
+    : runtimeTransportConfidence !== "current" ? "待确认" : selectedProfile?.source === "configured"
       ? "当前生效配置"
       : selectedProfile?.source || NO_SAMPLE;
   const detectedChoices = useMemo(() => groupCapabilities(caps?.capabilities ?? []), [caps]);
@@ -1322,7 +1374,7 @@ export function StudioConsoleView({
   const roiY = rustControlPlane
     ? configuredRoiTop
     : sourceHeight > 0 ? Math.max(0, Math.floor((sourceHeight - roiSize) / 2)) : 0;
-  const confidence = readNumber(inferenceConfig.confidence_threshold, 0.25);
+  const confidence = readNumber(inferenceConfig.confidence_threshold, 0.5);
   const nms = readNumber(inferenceConfig.nms_threshold, 0.45);
   const detectionProfiles = useMemo(
     () => recordList(inferenceConfig.detection_class_profiles),
@@ -1346,10 +1398,11 @@ export function StudioConsoleView({
   );
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
   const detectionClassPriority = readString(
-    detectionPriorityProfiles[activeDetectionProfile]
-      ?? (rustControlPlane
-        ? rustPipelineConfig.target_class_priority
-        : inferenceConfig.detection_class_priority),
+    rustControlPlane
+      ? Object.entries(parseClassValues(rustPipelineConfig.target_class_weights))
+        .sort(([leftId, left], [rightId, right]) => right - left || Number(leftId) - Number(rightId))
+        .map(([id]) => id).join(",")
+      : detectionPriorityProfiles[activeDetectionProfile] ?? inferenceConfig.detection_class_priority,
     "0,1"
   );
   const classPriorityIds = useMemo(
@@ -1362,34 +1415,12 @@ export function StudioConsoleView({
   );
   const targetFovRadiusPx = readNumber(rustPipelineConfig.target_fov_radius_px, 180);
   const candidateRatioMaxAspect = readNumber(rustPipelineConfig.candidate_max_aspect_ratio, 6);
-  const targetSelectionWeights = [
-    { key: "target_selection_distance_weight", label: "距离", className: "distance", value: readNumber(rustPipelineConfig.target_selection_distance_weight, 0.45), detail: "越靠近准星，候选分越高。" },
-    { key: "target_selection_class_weight", label: "内部类别", className: "class", value: readNumber(rustPipelineConfig.target_selection_class_weight, 0.20), detail: "使用各 cls 的优先权重；它只参与候选评分，不锁定身份。" },
-    { key: "target_selection_confidence_weight", label: "置信度", className: "confidence", value: readNumber(rustPipelineConfig.target_selection_confidence_weight, 0.15), detail: "本帧 YOLO 置信度越高，候选分越高。" },
-    { key: "target_selection_size_weight", label: "大小", className: "size", value: readNumber(rustPipelineConfig.target_selection_size_weight, 0.05), detail: "画面中更大的目标获得少量加分。" },
-    { key: "target_selection_continuity_weight", label: "连续性", className: "continuity", value: readNumber(rustPipelineConfig.target_selection_continuity_weight, 0.10), detail: "最近稳定关联过的目标获得加分。" },
-    { key: "target_selection_motion_weight", label: "运动趋势", className: "motion", value: readNumber(rustPipelineConfig.target_selection_motion_weight, 0.05), detail: "短时间内向准星靠近的目标获得加分。" }
-  ] as const;
-  const targetSelectionWeightTotal = targetSelectionWeights.reduce(
-    (total, item) => total + Math.max(0, item.value),
-    0
-  );
-  const normalizedTargetSelectionWeights = targetSelectionWeights.map((item) => ({
-    ...item,
-    share: targetSelectionWeightTotal > 0 ? Math.max(0, item.value) / targetSelectionWeightTotal : 0
-  }));
-  const dominantTargetSelectionWeight = normalizedTargetSelectionWeights.reduce(
-    (dominant, item) => item.share > dominant.share ? item : dominant,
-    normalizedTargetSelectionWeights[0]
-  );
   const trackerMaxMatchDistance = readNumber(rustPipelineConfig.tracker_max_match_distance, 1.5);
   const trackerPositionCostWeight = readNumber(rustPipelineConfig.tracker_position_cost_weight, 0.75);
   const trackerIouCostWeight = readNumber(rustPipelineConfig.tracker_iou_cost_weight, 0.25);
-  const targetLostGraceMs = readNumber(rustPipelineConfig.target_track_max_lost_age_ms, 120);
   const targetSwitchPreferenceAdvantage = readNumber(rustPipelineConfig.target_switch_min_preference_advantage, 0.08);
   const targetSwitchContinuityScore = readNumber(rustPipelineConfig.target_switch_min_continuity_score, 0.7);
-  const targetSwitchDelayMs = readNumber(rustPipelineConfig.target_switch_delay_ms, 50);
-  const freshnessThresholdMs = readNumber(rustPipelineConfig.freshness_threshold_ms, 55);
+  const freshnessThresholdMs = readNumber(rustPipelineConfig.frame_max_age_ms, 50);
   const controlFovX = readNumber(rustPipelineConfig.projection_fov_x_deg, 105);
   const controlCountsPer360 = readNumber(rustPipelineConfig.projection_counts_per_360, 9980);
   const pResponseScale = readNumber(rustPipelineConfig.p_response_scale, 0.20);
@@ -1398,9 +1429,7 @@ export function StudioConsoleView({
   const controlPredictionEnabled = readBoolean(rustPipelineConfig.prediction_enabled, true);
   const controlPredictionHistoryResetGapMs = readNumber(rustPipelineConfig.velocity_history_reset_gap_ms, 80);
   const controlPredictionLeadMs = readNumber(rustPipelineConfig.prediction_lead_ms, 16);
-  const controlPredictionCapPx = readNumber(rustPipelineConfig.prediction_cap_px, 10);
   const predictionActuationDelayMs = readNumber(rustPipelineConfig.prediction_actuation_delay_ms, 4);
-  const targetMinConfidence = readNumber(rustPipelineConfig.target_min_confidence, 0.5);
   const trackerScaleCostWeight = readNumber(rustPipelineConfig.tracker_scale_cost_weight, 0.15);
   const trackerClassCostWeight = readNumber(rustPipelineConfig.tracker_class_cost_weight, 0.35);
   const trackerMaxSizeRatio = readNumber(rustPipelineConfig.tracker_max_size_ratio, 2.5);
@@ -1410,10 +1439,8 @@ export function StudioConsoleView({
   const trackerKalmanMeasurementNoiseY = readNumber(rustPipelineConfig.tracker_kalman_measurement_noise_y, 16);
   const trackerKalmanMaxPredictDtMs = readNumber(rustPipelineConfig.tracker_kalman_max_predict_dt_ms, 35);
   const trackerKalmanMaxPredictMissingMs = readNumber(rustPipelineConfig.tracker_kalman_max_predict_missing_ms, 80);
-  const trackerKalmanMaxPredictSteps = readNumber(rustPipelineConfig.tracker_kalman_max_predict_steps, 5);
   const trackerKalmanNisThreshold = readNumber(rustPipelineConfig.tracker_kalman_nis_threshold, 9.21);
   const trackerKalmanNisHardReject = readNumber(rustPipelineConfig.tracker_kalman_nis_hard_reject, 16);
-  const targetSelectionMotionHorizonMs = readNumber(rustPipelineConfig.target_selection_motion_horizon_ms, 30);
   const fireDelayEnabled = readBoolean(rustPipelineConfig.fire_delay_enabled, false);
   const fireDelayMs = readNumber(rustPipelineConfig.fire_delay_ms, 0);
   const hardwareTriggerRequired = readString(controlConfig.trigger_mode, "hardware") === "hardware";
@@ -2847,15 +2874,12 @@ export function StudioConsoleView({
       predictionActuationDelayMs,
       controlPredictionLeadMs,
       controlPredictionHistoryResetGapMs,
-      controlPredictionCapPx,
       controlFovX,
-      controlCountsPer360,
-      freshnessThresholdMs
+      controlCountsPer360
     }, configFieldIndex)
     : null;
   const responseParameters = algorithmParameterGroups?.responseParameters ?? [];
   const predictionCoreParameters = algorithmParameterGroups?.predictionCoreParameters ?? [];
-  const predictionCapParameters = algorithmParameterGroups?.predictionCapParameters ?? [];
   const calibrationParameters = algorithmParameterGroups?.calibrationParameters ?? [];
 
   const buildAlgorithmNumberParameterControl = (parameter: AlgorithmNumberParameter, compact = false) => (
@@ -2884,11 +2908,9 @@ export function StudioConsoleView({
 
   const targetingParameterGroups = activePage === "params"
     ? buildTargetingParameterGroups({
-      targetMinConfidence,
       candidateRatioMaxAspect,
       targetSwitchPreferenceAdvantage,
       targetSwitchContinuityScore,
-      targetSwitchDelayMs,
       trackerMaxMatchDistance,
       trackerPositionCostWeight,
       trackerIouCostWeight,
@@ -2896,19 +2918,15 @@ export function StudioConsoleView({
       trackerClassCostWeight,
       trackerMaxSizeRatio,
       trackerMaxAssociationDtMs,
-      targetLostGraceMs,
       trackerKalmanAccelerationNoise,
       trackerKalmanMeasurementNoiseX,
       trackerKalmanMeasurementNoiseY,
       trackerKalmanMaxPredictDtMs,
       trackerKalmanMaxPredictMissingMs,
-      trackerKalmanMaxPredictSteps,
       trackerKalmanNisThreshold,
       trackerKalmanNisHardReject,
-      targetSelectionMotionHorizonMs
     }, configFieldIndex)
     : null;
-  const targetAdvancedParameters = targetingParameterGroups?.targetAdvancedParameters ?? [];
   const trackerCoreParameters = targetingParameterGroups?.trackerCoreParameters ?? [];
   const trackerKalmanParameters = targetingParameterGroups?.trackerKalmanParameters ?? [];
 
@@ -3149,8 +3167,8 @@ export function StudioConsoleView({
   }, []);
 
   const closeModelManager = useCallback(() => {
-    setModelManagerDialogOpen(false);
-  }, []);
+    withModelDraftGuard(() => setModelManagerDialogOpen(false));
+  }, [withModelDraftGuard]);
 
   const openModelManager = useCallback(() => {
     void onEnsureProjects(false).catch(() => undefined);
@@ -3279,12 +3297,6 @@ export function StudioConsoleView({
     }),
     [errors.health, health?.ok, license, runtime]
   );
-  const runtimeTransportConfidence: RuntimeTransportConfidence =
-    realtimeStatus === "connected" || realtimeStatus === "fallback"
-      ? "current"
-      : realtimeStatus === "stale" || realtimeStatus === "paused"
-        ? "stale"
-        : "unavailable";
   const runtimeProjection = useMemo(
     () => projectRuntimeState(runtime, runtimeTransportConfidence),
     [runtime, runtimeTransportConfidence]
@@ -3402,7 +3414,7 @@ export function StudioConsoleView({
         <StudioPageHeader page={activePage} />
         <StudioRuntimeBar
           page={activePage}
-          runtimeAvailable={runtime !== null}
+          runtimeAvailable={runtime !== null && runtimeTransportConfidence === "current"}
           runtimeLifecycleActive={runtimeLifecycleActive}
           diagnosticModeReady={diagnosticModeReady}
           captureStatus={captureStatusText}
@@ -3426,6 +3438,7 @@ export function StudioConsoleView({
               onToggle={() => requestRuntimeChange(!runtimeLifecycleActive)}
               moduleOrder={overviewModuleOrder}
             />
+            <HomeShortcuts onNavigate={navigatePage} />
           </>
         ) : null}
 
@@ -3459,7 +3472,7 @@ export function StudioConsoleView({
                 clearActivityNotices();
                 clearErrorNotices();
               } catch (error) {
-                reportError(error, { source: "activity-clear", title: "日志清理失败" });
+                reportError(error, { source: "activity-clear", title: "日志清理失败", popup: false });
                 throw error;
               }
             }}
@@ -3474,6 +3487,7 @@ export function StudioConsoleView({
             effectiveRevision={effectiveConfigRevision}
             restartRequired={reportedConfigRestartRequired}
             configAvailable={runtimeConfig !== null}
+            runtimeVerified={runtime !== null && runtimeTransportConfidence === "current"}
             operationPending={busy !== null || pendingConfigWriteCount > 0}
             parameterChangesPending={parameterPageDirty}
             onExport={exportConfig}
@@ -3524,6 +3538,7 @@ export function StudioConsoleView({
                 onRequestMove: requestMoveModelEngine,
                 onSelectModel: selectModelFromCatalog,
                 onSaveMetadata: requestSaveModelMetadata,
+                onDraftChange: onModelDraftChange,
                 onSwitch: modelSwitch.switchModel,
               }}
             />
@@ -3566,19 +3581,19 @@ export function StudioConsoleView({
             <div className="capture-command-copy">
               <span className="class-config-eyebrow">当前画面输入</span>
               <h2 id="capture-profile-check-title">{configuredCaptureDevice || "尚未配置采集设备"}</h2>
-              <p>{configuredCaptureProfile ? choiceLabel(configuredCaptureProfile) : "尚未选择画面规格"}</p>
+              <p>{configuredCaptureProfile ? choiceLabel(configuredCaptureProfile) : "从下方选择设备，完成后会记住你的选择。"}</p>
             </div>
-            <div className="capture-runtime-proof">
+            {configuredCaptureDevice ? <div className="capture-runtime-proof">
               <div>
                 <span>运行中的画面</span>
-                <strong>{capture?.running === true && selectedProfile ? choiceLabel(selectedProfile) : capture?.running === true ? "规格未上报" : "主链未运行"}</strong>
-                <small>{capture?.running === true ? capture.device || "设备未上报" : "启动后自动核对"}</small>
+                <strong>{runtime === null || runtimeTransportConfidence !== "current" ? "运行状态未确认" : capture?.running === true && selectedProfile ? choiceLabel(selectedProfile) : capture?.running === true ? "规格未上报" : "主链未运行"}</strong>
+                <small>{runtime === null || runtimeTransportConfidence !== "current" ? "连接恢复后自动核对" : capture?.running === true ? capture.device || "设备未上报" : "启动后自动核对"}</small>
               </div>
               <span className="capture-profile-check-state" role="status">
                 <NovaIcon name={captureProfileState === "matched" ? "check-circle" : captureProfileState === "mismatch" ? "triangle-alert" : "clock"} size={16} />
                 {captureProfileState === "matched" ? "运行规格一致" : captureProfileState === "mismatch" ? "保存与运行不一致" : captureProfileState === "unknown" ? "运行规格未确认" : "等待运行验证"}
               </span>
-            </div>
+            </div> : null}
           </header>
           ) : null}
           <div className="capture-workbench">
@@ -3587,11 +3602,11 @@ export function StudioConsoleView({
               <section className="capture-source-setup" aria-labelledby="capture-source-title" key={moduleId}>
                 <header className="capture-workbench-heading">
                   <span aria-hidden="true"><NovaIcon name="capture-card" size={20} /></span>
-                  <div><small>画面来源</small><h3 id="capture-source-title">选择设备和画质</h3><p>读取设备真实能力；点击帧率后立即保存，不需要再次应用。</p></div>
+                  <div><small>画面来源</small><h3 id="capture-source-title">选择设备和画质</h3><p>选择设备，再选择分辨率与帧率。画质设置自动保存。</p></div>
                 </header>
                 <div className="capture-device-picker">
                   <header>
-                    <div><b>选择采集设备</b><small>只展示 Jetson 当前发现的 V4L2 设备；选择后自动读取其真实规格。</small></div>
+                    <div><b>选择采集设备</b><small>显示当前设备上的可用输入，选择后读取支持的画质。</small></div>
                     <button className="console-button secondary" disabled={deviceDiscoveryStatus === "loading" || busy !== null} onClick={() => void refreshCaptureDevices()} type="button">
                       <NovaIcon name="refresh" size={15} />
                       {deviceDiscoveryStatus === "loading" ? "正在扫描…" : "重新扫描"}
@@ -3622,7 +3637,10 @@ export function StudioConsoleView({
                       <div className="capture-device-empty"><b>没有发现采集设备</b><small>连接采集卡后重新扫描，或在下方输入其他设备路径。</small></div>
                     ) : null}
                     {deviceDiscoveryStatus === "error" ? (
-                      <div className="capture-device-empty error" role="alert"><b>无法扫描设备</b><small>{deviceDiscoveryError}</small></div>
+                      <div className="capture-device-empty error" role="alert">
+                        <b>无法扫描设备</b><small>请确认服务在线、采集设备已连接，再重新扫描。</small>
+                        <details><summary>查看错误详情</summary><small>{deviceDiscoveryError}</small></details>
+                      </div>
                     ) : null}
                   </div>
                 </div>
@@ -3815,8 +3833,8 @@ export function StudioConsoleView({
             <div className="console-card">
               <SectionTitle title="识别灵敏度" />
               <ParameterNumberControl
-                label="最低可信度"
-                detail="低于该分数的检测框会被过滤；调低更敏感，调高更干净。"
+                label="检测置信度阈值"
+                detail="低于此值的检测框不进入预览、跟踪和目标选择。调低会增加候选，也可能增加误检。"
                 value={confidence}
                 min={0}
                 max={1}
@@ -3827,8 +3845,8 @@ export function StudioConsoleView({
                 onEditingChange={handleParameterEditingChange}
               />
               <ParameterNumberControl
-                label="重复目标合并"
-                detail="NMS 使用这个阈值合并同一目标附近的重叠框；过低容易误删，过高容易重复。"
+                label="重复框抑制阈值（IoU）"
+                detail="同类别检测框重叠程度超过此值时，NMS 抑制低分框。调低抑制更强，调高保留更多重叠框。"
                 value={nms}
                 min={0}
                 max={1}
@@ -4065,8 +4083,7 @@ export function StudioConsoleView({
                   <span>速度段 Y</span><b>{`${formatOptionalNumber(controlPipeline?.velocity_y_1, 3)} / ${formatOptionalNumber(controlPipeline?.velocity_y_2, 3)} / ${formatOptionalNumber(controlPipeline?.velocity_y_3, 3)} px/ms`}</b>
                   <span>Medoid 速度</span><b>{formatPoint(controlPipeline?.prediction_velocity, controlPipeline?.prediction_velocity_y, 3, "px/ms")}</b>
                   <span>原始预测</span><b>{formatPoint(controlPipeline?.prediction_raw_offset_x, controlPipeline?.prediction_raw_offset_y, 2, "px")}</b>
-                  <span>预测位移上限</span><b>{formatOptionalNumber(controlPipeline?.prediction_allowed_cap_x, 2, "px")}</b>
-                  <span>截断后预测</span><b>{formatPoint(controlPipeline?.prediction_safe_offset_x, controlPipeline?.prediction_safe_offset_y, 2, "px")}</b>
+                  <span>有效预测位移</span><b>{formatPoint(controlPipeline?.prediction_safe_offset_x, controlPipeline?.prediction_safe_offset_y, 2, "px")}</b>
                 </div>
               </div>
               <div className="console-card">
@@ -4114,7 +4131,7 @@ export function StudioConsoleView({
               </span>
               <div aria-live="polite" role="status">
                 <b>有未应用的修改</b>
-                <small>保存后整组参数立即生效；首页运行状态保持不变。</small>
+                <small>确认后一次保存所有修改，不会改变首页总开关。</small>
               </div>
               <div className="parameter-save-bar-actions">
                 <button
@@ -4137,27 +4154,23 @@ export function StudioConsoleView({
               </div>
             </div> : null}
             {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
-            <div className="algorithm-workspace">
-              <div className="algorithm-flow" data-running={runtimeMainlineRunning}>
-                <span><i /><strong>{runtime === null ? "等待连接" : runtimeMainlineRunning ? "主链运行中" : runtimeLifecycleActive ? "主链状态切换中" : "主链已停止"}</strong></span>
-                <span>首页总开关管理采集、推理与控制</span>
-                <span>无目标 / 范围外 → 不输出</span>
+            <div className="algorithm-workspace" data-section={algorithmSection}>
+              <div className="algorithm-flow">
+                <span><span className="algorithm-workspace-dot" aria-hidden="true" />参数工作台<span className="algorithm-draft-label">{parameterPageDirty ? "草稿未应用" : "当前配置"}</span></span>
+                <span>修改后统一保存 · 总开关在首页</span>
               </div>
-              <nav className="algorithm-tabs" aria-label="算法调校分区">
-                {([{ id: "response", label: "范围与触发" }, { id: "targeting", label: "目标与瞄点" }, { id: "motion", label: "移动与输出" }] as const).map((item) => (
-                  <button key={item.id} data-section={item.id} type="button" aria-pressed={algorithmSection === item.id} onClick={() => setAlgorithmSection(item.id)}><i aria-hidden="true" />{item.label}</button>
-                ))}
-              </nav>
-            <div className="parameter-workspace">
+              <AlgorithmTabs value={algorithmSection} onChange={setAlgorithmSection} />
+            <div className="parameter-workspace" id="algorithm-parameter-panel" role="tabpanel" aria-labelledby={`algorithm-tab-${algorithmSection}`} tabIndex={0} key={algorithmSection}>
             {[algorithmSection].map((moduleId) => {
               if (moduleId === "response") return (
                 <div key={moduleId}>
                   <TargetRangeControls
-                    scale={readNumber(rustPipelineConfig.target_range_scale, 1)}
-                    onScaleCommit={(value) => updatePipelineField("target_range_scale", value)}
+                    radius={targetFovRadiusPx}
+                    onRadiusCommit={(value) => updatePipelineField("target_fov_radius_px", value)}
                     onEditingChange={handleParameterEditingChange}
                   />
                   <section className="algorithm-entry-delay">
+                    <span className="algorithm-setting-icon" aria-hidden="true"><NovaIcon name="activity-pulse" size={20} /></span>
                     <div><h3>触发延迟</h3><p>按住触发键后等待多久开始控制，0 ms 表示立即响应。</p></div>
                     <label className="control-chain-inline-field"><InlineNumberControl ariaLabel="触发延迟" value={fireDelayMs} onCommit={updateTriggerDelay} /><i>ms</i></label>
                   </section>
@@ -4167,32 +4180,18 @@ export function StudioConsoleView({
             <section className="parameter-group" data-module="motion" id="parameter-motion-response" aria-labelledby="parameter-motion-response-title" key={moduleId}>
               <header className="parameter-group-heading">
                 <span>移动</span>
-                <div><h2 id="parameter-motion-response-title">移动响应</h2><p>先试算响应，再观察运行数据；编辑后保存并应用到设备。</p></div>
+                <div><h2 id="parameter-motion-response-title">移动响应</h2><p>先调整跟随力度与入场时间。目标快速移动时，再开启预测。</p></div>
               </header>
-              <PredictionInsight
-                sample={controlPipeline}
-                configuredEnabled={controlPredictionEnabled}
-                live={runtimeMainlineRunning && controlHasSample && controlHasTarget
-                  && (realtimeStatus === "connected" || realtimeStatus === "fallback")
-                  && controlFrameAgeMs !== null && controlFrameAgeMs >= 0 && controlFrameAgeMs <= freshnessThresholdMs}
-              />
             <ol className="control-chain-settings" aria-label="移动响应设置">
               <li className="console-card control-chain-setting parameter-expanded-setting">
                 <span className="control-chain-step" aria-hidden="true"><NovaIcon name="prediction-line" size={16} /></span>
                 <div className="control-chain-setting-title">
                   <b>移动手感</b>
-                  <small>Kp 决定跟随力度，入场时长决定多久升到完整力度；基准频率用于时间换算，不是额外增强。</small>
+                  <small>力度越大跟随越积极；入场时间越长，开始时越柔和。</small>
                 </div>
                 <div className="parameter-inline-grid">
-                  {responseParameters.map(renderAlgorithmNumberParameter)}
+                  {responseParameters.filter((parameter) => parameter.key !== "response_reference_hz").map(renderAlgorithmNumberParameter)}
                 </div>
-              </li>
-              <li>
-                <ResponseExperiment
-                  kp={pResponseScale}
-                  rampMs={readNumber(rustPipelineConfig.entry_ramp_ms, 200)}
-                  referenceHz={readNumber(rustPipelineConfig.response_reference_hz, 0)}
-                />
               </li>
 
               <li className="console-card control-chain-setting parameter-expanded-setting">
@@ -4204,7 +4203,7 @@ export function StudioConsoleView({
                 <div className="parameter-expanded-controls">
                   <ModuleSwitch
                     compact
-                    label="预测移动目标"
+                    label="启用运动预测"
                     enabled={controlPredictionEnabled}
                     onToggle={(enabled) => updateControlPipelineField("prediction_enabled", enabled)}
                   />
@@ -4213,23 +4212,22 @@ export function StudioConsoleView({
                       {predictionCoreParameters
                         .filter((parameter) => parameter.key === "prediction_lead_ms")
                         .map(renderAlgorithmNumberParameter)}
-                      {predictionCapParameters.map(renderAlgorithmNumberParameter)}
                     </div>
                   ) : null}
                 </div>
               </li>
 
-              <li className="console-card control-chain-setting">
+              <li className="console-card control-chain-setting parameter-expanded-setting">
                 <span className="control-chain-step" aria-hidden="true"><NovaIcon name="shield-check" size={16} /></span>
                 <div className="control-chain-setting-title">
-                  <b>限幅</b>
-                  <small>约束每次发送的最大 X/Y 输出，防止突变。</small>
+                  <b>单次输出上限</b>
+                  <small>限制每次发送的设备移动计数，不是像素或每秒速度。</small>
                 </div>
                 <div className="control-chain-setting-controls">
                   <label className="control-chain-inline-field">
                     <span>X 轴上限</span>
                     <InlineNumberControl
-                      ariaLabel="X 轴输出上限"
+                      ariaLabel="单次 X 轴输出上限"
                       value={maxOutputXCounts}
                       onCommit={(value) => updateControlPipelineField("max_output_x_counts", Math.max(1, Math.min(32767, Math.round(value))))}
                     />
@@ -4238,7 +4236,7 @@ export function StudioConsoleView({
                   <label className="control-chain-inline-field">
                     <span>Y 轴上限</span>
                     <InlineNumberControl
-                      ariaLabel="Y 轴输出上限"
+                      ariaLabel="单次 Y 轴输出上限"
                       value={maxOutputYCounts}
                       onCommit={(value) => updateControlPipelineField("max_output_y_counts", Math.max(1, Math.min(32767, Math.round(value))))}
                     />
@@ -4246,8 +4244,49 @@ export function StudioConsoleView({
                   </label>
                 </div>
               </li>
-
             </ol>
+            <button className="algorithm-advanced-link" type="button" onClick={() => setAlgorithmSection("advanced")}>
+              <NovaIcon name="settings" size={16} />需要设备标定或响应试算？前往进阶调校 <span aria-hidden="true">→</span>
+            </button>
+            </section>
+            );
+              if (moduleId === "advanced") return (
+            <section className="parameter-group" data-module="advanced" key={moduleId} aria-labelledby="parameter-advanced-title">
+              <header className="parameter-group-heading">
+                <div><h2 id="parameter-advanced-title">进阶调校</h2><p>日常使用通常无需修改。更换设备或排查跟随问题时，再逐项调整。</p></div>
+              </header>
+              <details className="parameter-disclosure">
+                <summary><span><b>响应试算</b><small>用当前草稿预览力度变化，不会向设备发送指令。</small></span></summary>
+                <ResponseExperiment kp={pResponseScale} rampMs={readNumber(rustPipelineConfig.entry_ramp_ms, 200)} referenceHz={readNumber(rustPipelineConfig.response_reference_hz, 0)} />
+              </details>
+              <details className="parameter-disclosure">
+                <summary><span><b>实时预测诊断</b><small>运行后查看实际目标、预测位置与提前量。</small></span></summary>
+                <PredictionInsight
+                  sample={controlPipeline}
+                  configuredEnabled={controlPredictionEnabled}
+                  live={runtimeMainlineRunning && controlHasSample && controlHasTarget
+                    && (realtimeStatus === "connected" || realtimeStatus === "fallback")
+                    && controlFrameAgeMs !== null && controlFrameAgeMs >= 0 && controlFrameAgeMs <= freshnessThresholdMs}
+                />
+              </details>
+              <details className="parameter-disclosure">
+                <summary><span><b>设备标定</b><small>匹配设备真实移动比例与时间基准。</small></span></summary>
+                <div className="parameter-inline-grid">
+                  {responseParameters.filter((parameter) => parameter.key === "response_reference_hz").map(renderAlgorithmNumberParameter)}
+                  {calibrationParameters.map(renderAlgorithmNumberParameter)}
+                </div>
+              </details>
+              <details className="parameter-disclosure">
+                <summary><span><b>跟踪与目标保护</b><small>处理误跟、短暂漏检和异常跳变。</small></span></summary>
+                <div className="parameter-inline-grid">
+                  {predictionCoreParameters.filter((parameter) => parameter.key !== "prediction_lead_ms").map(renderAlgorithmNumberParameter)}
+                  {trackerCoreParameters.map(renderTargetingNumberParameter)}
+                </div>
+                <details className="parameter-disclosure nested">
+                  <summary><span><b>轨迹滤波参数</b><small>用于识别相邻画面中的同一目标。</small></span><i>{trackerKalmanParameters.length} 项</i></summary>
+                  <div className="parameter-inline-grid">{trackerKalmanParameters.map(renderTargetingNumberParameter)}</div>
+                </details>
+              </details>
             </section>
             );
               if (moduleId === "targeting") return (
@@ -4280,88 +4319,18 @@ export function StudioConsoleView({
                   </button>
                 </div>
 
-                <div className="parameter-inline-grid parameter-target-basics">
-                  {targetAdvancedParameters.map(renderTargetingNumberParameter)}
-                </div>
-
-                <details className="parameter-disclosure">
-                  <summary>
-                    <span><b>目标偏好</b><small>距离、类别、可信度、大小、连续性和运动趋势共同决定优先目标。</small></span>
-                    <i>{dominantTargetSelectionWeight.label} {(dominantTargetSelectionWeight.share * 100).toFixed(0)}%</i>
-                  </summary>
-                  <div className="target-weight-composition" aria-label="综合目标分数权重占比">
-                    {normalizedTargetSelectionWeights.map((item) => (
-                      <i className={item.className} key={item.key} style={{ flexGrow: item.share }} />
-                    ))}
-                  </div>
-                  <div className="target-weight-legend">
-                    {normalizedTargetSelectionWeights.map((item) => (
-                      <span key={item.key}><i className={item.className} />{item.label} <b>{(item.share * 100).toFixed(0)}%</b></span>
-                    ))}
-                  </div>
-                  <div className="parameter-inline-grid">
-                    {targetSelectionWeights.map((item) => (
-                      <ParameterNumberControl
-                        detail={item.detail}
-                        key={item.key}
-                        label={`${item.label}权重`}
-                        max={100}
-                        min={0}
-                        onCommit={(value) => updatePipelineField(item.key, value)}
-                        onEditingChange={handleParameterEditingChange}
-                        recommendedMax={1}
-                        recommendedMin={0}
-                        step={0.01}
-                        value={item.value}
-                      />
-                    ))}
-                  </div>
-                </details>
+                <ul className="algorithm-class-overview" aria-label="当前类别配置">
+                  {classEditorIds.map((id) => (
+                    <li key={id} style={classStyle(id)} data-enabled={selectedDetectionClassIds.has(id)}>
+                      <span><i aria-hidden="true" />cls {id}<small>{selectedDetectionClassIds.has(id) ? "参与" : "未参与"}</small></span>
+                      <strong>{detectionClasses[id] || "未命名类别"}</strong>
+                      <span className="algorithm-class-weight">优先权重<b>× {(parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? 0).toFixed(2)}</b></span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="console-section-note">权重不代表识别置信度，也不改变移动力度。检测置信度与重复框抑制在模型推理页面设置。</p>
               </div>
             </section>
-            <details className="parameter-professional-settings" id="parameter-professional-settings">
-              <summary>
-                <span><b>专业参数</b><small>只在出现误跟、断轨或设备标定偏差时调整。</small></span>
-                <i>展开</i>
-              </summary>
-              <div className="parameter-professional-content">
-                <section>
-                  <header><h3>预测与设备标定</h3><p>修正断流后的预测历史、画面视场与设备真实移动比例。</p></header>
-                  <div className="parameter-inline-grid">
-                    {predictionCoreParameters
-                      .filter((parameter) => parameter.key !== "prediction_lead_ms")
-                      .map(renderAlgorithmNumberParameter)}
-                    {calibrationParameters.map(renderAlgorithmNumberParameter)}
-                  <ParameterNumberControl
-                    label="搜索半径上限"
-                    detail="外层保护上限；即使胶囊很大，瞄准点也不能超过此距离。通常不需要调整。"
-                    value={targetFovRadiusPx}
-                    min={0.000001}
-                    max={100000}
-                    recommendedMin={1}
-                    recommendedMax={640}
-                    step={1}
-                    unit="px"
-                    onCommit={(value) => updatePipelineField("target_fov_radius_px", value)}
-                    onEditingChange={handleParameterEditingChange}
-                  />
-
-                  </div>
-                </section>
-                <section>
-                  <header><h3>短时跟踪匹配</h3><p>这些参数只用于判断相邻画面中的检测结果是否属于同一目标，不把类别当成永久身份。</p></header>
-                  <div className="parameter-inline-grid">
-                    {trackerCoreParameters.map(renderTargetingNumberParameter)}
-                  </div>
-                </section>
-                <details className="parameter-disclosure nested">
-                  <summary><span><b>轨迹滤波参数</b><small>处理框抖动、短暂漏检和异常跳变。</small></span><i>{trackerKalmanParameters.length} 项</i></summary>
-                  <div className="parameter-inline-grid">
-                    {trackerKalmanParameters.map(renderTargetingNumberParameter)}
-                  </div>
-                </details>
-              </div>
-            </details>
             </div>
             );
               return null;
@@ -4642,7 +4611,7 @@ export function StudioConsoleView({
               <div className="class-config-workspace class-point-workspace-shell">
                 <TargetClassEditor
                   ids={classEditorIds} names={detectionClasses} selected={selectedDetectionClassIds}
-                  weights={Object.fromEntries(classEditorIds.map((id) => [id, parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? (classPriorityIds.includes(id) ? 0.5 ** classPriorityIds.indexOf(id) : 0)]))}
+                  weights={Object.fromEntries(classEditorIds.map((id) => [id, parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? 0]))}
                   xs={parseClassValues(rustPipelineConfig.target_class_aim_x_ratios)}
                   ys={parseClassValues(rustPipelineConfig.target_class_aim_y_ratios)}
                   defaultY={rustOtherAimRatio} disabled={dialogSaving}
@@ -4720,8 +4689,8 @@ export function StudioConsoleView({
               )) : (
                 <div className="error-center-empty">
                   <NovaIcon name="shield-check" size={28} />
-                  <strong>当前没有异常</strong>
-                  <span>服务连接和最近操作均未报告错误。</span>
+                  <strong>当前没有异常记录</strong>
+                  <span>尚无可展示的记录；设备是否在线请查看首页状态。</span>
                 </div>
               )}
             </div>
@@ -4779,6 +4748,7 @@ export function StudioConsoleView({
           onRequestMove: requestMoveModelEngine,
           onSelectModel: selectModelFromCatalog,
           onSaveMetadata: requestSaveModelMetadata,
+          onDraftChange: onModelDraftChange,
           onSwitch: modelSwitch.switchModel
             }}
           />
@@ -4804,7 +4774,7 @@ export function StudioConsoleView({
         busy={confirmationBusy}
         error={confirmationError}
         onCancel={() => {
-          if (!confirmationBusy) setConfirmationRequest(null);
+          if (!confirmationBusy) { confirmationRequest.onCancel?.(); setConfirmationRequest(null); }
         }}
         onConfirm={() => void confirmPendingAction()}
         request={confirmationRequest}

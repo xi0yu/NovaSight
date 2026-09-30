@@ -1,6 +1,6 @@
 # NovaSight's single runtime configuration. Relative paths resolve from the
 # directory in which novasightd is started.
-schema_version: 17
+schema_version: 20
 revision: 0
 server:
   # Public TCP belongs to novasight-web. novasightd listens only on control_socket.
@@ -20,7 +20,8 @@ limits:
   stream_fps: 30
 # Every field below is consumed by the current Rust production hot path.
 pipeline:
-  freshness_threshold_ms: 55.0
+  # One capture-age budget shared by inference, control and output.
+  frame_max_age_ms: 50.0
   projection_fov_x_deg: 105.0
   projection_counts_per_360: 9980.0
   # 连续响应模型：a(t) * Kp * S * atan(e/S)，S 固定为内部常量 256 counts。
@@ -35,10 +36,7 @@ pipeline:
   velocity_history_reset_gap_ms: 80.0
   prediction_enabled: true
   prediction_lead_ms: 16.0
-  prediction_cap_px: 10.0
   target_fov_radius_px: 180.0
-  target_range_scale: 1.0
-  target_min_confidence: 0.5
   target_track_max_lost_age_ms: 120.0
   tracker_max_match_distance: 1.5
   tracker_position_cost_weight: 0.75
@@ -50,19 +48,13 @@ pipeline:
   tracker_max_association_dt_ms: 150.0
   tracker_kalman_max_predict_dt_ms: 35.0
   tracker_kalman_max_predict_missing_ms: 80.0
-  tracker_kalman_max_predict_steps: 5
-  target_class_priority: "0,1"
-  target_class_weights: ""
+  target_class_weights: "0:1,1:0.5"
   target_class_aim_x_ratios: ""
   target_class_filter: all
-  # 六项权重会自动归一化；raw cls 只参与类别偏好，不决定内部身份。
+  # 三项权重会自动归一化；raw cls 只参与类别偏好，不决定内部身份。
   target_selection_distance_weight: 0.45
   target_selection_class_weight: 0.20
   target_selection_confidence_weight: 0.15
-  target_selection_size_weight: 0.05
-  target_selection_continuity_weight: 0.10
-  target_selection_motion_weight: 0.05
-  target_selection_motion_horizon_ms: 30.0
   target_switch_min_preference_advantage: 0.08
   target_switch_min_continuity_score: 0.70
   target_switch_delay_ms: 50.0
@@ -82,7 +74,6 @@ inference:
   backend: deepstream_nvinfer
   require_gpu: true
   allow_cpu_fallback: false
-  inference_input_deadline_ms: 55.0
   # `auto` selects the parser compiled by Cargo for this exact novasightd build.
   deepstream_parser_library: auto
   deepstream_startup_timeout_ms: 10000

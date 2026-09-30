@@ -14,6 +14,81 @@ use serde_json::Value;
 const OBSERVATION_CENTER: (f64, f64) = (320.0, 320.0);
 
 #[test]
+fn default_scoring_handles_distance_class_conflicts_reordering_and_short_loss() {
+    // Declared preferences, not a search for a universal optimum. Exercise the
+    // real selector together with identity retention and switching hysteresis.
+    for scale in [0.5, 1.0, 2.0] {
+        for fps in [30, 60, 120, 240] {
+            for (classes, distances, confidence, expected) in [
+                ([0, 0], [40.0, 80.0], [0.9, 0.9], 10),
+                ([0, 1], [100.0, 40.0], [0.9, 0.9], 10),
+                ([0, 1], [160.0, 20.0], [0.9, 0.9], 20),
+                ([2, 2], [40.0, 40.0], [0.8, 0.95], 20),
+            ] {
+                let center = (320.0 * scale, 320.0 * scale);
+                let mut core = TargetingCore::new(TargetingConfig {
+                    target_fov_radius_px: 180.0 * scale,
+                    aim_y_ratio: 0.5,
+                    ..TargetingConfig::default()
+                });
+                let mut last = Vec::new();
+                let mut identity = None;
+                for frame in 0..12 {
+                    let jitter = if frame % 2 == 0 { 0.5 } else { -0.5 };
+                    let mut detections: Vec<_> = (0..2)
+                        .map(|i| {
+                            let x = center.0
+                                + (if i == 0 { -1.0 } else { 1.0 })
+                                    * (distances[i] + jitter)
+                                    * scale;
+                            Detection::new(
+                                (i as u64 + 1) * 10,
+                                classes[i],
+                                (x - 10.0 * scale) as f32,
+                                (center.1 - 20.0 * scale) as f32,
+                                (20.0 * scale) as f32,
+                                (40.0 * scale) as f32,
+                                confidence[i],
+                            )
+                            .unwrap()
+                        })
+                        .collect();
+                    if frame % 2 == 1 {
+                        detections.reverse();
+                    }
+                    let result = core.select_at(
+                        &detections,
+                        center,
+                        1_000_000_000 + frame * 1_000_000_000 / fps,
+                    );
+                    if frame > 0 {
+                        assert_eq!(
+                            result.target_object_id,
+                            Some(expected),
+                            "scale={scale} fps={fps} frame={frame}"
+                        );
+                        if let Some(id) = identity {
+                            assert_eq!(result.target_track_id, Some(id));
+                        }
+                        identity = result.target_track_id;
+                    }
+                    last = detections;
+                }
+                assert!(
+                    core.select_at(&[], center, 1_000_000_000 + 12 * 1_000_000_000 / fps)
+                        .target_object_id
+                        .is_none()
+                );
+                let recovered =
+                    core.select_at(&last, center, 1_000_000_000 + 13 * 1_000_000_000 / fps);
+                assert_eq!(recovered.target_track_id, identity);
+                assert_eq!(recovered.target_object_id, Some(expected));
+            }
+        }
+    }
+}
+
+#[test]
 fn explicit_class_weights_and_xy_points_reach_target_selection() {
     let mut config = TargetingConfig {
         class_weights: BTreeMap::from([(0, 0.8), (1, 0.4)]),
@@ -23,9 +98,6 @@ fn explicit_class_weights_and_xy_points_reach_target_selection() {
             distance: 0.0,
             class: 1.0,
             confidence: 0.0,
-            size: 0.0,
-            continuity: 0.0,
-            motion: 0.0,
         },
         switch_delay_ms: 0.0,
         ..TargetingConfig::default()
@@ -55,26 +127,24 @@ fn explicit_class_weights_and_xy_points_reach_target_selection() {
 }
 
 #[test]
-fn capsule_admission_checks_caps_scale_and_degenerate_circle() {
+fn search_circle_uses_observed_aim_inclusive_boundary_and_not_box_size() {
     let cases = [
-        // Box center (320,320), width 40, height 80; segment y=300..340.
-        (40.0, 80.0, 1.0, (340.0, 320.0), true),
-        (40.0, 80.0, 1.0, (340.1, 320.0), false),
-        (40.0, 80.0, 1.0, (320.0, 280.0), true),
-        (40.0, 80.0, 1.0, (339.0, 281.0), false),
-        // Uniform 2x scale: both the radius and the center segment grow.
-        (40.0, 80.0, 2.0, (320.0, 240.0), true),
-        (40.0, 80.0, 2.0, (320.0, 239.9), false),
-        (40.0, 80.0, 5.0, (420.0, 320.0), true),
-        (40.0, 80.0, 5.0, (420.1, 320.0), false),
-        (80.0, 40.0, 1.0, (320.0, 280.0), true),
-        (80.0, 40.0, 1.0, (350.0, 350.0), false),
+        // All aim points are (320,320). A small distant box is still eligible.
+        (10.0, 20.0, 100.0, (420.0, 320.0), true),
+        (40.0, 80.0, 100.0, (420.0, 320.0), true),
+        (80.0, 40.0, 100.0, (320.0, 220.0), true),
+        (40.0, 80.0, 100.0, (380.0, 400.0), true),
+        (40.0, 80.0, 100.0, (420.1, 320.0), false),
+        // Even a box covering the crosshair cannot admit an out-of-range aim.
+        (240.0, 240.0, 100.0, (430.0, 320.0), false),
         (40.0, 80.0, f64::NAN, (320.0, 320.0), false),
+        (40.0, 80.0, f64::INFINITY, (320.0, 320.0), false),
         (40.0, 80.0, 0.0, (320.0, 320.0), false),
+        (40.0, 80.0, -1.0, (320.0, 320.0), false),
     ];
-    for (width, height, scale, point, expected) in cases {
+    for (width, height, radius, point, expected) in cases {
         let mut core = TargetingCore::new(TargetingConfig {
-            target_range_scale: scale,
+            target_fov_radius_px: radius,
             aim_y_ratio: 0.5,
             ..TargetingConfig::default()
         });
@@ -92,15 +162,31 @@ fn capsule_admission_checks_caps_scale_and_degenerate_circle() {
         assert_eq!(
             result.target_object_id.is_some(),
             expected,
-            "{width}x{height} scale={scale} point={point:?}"
+            "{width}x{height} radius={radius} point={point:?}"
         );
         assert_eq!(result.inside_fov, usize::from(expected));
+    }
+    for (aim_x_ratio, admitted) in [(0.5, true), (1.0, false)] {
+        let mut core = TargetingCore::new(TargetingConfig {
+            target_fov_radius_px: 100.0,
+            class_aim_x_ratios: BTreeMap::from([(0, aim_x_ratio)]),
+            aim_y_ratio: 0.5,
+            ..TargetingConfig::default()
+        });
+        let target = Detection::new(1, 0, 300.0, 280.0, 200.0, 80.0, 0.95).unwrap();
+        assert_eq!(
+            core.select(&[target], OBSERVATION_CENTER)
+                .target_object_id
+                .is_some(),
+            admitted
+        );
     }
 }
 
 #[test]
-fn capsule_exit_suppresses_output_without_discarding_observed_identity() {
+fn search_circle_exit_suppresses_output_without_discarding_observed_identity() {
     let mut config = TargetingConfig {
+        target_fov_radius_px: 20.0,
         aim_y_ratio: 0.5,
         ..TargetingConfig::default()
     };
@@ -113,8 +199,8 @@ fn capsule_exit_suppresses_output_without_discarding_observed_identity() {
     let outside = core.select_at(&[target.clone()], (345.0, 320.0), 1_010_000_000);
     assert!(outside.target_object_id.is_none());
     assert_eq!(core.locked().unwrap().id, id);
-    // Live scaling changes admission on the next observation, retaining identity.
-    config.target_range_scale = 1.5;
+    // A live radius change affects the next observation, retaining identity.
+    config.target_fov_radius_px = 30.0;
     core.set_config(config.clone());
     let inside = core.select_at(&[target.clone()], (345.0, 320.0), 1_020_000_000);
     assert_eq!(inside.target_track_id, Some(id));
@@ -134,8 +220,9 @@ fn capsule_exit_suppresses_output_without_discarding_observed_identity() {
 }
 
 #[test]
-fn capsule_filter_skips_outside_candidates_and_uses_latest_observed_box() {
+fn search_circle_skips_outside_candidates_and_uses_latest_observed_aim() {
     let mut core = TargetingCore::new(TargetingConfig {
+        target_fov_radius_px: 20.0,
         aim_y_ratio: 0.5,
         ..TargetingConfig::default()
     });
@@ -152,13 +239,48 @@ fn capsule_filter_skips_outside_candidates_and_uses_latest_observed_box() {
     );
 }
 
-// Ranking/association fixtures use a broad capsule so the behavior under test
-// is ranking or identity, while capsule-specific tests above cover admission.
-fn ranking_config() -> TargetingConfig {
-    TargetingConfig {
-        target_range_scale: 3.0,
-        ..TargetingConfig::default()
+#[test]
+fn search_radius_does_not_change_ranking_or_switching_for_admitted_targets() {
+    let near = Detection::new(1, 1, 310.0, 280.0, 40.0, 80.0, 0.95).unwrap();
+    let preferred = Detection::new(2, 0, 400.0, 280.0, 40.0, 80.0, 0.95).unwrap();
+    let mut traces = Vec::new();
+    for radius in [120.0, 1000.0] {
+        let config = TargetingConfig {
+            target_fov_radius_px: radius,
+            aim_y_ratio: 0.5,
+            switch_min_preference_advantage: 0.005,
+            switch_delay_ms: 30.0,
+            ..TargetingConfig::default()
+        };
+        let mut core = TargetingCore::new(config.clone());
+        let mut trace = vec![
+            core.select_at(&[near.clone()], OBSERVATION_CENTER, 1_000_000_000)
+                .target_object_id,
+        ];
+        for frame in 1..=6 {
+            let result = core.select_at(
+                &[near.clone(), preferred.clone()],
+                OBSERVATION_CENTER,
+                1_000_000_000 + frame * 20_000_000,
+            );
+            trace.push(result.target_object_id);
+        }
+        assert_eq!(trace.last(), Some(&Some(2)));
+        traces.push(trace);
+
+        let mut fresh = TargetingCore::new(config);
+        for frame in 0..=1 {
+            let selected = fresh.select_at(
+                &[near.clone(), preferred.clone()],
+                OBSERVATION_CENTER,
+                2_000_000_000 + frame * 20_000_000,
+            );
+            if frame == 1 {
+                assert_eq!(selected.target_object_id, Some(2));
+            }
+        }
     }
+    assert_eq!(traces[0], traces[1]);
 }
 
 fn fixture_dir() -> PathBuf {
@@ -212,7 +334,7 @@ fn target_switch_loss_fixture_matches_targeting_core() {
         "fixture must cover lock, challenger_close, challenger_commit"
     );
 
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
 
     let first_detections = detections_from_value(&records[0]["detections"]);
     let first_captured_at_ns = records[0]["frame"]["captured_at_ns"]
@@ -221,8 +343,8 @@ fn target_switch_loss_fixture_matches_targeting_core() {
     assert_eq!(
         core.select_at(&first_detections, OBSERVATION_CENTER, first_captured_at_ns)
             .target_object_id,
-        Some(1),
-        "the sole in-capsule candidate is confirmed immediately"
+        None,
+        "both candidates are in the circle; ambiguous first observations need confirmation"
     );
 
     for record in &records {
@@ -258,7 +380,7 @@ fn target_switch_loss_fixture_matches_targeting_core() {
 
 #[test]
 fn empty_detections_hold_lock_identity_without_emitting_a_stale_target() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
     let first = core.select(&[head], OBSERVATION_CENTER);
     assert!(first.target_object_id.is_some());
@@ -270,7 +392,7 @@ fn empty_detections_hold_lock_identity_without_emitting_a_stale_target() {
 
 #[test]
 fn detection_reacquired_inside_grace_keeps_the_same_track_id() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let first = Detection::new(1, 0, 280.0, 280.0, 80.0, 100.0, 0.9).expect("first");
     let track_id = core
         .select(&[first], OBSERVATION_CENTER)
@@ -289,7 +411,7 @@ fn detection_reacquired_inside_grace_keeps_the_same_track_id() {
 
 #[test]
 fn strong_geometry_can_keep_identity_when_raw_class_changes() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let first = Detection::new(1, 0, 280.0, 280.0, 80.0, 100.0, 0.95).expect("first");
     let track_id = core
         .select_at(&[first], OBSERVATION_CENTER, 1_000_000_000)
@@ -307,7 +429,7 @@ fn strong_geometry_can_keep_identity_when_raw_class_changes() {
 
 #[test]
 fn same_class_association_wins_over_a_slightly_closer_cross_class_box() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let first = Detection::new(1, 0, 280.0, 280.0, 80.0, 100.0, 0.95).expect("first");
     let track_id = core
         .select_at(&[first], OBSERVATION_CENTER, 1_000_000_000)
@@ -327,7 +449,7 @@ fn same_class_association_wins_over_a_slightly_closer_cross_class_box() {
 
 #[test]
 fn smooth_visual_motion_keeps_identity_and_does_not_rebuild_control_state() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let mut stable_track_id = None;
 
     for (frame, x) in [240.0_f32, 256.0, 272.0, 288.0, 304.0]
@@ -341,7 +463,12 @@ fn smooth_visual_motion_keeps_identity_and_does_not_rebuild_control_state() {
             OBSERVATION_CENTER,
             1_000_000_000 + frame as u64 * 8_333_333,
         );
-        let track_id = selected.target_track_id.expect("selected track");
+        let track_id = selected.target_track_id.unwrap_or_else(|| {
+            panic!(
+                "frame {frame} lost its smoothly moving target: {selected:?}; lock={:?}",
+                core.locked()
+            )
+        });
         if let Some(expected) = stable_track_id {
             assert_eq!(track_id, expected, "frame {frame} rebuilt target identity");
             assert!(
@@ -355,16 +482,61 @@ fn smooth_visual_motion_keeps_identity_and_does_not_rebuild_control_state() {
 }
 
 #[test]
+fn abrupt_jump_after_smooth_motion_cannot_reuse_identity_via_observed_position_fallback() {
+    let mut core = TargetingCore::new(TargetingConfig::default());
+    let mut stable_track = None;
+    for (frame, x) in [240.0_f32, 256.0, 272.0].into_iter().enumerate() {
+        let detection = Detection::new(frame as u64, 0, x, 240.0, 80.0, 160.0, 0.95).unwrap();
+        let selected = core.select_at(
+            &[detection],
+            OBSERVATION_CENTER,
+            1_000_000_000 + frame as u64 * 8_333_333,
+        );
+        let track = selected
+            .target_track_id
+            .expect("smooth motion remains associated");
+        if let Some(expected) = stable_track {
+            assert_eq!(track, expected);
+        }
+        stable_track = Some(track);
+    }
+
+    // The 80px jump remains inside both the search circle and the height-normalized
+    // distance bound. Only the NIS outlier check rejects both reference points.
+    let jumped = Detection::new(10, 0, 352.0, 240.0, 80.0, 160.0, 0.95).unwrap();
+    let rejected = core.select_at(
+        std::slice::from_ref(&jumped),
+        OBSERVATION_CENTER,
+        1_025_000_000,
+    );
+    assert_eq!(rejected.inside_fov, 1);
+    assert!(rejected.target_track_id.is_none());
+    assert!(rejected.target_aim_x.is_none());
+    assert!(rejected.target_aim_y.is_none());
+    assert_eq!(core.locked().map(|track| track.id), stable_track);
+
+    // Repeated observations may confirm the new target, never recycle the
+    // old identity merely because the fallback hypothesis was available.
+    let waiting = core.select_at(
+        std::slice::from_ref(&jumped),
+        OBSERVATION_CENTER,
+        1_035_000_000,
+    );
+    assert!(waiting.target_track_id.is_none());
+    let confirmed = core.select_at(&[jumped], OBSERVATION_CENTER, 1_095_000_000);
+    assert!(confirmed.target_track_id.is_some());
+    assert_ne!(confirmed.target_track_id, stable_track);
+    assert_eq!(confirmed.target_object_id, Some(10));
+}
+
+#[test]
 fn switch_margin_holds_the_current_target_when_the_challenger_is_not_better_enough() {
     let mut core = TargetingCore::new(TargetingConfig {
-        class_priority: Vec::new(),
+        class_weights: BTreeMap::new(),
         selection_weights: SelectionWeights {
             distance: 1.0,
             class: 0.0,
             confidence: 0.0,
-            size: 0.0,
-            continuity: 0.0,
-            motion: 0.0,
         },
         switch_min_preference_advantage: 0.30,
         switch_min_continuity_score: 0.0,
@@ -372,10 +544,9 @@ fn switch_margin_holds_the_current_target_when_the_challenger_is_not_better_enou
         kalman: KalmanConfig {
             nis_threshold: 1_000_000.0,
             nis_hard_reject: 1_000_000.0,
-            min_prediction_confidence: 0.0,
             ..KalmanConfig::default()
         },
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let initial = [
         Detection::new(10, 0, 280.0, 280.0, 80.0, 100.0, 0.9).expect("locked"),
@@ -401,16 +572,13 @@ fn switch_margin_holds_the_current_target_when_the_challenger_is_not_better_enou
 #[test]
 fn equal_scores_tie_break_by_stable_track_id_not_frame_local_object_id() {
     let mut core = TargetingCore::new(TargetingConfig {
-        class_priority: Vec::new(),
+        class_weights: BTreeMap::new(),
         selection_weights: SelectionWeights {
             distance: 1.0,
             class: 0.0,
             confidence: 0.0,
-            size: 0.0,
-            continuity: 0.0,
-            motion: 0.0,
         },
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let first = [
         Detection::new(10, 0, 270.0, 280.0, 80.0, 100.0, 0.9).expect("left"),
@@ -432,7 +600,7 @@ fn equal_scores_tie_break_by_stable_track_id_not_frame_local_object_id() {
 
 #[test]
 fn reset_clears_targeting_state() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
     core.select(&[head], OBSERVATION_CENTER);
     core.reset();
@@ -444,7 +612,7 @@ fn reset_clears_targeting_state() {
 fn below_confidence_detections_are_filtered_before_targeting() {
     let mut core = TargetingCore::new(TargetingConfig {
         min_confidence: 0.5,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let weak = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.1).expect("weak");
     let selection = core.select(&[weak], OBSERVATION_CENTER);
@@ -454,11 +622,11 @@ fn below_confidence_detections_are_filtered_before_targeting() {
 }
 
 #[test]
-fn explicit_class_filter_is_independent_from_class_priority() {
+fn explicit_class_filter_is_independent_from_class_weights() {
     let mut core = TargetingCore::new(TargetingConfig {
-        class_priority: vec![0, 1],
+        class_weights: BTreeMap::from([(0, 1.0), (1, 0.5)]),
         allowed_class_ids: Some(BTreeSet::from([2])),
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let preferred_but_blocked =
         Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("blocked");
@@ -480,7 +648,7 @@ fn explicit_class_filter_is_independent_from_class_priority() {
 fn empty_class_allowlist_disables_target_selection() {
     let mut core = TargetingCore::new(TargetingConfig {
         allowed_class_ids: Some(BTreeSet::new()),
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let target = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("target");
 
@@ -494,7 +662,7 @@ fn empty_class_allowlist_disables_target_selection() {
 fn first_lock_is_ranked_from_declared_observation_center_not_origin() {
     let mut core = TargetingCore::new(TargetingConfig {
         target_fov_radius_px: 1_000.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let near_origin = Detection::new(1, 0, 90.0, 90.0, 20.0, 20.0, 0.9).expect("origin");
     let near_center = Detection::new(2, 0, 290.0, 290.0, 20.0, 20.0, 0.9).expect("center");
@@ -503,7 +671,11 @@ fn first_lock_is_ranked_from_declared_observation_center_not_origin() {
         &[near_origin.clone(), near_center.clone()],
         OBSERVATION_CENTER,
     );
-    assert_eq!(selected.target_object_id, Some(2));
+    assert_eq!(selected.inside_fov, 2);
+    assert!(
+        selected.target_object_id.is_none(),
+        "two new candidates need confirmation"
+    );
     let selected = core.select(&[near_origin, near_center], OBSERVATION_CENTER);
 
     assert_eq!(selected.target_object_id, Some(2));
@@ -513,7 +685,7 @@ fn first_lock_is_ranked_from_declared_observation_center_not_origin() {
 fn target_fov_radius_is_a_real_radial_admission_gate() {
     let mut core = TargetingCore::new(TargetingConfig {
         target_fov_radius_px: 180.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let outside = Detection::new(1, 0, 530.0, 310.0, 20.0, 20.0, 0.99).expect("outside");
     let inside = Detection::new(2, 0, 310.0, 310.0, 20.0, 20.0, 0.60).expect("inside");
@@ -534,10 +706,9 @@ fn detections_outside_selection_fov_keep_their_tracker_identity() {
         kalman: KalmanConfig {
             nis_threshold: 1_000_000.0,
             nis_hard_reject: 1_000_000.0,
-            min_prediction_confidence: 0.0,
             ..KalmanConfig::default()
         },
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let initial = Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.95).expect("initial");
     let track_id = core
@@ -561,18 +732,15 @@ fn detections_outside_selection_fov_keep_their_tracker_identity() {
 }
 
 #[test]
-fn every_declared_class_priority_rank_affects_selection() {
+fn every_declared_class_weight_affects_selection() {
     let mut core = TargetingCore::new(TargetingConfig {
-        class_priority: vec![0, 1, 2, 3],
+        class_weights: BTreeMap::from([(0, 1.0), (1, 0.5), (2, 0.25), (3, 0.125)]),
         selection_weights: SelectionWeights {
             distance: 0.0,
             class: 1.0,
             confidence: 0.0,
-            size: 0.0,
-            continuity: 0.0,
-            motion: 0.0,
         },
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let candidates = [
         Detection::new(1, 2, 280.0, 280.0, 40.0, 80.0, 0.95).expect("third rank"),
@@ -588,18 +756,37 @@ fn every_declared_class_priority_rank_affects_selection() {
 }
 
 #[test]
+fn unweighted_classes_receive_no_implicit_preference() {
+    let mut core = TargetingCore::new(TargetingConfig {
+        class_weights: BTreeMap::new(),
+        selection_weights: SelectionWeights {
+            distance: 0.0,
+            class: 1.0,
+            confidence: 0.0,
+        },
+        ..TargetingConfig::default()
+    });
+    let candidates = [
+        Detection::new(1, 15, 300.0, 280.0, 40.0, 80.0, 0.95).unwrap(),
+        Detection::new(2, 0, 300.0, 280.0, 40.0, 80.0, 0.95).unwrap(),
+    ];
+    core.select_at(&candidates, OBSERVATION_CENTER, 1_000_000_000);
+    let selected = core.select_at(&candidates, OBSERVATION_CENTER, 1_010_000_000);
+
+    assert_eq!(selected.target_object_id, Some(1));
+    assert_eq!(selected.target_class_id, Some(15));
+}
+
+#[test]
 fn confidence_can_outweigh_a_small_distance_advantage() {
     let mut core = TargetingCore::new(TargetingConfig {
-        class_priority: Vec::new(),
+        class_weights: BTreeMap::new(),
         selection_weights: SelectionWeights {
             distance: 0.65,
             class: 0.0,
             confidence: 0.15,
-            size: 0.0,
-            continuity: 0.0,
-            motion: 0.0,
         },
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let candidates = [
         Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.51).expect("near low score"),
@@ -612,26 +799,30 @@ fn confidence_can_outweigh_a_small_distance_advantage() {
 }
 
 #[test]
-fn larger_visible_box_breaks_an_otherwise_equal_target_tie() {
+fn box_size_does_not_break_a_tie_with_the_same_observed_aim_point() {
     let mut core = TargetingCore::new(TargetingConfig {
-        class_priority: Vec::new(),
+        class_weights: BTreeMap::new(),
         aim_y_ratio: 0.5,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let candidates = [
-        Detection::new(1, 0, 270.0, 300.0, 20.0, 40.0, 0.9).expect("small"),
-        Detection::new(2, 0, 340.0, 280.0, 40.0, 80.0, 0.9).expect("large"),
+        Detection::new(1, 0, 310.0, 300.0, 20.0, 40.0, 0.9).expect("small"),
+        Detection::new(2, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("large"),
     ];
     core.select_at(&candidates, OBSERVATION_CENTER, 1_000_000_000);
     let selected = core.select_at(&candidates, OBSERVATION_CENTER, 1_010_000_000);
 
-    assert_eq!(selected.target_object_id, Some(2));
+    assert_eq!(selected.target_object_id, Some(1));
+    assert_eq!(
+        (selected.target_aim_x, selected.target_aim_y),
+        (Some(320.0), Some(320.0))
+    );
 }
 
 #[test]
-fn stable_continuity_breaks_an_equal_score_tie() {
+fn association_continuity_does_not_add_target_selection_merit() {
     let initial_config = TargetingConfig {
-        class_priority: Vec::new(),
+        class_weights: BTreeMap::new(),
         aim_y_ratio: 0.5,
         switch_min_preference_advantage: 1.0,
         switch_min_continuity_score: 0.0,
@@ -639,10 +830,9 @@ fn stable_continuity_breaks_an_equal_score_tie() {
         kalman: KalmanConfig {
             nis_threshold: 1_000_000.0,
             nis_hard_reject: 1_000_000.0,
-            min_prediction_confidence: 0.0,
             ..KalmanConfig::default()
         },
-        ..ranking_config()
+        ..TargetingConfig::default()
     };
     let mut core = TargetingCore::new(initial_config.clone());
     let initial = [
@@ -664,14 +854,15 @@ fn stable_continuity_breaks_an_equal_score_tie() {
     });
     let selected = core.select_at(&displaced, OBSERVATION_CENTER, 1_020_000_000);
 
-    assert_ne!(selected.target_track_id, Some(locked));
-    assert_eq!(selected.target_object_id, Some(12));
+    assert_eq!(selected.target_track_id, Some(locked));
+    assert_eq!(selected.target_object_id, Some(11));
+    assert!(!selected.target_rebuilt);
 }
 
 #[test]
-fn motion_toward_the_crosshair_breaks_an_equal_distance_tie() {
+fn motion_history_does_not_break_an_equal_current_distance_tie() {
     let mut core = TargetingCore::new(TargetingConfig {
-        class_priority: Vec::new(),
+        class_weights: BTreeMap::new(),
         aim_y_ratio: 0.5,
         switch_min_preference_advantage: 0.0,
         switch_min_continuity_score: 0.0,
@@ -679,10 +870,9 @@ fn motion_toward_the_crosshair_breaks_an_equal_distance_tie() {
         kalman: KalmanConfig {
             nis_threshold: 1_000_000.0,
             nis_hard_reject: 1_000_000.0,
-            min_prediction_confidence: 0.0,
             ..KalmanConfig::default()
         },
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let initial = [
         Detection::new(1, 0, 280.0, 280.0, 40.0, 80.0, 0.9).expect("near left"),
@@ -700,22 +890,25 @@ fn motion_toward_the_crosshair_breaks_an_equal_distance_tie() {
 
     let selected = core.select_at(&moving, OBSERVATION_CENTER, 1_020_000_000);
 
-    assert_ne!(selected.target_track_id, Some(locked));
-    assert_eq!(selected.target_object_id, Some(12));
+    assert_eq!(selected.target_track_id, Some(locked));
+    assert_eq!(selected.target_object_id, Some(11));
+    assert!(!selected.target_rebuilt);
+    let missing = core.select_at(&[], OBSERVATION_CENTER, 1_030_000_000);
+    assert!(missing.target_object_id.is_none());
+    assert!(missing.target_aim_x.is_none());
+    assert!(missing.target_aim_y.is_none());
+    assert_eq!(core.locked().expect("retained identity").id, locked);
 }
 
 #[test]
-fn invalid_motion_state_is_neutral_in_target_scoring() {
+fn invalid_prediction_does_not_prevent_selecting_the_current_observation() {
     let mut core = TargetingCore::new(TargetingConfig {
-        class_priority: Vec::new(),
+        class_weights: BTreeMap::new(),
         aim_y_ratio: 0.5,
         selection_weights: SelectionWeights {
-            distance: 0.0,
+            distance: 1.0,
             class: 0.0,
             confidence: 0.0,
-            size: 0.0,
-            continuity: 0.0,
-            motion: 1.0,
         },
         switch_min_preference_advantage: 0.0,
         switch_min_continuity_score: 0.0,
@@ -726,7 +919,7 @@ fn invalid_motion_state_is_neutral_in_target_scoring() {
             nis_hard_reject: 1_000_000.0,
             ..KalmanConfig::default()
         },
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let initial = [
         Detection::new(1, 0, 280.0, 280.0, 40.0, 80.0, 0.9).expect("left"),
@@ -751,7 +944,7 @@ fn invalid_motion_state_is_neutral_in_target_scoring() {
 
 #[test]
 fn aim_point_policy_change_rebuilds_prediction_history_without_restarting_for_other_tuning() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let detection = Detection::new(1, 0, 280.0, 280.0, 80.0, 100.0, 0.9).unwrap();
     core.select_at(&[detection], OBSERVATION_CENTER, 1_000_000_000);
     let stable = core.select_at(
@@ -763,7 +956,7 @@ fn aim_point_policy_change_rebuilds_prediction_history_without_restarting_for_ot
 
     let mut config = TargetingConfig {
         aim_y_ratio: 0.62,
-        ..ranking_config()
+        ..TargetingConfig::default()
     };
     core.set_config(config.clone());
     let rebuilt = core.select_at(
@@ -791,7 +984,7 @@ fn control_aim_point_is_separate_from_association_center_and_supports_class_over
     let mut core = TargetingCore::new(TargetingConfig {
         aim_y_ratio: 0.22,
         class_aim_y_ratios: class_ratios,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let target = Detection::new(1, 1, 280.0, 200.0, 80.0, 100.0, 0.9).expect("target");
     let selection = core.select(&[target], OBSERVATION_CENTER);
@@ -810,7 +1003,7 @@ fn control_aim_point_is_separate_from_association_center_and_supports_class_over
 fn aim_point_motion_from_bbox_shape_does_not_rebuild_identity() {
     let mut core = TargetingCore::new(TargetingConfig {
         aim_y_ratio: 0.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let compact = Detection::new(1, 0, 300.0, 300.0, 40.0, 40.0, 0.95).expect("compact");
     let first = core.select_at(&[compact], OBSERVATION_CENTER, 1_000_000_000);
@@ -829,7 +1022,7 @@ fn aim_point_motion_from_bbox_shape_does_not_rebuild_identity() {
 fn extreme_aspect_ratio_is_rejected_before_association() {
     let mut core = TargetingCore::new(TargetingConfig {
         candidate_max_aspect_ratio: 6.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let stretched = Detection::new(1, 0, 270.0, 315.0, 100.0, 10.0, 0.9).expect("stretched");
     let selection = core.select(&[stretched], OBSERVATION_CENTER);
@@ -839,7 +1032,7 @@ fn extreme_aspect_ratio_is_rejected_before_association() {
 
 #[test]
 fn head_movement_keeps_the_same_stable_lock() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let frame1 = vec![Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.9).expect("d1")];
     let first = core.select(&frame1, OBSERVATION_CENTER);
     assert_eq!(first.lock_reason, Some(LockReason::PreferredClass));
@@ -857,13 +1050,10 @@ fn stable_challenger_must_hold_its_advantage_for_capture_time_delay() {
             distance: 0.99,
             class: 0.01,
             confidence: 0.0,
-            size: 0.0,
-            continuity: 0.0,
-            motion: 0.0,
         },
         switch_min_preference_advantage: 0.01,
         switch_delay_ms: 50.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let first = vec![
         Detection::new(1, 0, 270.0, 285.0, 80.0, 160.0, 0.9).expect("locked"),
@@ -901,7 +1091,7 @@ fn stable_challenger_must_hold_its_advantage_for_capture_time_delay() {
 
 #[test]
 fn frame_local_candidate_reordering_keeps_runtime_track_identity() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let left = Detection::new(0, 0, 280.0, 300.0, 40.0, 80.0, 0.9).expect("left");
     let right = Detection::new(1, 0, 500.0, 300.0, 40.0, 80.0, 0.9).expect("right");
     let first = core.select(&[left, right], OBSERVATION_CENTER);
@@ -920,7 +1110,7 @@ fn frame_local_candidate_reordering_keeps_runtime_track_identity() {
 
 #[test]
 fn identity_confidence_is_spatial_continuity_not_detector_confidence() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let first = Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.55).expect("first");
     assert!(
         core.select(std::slice::from_ref(&first), OBSERVATION_CENTER)
@@ -935,7 +1125,7 @@ fn identity_confidence_is_spatial_continuity_not_detector_confidence() {
     let moved = Detection::new(2, 0, 318.0, 300.0, 40.0, 80.0, 0.95).expect("moved");
     let selection = core.select(&[moved], OBSERVATION_CENTER);
     let tracked = core.locked().expect("continued track");
-    let expected = 1.0 - (0.75 * 0.225 + 0.25 * (1.0 - 22.0 / 58.0)) / 1.50;
+    let expected = 1.0 - (0.75 * 0.225 + 0.25 * (1.0 - 22.0 / 58.0)) / 1.15;
     assert!((tracked.confidence - 0.95).abs() < f32::EPSILON);
     assert!((tracked.identity_confidence - expected).abs() < 1e-12);
     assert_eq!(selection.target_detection_confidence, Some(0.95));
@@ -950,10 +1140,42 @@ fn identity_confidence_is_spatial_continuity_not_detector_confidence() {
 }
 
 #[test]
+fn same_class_identity_confidence_is_independent_of_class_association_weight() {
+    let mut confidences = Vec::new();
+    for class_weight in [0.0, 0.35, 2.0] {
+        let mut core = TargetingCore::new(TargetingConfig {
+            tracker_class_cost_weight: class_weight,
+            ..TargetingConfig::default()
+        });
+        let first = Detection::new(1, 0, 300.0, 300.0, 40.0, 80.0, 0.95).unwrap();
+        let locked = core
+            .select_at(&[first], OBSERVATION_CENTER, 1_000_000_000)
+            .target_track_id
+            .expect("initial identity");
+        let moved = Detection::new(2, 0, 318.0, 300.0, 40.0, 80.0, 0.95).unwrap();
+        let selected = core.select_at(&[moved], OBSERVATION_CENTER, 1_010_000_000);
+        assert_eq!(selected.target_track_id, Some(locked));
+        assert!(!selected.target_rebuilt);
+        let confidence = selected
+            .target_identity_confidence
+            .expect("current observed identity confidence");
+        assert!(confidence > 0.0 && confidence < 1.0);
+        confidences.push(confidence);
+    }
+
+    for confidence in &confidences[1..] {
+        assert!(
+            (confidence - confidences[0]).abs() < 1e-12,
+            "class cost must not inflate same-class geometry confidence: {confidences:?}"
+        );
+    }
+}
+
+#[test]
 fn rectangular_minimum_cost_assignment_preserves_both_feasible_identities() {
     let mut core = TargetingCore::new(TargetingConfig {
         target_fov_radius_px: 200.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let first = vec![
         Detection::new(1, 0, 280.0, 270.0, 40.0, 100.0, 0.9).expect("left"),
@@ -985,7 +1207,7 @@ fn rectangular_minimum_cost_assignment_preserves_both_feasible_identities() {
 fn scale_jump_and_expired_capture_gap_allocate_new_identities() {
     let mut scale_core = TargetingCore::new(TargetingConfig {
         tracker_max_size_ratio: 2.5,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let first = Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("first");
     let first_id = scale_core
@@ -1002,7 +1224,7 @@ fn scale_jump_and_expired_capture_gap_allocate_new_identities() {
 
     let mut time_core = TargetingCore::new(TargetingConfig {
         tracker_max_association_dt_ms: 150.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let first = Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("first");
     let first_id = time_core
@@ -1020,7 +1242,7 @@ fn scale_jump_and_expired_capture_gap_allocate_new_identities() {
 
 #[test]
 fn missing_locked_target_does_not_promote_a_different_class_during_grace() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let first = vec![
         Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("locked"),
         Detection::new(2, 1, 380.0, 270.0, 80.0, 100.0, 0.9).expect("challenger"),
@@ -1042,7 +1264,7 @@ fn missing_locked_target_does_not_promote_a_different_class_during_grace() {
 fn temporarily_missing_locked_target_does_not_immediately_switch_to_challenger() {
     let mut core = TargetingCore::new(TargetingConfig {
         track_max_lost_age_ms: 120.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let both_visible = [
         Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("locked"),
@@ -1085,7 +1307,7 @@ fn confirmed_challenger_takes_over_before_missing_lock_grace_expires() {
     let mut core = TargetingCore::new(TargetingConfig {
         track_max_lost_age_ms: 120.0,
         switch_delay_ms: 50.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let both_visible = [
         Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.95).expect("locked"),
@@ -1116,7 +1338,7 @@ fn confirmed_challenger_takes_over_before_missing_lock_grace_expires() {
 fn locked_target_loss_grace_uses_capture_time_instead_of_inference_frame_count() {
     let mut core = TargetingCore::new(TargetingConfig {
         track_max_lost_age_ms: 120.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let both_visible = [
         Detection::new(1, 0, 280.0, 270.0, 80.0, 100.0, 0.9).expect("locked"),
@@ -1147,7 +1369,7 @@ fn locked_target_loss_grace_uses_capture_time_instead_of_inference_frame_count()
 fn association_beyond_normalized_distance_allocates_a_new_identity() {
     let mut core = TargetingCore::new(TargetingConfig {
         target_fov_radius_px: 1_000.0,
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let first = Detection::new(1, 0, 100.0, 100.0, 40.0, 80.0, 0.9).expect("first");
     let first_track = core
@@ -1164,7 +1386,7 @@ fn association_beyond_normalized_distance_allocates_a_new_identity() {
 fn filtered_classes_age_out_the_previous_track() {
     let mut core = TargetingCore::new(TargetingConfig {
         allowed_class_ids: Some(BTreeSet::from([0, 1])),
-        ..ranking_config()
+        ..TargetingConfig::default()
     });
     let target = Detection::new(0, 0, 280.0, 300.0, 40.0, 80.0, 0.9).expect("target");
     let first = core.select(std::slice::from_ref(&target), OBSERVATION_CENTER);
@@ -1196,11 +1418,11 @@ fn crowded_frame_can_choose_a_late_better_class_without_input_order_bias() {
         reversed.reverse();
         reversed
     }] {
-        let mut core = TargetingCore::new(ranking_config());
+        let mut core = TargetingCore::new(TargetingConfig::default());
         core.select_at(&frame, OBSERVATION_CENTER, 1_000_000_000);
         let selection = core.select_at(&frame, OBSERVATION_CENTER, 1_010_000_000);
         assert_eq!(selection.target_object_id, Some(17));
-        assert_eq!(selection.inside_fov, 1);
+        assert_eq!(selection.inside_fov, 17);
         assert_eq!(selection.admitted_to_tracking, 16);
         assert_eq!(selection.dropped_by_budget, 1);
     }
@@ -1208,7 +1430,7 @@ fn crowded_frame_can_choose_a_late_better_class_without_input_order_bias() {
 
 #[test]
 fn crowded_frame_keeps_the_existing_lock_in_the_association_budget() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let incumbent = Detection::new(100, 2, 300.0, 280.0, 40.0, 80.0, 0.9).expect("incumbent");
     let locked = core.select_at(
         std::slice::from_ref(&incumbent),
@@ -1232,7 +1454,7 @@ fn crowded_frame_keeps_the_existing_lock_in_the_association_budget() {
 
 #[test]
 fn lost_track_cannot_produce_a_target_object_id() {
-    let mut core = TargetingCore::new(ranking_config());
+    let mut core = TargetingCore::new(TargetingConfig::default());
     let head = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.9).expect("head");
     core.select(&[head], OBSERVATION_CENTER);
     // Timestamp-free replay keeps a short fixed internal grace period. Once

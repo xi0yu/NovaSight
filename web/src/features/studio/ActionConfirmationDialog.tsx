@@ -12,6 +12,7 @@ export type ActionConfirmationRequest = {
   danger?: boolean;
   handoffOnConfirm?: boolean;
   onConfirm: () => void | boolean | Promise<void | boolean>;
+  onCancel?: () => void;
 };
 
 export function ActionConfirmationDialog({
@@ -67,6 +68,7 @@ export function ActionConfirmationDialog({
       <section
         aria-busy={busy}
         aria-labelledby={titleId}
+        aria-describedby={`${titleId}-description`}
         aria-modal="true"
         className="action-confirmation-dialog"
         ref={dialogRef}
@@ -80,7 +82,7 @@ export function ActionConfirmationDialog({
           <div>
             <span className="class-config-eyebrow">{request.eyebrow}</span>
             <h2 id={titleId}>{request.title}</h2>
-            <p>{request.description}</p>
+            <p id={`${titleId}-description`}>{request.description}</p>
           </div>
         </header>
         {request.details?.length ? (

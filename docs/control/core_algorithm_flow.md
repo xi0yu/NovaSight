@@ -1,6 +1,6 @@
 # NovaSight Core Algorithm Flow
 
-Date: 2026-08-04
+Date: 2026-09-30
 
 This document describes the current production algorithm path. It is written as
 the runtime flow a user would experience on a Jetson, not as crate-by-crate API
@@ -79,7 +79,8 @@ Then it selects and tracks targets:
 
 ```text
 detections
--> class/confidence/FOV admission
+-> class/confidence/aspect-ratio admission
+-> observed aim inside the search circle (selection eligibility)
 -> bounded track association
 -> stable TrackId
 -> target ranking
@@ -89,6 +90,45 @@ detections
 The tracker uses a bounded constant-velocity Kalman state for identity
 association. That Kalman state is for keeping the same target identity across
 frames. It is not the final mouse-control prediction.
+
+The only geometric selection gate is `distance(observed_aim, center) <= R`,
+where `R = target_fov_radius_px` in observation pixels. The aim point uses the
+configured class X/Y ratios, not necessarily the box center. Box overlap with
+the circle is insufficient; predicted positions cannot admit an outside aim.
+Box size does not scale the radius. Outside observations may retain an identity,
+but never authorize control output. This is post-inference candidate filtering,
+not a capture or inference crop.
+
+Selection now uses three current-observation signals only:
+
+```text
+L = hypot(observation_width / 2, observation_height / 2)
+D = 1 - clamp(distance_to_observed_aim / L, 0, 1)
+C = configured class weight (unlisted classes: 0)
+Q = current detector confidence
+score = (w_distance*D + w_class*C + w_confidence*Q) / sum(weights)
+```
+
+Box size, association continuity, and motion direction do not add merit.
+Continuity is handled by identity association and the existing switch margin,
+confirmation time, and challenger-quality gate. Class preference is soft: a
+higher class weight does not guarantee selection over distance and confidence.
+Changing the search radius changes eligibility only, not the score or switch
+margin between already admitted candidates. Changing observation dimensions
+does change the geometric reference, as intended.
+
+The matching cost still includes a cross-class penalty. Its identity-quality
+score uses geometry only, so increasing the class penalty cannot manufacture
+confidence for a same-class match. This quality score is a heuristic, not a
+calibrated probability. A cold/lagging Kalman prediction may fall back to the
+last observed center only if it passes the same NIS outlier bound. Neither
+reference passing means no association; the hard threshold is not relaxed.
+
+Kalman prediction retention is bounded by elapsed capture time, without a
+second frame-count limit or hidden multiplicative confidence-decay expiry.
+Finite-state, covariance, position-uncertainty, NIS, and identity-quality guards
+remain and can reject prediction before that time limit. A retained/lost track
+never becomes a control target without a current admitted detection.
 
 The control aim point comes from the current selected detection box and class
 aim ratio. For example, different classes can aim at a different vertical point
@@ -130,16 +170,9 @@ prediction_velocity = vector_medoid(v1, v2, v3)
 predicted_offset = prediction_velocity * horizon_ms
 ```
 
-The offset is then gated and capped:
+The offset is accepted only for valid timing, finite arithmetic and consistent motion. Valid displacement is not clipped to a fixed pixel radius. Stops, reversals and unavailable history still disable extrapolation. Final X/Y device-count limits remain independent of prediction.
 
-```text
-vector-medoid velocity-time offset
--> prediction_cap_px vector cap
--> safe prediction offset
-```
-
-This cap belongs to prediction only: it limits how far the target aim point can
-be advanced. It is separate from the later device-count output limit.
+The device delay is a measured calibration value, not a second strength knob. Extra lead adds time; zero extra lead still compensates observation age and device delay.
 
 Acceleration is telemetry only in the current model. It does not add a second
 prediction correction path.
@@ -196,6 +229,13 @@ large error -> compressed by Atan, no additional gain boost
 entry -> smoothly reach configured Kp within entry_ramp_ms
 ```
 
+Entry restarts after target/gate changes or capture gaps exceeding an internal
+80ms continuity budget (the previous default). Frame age is a separate freshness
+check: a new frame arriving every 60ms is not necessarily 60ms old. Changing
+prediction-history retention no longer changes the entry envelope, including
+when prediction is disabled. Low-rate control below 12.5Hz requires revisiting
+this existing continuity policy; it is not claimed as validated here.
+
 There is no traditional PID loop in the current mainline:
 
 ```text
@@ -206,14 +246,15 @@ no prediction of mouse counts
 
 ## 6. Output Limit And Integer Conversion
 
-The limiter owns the only output-bound policy and the final integer mouse
-counts:
+The controller quantizes demand first; the device worker owns the final
+output-bound policy:
 
 ```text
-out_x = clamp(float_demand_x, -max_output_x_counts, max_output_x_counts)
-out_y = clamp(float_demand_y, -max_output_y_counts, max_output_y_counts)
+float demand
 -> carry fractional remainder needed by integer-only hardware
 -> integer dx / dy
+-> device worker rechecks current gates and generation
+-> clamp integer dx / dy to the configured per-axis output bounds
 ```
 
 The fractional remainder is internal conversion state, not a parameter and not
@@ -281,6 +322,60 @@ no repeated old-frame control playback
 The expensive work should remain in DeepStream/TensorRT. Rust should keep owning
 validation, target state, prediction math, control math, output safety, and UI
 telemetry.
+
+## Schema 19 Search Range Migration
+
+`target_range_scale` is retired from runtime, configuration schema, and Studio.
+The existing `target_fov_radius_px` value is preserved (180 px if missing).
+There is no percentage-to-pixel conversion: capsule scale depended on each
+target's dimensions and was not equivalent to a fixed search radius. Loading
+migrates in memory; the next ordinary save writes schema 19 and removes the
+retired key. Explicit writes to that key are rejected.
+
+Removing the capsule gate intentionally admits more targets within the existing
+search circle. The distance score now uses the observation half-diagonal rather
+than the search radius, so older weights can choose differently. This is not a
+behavior-equivalent migration. Keep a configuration backup when deploying and
+verify admission and ranking before enabling physical output. No running device
+configuration is changed by editing this repository.
+
+## Schema 18 Cleanup And Verification Boundary
+
+Removed from runtime config, API schema, and Studio controls:
+
+```text
+target_selection_size_weight
+target_selection_continuity_weight
+target_selection_motion_weight
+target_selection_motion_horizon_ms
+tracker_kalman_max_predict_steps
+target_class_priority
+```
+
+Old class order is converted once into explicit class weights; existing explicit
+weights override the migrated rank values. Empty modern weight maps have no
+implicit class preference. Removed scoring fields are discarded during migration.
+If an old profile exclusively used removed merits, it receives the default three
+remaining weights. Malformed active settings and unknown keys still fail
+validation. Migration is idempotent and persists with the normal configuration
+save; loading alone does not overwrite the user's file.
+
+Hardware calibration, trigger delay, capture-age validation, and
+final device limits remain. Valid predictions have no fixed pixel cap. Final output still has independent X/Y bounds; this
+pass does not claim a vector-only device limiter or change hardware semantics.
+Host simulations establish deterministic contracts, not Jetson accuracy or a
+universally optimal parameter set. Real capture latency, detector noise, and
+physical-device response still need measurement.
+
+Schema 20 uses one internal capture-age budget, `pipeline.frame_max_age_ms`
+(default/maximum 50 ms), for GPU admission, post-inference admission, control and
+device-worker dispatch. The age is always measured from the original capture,
+not from a previous gate. Latest generation alone does not prove freshness.
+Legacy deadlines migrate to the strictest of the old values and 50 ms. Detection
+and target selection share `inference.confidence_threshold`; migration keeps the
+higher old threshold. Reading migrates in memory; normal saving persists it.
+The three scoring weights and switch/lost-identity timers remain internal and
+are not consumer controls. Per-class preference and aim points remain editable.
 
 ## Remaining Rust Test Surface
 

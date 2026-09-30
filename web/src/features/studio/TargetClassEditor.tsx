@@ -3,7 +3,7 @@ import { ParameterNumberControl, InlineTextControl } from "./StudioControls";
 
 // Stable class identity colors; IDs and participation text remain visible without color.
 const CLASS_COLORS = ["#69b7ff", "#ffb469", "#b8a0ff", "#63d6bc", "#ff879e", "#d4ce74", "#76cbe9", "#e99ade", "#a8cf83", "#b6b2ff", "#f29c78", "#78d3cc", "#daaeed", "#93b9e6", "#ddc491", "#c2cbd9"];
-const classStyle = (id: number) => ({ "--class-color": CLASS_COLORS[id % CLASS_COLORS.length] }) as CSSProperties;
+export const classStyle = (id: number) => ({ "--class-color": CLASS_COLORS[id % CLASS_COLORS.length] }) as CSSProperties;
 
 export function parseClassValues(value: unknown): Record<string, number> {
   if (typeof value !== "string") return {};

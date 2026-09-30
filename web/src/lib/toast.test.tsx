@@ -123,7 +123,9 @@ it("makes the request ID visible in a transient failure notice", () => {
       tone: "error", title: "操作失败", source: "request-id-test", status: 409,
       requestId: "0123456789abcdef0123456789abcdef"
     }));
-    expect(view.getByText("排查编号 0123456789abcdef0123456789abcdef")).toBeVisible();
+    const details = view.getByText("排查信息").closest("details")!;
+    expect(details).not.toHaveAttribute("open");
+    expect(details).toHaveTextContent("0123456789abcdef0123456789abcdef");
   } finally {
     act(() => {
       for (const toast of result.current.toasts) result.current.dismiss(toast.id);

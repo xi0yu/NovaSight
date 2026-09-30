@@ -79,6 +79,7 @@ function SliderNumberControl({
   textInputId,
   step,
   digits,
+  unit,
   ariaLabel,
   disabled = false,
   onDraftChange,
@@ -95,6 +96,7 @@ function SliderNumberControl({
   textInputId?: string;
   step: number;
   digits: number;
+  unit?: string;
   ariaLabel?: string;
   disabled?: boolean;
   onDraftChange?: (value: number) => void;
@@ -213,70 +215,77 @@ function SliderNumberControl({
   } as CSSProperties;
 
   return (
-    <div className="console-row" data-control-id={controlId}>
-      <input
-        aria-label={ariaLabel ? `${ariaLabel} 滑块` : undefined}
-        disabled={disabled}
-        id={rangeInputId}
-        type="range"
-        min={displayMin}
-        max={displayMax}
-        step={step}
-        style={rangeStyle}
-        value={sliderValue}
-        onBlur={() => commit()}
-        onChange={(event) => {
-          const next = clampNumber(Number(event.target.value), min, max);
-          const nextText = formatNumberDraft(next, digits);
-          draftTextRef.current = nextText;
-          setDraftValue(next);
-          setDraftText(nextText);
-          onDraftChange?.(next);
-        }}
-        onFocus={beginEdit}
-        onPointerDown={beginEdit}
-        onPointerUp={(event) => {
-          const boundaryValue = pointerRangeBoundaryValue(event, displayMin, displayMax, digits);
-          if (boundaryValue === null) {
-            commit();
-            return;
-          }
-          const next = clampNumber(boundaryValue, min, max);
-          const nextText = formatNumberDraft(next, digits);
-          draftTextRef.current = nextText;
-          setDraftValue(next);
-          setDraftText(nextText);
-          onDraftChange?.(next);
-          commit(nextText);
-        }}
-        onTouchEnd={() => commit()}
-      />
-      <input
-        aria-label={ariaLabel ? `${ariaLabel} 数值` : undefined}
-        disabled={disabled}
-        id={textInputId}
-        inputMode="decimal"
-        type="text"
-        value={draftText}
-        onBlur={() => commit()}
-        onFocus={beginEdit}
-        onChange={(event) => {
-          const nextText = event.target.value;
-          const parsed = Number(nextText);
-          draftTextRef.current = nextText;
-          setDraftText(nextText);
-          if (nextText.trim() !== "" && Number.isFinite(parsed)) {
-            const next = clampNumber(parsed, min, max);
+    <div className="console-row parameter-slider" data-control-id={controlId} data-editing={isEditing || undefined}>
+      <div className="parameter-slider-track">
+        <input
+          aria-label={ariaLabel ? `${ariaLabel} 滑块` : undefined}
+          aria-valuetext={unit ? `${sliderValue} ${unit}` : undefined}
+          disabled={disabled}
+          id={rangeInputId}
+          type="range"
+          min={displayMin}
+          max={displayMax}
+          step={step}
+          style={rangeStyle}
+          value={sliderValue}
+          onBlur={() => commit()}
+          onChange={(event) => {
+            const next = clampNumber(Number(event.target.value), min, max);
+            const nextText = formatNumberDraft(next, digits);
+            draftTextRef.current = nextText;
             setDraftValue(next);
+            setDraftText(nextText);
             onDraftChange?.(next);
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.currentTarget.blur();
-          }
-        }}
-      />
+          }}
+          onFocus={beginEdit}
+          onPointerDown={beginEdit}
+          onPointerUp={(event) => {
+            const boundaryValue = pointerRangeBoundaryValue(event, displayMin, displayMax, digits);
+            if (boundaryValue === null) {
+              commit();
+              return;
+            }
+            const next = clampNumber(boundaryValue, min, max);
+            const nextText = formatNumberDraft(next, digits);
+            draftTextRef.current = nextText;
+            setDraftValue(next);
+            setDraftText(nextText);
+            onDraftChange?.(next);
+            commit(nextText);
+          }}
+          onTouchEnd={() => commit()}
+        />
+        <div className="parameter-slider-scale" aria-hidden="true"><span>{formatNumberDraft(displayMin, digits)}</span><span>{formatNumberDraft(displayMax, digits)}</span></div>
+      </div>
+      <div className="parameter-number-readout">
+        <input
+          aria-label={ariaLabel ? `${ariaLabel} 数值` : undefined}
+          disabled={disabled}
+          id={textInputId}
+          inputMode="decimal"
+          type="text"
+          value={draftText}
+          onBlur={() => commit()}
+          onFocus={beginEdit}
+          onChange={(event) => {
+            const nextText = event.target.value;
+            const parsed = Number(nextText);
+            draftTextRef.current = nextText;
+            setDraftText(nextText);
+            if (nextText.trim() !== "" && Number.isFinite(parsed)) {
+              const next = clampNumber(parsed, min, max);
+              setDraftValue(next);
+              onDraftChange?.(next);
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.currentTarget.blur();
+            }
+          }}
+        />
+        {unit ? <span aria-hidden="true">{unit}</span> : null}
+      </div>
     </div>
   );
 }
@@ -504,8 +513,8 @@ export function ParameterNumberControl({
         {!compact ? (
           <span className="parameter-control-meta" aria-label="参数属性">
             {formula ? <span title="算法符号">{formula}</span> : null}
-            {unit ? <span>{unit}</span> : null}
-            <span>{applyModeLabel(applyMode)}</span>
+            {kind === "stepper" && unit ? <span>{unit}</span> : null}
+            <span data-apply-mode={applyMode}>{applyModeLabel(applyMode)}</span>
             {outsideRecommendedRange ? <span data-tone="warning">超推荐</span> : null}
             {riskLevel !== "normal" ? <span>{riskLevel === "calibration" ? "标定" : "高级"}</span> : null}
           </span>
@@ -536,6 +545,7 @@ export function ParameterNumberControl({
           rangeMax={normalizedRecommendedMax}
           rangeInputId={`${controlId}-range`}
           textInputId={`${controlId}-value`}
+          unit={unit}
           step={step}
           digits={digits}
           ariaLabel={label}

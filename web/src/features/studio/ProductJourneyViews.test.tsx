@@ -2,7 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { DeviceStatusView, ManagementView, OnboardingView } from "./ProductJourneyViews";
+import { DeviceStatusView, HomeSetupPrompt, HomeShortcuts, ManagementView, OnboardingView } from "./ProductJourneyViews";
+import { SettingsView } from "./SettingsView";
 
 const incomplete = {
   captureReady: true,
@@ -11,7 +12,35 @@ const incomplete = {
   runtimeReady: false,
 };
 
+it("only calls revisions consistent when both saved and running settings are known", () => {
+  const props = { modules: ["backup", "restore", "details"], desiredRevision: 2, effectiveRevision: 1, restartRequired: false, operationPending: false, parameterChangesPending: false, onExport: vi.fn(), onImport: vi.fn(), onNavigate: vi.fn() };
+  const view = render(<SettingsView {...props} configAvailable={false} runtimeVerified={false} />);
+  expect(screen.getByRole("status")).toHaveTextContent("设置未读取");
+  view.rerender(<SettingsView {...props} configAvailable runtimeVerified={false} />);
+  expect(screen.getByRole("status")).toHaveTextContent("运行版本待确认");
+  view.rerender(<SettingsView {...props} configAvailable runtimeVerified />);
+  expect(screen.getByRole("status")).toHaveTextContent("等待生效");
+});
+
 describe("guided product journeys", () => {
+  it("opens the missing setup task directly from home without another guide step", async () => {
+    const onNavigate = vi.fn();
+    const { rerender } = render(<HomeSetupPrompt state={incomplete} statusKnown onNavigate={onNavigate} />);
+    await userEvent.click(screen.getByRole("button", { name: "选择识别模型" }));
+    expect(onNavigate).toHaveBeenCalledWith("models");
+    rerender(<HomeSetupPrompt state={incomplete} statusKnown={false} onNavigate={onNavigate} />);
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("offers real device, tuning and history destinations from home", async () => {
+    const onNavigate = vi.fn();
+    render(<HomeShortcuts onNavigate={onNavigate} />);
+    for (const label of ["设备与画面", "调整使用手感", "查看使用记录"]) {
+      await userEvent.click(screen.getByRole("button", { name: new RegExp(label) }));
+    }
+    expect(onNavigate.mock.calls).toEqual([["capture"], ["params"], ["activity"]]);
+  });
+
   it("takes a new user to the first unfinished task", async () => {
     const onNavigate = vi.fn();
     render(<OnboardingView state={incomplete} statusKnown onNavigate={onNavigate} />);

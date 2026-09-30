@@ -26,19 +26,36 @@ function completedSetupSteps(state: SetupState): number {
 export function HomeSetupPrompt({ state, statusKnown, onNavigate }: { state: SetupState; statusKnown: boolean; onNavigate: Navigate }) {
   const completed = completedSetupSteps(state);
   if (!statusKnown || (state.captureReady && state.modelReady && state.configReady)) return null;
+  const next = !state.captureReady
+    ? { page: "capture" as const, label: "选择画面设备", detail: "连接采集设备，选择画面来源与画质。" }
+    : !state.modelReady
+      ? { page: "models" as const, label: "选择识别模型", detail: "为当前设备准备一个可用的识别模型。" }
+      : { page: "params" as const, label: "确认使用参数", detail: "设置辅助范围、目标规则与跟随手感。" };
   return (
     <section className="home-setup-prompt" aria-labelledby="home-setup-title">
       <span className="home-setup-icon" aria-hidden="true"><NovaIcon name="play-circle" size={20} /></span>
       <div>
         <small>首次设置 · {completed}/{SETUP_STEP_COUNT}</small>
-        <h2 id="home-setup-title">继续完成 NovaSight 设置</h2>
-        <p>按顺序连接画面、选择模型、确认参数，再安全开始运行。</p>
+        <h2 id="home-setup-title">{next.label}</h2>
+        <p>{next.detail}</p>
       </div>
-      <button className="console-button primary" onClick={() => onNavigate("onboarding")} type="button">
-        继续设置
+      <button className="console-button primary" onClick={() => onNavigate(next.page)} type="button">
+        {next.label}
       </button>
     </section>
   );
+}
+
+export function HomeShortcuts({ onNavigate }: { onNavigate: Navigate }) {
+  return <nav className="home-shortcuts" aria-label="常用操作">
+    {([
+      { page: "capture", icon: "capture", label: "设备与画面", detail: "选择设备 · 调整画质" },
+      { page: "params", icon: "target", label: "调整使用手感", detail: "范围 · 瞄点 · 跟随" },
+      { page: "activity", icon: "logs", label: "查看使用记录", detail: "运行日志 · 问题排查" },
+    ] as const).map((item) => <button type="button" key={item.page} onClick={() => onNavigate(item.page)}>
+      <NovaIcon name={item.icon} size={20} /><span><b>{item.label}</b><small>{item.detail}</small></span><i aria-hidden="true">→</i>
+    </button>)}
+  </nav>;
 }
 
 export function OnboardingView({ state, statusKnown, onNavigate }: { state: SetupState; statusKnown: boolean; onNavigate: Navigate }) {
@@ -53,7 +70,7 @@ export function OnboardingView({ state, statusKnown, onNavigate }: { state: Setu
   }> = [
     { label: "连接画面", detail: "选择摄像头和实际支持的画面规格。", complete: state.captureReady, page: "capture", action: "设置画面", icon: "capture" },
     { label: "选择模型", detail: "检查模型资格并部署到当前设备。", complete: state.modelReady, page: "models", action: "选择模型", icon: "models" },
-    { label: "确认参数", detail: "确认响应方式、移动方式和输出保持暂停。", complete: state.configReady, page: "params", action: "检查参数", icon: "settings" },
+    { label: "确认参数", detail: "检查搜索范围、目标瞄点、触发延迟和跟随力度。", complete: state.configReady, page: "params", action: "检查参数", icon: "settings" },
     { label: "开始运行", detail: "回到首页核对状态，再由你明确启动。", complete: state.runtimeReady, page: "overview", action: "前往首页", icon: "start" },
   ];
   const next = steps.find((step) => !step.complete) ?? steps[SETUP_STEP_COUNT - 1]!;
@@ -63,7 +80,7 @@ export function OnboardingView({ state, statusKnown, onNavigate }: { state: Setu
       <header className="onboarding-hero">
         <div>
           <span>新手引导</span>
-          <h2 id="onboarding-title">{statusKnown ? "四步准备好第一条视觉链路" : "正在核对当前设备"}</h2>
+          <h2 id="onboarding-title">{statusKnown ? "完成首次设置" : "正在核对当前设备"}</h2>
           <p>{statusKnown ? "每一步都读取当前服务状态；你可以随时离开，已经完成的设置不会丢失。" : "服务状态尚不可用，暂时不能判断哪些步骤已经完成。请先检查连接。"}</p>
         </div>
         <div className="onboarding-progress" role="status" aria-label={statusKnown ? `已完成 ${completed} 步，共 ${SETUP_STEP_COUNT} 步` : "设置进度待核实"}>
@@ -227,8 +244,8 @@ export function ManagementView({
       <header className="management-hero">
         <div>
           <span>NovaSight 工作空间</span>
-          <h2 id="management-title">管理真实对象，不管理后台术语</h2>
-          <p>设备、模型、活动和授权集中在这里。每项数据都来自当前服务，不用虚构的 KPI 填满页面。</p>
+          <h2 id="management-title">设备与资源</h2>
+          <p>查看设备连接，整理模型，或检查最近的操作记录。</p>
         </div>
         <button className="console-button primary" onClick={() => onNavigate(!runtimeAvailable || setupReady ? "device" : "onboarding")} type="button">
           {!runtimeAvailable || setupReady ? "查看设备状态" : "继续新手引导"}
@@ -248,7 +265,7 @@ export function ManagementView({
       <section className="management-boundary" aria-labelledby="management-boundary-title">
         <div>
           <h3 id="management-boundary-title">当前由 Studio 管理</h3>
-          <p>这里管理本机设备、模型、配置与授权。团队、账单和多设备云端编排没有后端数据时不会伪装成可用功能。</p>
+          <p>当前连接设备的模型、配置与授权相互独立。切换模型、恢复配置前会显示需要确认的改动。</p>
         </div>
         <button className="console-button" onClick={() => onNavigate("license")} type="button">查看授权范围</button>
       </section>
@@ -288,7 +305,7 @@ export function AboutView({
       <dl className="about-facts" aria-label="版本与配置信息">
         <div><dt>Studio 版本</dt><dd>{studioVersion}</dd></div>
         <div><dt>页面配置</dt><dd>{layoutRevision}</dd></div>
-        <div><dt>授权</dt><dd>{license?.valid ? license.tier || "已授权" : "不可用"}</dd></div>
+        <div><dt>授权</dt><dd>{license?.valid ? license.tier || "已授权" : license ? "未激活" : "待核实"}</dd></div>
       </dl>
     ),
     capabilities: (
@@ -310,6 +327,7 @@ export function AboutView({
       <footer className="about-actions">
         <button className="console-button" onClick={() => onNavigate("license")} type="button">查看授权</button>
         <button className="console-button primary" onClick={() => onNavigate("activity")} type="button">打开实时日志</button>
+        <a className="console-button" href="/third-party-ui.txt" target="_blank" rel="noreferrer">界面组件许可</a>
       </footer>
     ),
   };

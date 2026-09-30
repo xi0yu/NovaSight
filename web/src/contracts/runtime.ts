@@ -269,7 +269,8 @@ export type RuntimeOutputDeliveryState =
   | "no_movement"
   | "superseded"
   | "sent"
-  | "send_failed";
+  | "send_failed"
+  | "expired";
 
 export interface RuntimeControlPipelineState {
   control_mode: "continuous_atan_medoid_v2";
@@ -290,7 +291,6 @@ export interface RuntimeControlPipelineState {
   prediction_lead_ms: number | null;
   prediction_horizon_ms: number | null;
   prediction_raw_offset_x: number | null;
-  prediction_allowed_cap_x: number | null;
   prediction_safe_offset_x: number | null;
   prediction_allowed: boolean | null;
   velocity_y_1: number | null;
@@ -302,7 +302,6 @@ export interface RuntimeControlPipelineState {
   measurement_dt_y_s: number | null;
   reference_dt_y_ms: number | null;
   prediction_raw_offset_y: number | null;
-  prediction_allowed_cap_y: number | null;
   prediction_safe_offset_y: number | null;
   prediction_allowed_y: boolean | null;
   observed_error_x_px: number | null;
@@ -730,17 +729,17 @@ function assertControlPipeline(value: unknown, path: string): void {
   }
   expectLiteral(record.output_delivery_state, `${path}.output_delivery_state`, new Set([
     "idle", "gate_closed", "device_disabled", "trigger_inactive", "generation_fenced",
-    "no_movement", "superseded", "sent", "send_failed"
+    "no_movement", "superseded", "sent", "send_failed", "expired"
   ]));
   expectNullable(record.mode, `${path}.mode`, (item, itemPath) =>
     expectLiteral(item, itemPath, new Set(["CONTINUOUS"])));
   const nullableNumbers = [
     "frame_age_ms", "velocity_1", "velocity_2", "velocity_3", "medoid_velocity",
     "prediction_velocity", "measurement_dt_s", "reference_dt_ms", "prediction_actuation_delay_ms",
-    "prediction_lead_ms", "prediction_horizon_ms", "prediction_raw_offset_x", "prediction_allowed_cap_x",
+    "prediction_lead_ms", "prediction_horizon_ms", "prediction_raw_offset_x",
     "prediction_safe_offset_x", "velocity_y_1", "velocity_y_2", "velocity_y_3", "medoid_velocity_y",
     "prediction_velocity_y", "measurement_dt_y_s", "reference_dt_y_ms", "prediction_raw_offset_y",
-    "prediction_allowed_cap_y", "prediction_safe_offset_y", "observed_error_x_px", "observed_error_y_px",
+    "prediction_safe_offset_y", "observed_error_x_px", "observed_error_y_px",
     "predicted_error_x_px", "predicted_error_y_px", "full_error_counts_x", "full_error_counts_y",
     "float_demand_x", "float_demand_y", "quantizer_residual_x", "quantizer_residual_y",
     "fire_delay_elapsed_ms", "fire_delay_remaining_ms"

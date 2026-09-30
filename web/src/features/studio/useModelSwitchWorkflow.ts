@@ -24,7 +24,7 @@ import { getErrorMessage } from "../shared/format";
 import type { ActionConfirmationRequest } from "./ActionConfirmationDialog";
 import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
 
-const MODEL_SWITCH_STAGE_COUNT = 5;
+const MODEL_SWITCH_STAGE_COUNT = 3;
 
 export function isActiveModelNoOp(
   response: ModelPublishResponse,
@@ -219,7 +219,7 @@ export function useModelSwitchWorkflow({
       const { projectId, artifactId } = await ensureCatalogModelRegistration(model);
       setCompletedStages(2);
       setStageIndex(2);
-      setProgressDetail("正在验证模型输入输出，并准备运行配置。");
+      setProgressDetail("等待设备完成验证与切换。设备未提供分阶段进度，请勿重复操作。");
       const response = await publishModel(
         projectId,
         artifactId,
@@ -251,14 +251,18 @@ export function useModelSwitchWorkflow({
       setModelManagerDialogOpen(false);
       setModelCatalogRefreshKey((current) => current + 1);
       setModelDetailsRefreshKey((current) => current + 1);
-      await onRefresh();
+      try {
+        await onRefresh();
+      } catch (refreshError) {
+        setProgressDetail(`${manifestSummary}；${switchSummary}。切换已确认，但最新状态读取失败，请刷新页面核对。`);
+        reportError(refreshError, { source: "model-refresh", title: "模型已切换，状态读取失败", popup: false });
+      }
     } catch (err) {
       const errorMessage = getErrorMessage(err);
       setDialogStatus("failed");
       setDialogError(`${errorMessage}。请核对页面上的当前模型和运行状态；请求失败或回执解析失败时，不能假定切换未生效。`);
-      setLocalError(`模型切换结果未确认：${errorMessage}`);
-      reportError(err, { source: "studio", title: "操作失败" });
-      await onRefresh();
+      reportError(err, { source: "model-switch", title: "模型切换结果未确认", popup: false });
+      try { await onRefresh(); } catch { /* Keep the original operation error visible in the dialog. */ }
     } finally {
       setBusy(null);
     }

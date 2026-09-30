@@ -109,8 +109,8 @@ fn retired_recoil_is_removed_but_legacy_trigger_delay_survives() {
         let saved = repository
             .save_field(
                 "pipeline",
-                "target_range_scale",
-                Value::from(1.5),
+                "target_fov_radius_px",
+                Value::from(240.0),
                 loaded.revision,
             )
             .unwrap();
@@ -125,50 +125,65 @@ fn retired_recoil_is_removed_but_legacy_trigger_delay_survives() {
 }
 
 #[test]
-fn capsule_settings_round_trip_and_reject_invalid_values() {
+fn search_radius_migration_preserves_value_and_retires_capsule_settings() {
     let directory = TempDirectory::new();
-    let path = directory.join("capsule.yaml");
+    let path = directory.join("search-range.yaml");
     fs::write(
         &path,
-        "schema_version: 17\npipeline:\n  target_fov_radius_px: 180.0\n  target_range_shape: circle\ncontrol:\n  recoil:\n    require_target: false\n",
+        "schema_version: 18\npipeline:\n  target_fov_radius_px: 180.0\n  target_range_scale: 5.0\n  target_range_shape: circle\n",
     )
     .unwrap();
+    let before = fs::read(&path).unwrap();
     let original = YamlConfigRepository::load(&path).unwrap();
-    assert_eq!(original.pipeline.target_range_scale, 1.0);
+    assert_eq!(
+        original.schema_version,
+        novasight_store::config::CURRENT_SCHEMA_VERSION
+    );
+    assert_eq!(original.pipeline.target_fov_radius_px, 180.0);
+    assert!(!original.pipeline.extra.contains_key("target_range_scale"));
     assert!(!original.pipeline.extra.contains_key("target_range_shape"));
-    assert!(!original.control.extra.contains_key("recoil"));
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        before,
+        "loading must not rewrite user configuration"
+    );
     let repository = YamlConfigRepository::new(&path);
     let revision = YamlConfigRepository::load(&path).unwrap().revision;
     repository
-        .save_field("pipeline", "target_range_scale", Value::from(5.0), revision)
+        .save_field(
+            "pipeline",
+            "target_fov_radius_px",
+            Value::from(240.0),
+            revision,
+        )
         .unwrap();
     let saved = YamlConfigRepository::load(&path).unwrap();
-    assert_eq!(saved.pipeline.target_range_scale, 5.0);
-    for invalid in [0.0, 5.1, f64::NAN] {
+    assert_eq!(saved.pipeline.target_fov_radius_px, 240.0);
+    let document = fs::read_to_string(&path).unwrap();
+    assert!(!document.contains("target_range_scale"));
+    assert!(!document.contains("target_range_shape"));
+    for invalid in [0.0, -1.0, 100_000.1, f64::NAN] {
         assert!(
             repository
                 .save_field(
                     "pipeline",
-                    "target_range_scale",
+                    "target_fov_radius_px",
                     Value::from(invalid),
                     saved.revision
                 )
                 .is_err()
         );
     }
-    assert!(
-        repository
-            .save_field(
-                "pipeline",
-                "target_range_shape",
-                Value::from("triangle"),
-                saved.revision
-            )
-            .is_err()
-    );
+    for retired in ["target_range_shape", "target_range_scale"] {
+        let error = repository
+            .save_field("pipeline", retired, Value::from(1.0), saved.revision)
+            .unwrap_err();
+        assert_eq!(error.code(), "CONFIG_UNSUPPORTED_CONFIG_KEY");
+    }
     let unchanged = YamlConfigRepository::load(&path).unwrap();
     assert_eq!(unchanged.revision, saved.revision);
-    assert_eq!(unchanged.pipeline.target_range_scale, 5.0);
+    assert_eq!(unchanged.pipeline.target_fov_radius_px, 240.0);
+    assert_eq!(fs::read_to_string(&path).unwrap(), document);
 }
 
 struct TempDirectory(PathBuf);
@@ -232,12 +247,14 @@ fn bundled_runtime_config_loads_current_algorithm_defaults() {
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 17);
+    assert_eq!(
+        config.schema_version,
+        novasight_store::config::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(config.pipeline.p_response_scale, 0.20);
     assert_eq!(config.pipeline.max_output_x_counts, 127.0);
     assert_eq!(config.pipeline.max_output_y_counts, 127.0);
     assert_eq!(config.pipeline.prediction_lead_ms, 16.0);
-    assert_eq!(config.pipeline.prediction_cap_px, 10.0);
     assert!(config.pipeline.prediction_enabled);
     assert!(config.capture.is_none());
 
@@ -264,7 +281,10 @@ pipeline:
 
     let config = YamlConfigRepository::load(&path).unwrap();
 
-    assert_eq!(config.schema_version, 17);
+    assert_eq!(
+        config.schema_version,
+        novasight_store::config::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(config.pipeline.prediction_lead_ms, 16.0);
     assert!(config.pipeline.extra.is_empty());
 
@@ -272,9 +292,12 @@ pipeline:
         .save_field("pipeline", "max_output_x_counts", Value::from(128.0), 0)
         .unwrap();
     let persisted: Value = serde_yaml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(persisted["schema_version"], 17);
+    assert_eq!(
+        persisted["schema_version"],
+        novasight_store::config::CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(persisted["pipeline"]["prediction_lead_ms"], 16.0);
-    assert_eq!(persisted["pipeline"]["prediction_cap_px"], 10.0);
+    assert!(persisted["pipeline"].get("prediction_cap_px").is_none());
     assert!(persisted["pipeline"]["atan_scale_counts"].is_null());
 }
 

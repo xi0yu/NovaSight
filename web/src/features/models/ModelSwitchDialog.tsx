@@ -3,11 +3,9 @@ import type { Ref } from "react";
 export type ModelSwitchDialogStatus = "running" | "success" | "failed";
 
 const MODEL_SWITCH_STAGES = [
-  ["确认 Engine 文件", "仅按 .engine 后缀接受候选，目录浏览阶段不会加载模型。"],
-  ["登记模型引用", "复用已有登记；未登记时只按路径和文件元数据创建轻量引用。"],
-  ["验证模型输入输出", "读取真实输入、输出、尺寸与数据类型，非法 Engine 在此终止。"],
-  ["准备运行配置", "复用匹配配置；缺失或不匹配时自动生成。"],
-  ["切换当前模型", "应用模型，并在主链运行时等待新的识别结果。"]
+  ["确认所选文件", "已选择 Engine 文件；此时尚未验证模型内容。"],
+  ["登记模型引用", "取得设备返回的模型登记编号。"],
+  ["等待设备切换回执", "设备完成验证、配置与切换后，统一返回结果。"]
 ] as const;
 
 export function ModelSwitchDialog({
@@ -32,10 +30,6 @@ export function ModelSwitchDialog({
   dialogRef: Ref<HTMLElement>;
 }) {
   if (!open) return null;
-  const progress = status === "success"
-    ? 100
-    : Math.round((completedStages / MODEL_SWITCH_STAGES.length) * 100);
-
   return (
     <div className="model-switch-dialog-layer">
       <section
@@ -49,14 +43,11 @@ export function ModelSwitchDialog({
         <header className="model-switch-dialog-header">
           <div>
             <span>模型切换</span>
-            <h2 id="model-switch-dialog-title">验证并切换模型</h2>
+            <h2 id="model-switch-dialog-title">{status === "success" ? "模型切换已确认" : status === "failed" ? "模型切换未确认" : "验证并切换模型"}</h2>
             <p title={modelName}>{modelName}</p>
           </div>
-          <strong>{progress}%</strong>
+          <strong>{status === "success" ? "已完成" : status === "failed" ? "待核对" : "处理中"}</strong>
         </header>
-        <div className="model-switch-progress" aria-hidden="true">
-          <i style={{ width: `${progress}%` }} />
-        </div>
         <ol className="model-switch-stage-list">
           {MODEL_SWITCH_STAGES.map(([title, caption], index) => {
             const state = index < completedStages
@@ -79,11 +70,11 @@ export function ModelSwitchDialog({
             );
           })}
         </ol>
-        <div className={error ? "model-switch-dialog-detail error" : "model-switch-dialog-detail"}>
+        <div className={error ? "model-switch-dialog-detail error" : "model-switch-dialog-detail"} role={error ? "alert" : "status"}>
           {error || detail}
         </div>
         <footer>
-          <small>NovaSight 会自动完成模型验证、运行配置准备和当前切换。</small>
+          <small>{status === "running" ? "切换期间请保持页面打开，完成后可以关闭。" : "运行状态以设备最新回执为准。"}</small>
           <button
             className="console-button primary"
             disabled={status === "running"}

@@ -23,6 +23,11 @@ use crate::prediction::{
 };
 use crate::quantizer::DeviceCountQuantizer;
 
+// Preserve the existing entry continuity budget, independently of prediction
+// history and frame age. ponytail: >80ms capture gaps restart entry; revisit
+// this policy if low-rate (below 12.5Hz) control becomes a supported use case.
+const ENTRY_CONTINUITY_MAX_GAP_MS: f64 = 80.0;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ControlMode {
     Continuous,
@@ -70,7 +75,6 @@ pub struct AimAlgorithmConfig {
     /// Command-to-visible-response delay used by target prediction.
     pub prediction_actuation_delay_ms: f64,
     pub prediction_lead_ms: f64,
-    pub prediction_cap_px: f64,
     pub source_width: u32,
     pub roi_width: u32,
     pub roi_height: u32,
@@ -81,7 +85,7 @@ pub struct AimAlgorithmConfig {
 impl Default for AimAlgorithmConfig {
     fn default() -> Self {
         Self {
-            freshness_threshold_ms: 55.0,
+            freshness_threshold_ms: 50.0,
             projection_fov_x_deg: 105.0,
             projection_counts_per_360: 9_980.0,
             response_scale: 0.20,
@@ -91,7 +95,6 @@ impl Default for AimAlgorithmConfig {
             prediction_enabled: true,
             prediction_actuation_delay_ms: 4.0,
             prediction_lead_ms: 16.0,
-            prediction_cap_px: 10.0,
             source_width: 640,
             roi_width: 640,
             roi_height: 640,
@@ -121,7 +124,6 @@ impl AimAlgorithmConfig {
             history_reset_gap_ms: self.velocity_history_reset_gap_ms,
             actuation_delay_ms: self.prediction_actuation_delay_ms,
             lead_ms: self.prediction_lead_ms,
-            cap_px: self.prediction_cap_px,
         }
     }
 }
@@ -177,14 +179,12 @@ pub struct AimResult {
     pub prediction_lead_ms: f64,
     pub prediction_horizon_ms: f64,
     pub prediction_raw_offset_x: f64,
-    pub prediction_allowed_cap_x: f64,
     pub prediction_allowed: bool,
     pub velocity_samples_y: [Option<f64>; 3],
     pub medoid_velocity_y: Option<f64>,
     pub measurement_dt_ms_y: Option<f64>,
     pub reference_dt_ms_y: f64,
     pub prediction_raw_offset_y: f64,
-    pub prediction_allowed_cap_y: f64,
     pub prediction_allowed_y: bool,
     pub observed_error_x: f64,
     pub observed_error_y: f64,
@@ -234,14 +234,12 @@ impl AimResult {
             prediction_lead_ms: 0.0,
             prediction_horizon_ms: 0.0,
             prediction_raw_offset_x: 0.0,
-            prediction_allowed_cap_x: 0.0,
             prediction_allowed: false,
             velocity_samples_y: [None; 3],
             medoid_velocity_y: None,
             measurement_dt_ms_y: None,
             reference_dt_ms_y: 0.0,
             prediction_raw_offset_y: 0.0,
-            prediction_allowed_cap_y: 0.0,
             prediction_allowed_y: false,
             observed_error_x: 0.0,
             observed_error_y: 0.0,
@@ -362,7 +360,7 @@ impl AimAlgorithm {
         if capture_timestamp_discontinuity
             || self.last_capture_ts_ns.is_some_and(|previous| {
                 observation.capture_ts_ns.saturating_sub(previous) as f64 / 1_000_000.0
-                    > self.config.velocity_history_reset_gap_ms
+                    > ENTRY_CONTINUITY_MAX_GAP_MS
             })
         {
             self.release_trigger();
@@ -521,14 +519,12 @@ impl AimAlgorithm {
             prediction_lead_ms: prediction.lead_ms,
             prediction_horizon_ms: prediction.x.horizon_ms,
             prediction_raw_offset_x: prediction.x.raw_offset,
-            prediction_allowed_cap_x: prediction.x.allowed_cap,
             prediction_allowed: prediction.x.allowed,
             velocity_samples_y: prediction.y.velocity_samples,
             medoid_velocity_y: prediction.y.medoid_velocity,
             measurement_dt_ms_y: prediction.y.measurement_dt_ms,
             reference_dt_ms_y: prediction.y.reference_dt_ms,
             prediction_raw_offset_y: prediction.y.raw_offset,
-            prediction_allowed_cap_y: prediction.y.allowed_cap,
             prediction_allowed_y: prediction.y.allowed,
             observed_error_x: error_x,
             observed_error_y: error_y,
@@ -548,11 +544,10 @@ mod tests {
     use crate::prediction::PredictionMotionState;
 
     #[test]
-    fn vector_medoid_prediction_respects_single_cap() {
+    fn vector_medoid_prediction_preserves_valid_displacement() {
         let config = AimAlgorithmConfig {
             prediction_enabled: true,
             prediction_lead_ms: 2.0,
-            prediction_cap_px: 3.0,
             ..AimAlgorithmConfig::default()
         };
         let mut control = AimAlgorithm::new(config);
@@ -586,18 +581,8 @@ mod tests {
         assert!((decision.reference_dt_ms - 10.0).abs() < 1e-12);
         assert!((decision.prediction_horizon_ms - 14.0).abs() < 1e-12);
         assert!((decision.prediction_raw_offset_x - 5.6).abs() < 1e-12);
-        assert_eq!(
-            decision.prediction_allowed_cap_x,
-            decision.prediction_allowed_cap_y
-        );
-        assert!(decision.prediction_allowed_cap_x <= 3.0);
         assert!(decision.prediction_allowed);
-        assert!(
-            decision
-                .predicted_offset_x
-                .hypot(decision.predicted_offset_y)
-                <= decision.prediction_allowed_cap_x + 1e-12
-        );
+        assert!((decision.predicted_offset_x - 5.6).abs() < 1e-12);
         assert!((decision.predicted_offset_x / decision.predicted_offset_y - 2.0).abs() < 1e-12);
         assert!((decision.filtered_error_x - (52.0 + decision.predicted_offset_x)).abs() < 1e-12);
         assert!((decision.velocity_y - 0.2).abs() < 1e-12);

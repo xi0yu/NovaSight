@@ -2,7 +2,7 @@ import type { LicenseStatus, RuntimeState } from "../../api";
 import { SafetyOperationProvider } from "../runtime/SafetyOperationContext";
 import { StudioConsoleView } from "./StudioConsoleView";
 
-const runtime = {
+export const previewRuntime = {
   semantic: {
     daemon_instance_id: "frontend-preview",
     phase: "stopped",
@@ -18,7 +18,7 @@ const runtime = {
   },
   running: false,
   capture: { available: false, device: "", running: false, profile: null, state: "unconfigured" },
-  statistics: { metrics_available: false, detection_freshness_threshold_ms: 55 },
+  statistics: { metrics_available: false, detection_freshness_threshold_ms: 50 },
   config: { version: 1, effective_version: 1 },
   executor: {
     executors: {
@@ -37,13 +37,13 @@ const runtime = {
   },
 } as unknown as RuntimeState;
 
-export function FrontendPreview() {
+export function FrontendPreview({ scenario = "pages" }: { scenario?: string }) {
   return (
     <SafetyOperationProvider>
       <StudioConsoleView
         license={{ valid: true, features: ["hardware_control"] } as LicenseStatus}
-        health={{ ok: true }}
-        runtime={runtime}
+        health={scenario === "offline" ? null : { ok: true }}
+        runtime={scenario === "offline" ? null : previewRuntime}
         runtimeConfig={{
           revision: 1,
           pipeline: { fire_delay_enabled: false, fire_delay_ms: 0, projection_fov_x_deg: 90 },
@@ -53,7 +53,7 @@ export function FrontendPreview() {
         projects={[]}
         errors={{}}
         lastUpdated={null}
-        realtimeStatus="connected"
+        realtimeStatus={scenario === "offline" ? "disconnected" : scenario === "stale" ? "stale" : "connected"}
         onEnsureProjects={async () => []}
         onLicenseChange={() => undefined}
         onRefresh={async () => undefined}

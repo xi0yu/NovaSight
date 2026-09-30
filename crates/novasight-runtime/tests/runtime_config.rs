@@ -62,20 +62,11 @@ fn compose_pipeline_config_uses_configured_kalman_prediction_window() {
             config.revision,
         )
         .unwrap();
-    let config = YamlConfigRepository::new(&path)
-        .save_field(
-            "pipeline",
-            "tracker_kalman_max_predict_steps",
-            serde_yaml::Value::Number(7_u64.into()),
-            config.revision,
-        )
-        .unwrap();
 
     let pipeline = compose_pipeline_config(&with_test_capture(config), None).unwrap();
 
     assert_eq!(pipeline.targeting.kalman.max_predict_dt_ms, 42.0);
     assert_eq!(pipeline.targeting.kalman.max_predict_missing_ms, 125.0);
-    assert_eq!(pipeline.targeting.kalman.max_predict_steps, 7);
 }
 
 #[test]
@@ -118,12 +109,10 @@ fn compose_pipeline_config_wires_target_decision_policy() {
     config.pipeline.target_selection_distance_weight = 0.1;
     config.pipeline.target_selection_class_weight = 0.2;
     config.pipeline.target_selection_confidence_weight = 0.3;
-    config.pipeline.target_selection_size_weight = 0.4;
-    config.pipeline.target_selection_continuity_weight = 0.5;
-    config.pipeline.target_selection_motion_weight = 0.6;
-    config.pipeline.target_selection_motion_horizon_ms = 45.0;
     config.pipeline.target_class_weights = "0:0.8,1:0.4".into();
     config.pipeline.target_class_aim_x_ratios = "0:0.3,1:0.7".into();
+    config.inference.as_mut().unwrap().confidence_threshold = 0.65;
+    config.pipeline.frame_max_age_ms = 35.0;
 
     let pipeline = compose_pipeline_config(&with_test_capture(config), None).unwrap();
 
@@ -131,11 +120,9 @@ fn compose_pipeline_config_wires_target_decision_policy() {
     assert_eq!(pipeline.targeting.selection_weights.distance, 0.1);
     assert_eq!(pipeline.targeting.selection_weights.class, 0.2);
     assert_eq!(pipeline.targeting.selection_weights.confidence, 0.3);
-    assert_eq!(pipeline.targeting.selection_weights.size, 0.4);
-    assert_eq!(pipeline.targeting.selection_weights.continuity, 0.5);
-    assert_eq!(pipeline.targeting.selection_weights.motion, 0.6);
-    assert_eq!(pipeline.targeting.selection_motion_horizon_ms, 45.0);
     assert_eq!(pipeline.targeting.class_weights[&0], 0.8);
     assert_eq!(pipeline.targeting.class_weights[&1], 0.4);
     assert_eq!(pipeline.targeting.class_aim_x_ratios[&0], 0.3);
+    assert_eq!(pipeline.targeting.min_confidence, 0.65_f32);
+    assert_eq!(pipeline.control.freshness_threshold_ms, 35.0);
 }

@@ -28,6 +28,15 @@ const CONFIG_LOCK_WAIT: Duration = Duration::from_millis(250);
 const CONFIG_LOCK_RETRY: Duration = Duration::from_millis(2);
 const DEFAULT_RUNTIME_CONFIG: &str = include_str!("bootstrap.yaml");
 const RETIRED_PIPELINE_FIELDS: &[&str] = &[
+    "prediction_cap_px",
+    "target_min_confidence",
+    "freshness_threshold_ms",
+    "target_range_scale",
+    "target_selection_size_weight",
+    "target_selection_continuity_weight",
+    "target_selection_motion_weight",
+    "target_selection_motion_horizon_ms",
+    "tracker_kalman_max_predict_steps",
     "p_response_boost",
     "p_response_curve_shape",
     "target_range_shape",
@@ -445,6 +454,7 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
     migrate_output_limits(&mut document);
     migrate_prediction_actuation_delay(&mut document);
     migrate_recoil_fire_delay(&mut document);
+    migrate_parameter_policy(path, &mut document)?;
     let mut config: AppConfig =
         serde_yaml::from_value(document.clone()).map_err(|source| ConfigError::Parse {
             path: path.to_owned(),
@@ -462,28 +472,146 @@ fn load_document(path: &Path) -> Result<(File, Value, AppConfig), ConfigError> {
     Ok((file, document, config))
 }
 
+/// Consolidate legacy gates before deserialization; loading never writes disk.
+fn migrate_parameter_policy(path: &Path, document: &mut Value) -> Result<(), ConfigError> {
+    if !document.is_mapping() {
+        return Ok(());
+    }
+    let legacy = document["schema_version"].as_u64().unwrap_or(0) < 20;
+    let number = |section: &str, key: &str, field: &'static str, min: f64, max: f64| {
+        document[section]
+            .get(key)
+            .map(|value| {
+                value
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v >= min && *v <= max)
+                    .ok_or_else(|| ConfigError::Validation {
+                        path: path.to_owned(),
+                        source: ConfigValidationError {
+                            field,
+                            message: "invalid legacy parameter value".into(),
+                        },
+                    })
+            })
+            .transpose()
+    };
+    let old_control_age = number(
+        "pipeline",
+        "freshness_threshold_ms",
+        "pipeline.freshness_threshold_ms",
+        1.0,
+        1000.0,
+    )?;
+    let old_input_age = number(
+        "inference",
+        "inference_input_deadline_ms",
+        "inference.inference_input_deadline_ms",
+        f64::MIN_POSITIVE,
+        f64::MAX,
+    )?;
+    let old_confidence = number(
+        "pipeline",
+        "target_min_confidence",
+        "pipeline.target_min_confidence",
+        0.0,
+        1.0,
+    )?;
+    let age = if legacy || old_control_age.is_some() || old_input_age.is_some() {
+        let current = number(
+            "pipeline",
+            "frame_max_age_ms",
+            "pipeline.frame_max_age_ms",
+            f64::MIN_POSITIVE,
+            50.0,
+        )?
+        .unwrap_or(50.0);
+        Some(
+            current
+                .min(old_control_age.unwrap_or(50.0))
+                .min(old_input_age.unwrap_or(50.0)),
+        )
+    } else {
+        None
+    };
+    let confidence = if document["inference"].is_mapping() && (legacy || old_confidence.is_some()) {
+        let inference = number(
+            "inference",
+            "confidence_threshold",
+            "inference.confidence_threshold",
+            0.0,
+            1.0,
+        )?
+        .unwrap_or(0.25);
+        Some(inference.max(old_confidence.unwrap_or(0.5)))
+    } else {
+        None
+    };
+    if let Some(age) = age {
+        let root = document.as_mapping_mut().expect("configuration mapping");
+        let pipeline = root
+            .entry(Value::String("pipeline".into()))
+            .or_insert_with(|| Value::Mapping(Mapping::new()));
+        if let Some(pipeline) = pipeline.as_mapping_mut() {
+            pipeline.insert(
+                Value::String("frame_max_age_ms".into()),
+                serde_yaml::to_value(age).expect("finite age"),
+            );
+        }
+    }
+    if let Some(confidence) = confidence {
+        document["inference"]
+            .as_mapping_mut()
+            .expect("inference mapping")
+            .insert(
+                Value::String("confidence_threshold".into()),
+                serde_yaml::to_value(confidence).expect("finite confidence"),
+            );
+    }
+    remove_section_fields(
+        document,
+        "pipeline",
+        &["freshness_threshold_ms", "target_min_confidence"],
+    );
+    remove_section_fields(document, "inference", &["inference_input_deadline_ms"]);
+    Ok(())
+}
+
 fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     let schema_version = config.schema_version;
-    let removed_humanized_motion = config.control.extra.remove("humanized_motion").is_some();
-    config.pipeline.extra.remove("p_response_boost");
-    config.pipeline.extra.remove("p_response_curve_shape");
-    config.pipeline.extra.remove("projection_invert_y");
-    config.pipeline.extra.remove("target_range_shape");
-    config.pipeline.extra.remove("target_debounce_distance_px");
-    config.pipeline.extra.remove("max_command_age_ms");
-    config.pipeline.extra.remove("output_interval_ms");
-    config.pipeline.extra.remove("atan_scale_counts");
-    config.pipeline.extra.remove("arrival_radius_counts");
-    config.pipeline.extra.remove("residual_cap");
-    config.pipeline.extra.remove("target_track_max_age");
-    for retired_key in [
-        "velocity_change_base_px_ms",
-        "velocity_change_relative",
-        "velocity_spread_base_px_ms",
-        "velocity_spread_relative",
-    ] {
-        config.pipeline.extra.remove(retired_key);
+    migrate_class_weights(document, config);
+    // Profiles that relied exclusively on a removed merit need a real remaining
+    // selection signal. Do not rewrite invalid or deliberately all-zero input.
+    let retired_merit_present = [
+        "target_selection_size_weight",
+        "target_selection_continuity_weight",
+        "target_selection_motion_weight",
+    ]
+    .iter()
+    .any(|key| {
+        config
+            .pipeline
+            .extra
+            .get(*key)
+            .and_then(Value::as_f64)
+            .is_some_and(|v| v.is_finite() && v > 0.0)
+    });
+    if schema_version < 18
+        && retired_merit_present
+        && config.pipeline.target_selection_distance_weight == 0.0
+        && config.pipeline.target_selection_class_weight == 0.0
+        && config.pipeline.target_selection_confidence_weight == 0.0
+    {
+        let defaults = PipelineRuntimeConfig::default();
+        config.pipeline.target_selection_distance_weight =
+            defaults.target_selection_distance_weight;
+        config.pipeline.target_selection_class_weight = defaults.target_selection_class_weight;
+        config.pipeline.target_selection_confidence_weight =
+            defaults.target_selection_confidence_weight;
     }
+    for key in RETIRED_PIPELINE_FIELDS {
+        config.pipeline.extra.remove(*key);
+    }
+    let removed_humanized_motion = config.control.extra.remove("humanized_motion").is_some();
     config.control.extra.remove("recoil");
     let retired_class_ratio_present = config
         .pipeline
@@ -495,7 +623,6 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         .get("target_selection_class_ratio")
         .and_then(|value| value.as_f64())
         .filter(|value| value.is_finite() && (0.0..=1.0).contains(value));
-    config.pipeline.extra.remove("target_sticky_bias");
     let new_target_weights_explicit = section_has_fields(
         document,
         "pipeline",
@@ -512,9 +639,6 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
         config.pipeline.target_selection_class_weight = class_ratio;
         config.pipeline.target_selection_distance_weight = 1.0 - class_ratio;
         config.pipeline.target_selection_confidence_weight = 0.0;
-        config.pipeline.target_selection_size_weight = 0.0;
-        config.pipeline.target_selection_continuity_weight = 0.0;
-        config.pipeline.target_selection_motion_weight = 0.0;
     }
     if retired_class_ratio.is_some() {
         config.pipeline.extra.remove("target_selection_class_ratio");
@@ -578,6 +702,55 @@ fn migrate_config(document: &mut Value, config: &mut AppConfig) {
     if let Value::Mapping(control) = control {
         control.remove(Value::String("humanized_motion".to_owned()));
         control.remove(Value::String("recoil".to_owned()));
+    }
+}
+
+fn migrate_class_weights(document: &mut Value, config: &mut AppConfig) {
+    let legacy = config.pipeline.extra.get("target_class_priority");
+    if config.schema_version >= 18 && legacy.is_none() {
+        return;
+    }
+    let priority = match legacy {
+        Some(value) => match value.as_str() {
+            Some(value) => value,
+            None => return, // Leave malformed legacy input for strict validation.
+        },
+        None => "0,1",
+    };
+    let Ok(priority) = super::model::parse_target_class_priority(priority) else {
+        return;
+    };
+    let explicit = document["pipeline"]
+        .get("target_class_weights")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let Ok(overrides) = super::parse_class_values(explicit, "pipeline.target_class_weights") else {
+        return;
+    };
+    let mut weights: BTreeMap<u32, f64> = priority
+        .into_iter()
+        .enumerate()
+        .map(|(rank, id)| (id, 0.5_f64.powi(rank as i32)))
+        .collect();
+    weights.extend(overrides);
+    config.pipeline.target_class_weights = weights
+        .into_iter()
+        .map(|(id, value)| format!("{id}:{value}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    config.pipeline.extra.remove("target_class_priority");
+    let Some(root) = document.as_mapping_mut() else {
+        return;
+    };
+    let pipeline = root
+        .entry(Value::String("pipeline".into()))
+        .or_insert_with(|| Value::Mapping(Mapping::new()));
+    if let Some(pipeline) = pipeline.as_mapping_mut() {
+        pipeline.remove(Value::String("target_class_priority".into()));
+        pipeline.insert(
+            Value::String("target_class_weights".into()),
+            Value::String(config.pipeline.target_class_weights.clone()),
+        );
     }
 }
 
@@ -673,6 +846,7 @@ fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRunti
         Value::Number(config.fire_delay_ms.into()),
     );
     for (key, value) in [
+        ("frame_max_age_ms", config.frame_max_age_ms),
         ("p_response_scale", config.p_response_scale),
         ("response_reference_hz", config.response_reference_hz),
         ("entry_ramp_ms", config.entry_ramp_ms),
@@ -683,7 +857,6 @@ fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRunti
             config.velocity_history_reset_gap_ms,
         ),
         ("prediction_lead_ms", config.prediction_lead_ms),
-        ("prediction_cap_px", config.prediction_cap_px),
         (
             "target_track_max_lost_age_ms",
             config.target_track_max_lost_age_ms,
@@ -703,22 +876,6 @@ fn write_current_control_defaults(pipeline: &mut Mapping, config: &PipelineRunti
         (
             "target_selection_confidence_weight",
             config.target_selection_confidence_weight,
-        ),
-        (
-            "target_selection_size_weight",
-            config.target_selection_size_weight,
-        ),
-        (
-            "target_selection_continuity_weight",
-            config.target_selection_continuity_weight,
-        ),
-        (
-            "target_selection_motion_weight",
-            config.target_selection_motion_weight,
-        ),
-        (
-            "target_selection_motion_horizon_ms",
-            config.target_selection_motion_horizon_ms,
         ),
         (
             "prediction_actuation_delay_ms",
@@ -745,12 +902,12 @@ fn remove_section_fields(document: &mut Value, section: &str, fields: &[&str]) {
 }
 
 fn mark_production_fields(document: &Value, config: &mut AppConfig) {
-    // Optional capsule/class overrides retain their defaults for existing YAML.
+    // Optional class overrides retain their defaults for existing YAML.
     config.pipeline.production_fields_explicit = section_has_fields(
         document,
         "pipeline",
         &[
-            "freshness_threshold_ms",
+            "frame_max_age_ms",
             "projection_fov_x_deg",
             "projection_counts_per_360",
             "p_response_scale",
@@ -761,10 +918,8 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "velocity_history_reset_gap_ms",
             "prediction_enabled",
             "prediction_lead_ms",
-            "prediction_cap_px",
             "prediction_actuation_delay_ms",
             "target_fov_radius_px",
-            "target_min_confidence",
             "target_track_max_lost_age_ms",
             "tracker_max_match_distance",
             "tracker_position_cost_weight",
@@ -773,15 +928,11 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
             "tracker_class_cost_weight",
             "tracker_max_size_ratio",
             "tracker_max_association_dt_ms",
-            "target_class_priority",
+            "target_class_weights",
             "target_class_filter",
             "target_selection_distance_weight",
             "target_selection_class_weight",
             "target_selection_confidence_weight",
-            "target_selection_size_weight",
-            "target_selection_continuity_weight",
-            "target_selection_motion_weight",
-            "target_selection_motion_horizon_ms",
             "target_switch_min_preference_advantage",
             "target_switch_min_continuity_score",
             "target_switch_delay_ms",
@@ -819,7 +970,6 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
                 "backend",
                 "require_gpu",
                 "allow_cpu_fallback",
-                "inference_input_deadline_ms",
                 "deepstream_parser_library",
                 "deepstream_startup_timeout_ms",
                 "deepstream_shutdown_timeout_ms",
@@ -1179,6 +1329,7 @@ fn replace_document(
             value,
         );
     }
+    migrate_parameter_policy(path, &mut document)?;
     let root =
         document
             .as_mapping_mut()
@@ -1658,6 +1809,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_confidence_and_age_gates_migrate_without_loosening() {
+        for (inference, target, input_age, control_age, expected_age) in [
+            (0.25, 0.5, 55.0, 55.0, 50.0),
+            (0.8, 0.3, 20.0, 40.0, 20.0),
+            (0.1, 0.2, 45.0, 30.0, 30.0),
+        ] {
+            let mut document: Value = serde_yaml::from_str(DEFAULT_RUNTIME_CONFIG).unwrap();
+            document["schema_version"] = 19.into();
+            document["pipeline"]
+                .as_mapping_mut()
+                .unwrap()
+                .remove("frame_max_age_ms");
+            document["pipeline"]["target_min_confidence"] = serde_yaml::to_value(target).unwrap();
+            document["pipeline"]["prediction_cap_px"] = 10.into();
+            document["pipeline"]["freshness_threshold_ms"] =
+                serde_yaml::to_value(control_age).unwrap();
+            document["inference"]["confidence_threshold"] =
+                serde_yaml::to_value(inference).unwrap();
+            document["inference"]["inference_input_deadline_ms"] =
+                serde_yaml::to_value(input_age).unwrap();
+            migrate_parameter_policy(Path::new("migration-test.yaml"), &mut document).unwrap();
+            let mut config: AppConfig = serde_yaml::from_value(document.clone()).unwrap();
+            migrate_config(&mut document, &mut config);
+            config.validate_configured_adapters().unwrap();
+            assert_eq!(
+                config.inference.as_ref().unwrap().confidence_threshold,
+                f64::max(inference, target)
+            );
+            assert_eq!(config.pipeline.frame_max_age_ms, expected_age);
+            assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+            for key in [
+                "target_min_confidence",
+                "prediction_cap_px",
+                "freshness_threshold_ms",
+            ] {
+                assert!(document["pipeline"].get(key).is_none());
+            }
+            assert!(
+                document["inference"]
+                    .get("inference_input_deadline_ms")
+                    .is_none()
+            );
+            let migrated = document.clone();
+            migrate_parameter_policy(Path::new("migration-test.yaml"), &mut document).unwrap();
+            assert_eq!(document, migrated, "migration must be idempotent");
+        }
+        let mut invalid: Value =
+            serde_yaml::from_str("pipeline:\n  target_min_confidence: nope\n").unwrap();
+        assert!(migrate_parameter_policy(Path::new("invalid.yaml"), &mut invalid).is_err());
+    }
+
+    #[test]
     fn path_identity_check_rejects_an_inode_replaced_after_open() {
         let directory = std::env::temp_dir().join(format!(
             "novasight-config-identity-test-{}",
@@ -1707,6 +1910,83 @@ mod tests {
     }
 
     #[test]
+    fn migration_preserves_empty_modern_preferences_and_rejects_bad_legacy_order() {
+        let mut document: Value =
+            serde_yaml::from_str("schema_version: 18\npipeline:\n  target_class_weights: ''\n")
+                .unwrap();
+        let mut config: AppConfig = serde_yaml::from_value(document.clone()).unwrap();
+        migrate_config(&mut document, &mut config);
+        assert!(config.pipeline.target_class_weights.is_empty());
+
+        document = serde_yaml::from_str(
+            "schema_version: 17\npipeline:\n  target_class_priority: '0,1,0'\n",
+        )
+        .unwrap();
+        config = serde_yaml::from_value(document.clone()).unwrap();
+        migrate_config(&mut document, &mut config);
+        assert!(validate_extra_keys(Path::new("invalid-order.yaml"), &config).is_err());
+    }
+
+    #[test]
+    fn removed_only_merits_get_a_usable_default_but_zero_input_stays_invalid() {
+        for motion in [0.0, 1.0] {
+            let mut document: Value = serde_yaml::from_str(&format!(
+                "schema_version: 17\npipeline:\n  target_selection_distance_weight: 0\n  target_selection_class_weight: 0\n  target_selection_confidence_weight: 0\n  target_selection_motion_weight: {motion}\n",
+            )).unwrap();
+            let mut config: AppConfig = serde_yaml::from_value(document.clone()).unwrap();
+            migrate_config(&mut document, &mut config);
+            assert_eq!(config.validate_configured_adapters().is_ok(), motion > 0.0);
+        }
+    }
+
+    #[test]
+    fn legacy_class_priority_becomes_one_explicit_weight_map() {
+        let mut document: Value = serde_yaml::from_str(
+            "schema_version: 17\npipeline:\n  target_class_priority: '3,1,2'\n  target_class_weights: '1:0.9,7:0.4'\n",
+        ).unwrap();
+        let mut config: AppConfig = serde_yaml::from_value(document.clone()).unwrap();
+        migrate_config(&mut document, &mut config);
+        assert_eq!(
+            config.pipeline.target_class_weights,
+            "1:0.9,2:0.25,3:1,7:0.4"
+        );
+        assert!(document["pipeline"].get("target_class_priority").is_none());
+        assert!(
+            serde_yaml::to_value(&config).unwrap()["pipeline"]
+                .get("target_class_priority")
+                .is_none()
+        );
+        let before = document.clone();
+        migrate_config(&mut document, &mut config);
+        assert_eq!(document, before);
+    }
+
+    #[test]
+    fn retired_target_scoring_and_frame_counter_do_not_survive_migration() {
+        let mut document: Value = serde_yaml::from_str(
+            "schema_version: 17\npipeline:\n  target_selection_size_weight: 0.05\n  target_selection_continuity_weight: 0.1\n  target_selection_motion_weight: 0.05\n  target_selection_motion_horizon_ms: 30\n  tracker_kalman_max_predict_steps: 5\n",
+        ).unwrap();
+        let mut config: AppConfig = serde_yaml::from_value(document.clone()).unwrap();
+        migrate_config(&mut document, &mut config);
+        let serialized = serde_yaml::to_value(&config).unwrap();
+        for key in [
+            "target_selection_size_weight",
+            "target_selection_continuity_weight",
+            "target_selection_motion_weight",
+            "target_selection_motion_horizon_ms",
+            "tracker_kalman_max_predict_steps",
+        ] {
+            assert!(document["pipeline"].get(key).is_none(), "persisted {key}");
+            assert!(serialized["pipeline"].get(key).is_none(), "typed {key}");
+        }
+        config.validate_configured_adapters().unwrap();
+        validate_extra_keys(Path::new("migrated.yaml"), &config).unwrap();
+        let before = document.clone();
+        migrate_config(&mut document, &mut config);
+        assert_eq!(document, before, "migration must be idempotent");
+    }
+
+    #[test]
     fn schema_16_class_ratio_migrates_without_changing_two_signal_behavior() {
         let mut document: Value = serde_yaml::from_str(
             "schema_version: 16\npipeline:\n  target_selection_class_ratio: 0.35\n",
@@ -1716,7 +1996,7 @@ mod tests {
 
         migrate_config(&mut document, &mut config);
 
-        assert_eq!(config.schema_version, 17);
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(config.pipeline.target_selection_class_weight, 0.35);
         assert_eq!(config.pipeline.target_selection_distance_weight, 0.65);
         assert_eq!(config.pipeline.target_selection_confidence_weight, 0.0);
@@ -1734,7 +2014,7 @@ mod tests {
 
         assert_eq!(config.pipeline.target_selection_class_weight, 0.35);
         assert_eq!(config.pipeline.target_selection_distance_weight, 0.65);
-        assert_eq!(config.pipeline.target_selection_motion_weight, 0.0);
+        assert_eq!(config.pipeline.target_selection_confidence_weight, 0.0);
     }
 
     #[test]

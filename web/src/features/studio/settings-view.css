@@ -41,6 +41,8 @@
 }
 
 .settings-revision.attention { border-color: var(--status-warning-border); background: var(--status-warning-bg); }
+.settings-revision.unknown { border-color: var(--border-default); background: var(--bg-surface); }
+.settings-transfer-row.restore .settings-transfer-icon { color: var(--status-warning-fg); border-color: var(--status-warning-border); background: var(--status-warning-bg); }
 .settings-revision small { color: var(--text-tertiary); font-size: 11px; }
 .settings-revision strong { color: var(--text-primary); font-size: 13px; }
 .settings-revision span { color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; }

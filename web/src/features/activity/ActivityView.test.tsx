@@ -24,7 +24,7 @@ it("separates completed operations from items that need attention", () => {
     tone: "error",
   }]} onClear={vi.fn()} onOpenDetails={vi.fn()} />);
 
-  expect(screen.getByRole("heading", { name: "1 件事需要注意" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "1 条故障与警告记录" })).toBeVisible();
   expect(screen.getByRole("button", { name: "查看完整详情" })).toBeVisible();
   expect(screen.getByText("原始错误与开发者详情")).toBeVisible();
 });
@@ -47,4 +47,18 @@ it("renders records as a list and exposes clearing", async () => {
   expect(screen.getByRole("list", { name: "最近活动" })).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "清理历史" }));
   expect(onClear).toHaveBeenCalledOnce();
+});
+
+it("searches diagnostic IDs and preserves records after a synchronous clear failure", async () => {
+  render(<ActivityView items={[{ key: "a", title: "保存失败", detail: "待核对", requestId: "trace-001", tone: "error" }]}
+    onClear={() => { throw new Error("无权清理"); }} onOpenDetails={vi.fn()} />);
+  await userEvent.type(screen.getByRole("searchbox", { name: "搜索日志" }), "trace-001");
+  expect(screen.getByText("保存失败")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "清理历史" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("无权清理");
+  expect(screen.getByRole("button", { name: "清理历史" })).toBeEnabled();
+  expect(screen.getByText("时间未提供")).toBeVisible();
+  await userEvent.type(screen.getByRole("searchbox"), "missing");
+  await userEvent.click(screen.getByRole("button", { name: "重置筛选" }));
+  expect(screen.getByText("保存失败")).toBeVisible();
 });

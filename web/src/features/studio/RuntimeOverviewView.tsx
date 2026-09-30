@@ -57,39 +57,17 @@ export function RuntimeOverviewView({
   if (!runtime || !projection) {
     return (
       <section className="runtime-overview runtime-overview-offline" role="status" aria-label="当前运行结论">
-        <article className="runtime-overview-stage">
-          <header className="runtime-overview-stage-header">
-            <span><NovaIcon name="capture-card" size={16} />实时画面</span>
-          </header>
-          <div className="runtime-overview-stage-canvas">
-            <div className="runtime-overview-stage-visual" aria-hidden="true"><i /><i /><i /></div>
-            <div className="runtime-overview-stage-placeholder">
-              <span aria-hidden="true"><NovaIcon name="prediction-line" size={22} strokeWidth={1.6} /></span>
-              <strong>等待画面</strong>
-              <small>服务连接后自动显示</small>
-            </div>
-          </div>
-        </article>
         <div className="runtime-overview-offline-actions">
           <article>
             <span className="runtime-overview-offline-icon" aria-hidden="true"><NovaIcon name="daemon" size={18} /></span>
             <div>
               <small>当前运行结论</small>
               <strong>{runtimeControlUnavailable ? "无法确认运行状态" : "正在读取运行状态"}</strong>
-              <p>{runtimeControlUnavailable ? "检查服务连接或查看异常记录。" : "等待服务返回完整状态。"}</p>
+              <p>{runtimeControlUnavailable ? "请确认设备在线。连接恢复前，本页无法操作运行开关。" : "连接后可查看设备状态并开始运行。"}</p>
             </div>
             {runtimeControlUnavailable && onOpenErrors ? (
               <button className="console-button" onClick={onOpenErrors} type="button">查看异常信息</button>
             ) : <span className="runtime-overview-waiting">请稍候</span>}
-          </article>
-          <article>
-            <span className="runtime-overview-offline-icon safe" aria-hidden="true"><NovaIcon name="shield-check" size={18} /></span>
-            <div>
-              <small>硬件安全</small>
-              <strong>输出保持锁定</strong>
-              <p>收到完整运行状态前，不会推断或发送硬件输出。</p>
-            </div>
-            <span className="runtime-overview-locked">已锁定</span>
           </article>
         </div>
       </section>
@@ -105,8 +83,8 @@ export function RuntimeOverviewView({
   const metricsCurrent = projection.transport === "current";
   const metricsAvailable = metricsCurrent && runtime.statistics.metrics_available === true;
   const missingMetricLabel = metricsCurrent ? "等待样本" : "状态已过期";
-  const runtimeControlLabel = stopping ? "正在停止" : starting ? "正在启动" : lifecycleActive ? "运行中" : "已关闭";
-  const runtimeControlTone = phase === "faulted"
+  const runtimeControlLabel = !metricsCurrent ? "状态待确认" : stopping ? "正在停止" : starting ? "正在启动" : lifecycleActive ? "运行中" : "已关闭";
+  const runtimeControlTone = !metricsCurrent ? "warning" : phase === "faulted"
     ? "danger"
     : starting || stopping || phase === "waiting_model"
       ? "warning"
@@ -161,7 +139,7 @@ export function RuntimeOverviewView({
       <section className="runtime-overview-pipeline" aria-labelledby="runtime-pipeline-title">
         <header><div><small>实时路径</small><h3 id="runtime-pipeline-title">画面如何变成输出</h3></div><span>{metricsCurrent && runtime.semantic.phase === "running" ? "LIVE" : chainStale ? "状态已过期" : "状态快照"}</span></header>
         <ol className="runtime-pipeline-list">
-          {chain.map((item, index) => <li key={item.label}><i>{index + 1}</i><span>{item.label}<strong>{item.value}</strong></span></li>)}
+          {chain.map((item, index) => <li key={item.label} data-live={item.live}><i>{index + 1}</i><span>{item.label}<strong>{item.value}</strong></span></li>)}
         </ol>
         <div className="runtime-overview-axes">
           <article><span><NovaIcon name="daemon" size={17} />运行</span><div><strong>{projection.lifecycle.label}</strong><p>{projection.lifecycle.detail}</p></div></article>

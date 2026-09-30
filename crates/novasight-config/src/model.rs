@@ -1,13 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use novasight_core::tracking::{
-    KalmanConfig, SelectionWeights, TargetingConfig, default_target_range_scale,
-};
+use novasight_core::tracking::{KalmanConfig, SelectionWeights, TargetingConfig};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 17;
+pub const CURRENT_SCHEMA_VERSION: u32 = 20;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -274,8 +272,8 @@ const fn default_stream_fps() -> u32 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PipelineRuntimeConfig {
-    #[serde(default = "default_freshness_threshold_ms")]
-    pub freshness_threshold_ms: f64,
+    #[serde(default = "default_frame_max_age_ms")]
+    pub frame_max_age_ms: f64,
     #[serde(default = "default_projection_fov_x_deg")]
     pub projection_fov_x_deg: f64,
     #[serde(default = "default_projection_counts_per_360")]
@@ -302,14 +300,8 @@ pub struct PipelineRuntimeConfig {
     pub prediction_enabled: bool,
     #[serde(default = "default_prediction_lead_ms")]
     pub prediction_lead_ms: f64,
-    #[serde(default = "default_prediction_cap_px")]
-    pub prediction_cap_px: f64,
     #[serde(default = "default_target_fov_radius_px")]
     pub target_fov_radius_px: f64,
-    #[serde(default = "default_target_range_scale")]
-    pub target_range_scale: f64,
-    #[serde(default = "default_target_min_confidence")]
-    pub target_min_confidence: f32,
     #[serde(default = "default_target_track_max_lost_age_ms")]
     pub target_track_max_lost_age_ms: f64,
     #[serde(default = "default_tracker_max_match_distance")]
@@ -336,15 +328,11 @@ pub struct PipelineRuntimeConfig {
     pub tracker_kalman_max_predict_dt_ms: f64,
     #[serde(default = "default_tracker_kalman_max_predict_missing_ms")]
     pub tracker_kalman_max_predict_missing_ms: f64,
-    #[serde(default = "default_tracker_kalman_max_predict_steps")]
-    pub tracker_kalman_max_predict_steps: u32,
     #[serde(default = "default_tracker_kalman_nis_threshold")]
     pub tracker_kalman_nis_threshold: f64,
     #[serde(default = "default_tracker_kalman_nis_hard_reject")]
     pub tracker_kalman_nis_hard_reject: f64,
-    #[serde(default = "default_target_class_priority")]
-    pub target_class_priority: String,
-    #[serde(default)]
+    #[serde(default = "default_target_class_weights")]
     pub target_class_weights: String,
     #[serde(default)]
     pub target_class_aim_x_ratios: String,
@@ -356,14 +344,6 @@ pub struct PipelineRuntimeConfig {
     pub target_selection_class_weight: f64,
     #[serde(default = "default_target_selection_confidence_weight")]
     pub target_selection_confidence_weight: f64,
-    #[serde(default = "default_target_selection_size_weight")]
-    pub target_selection_size_weight: f64,
-    #[serde(default = "default_target_selection_continuity_weight")]
-    pub target_selection_continuity_weight: f64,
-    #[serde(default = "default_target_selection_motion_weight")]
-    pub target_selection_motion_weight: f64,
-    #[serde(default = "default_target_selection_motion_horizon_ms")]
-    pub target_selection_motion_horizon_ms: f64,
     #[serde(default = "default_target_switch_min_preference_advantage")]
     pub target_switch_min_preference_advantage: f64,
     #[serde(default = "default_target_switch_min_continuity_score")]
@@ -390,7 +370,7 @@ pub struct PipelineRuntimeConfig {
 impl Default for PipelineRuntimeConfig {
     fn default() -> Self {
         Self {
-            freshness_threshold_ms: default_freshness_threshold_ms(),
+            frame_max_age_ms: default_frame_max_age_ms(),
             projection_fov_x_deg: default_projection_fov_x_deg(),
             projection_counts_per_360: default_projection_counts_per_360(),
             p_response_scale: default_p_response_scale(),
@@ -403,10 +383,7 @@ impl Default for PipelineRuntimeConfig {
             velocity_history_reset_gap_ms: default_velocity_history_reset_gap_ms(),
             prediction_enabled: default_prediction_enabled(),
             prediction_lead_ms: default_prediction_lead_ms(),
-            prediction_cap_px: default_prediction_cap_px(),
             target_fov_radius_px: default_target_fov_radius_px(),
-            target_range_scale: default_target_range_scale(),
-            target_min_confidence: default_target_min_confidence(),
             target_track_max_lost_age_ms: default_target_track_max_lost_age_ms(),
             tracker_max_match_distance: default_tracker_max_match_distance(),
             tracker_position_cost_weight: default_tracker_position_cost_weight(),
@@ -420,20 +397,14 @@ impl Default for PipelineRuntimeConfig {
             tracker_kalman_measurement_noise_y: default_tracker_kalman_measurement_noise_y(),
             tracker_kalman_max_predict_dt_ms: default_tracker_kalman_max_predict_dt_ms(),
             tracker_kalman_max_predict_missing_ms: default_tracker_kalman_max_predict_missing_ms(),
-            tracker_kalman_max_predict_steps: default_tracker_kalman_max_predict_steps(),
             tracker_kalman_nis_threshold: default_tracker_kalman_nis_threshold(),
             tracker_kalman_nis_hard_reject: default_tracker_kalman_nis_hard_reject(),
-            target_class_priority: default_target_class_priority(),
-            target_class_weights: String::new(),
+            target_class_weights: default_target_class_weights(),
             target_class_aim_x_ratios: String::new(),
             target_class_filter: default_target_class_filter(),
             target_selection_distance_weight: default_target_selection_distance_weight(),
             target_selection_class_weight: default_target_selection_class_weight(),
             target_selection_confidence_weight: default_target_selection_confidence_weight(),
-            target_selection_size_weight: default_target_selection_size_weight(),
-            target_selection_continuity_weight: default_target_selection_continuity_weight(),
-            target_selection_motion_weight: default_target_selection_motion_weight(),
-            target_selection_motion_horizon_ms: default_target_selection_motion_horizon_ms(),
             target_switch_min_preference_advantage: default_target_switch_min_preference_advantage(
             ),
             target_switch_min_continuity_score: default_target_switch_min_continuity_score(),
@@ -451,10 +422,10 @@ impl Default for PipelineRuntimeConfig {
 impl PipelineRuntimeConfig {
     fn validate(&self) -> Result<(), ConfigValidationError> {
         validate_finite_range(
-            "pipeline.freshness_threshold_ms",
-            self.freshness_threshold_ms,
-            1.0,
-            1_000.0,
+            "pipeline.frame_max_age_ms",
+            self.frame_max_age_ms,
+            f64::MIN_POSITIVE,
+            50.0,
         )?;
         validate_finite_range(
             "pipeline.projection_fov_x_deg",
@@ -512,31 +483,11 @@ impl PipelineRuntimeConfig {
             1_000.0,
         )?;
         validate_finite_range(
-            "pipeline.prediction_cap_px",
-            self.prediction_cap_px,
-            0.0,
-            100_000.0,
-        )?;
-        validate_finite_range(
             "pipeline.target_fov_radius_px",
             self.target_fov_radius_px,
             0.000_001,
             100_000.0,
         )?;
-        validate_finite_range(
-            "pipeline.target_range_scale",
-            self.target_range_scale,
-            0.1,
-            5.0,
-        )?;
-        if !self.target_min_confidence.is_finite()
-            || !(0.0..=1.0).contains(&self.target_min_confidence)
-        {
-            return Err(ConfigValidationError::new(
-                "pipeline.target_min_confidence",
-                "must be finite and within 0..=1",
-            ));
-        }
         validate_finite_range(
             "pipeline.target_track_max_lost_age_ms",
             self.target_track_max_lost_age_ms,
@@ -576,12 +527,11 @@ impl PipelineRuntimeConfig {
         if self.tracker_position_cost_weight
             + self.tracker_iou_cost_weight
             + self.tracker_scale_cost_weight
-            + self.tracker_class_cost_weight
             <= 0.0
         {
             return Err(ConfigValidationError::new(
                 "pipeline.tracker_position_cost_weight",
-                "tracker position, IoU, scale, and class weights must not all be zero",
+                "at least one position, IoU, or scale weight is required; class alone cannot establish identity",
             ));
         }
         validate_finite_range(
@@ -626,12 +576,6 @@ impl PipelineRuntimeConfig {
             1.0,
             10_000.0,
         )?;
-        if self.tracker_kalman_max_predict_steps > 120 {
-            return Err(ConfigValidationError::new(
-                "pipeline.tracker_kalman_max_predict_steps",
-                "must be within 0..=120 steps",
-            ));
-        }
         validate_finite_range(
             "pipeline.tracker_kalman_nis_threshold",
             self.tracker_kalman_nis_threshold,
@@ -644,7 +588,6 @@ impl PipelineRuntimeConfig {
             self.tracker_kalman_nis_threshold,
             1_000_000.0,
         )?;
-        parse_target_class_priority(&self.target_class_priority)?;
         parse_class_values(&self.target_class_weights, "pipeline.target_class_weights")?;
         parse_class_values(
             &self.target_class_aim_x_ratios,
@@ -664,27 +607,12 @@ impl PipelineRuntimeConfig {
                 "pipeline.target_selection_confidence_weight",
                 self.target_selection_confidence_weight,
             ),
-            (
-                "pipeline.target_selection_size_weight",
-                self.target_selection_size_weight,
-            ),
-            (
-                "pipeline.target_selection_continuity_weight",
-                self.target_selection_continuity_weight,
-            ),
-            (
-                "pipeline.target_selection_motion_weight",
-                self.target_selection_motion_weight,
-            ),
         ] {
             validate_finite_range(field, value, 0.0, 100.0)?;
         }
         if self.target_selection_distance_weight
             + self.target_selection_class_weight
             + self.target_selection_confidence_weight
-            + self.target_selection_size_weight
-            + self.target_selection_continuity_weight
-            + self.target_selection_motion_weight
             <= 0.0
         {
             return Err(ConfigValidationError::new(
@@ -692,12 +620,6 @@ impl PipelineRuntimeConfig {
                 "target selection weights must not all be zero",
             ));
         }
-        validate_finite_range(
-            "pipeline.target_selection_motion_horizon_ms",
-            self.target_selection_motion_horizon_ms,
-            0.0,
-            1_000.0,
-        )?;
         validate_finite_range(
             "pipeline.target_switch_min_preference_advantage",
             self.target_switch_min_preference_advantage,
@@ -739,7 +661,7 @@ impl PipelineRuntimeConfig {
     }
 }
 
-pub fn parse_target_class_priority(value: &str) -> Result<Vec<u32>, ConfigValidationError> {
+pub(crate) fn parse_target_class_priority(value: &str) -> Result<Vec<u32>, ConfigValidationError> {
     let mut classes = Vec::new();
     for item in value.split(',') {
         let class_id = item.trim().parse::<u32>().map_err(|_| {
@@ -851,8 +773,8 @@ fn validate_finite_range(
     Ok(())
 }
 
-const fn default_freshness_threshold_ms() -> f64 {
-    55.0
+const fn default_frame_max_age_ms() -> f64 {
+    50.0
 }
 
 const fn default_projection_fov_x_deg() -> f64 {
@@ -891,16 +813,8 @@ const fn default_fire_delay_ms() -> u64 {
     0
 }
 
-const fn default_prediction_cap_px() -> f64 {
-    10.0
-}
-
 const fn default_target_fov_radius_px() -> f64 {
     180.0
-}
-
-const fn default_target_min_confidence() -> f32 {
-    0.5
 }
 
 const fn default_target_track_max_lost_age_ms() -> f64 {
@@ -955,10 +869,6 @@ fn default_tracker_kalman_max_predict_missing_ms() -> f64 {
     KalmanConfig::default().max_predict_missing_ms
 }
 
-fn default_tracker_kalman_max_predict_steps() -> u32 {
-    KalmanConfig::default().max_predict_steps
-}
-
 fn default_tracker_kalman_nis_threshold() -> f64 {
     KalmanConfig::default().nis_threshold
 }
@@ -967,8 +877,8 @@ fn default_tracker_kalman_nis_hard_reject() -> f64 {
     KalmanConfig::default().nis_hard_reject
 }
 
-fn default_target_class_priority() -> String {
-    "0,1".to_owned()
+fn default_target_class_weights() -> String {
+    "0:1,1:0.5".to_owned()
 }
 
 fn default_target_class_filter() -> String {
@@ -985,22 +895,6 @@ fn default_target_selection_class_weight() -> f64 {
 
 fn default_target_selection_confidence_weight() -> f64 {
     SelectionWeights::default().confidence
-}
-
-fn default_target_selection_size_weight() -> f64 {
-    SelectionWeights::default().size
-}
-
-fn default_target_selection_continuity_weight() -> f64 {
-    SelectionWeights::default().continuity
-}
-
-fn default_target_selection_motion_weight() -> f64 {
-    SelectionWeights::default().motion
-}
-
-fn default_target_selection_motion_horizon_ms() -> f64 {
-    TargetingConfig::default().selection_motion_horizon_ms
 }
 
 const fn default_target_switch_min_preference_advantage() -> f64 {
@@ -1206,9 +1100,6 @@ pub struct InferenceConfig {
     pub confidence_threshold: f64,
     #[serde(default = "default_nms_threshold")]
     pub nms_threshold: f64,
-    #[serde(default = "default_inference_deadline_ms")]
-    /// Zero disables this additional deadline; runtime freshness still applies.
-    pub inference_input_deadline_ms: f64,
     #[serde(default = "default_parser_library")]
     pub deepstream_parser_library: PathBuf,
     #[serde(default = "default_deepstream_io_mode", skip_serializing)]
@@ -1251,7 +1142,6 @@ impl Default for InferenceConfig {
             allow_cpu_fallback: false,
             confidence_threshold: default_confidence_threshold(),
             nms_threshold: default_nms_threshold(),
-            inference_input_deadline_ms: default_inference_deadline_ms(),
             deepstream_parser_library: default_parser_library(),
             deepstream_io_mode: default_deepstream_io_mode(),
             deepstream_batched_push_timeout_us: 0,
@@ -1289,13 +1179,6 @@ impl InferenceConfig {
                     "must be finite and in [0, 1]",
                 ));
             }
-        }
-        if !self.inference_input_deadline_ms.is_finite() || self.inference_input_deadline_ms <= 0.0
-        {
-            return Err(ConfigValidationError::new(
-                "inference.inference_input_deadline_ms",
-                "must be finite and positive so stale batches cannot unlock runtime readiness",
-            ));
         }
         if self
             .deepstream_parser_library
@@ -1639,15 +1522,11 @@ const fn default_one_u32() -> u32 {
 }
 
 const fn default_confidence_threshold() -> f64 {
-    0.25
+    0.5
 }
 
 const fn default_nms_threshold() -> f64 {
     0.45
-}
-
-const fn default_inference_deadline_ms() -> f64 {
-    55.0
 }
 
 fn default_parser_library() -> PathBuf {
@@ -1724,7 +1603,7 @@ mod tests {
             tracker_position_cost_weight: 0.0,
             tracker_iou_cost_weight: 0.0,
             tracker_scale_cost_weight: 0.0,
-            tracker_class_cost_weight: 0.0,
+            tracker_class_cost_weight: 1.0,
             ..PipelineRuntimeConfig::default()
         };
         let error = config.validate().expect_err("zero association weights");
@@ -1732,24 +1611,23 @@ mod tests {
     }
 
     #[test]
-    fn tracker_kalman_prediction_steps_are_bounded() {
+    fn tracker_kalman_missing_window_must_be_positive() {
         let config = PipelineRuntimeConfig {
-            tracker_kalman_max_predict_steps: 121,
+            tracker_kalman_max_predict_missing_ms: 0.0,
             ..PipelineRuntimeConfig::default()
         };
         let error = config
             .validate()
             .expect_err("unbounded kalman prediction steps");
-        assert_eq!(error.field, "pipeline.tracker_kalman_max_predict_steps");
+        assert_eq!(
+            error.field,
+            "pipeline.tracker_kalman_max_predict_missing_ms"
+        );
     }
 
     #[test]
-    fn target_priority_rejects_duplicates_before_runtime_composition() {
-        let config = PipelineRuntimeConfig {
-            target_class_priority: "0,1,0".to_owned(),
-            ..PipelineRuntimeConfig::default()
-        };
-        let error = config.validate().expect_err("duplicate class priority");
+    fn legacy_target_priority_parser_rejects_duplicates() {
+        let error = parse_target_class_priority("0,1,0").expect_err("duplicate class priority");
         assert_eq!(error.field, "pipeline.target_class_priority");
     }
 
@@ -1788,9 +1666,6 @@ mod tests {
             target_selection_distance_weight: 0.0,
             target_selection_class_weight: 0.0,
             target_selection_confidence_weight: 0.0,
-            target_selection_size_weight: 0.0,
-            target_selection_continuity_weight: 0.0,
-            target_selection_motion_weight: 0.0,
             ..PipelineRuntimeConfig::default()
         };
         let error = config

@@ -29,7 +29,6 @@ export function ToastHost() {
               <span className="toast-card-tag" aria-hidden="true">
                 {TONE_TITLE[toast.tone]}
               </span>
-              <span className="toast-card-source">{toast.source}</span>
               <button
                 type="button"
                 className="toast-card-close"
@@ -41,7 +40,7 @@ export function ToastHost() {
             </div>
             <p className="toast-card-title">{toast.title}</p>
             {toast.detail ? <p className="toast-card-detail">{toast.detail}</p> : null}
-            {toast.requestId ? <small className="toast-card-request-id">排查编号 {toast.requestId}</small> : null}
+            {toast.requestId ? <details className="toast-card-request-id"><summary>排查信息</summary><span>来源：{toast.source}<br />编号：{toast.requestId}</span></details> : null}
           </article>
         ))}
       </output>

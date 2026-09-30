@@ -144,7 +144,7 @@ fn moving_target_records_emit_typed_decisions() {
 }
 
 #[test]
-fn control_first_observation_emits_first_decision() {
+fn control_first_observation_waits_for_entry_ramp() {
     let mut control = AimAlgorithm::new(AimAlgorithmConfig::default());
     let observation = AimSample {
         generation: 1,
@@ -159,8 +159,9 @@ fn control_first_observation_emits_first_decision() {
         trigger_active: true,
     };
     let decision = control.step(observation);
-    assert!(decision.emit_allowed);
-    assert_eq!(decision.block_reason, BlockReason::None);
+    assert!(!decision.emit_allowed);
+    assert_eq!(decision.block_reason, BlockReason::EntryRampPending);
+    assert_eq!((decision.dx, decision.dy), (0, 0));
     assert_eq!(decision.mode, ControlMode::Continuous);
 }
 
@@ -173,7 +174,8 @@ fn closed_loop_algorithm_score_tracks_visual_convergence() {
         focal_x * (std::f64::consts::TAU / control_config.projection_counts_per_360).tan();
     let mut targeting = TargetingCore::new(TargetingConfig::default());
     let mut control = AimAlgorithm::new(control_config);
-    let mut true_error_x = 100.0;
+    // Begin inside the search circle so the replay exercises control decisions.
+    let mut true_error_x = 16.0;
     let mut delayed_errors = [true_error_x; 3];
     let mut trace = Vec::new();
     let mut prediction_truth_trace = Vec::new();
@@ -217,7 +219,7 @@ fn closed_loop_algorithm_score_tracks_visual_convergence() {
         &prediction_truth_trace,
         PredictionTruthConfig {
             horizons_ms: vec![8.333333, 16.666666],
-            projection: PredictionTruthProjection::Capped,
+            projection: PredictionTruthProjection::ConfidenceWeighted,
             ..PredictionTruthConfig::default()
         },
     );

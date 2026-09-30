@@ -19,6 +19,7 @@ export function StudioRuntimeBar({
   inferenceStatus
 }: StudioRuntimeBarProps) {
   if (!(["capture", "infer", "control", "latency", "control-test"] as ConsolePage[]).includes(page)) return null;
+  if (page === "capture" && runtimeAvailable) return null;
 
   if (page === "control-test") {
     const title = !runtimeAvailable

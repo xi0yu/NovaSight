@@ -134,10 +134,11 @@ fn first_observation_has_zero_velocity_and_predicted_offset() {
 
 #[test]
 fn rust_feedback_matches_the_continuous_projection_and_atan_reference() {
-    let mut control = AimAlgorithm::new(AimAlgorithmConfig {
+    let config = AimAlgorithmConfig {
         entry_ramp_ms: 0.0,
         ..Default::default()
-    });
+    };
+    let mut control = AimAlgorithm::new(config);
     let decision = control.step(AimSample {
         generation: 1,
         target_id: 1,
@@ -151,7 +152,22 @@ fn rust_feedback_matches_the_continuous_projection_and_atan_reference() {
         trigger_active: true,
     });
 
-    assert_eq!((decision.dx, decision.dy), (88, 73));
+    // Independent pinhole projection + current Atan law, not a stale pair of
+    // counts from a previous gain formula. This sample has no prediction yet.
+    let focal =
+        (config.source_width as f64 * 0.5) / (config.projection_fov_x_deg.to_radians() * 0.5).tan();
+    let reference = |error: f64| {
+        let counts =
+            (error / focal).atan() * config.projection_counts_per_360 / std::f64::consts::TAU;
+        config.response_scale * 256.0 * (counts / 256.0).atan()
+    };
+    let (x, y) = (reference(100.0), reference(60.0));
+    assert!((decision.float_demand_x - x).abs() < 1e-9);
+    assert!((decision.float_demand_y - y).abs() < 1e-9);
+    assert_eq!(
+        (decision.dx, decision.dy),
+        (x.trunc() as i32, y.trunc() as i32)
+    );
     assert!((0.0..1.0).contains(&decision.quantizer_residual_x));
     assert!((0.0..1.0).contains(&decision.quantizer_residual_y));
 }

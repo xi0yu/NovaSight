@@ -1,8 +1,6 @@
 import { NovaIcon } from "../../components/visual";
 import { ModelSelectionPanel, type ModelSelectionPanelProps } from "./ModelSelectionPanel";
 
-import "./model-workspace.css";
-
 export function ModelWorkspace({
   activeModelName,
   activeArtifactStatus,
@@ -34,8 +32,8 @@ export function ModelWorkspace({
         </div>
         <div className={`model-production-slot ${deploymentState}`}>
           <div className="model-production-slot-heading">
-            <span><i aria-hidden="true" /> 当前生产槽</span>
-            <strong>{activeFile ? panelProps.activeLoaded ? "运行已装载" : "已部署，待装载" : "空槽"}</strong>
+            <span><i aria-hidden="true" /> 当前使用的模型</span>
+            <strong>{activeFile ? panelProps.activeLoaded ? "运行已装载" : "已部署，待装载" : "尚未选择"}</strong>
           </div>
           <b title={panelProps.activeArtifactPath}>{activeFile || "尚未部署模型"}</b>
           <div className="model-production-slot-facts">
@@ -47,7 +45,7 @@ export function ModelWorkspace({
             {activeFile ? "查看实时推理" : "查看推理状态"}
           </button>
         </div>
-        <ol className="model-promotion-overview" aria-label="模型进入生产槽的步骤">
+        <ol className="model-promotion-overview" aria-label="模型部署步骤">
           <li className={hasDiscoveredModel ? "complete" : panelProps.root ? "current" : "pending"}><span>1</span><b>发现文件</b><small>{panelProps.root ? "设备资产" : "待读取"}</small></li>
           <li className={activeVerified ? "complete" : activeFile ? "current" : "pending"}><span>2</span><b>资格检查</b><small>{activeVerified ? "已有验证记录" : "待验证"}</small></li>
           <li className={activeFile ? "complete" : "pending"}><span>3</span><b>部署模型</b><small>写入运行配置</small></li>
