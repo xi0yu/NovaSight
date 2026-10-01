@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use novasight_core::controller::FireStabilizationConfig;
 use novasight_core::tracking::{KalmanConfig, SelectionWeights, TargetingConfig};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
+
+use crate::ClassPreset;
 
 pub const CURRENT_SCHEMA_VERSION: u32 = 20;
 
@@ -74,6 +77,12 @@ impl AppConfig {
 
     pub fn validate_configured_adapters(&self) -> Result<(), ConfigValidationError> {
         self.pipeline.validate()?;
+        if !self.control.fire_stabilization.is_valid() {
+            return Err(ConfigValidationError::new(
+                "control.fire_stabilization.strength",
+                "must be finite and in [0, 1]",
+            ));
+        }
         if let Some(capture) = &self.capture {
             capture.validate()?;
         }
@@ -208,6 +217,8 @@ pub struct RustControlConfig {
     pub output_enabled: bool,
     #[serde(default)]
     pub trigger_mode: TriggerMode,
+    #[serde(default)]
+    pub fire_stabilization: FireStabilizationConfig,
     #[serde(default, flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -1100,6 +1111,8 @@ pub struct InferenceConfig {
     pub confidence_threshold: f64,
     #[serde(default = "default_nms_threshold")]
     pub nms_threshold: f64,
+    #[serde(default)]
+    pub detection_custom_presets: Vec<ClassPreset>,
     #[serde(default = "default_parser_library")]
     pub deepstream_parser_library: PathBuf,
     #[serde(default = "default_deepstream_io_mode", skip_serializing)]
@@ -1142,6 +1155,7 @@ impl Default for InferenceConfig {
             allow_cpu_fallback: false,
             confidence_threshold: default_confidence_threshold(),
             nms_threshold: default_nms_threshold(),
+            detection_custom_presets: Vec::new(),
             deepstream_parser_library: default_parser_library(),
             deepstream_io_mode: default_deepstream_io_mode(),
             deepstream_batched_push_timeout_us: 0,
@@ -1163,6 +1177,25 @@ impl Default for InferenceConfig {
 
 impl InferenceConfig {
     fn validate(&self) -> Result<(), ConfigValidationError> {
+        let mut preset_ids = BTreeSet::new();
+        for preset in &self.detection_custom_presets {
+            if !preset_ids.insert(&preset.id)
+                || crate::builtin_class_presets()
+                    .iter()
+                    .any(|builtin| builtin.id == preset.id)
+            {
+                return Err(ConfigValidationError::new(
+                    "inference.detection_custom_presets",
+                    "preset ids must be unique and cannot replace built-ins",
+                ));
+            }
+            if let Err(message) = preset.validate() {
+                return Err(ConfigValidationError::new(
+                    "inference.detection_custom_presets",
+                    message,
+                ));
+            }
+        }
         if !self.require_gpu || self.allow_cpu_fallback {
             return Err(ConfigValidationError::new(
                 "inference.device",

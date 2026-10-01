@@ -265,6 +265,10 @@ impl PointerDevice for KmNetNativeDevice {
         .map(Some)
     }
 
+    fn reports_distinct_buttons(&self) -> bool {
+        true
+    }
+
     fn disconnect(&self) -> Result<(), AppError> {
         if let Some(mut session) = self
             .session

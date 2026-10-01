@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+mod fire_stabilization;
 mod perception;
 mod preview;
 mod runtime;

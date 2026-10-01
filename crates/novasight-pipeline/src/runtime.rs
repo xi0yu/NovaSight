@@ -6,7 +6,9 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use novasight_core::controller::{AimAlgorithm, AimAlgorithmConfig, AimResult, AimSample};
+use novasight_core::controller::{
+    AimAlgorithm, AimAlgorithmConfig, AimResult, AimSample, FireStabilizationConfig,
+};
 use novasight_core::tracking::{TargetSelection, TargetingConfig, TargetingCore};
 use novasight_core::{
     Clock, DetectionBatch, DeviceCommand, DeviceReceipt, Generation, PointerDevice, RuntimeEpoch,
@@ -15,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::LatestSlot;
+use crate::fire_stabilization::{FireObservation, FireStabilizer, pixels_per_count_y};
 use crate::slot::{MonotonicPublishError, TryMonotonicPublishError};
 
 const STATUS_STARTING: u8 = 0;
@@ -111,6 +114,7 @@ pub struct PipelineConfig {
     pub control: AimAlgorithmConfig,
     /// Final device-axis clamp applied once, at the device boundary.
     pub output_limits: OutputLimitConfig,
+    pub fire_stabilization: FireStabilizationConfig,
     /// Hardware trigger polling cadence. `None` leaves trigger ownership with
     /// the control plane (recording/replay); production devices set this.
     pub trigger_poll_interval_ms: Option<u64>,
@@ -127,6 +131,7 @@ pub struct PipelineLiveConfig {
     pub targeting: TargetingConfig,
     pub control: AimAlgorithmConfig,
     pub output_limits: OutputLimitConfig,
+    pub fire_stabilization: FireStabilizationConfig,
     pub trigger_hold_delay_ms: u64,
 }
 
@@ -151,6 +156,7 @@ impl From<&PipelineConfig> for PipelineLiveConfig {
             targeting: config.targeting.clone(),
             control: config.control,
             output_limits: config.output_limits,
+            fire_stabilization: config.fire_stabilization,
             trigger_hold_delay_ms: config.trigger_hold_delay_ms,
         }
     }
@@ -159,6 +165,7 @@ impl From<&PipelineConfig> for PipelineLiveConfig {
 #[derive(Clone, Copy, Debug)]
 struct DeviceWorkerConfig {
     epoch: RuntimeEpoch,
+    fire_stabilization: FireStabilizationConfig,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -174,6 +181,7 @@ impl Default for PipelineConfig {
             targeting: TargetingConfig::default(),
             control: AimAlgorithmConfig::default(),
             output_limits: OutputLimitConfig::default(),
+            fire_stabilization: FireStabilizationConfig::default(),
             trigger_poll_interval_ms: None,
             trigger_mode: TriggerMode::Always,
             trigger_hold_delay_ms: 0,
@@ -422,6 +430,7 @@ struct SharedState {
     metrics: AtomicMetrics,
     targeting_config: Mutex<TargetingConfig>,
     control_config: Mutex<AimAlgorithmConfig>,
+    fire_stabilization_config: Mutex<FireStabilizationConfig>,
 }
 
 impl SharedState {
@@ -482,6 +491,7 @@ impl SharedState {
             metrics,
             targeting_config: Mutex::new(live_config.targeting),
             control_config: Mutex::new(live_config.control),
+            fire_stabilization_config: Mutex::new(live_config.fire_stabilization),
         }
     }
 
@@ -1034,6 +1044,19 @@ impl PipelineIngress {
             config.trigger_hold_delay_ms.saturating_mul(1_000_000),
             Ordering::Release,
         );
+        let fire_changed = {
+            let mut current = self
+                .shared
+                .fire_stabilization_config
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if *current == config.fire_stabilization {
+                false
+            } else {
+                *current = config.fire_stabilization;
+                true
+            }
+        };
         if targeting_changed {
             self.shared
                 .targeting_config_version
@@ -1044,7 +1067,7 @@ impl PipelineIngress {
                 .control_config_version
                 .fetch_add(1, Ordering::Release);
         }
-        if !targeting_changed && !control_changed {
+        if !targeting_changed && !control_changed && !fire_changed {
             return Ok(());
         }
         let next_generation = self
@@ -1151,6 +1174,7 @@ struct TargetedObservation {
     crosshair_x: f64,
     crosshair_y: f64,
     target_state_reset: bool,
+    target_radius_px: f64,
 }
 
 /// Latest safe tracking command, fenced to its originating trigger cycle.
@@ -1158,6 +1182,12 @@ struct TargetedObservation {
 struct OutputPlan {
     command: DeviceCommand,
     trigger_epoch: u64,
+    observed_error_x_px: f64,
+    observed_error_y_px: f64,
+    target_state_reset: bool,
+    target_radius_px: f64,
+    px_per_count_y: f64,
+    feedback_delay_ms: f64,
 }
 
 /// Owns the post-inference real-time lanes. Capture/DeepStream keeps
@@ -1304,6 +1334,7 @@ impl PipelineRuntime {
             Arc::clone(&clock),
             DeviceWorkerConfig {
                 epoch: config.epoch,
+                fire_stabilization: config.fire_stabilization,
             },
         ) {
             Ok(handle) => handle,
@@ -1603,6 +1634,7 @@ fn spawn_targeting_worker(
         .spawn(move || {
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "targeting", || {
+                let mut target_radius_px = config.target_fov_radius_px;
                 let mut targeting = TargetingCore::new(config);
                 let mut config_version = shared.targeting_config_version.load(Ordering::Acquire);
                 let mut trigger_epoch = shared.trigger_epoch.load(Ordering::Acquire);
@@ -1618,6 +1650,7 @@ fn spawn_targeting_worker(
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .clone();
+                        target_radius_px = config.target_fov_radius_px;
                         targeting.set_config(config);
                         config_version = latest_config_version;
                     }
@@ -1686,6 +1719,7 @@ fn spawn_targeting_worker(
                         crosshair_y,
                         target_state_reset: selection.target_rebuilt
                             || selection.target_part_changed,
+                        target_radius_px,
                     };
                     if output.publish(observation).is_err() {
                         break;
@@ -1712,7 +1746,8 @@ fn spawn_control_worker(
         .spawn(move || {
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "control", || {
-                let mut algorithm = AimAlgorithm::new(config.control);
+                let mut control_config = config.control;
+                let mut algorithm = AimAlgorithm::new(control_config);
                 let mut config_version = shared.control_config_version.load(Ordering::Acquire);
                 let mut next_telemetry_at_ns = 0;
                 let mut trigger_started_at_ns: Option<u64> = None;
@@ -1730,6 +1765,7 @@ fn spawn_control_worker(
                             .control_config
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        control_config = live_config;
                         algorithm.set_config(live_config);
                         config_version = latest_config_version;
                     }
@@ -1892,6 +1928,15 @@ fn spawn_control_worker(
                             // during calculation must not retag this old result
                             // as belonging to the new cycle.
                             trigger_epoch,
+                            observed_error_x_px: decision.observed_error_x,
+                            observed_error_y_px: decision.observed_error_y,
+                            target_state_reset: target.target_state_reset,
+                            target_radius_px: target.target_radius_px,
+                            px_per_count_y: pixels_per_count_y(
+                                control_config,
+                                decision.observation_height,
+                            ),
+                            feedback_delay_ms: control_config.prediction_actuation_delay_ms,
                         })
                         .is_err()
                     {
@@ -1919,11 +1964,26 @@ fn spawn_device_worker(
         .spawn(move || {
             let _guard = WorkerGuard::new(Arc::clone(&shared));
             guard_worker(&shared, "device", || {
+                let mut stabilizer = FireStabilizer::default();
+                let mut fire_config = config.fire_stabilization;
+                let mut observed_trigger_epoch = shared.trigger_epoch.load(Ordering::Acquire);
+                let mut observed_gate_generation =
+                    shared.output_gate_min_generation.load(Ordering::Acquire);
                 while let Some(plan) = input.wait_take() {
                     let _lane = shared
                         .device_lane
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let current_trigger_epoch = shared.trigger_epoch.load(Ordering::Acquire);
+                    let current_gate_generation =
+                        shared.output_gate_min_generation.load(Ordering::Acquire);
+                    if observed_trigger_epoch != current_trigger_epoch
+                        || observed_gate_generation != current_gate_generation
+                    {
+                        stabilizer.reset();
+                        observed_trigger_epoch = current_trigger_epoch;
+                        observed_gate_generation = current_gate_generation;
+                    }
                     if plan.trigger_epoch != shared.trigger_epoch.load(Ordering::Acquire) {
                         shared.set_output_delivery_state(OutputDeliveryState::Superseded);
                         continue;
@@ -1970,16 +2030,6 @@ fn spawn_device_worker(
 
                     let max_output_x_counts = shared.max_output_x_counts.load(Ordering::Acquire);
                     let max_output_y_counts = shared.max_output_y_counts.load(Ordering::Acquire);
-                    command.delta_x_counts = command
-                        .delta_x_counts
-                        .clamp(-max_output_x_counts, max_output_x_counts);
-                    command.delta_y_counts = command
-                        .delta_y_counts
-                        .clamp(-max_output_y_counts, max_output_y_counts);
-                    if command.delta_x_counts == 0 && command.delta_y_counts == 0 {
-                        shared.set_output_delivery_state(OutputDeliveryState::NoMovement);
-                        continue;
-                    }
                     let latest_generation = shared.latest_seen_generation();
                     if latest_generation != Some(command.generation) {
                         shared
@@ -2004,13 +2054,58 @@ fn spawn_device_worker(
                         shared.set_output_delivery_state(OutputDeliveryState::Expired);
                         continue;
                     }
+                    let latest_fire_config = *shared
+                        .fire_stabilization_config
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if latest_fire_config != fire_config {
+                        stabilizer.reset();
+                        fire_config = latest_fire_config;
+                    }
+                    command.delta_y_counts = stabilizer.adjust(
+                        fire_config,
+                        FireObservation {
+                            target_id: command.target_object_id,
+                            capture_ns: command.source_captured_at.0,
+                            issued_ns: command.issued_at.0,
+                            error_x_px: plan.observed_error_x_px,
+                            error_y_px: plan.observed_error_y_px,
+                            target_reset: plan.target_state_reset,
+                            left_held: device.reports_distinct_buttons()
+                                && shared.buttons_available.load(Ordering::Acquire)
+                                && shared.button_left.load(Ordering::Acquire),
+                            base_y_counts: command.delta_y_counts,
+                            target_radius_px: plan.target_radius_px,
+                            px_per_count_y: plan.px_per_count_y,
+                            feedback_delay_ms: plan.feedback_delay_ms,
+                        },
+                    );
+                    command.delta_x_counts = command
+                        .delta_x_counts
+                        .clamp(-max_output_x_counts, max_output_x_counts);
+                    command.delta_y_counts = command
+                        .delta_y_counts
+                        .clamp(-max_output_y_counts, max_output_y_counts);
+                    if command.delta_x_counts == 0 && command.delta_y_counts == 0 {
+                        shared.set_output_delivery_state(OutputDeliveryState::NoMovement);
+                        continue;
+                    }
+                    let sent_at_ns = clock.now().0;
                     match device.send(command) {
                         Ok(receipt) => {
+                            if command.delta_y_counts != 0 {
+                                stabilizer.record_sent(
+                                    sent_at_ns,
+                                    plan.feedback_delay_ms,
+                                    command.delta_y_counts,
+                                );
+                            }
                             let _ = shared.record_device_success();
                             shared.record_device_receipt(receipt);
                             shared.set_output_delivery_state(OutputDeliveryState::Sent);
                         }
                         Err(error) => {
+                            stabilizer.reset();
                             shared.record_device_error(&error);
                             shared.set_trigger_state(false, None);
                             shared.set_button_left(false);

@@ -1,4 +1,4 @@
-export const STUDIO_LAYOUT_PAGE_IDS = ["overview", "capture", "params", "activity", "settings", "about"] as const;
+export const STUDIO_LAYOUT_PAGE_IDS = ["overview", "capture", "params", "fire", "activity", "settings", "about"] as const;
 
 export type StudioLayoutPageId = typeof STUDIO_LAYOUT_PAGE_IDS[number];
 
@@ -6,6 +6,7 @@ export const STUDIO_LAYOUT_MODULE_IDS = {
   overview: ["setup", "runtime", "metrics", "pipeline", "diagnostics"],
   capture: ["source", "roi", "diagnostics"],
   params: ["response", "targeting", "motion", "output"],
+  fire: ["stabilization"],
   activity: ["summary", "filters", "feed"],
   settings: ["backup", "restore", "details"],
   about: ["identity", "version", "capabilities", "support"],
@@ -15,6 +16,7 @@ const REQUIRED_MODULES: Record<StudioLayoutPageId, readonly string[]> = {
   overview: ["runtime"],
   capture: ["source"],
   params: ["response", "motion", "output", "targeting"],
+  fire: ["stabilization"],
   activity: ["summary", "feed"],
   settings: ["backup", "restore"],
   about: ["identity"],
@@ -39,6 +41,7 @@ export const DEFAULT_STUDIO_LAYOUT: StudioLayout = {
     { id: "overview", label: "首页", modules: ["setup", "runtime", "metrics"] },
     { id: "capture", label: "设备管理", modules: [...STUDIO_LAYOUT_MODULE_IDS.capture] },
     { id: "params", label: "算法参数", modules: [...STUDIO_LAYOUT_MODULE_IDS.params] },
+    { id: "fire", label: "开火稳定", modules: [...STUDIO_LAYOUT_MODULE_IDS.fire] },
     { id: "activity", label: "实时日志", modules: [...STUDIO_LAYOUT_MODULE_IDS.activity] },
     { id: "settings", label: "设置", modules: [...STUDIO_LAYOUT_MODULE_IDS.settings] },
     { id: "about", label: "关于", modules: [...STUDIO_LAYOUT_MODULE_IDS.about] },

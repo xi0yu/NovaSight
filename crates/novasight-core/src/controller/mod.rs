@@ -7,6 +7,7 @@
 
 mod algorithm;
 mod control_law;
+mod fire_stabilization;
 #[cfg(feature = "replay-tools")]
 pub mod replay;
 
@@ -17,3 +18,4 @@ pub use control_law::{
     AimControlInput, AimControlLaw, AimControlParameters, AimControlResult, AxisPair,
     DEFAULT_ATAN_SCALE_COUNTS,
 };
+pub use fire_stabilization::FireStabilizationConfig;

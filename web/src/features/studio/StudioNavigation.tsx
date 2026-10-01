@@ -18,6 +18,7 @@ export type ConsolePage =
   | "management"
   | "license"
   | "params"
+  | "fire"
   | "control-test"
   | "latency"
   | "settings"
@@ -40,7 +41,7 @@ export const DEFAULT_CONSOLE_PAGE: ConsolePage = "overview";
 
 export const CONSOLE_PAGES = new Set<ConsolePage>([
   "overview", "onboarding", "activity", "device", "capture", "infer", "control",
-  "models", "management", "license", "params", "control-test", "latency", "about",
+  "models", "management", "license", "params", "fire", "control-test", "latency", "about",
   "settings",
 ]);
 
@@ -48,6 +49,7 @@ const navigationDetails: Record<StudioLayoutPage["id"], Omit<NavigationItem, "id
   overview: { detail: "状态、实时数据与下一步", icon: "dashboard" },
   capture: { detail: "输入、模型与采集规格", icon: "devices" },
   params: { detail: "识别、目标与输出参数", icon: "settings" },
+  fire: { detail: "开火时的近距离稳定", icon: "target" },
   activity: { detail: "按等级查看运行与操作日志", icon: "logs" },
   settings: { detail: "备份、恢复与系统设置", icon: "settings" },
   about: { detail: "平台版本、能力与支持", icon: "help" },
@@ -74,6 +76,7 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
   management: { group: "关于 NovaSight", title: "资源与授权", description: "集中查看设备、模型、活动和授权。" },
   license: { group: "关于 NovaSight", title: "授权", description: "查看当前授权范围，或在安全停止并确认输出后更换授权。" },
   params: { group: "NovaSight", title: "算法参数", description: "让范围、目标和跟随手感适合你。" },
+  fire: { group: "NovaSight", title: "开火稳定", description: "只在左键开火且已接近目标时，减轻画面上跳。" },
   "control-test": { group: "设备管理", title: "控制测试", description: "脱离自动目标链路验证 kmNet 连接和受控移动输出。" },
   latency: { group: "设备管理", title: "性能", description: "定位采集到设备发送之间的阶段耗时和数据新鲜度问题。" },
   settings: { group: "NovaSight", title: "设置", description: "备份当前设置，或从已有备份安全恢复。" },

@@ -94,6 +94,7 @@ pub fn compose_pipeline_config(
             x_counts: adapters.pipeline.max_output_x_counts,
             y_counts: adapters.pipeline.max_output_y_counts,
         },
+        fire_stabilization: config.control.fire_stabilization,
         trigger_hold_delay_ms: if adapters.pipeline.fire_delay_enabled {
             adapters.pipeline.fire_delay_ms
         } else {

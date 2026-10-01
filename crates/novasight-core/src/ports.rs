@@ -63,6 +63,12 @@ pub trait PointerDevice: Send + Sync {
             .map(|active| active.map(|left| PointerButtons { left, right: false }))
     }
 
+    /// True only when `buttons()` reads distinct physical left/right states.
+    /// The legacy combined-trigger fallback must not be treated as a left click.
+    fn reports_distinct_buttons(&self) -> bool {
+        false
+    }
+
     /// Release the epoch-owned device session after every worker has stopped.
     fn disconnect(&self) -> Result<(), AppError> {
         Ok(())

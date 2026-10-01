@@ -48,6 +48,11 @@ export function FrontendPreview({ scenario = "pages" }: { scenario?: string }) {
           revision: 1,
           pipeline: { fire_delay_enabled: false, fire_delay_ms: 0, projection_fov_x_deg: 90 },
           control: { output_enabled: false },
+          inference: { detection_custom_presets: [{
+            id: "preview_three_classes", label: "预览示例 · 三类", note: "模拟类别映射，仅供预览，不会写入设备。",
+            verified: false, class_names: ["头部", "身体", "队友"], enabled_ids: [0, 1],
+            weights: { 0: 0.8, 1: 0.5 }, roles: { 0: "head", 1: "body" }
+          }] },
           hardware: { auto_connect: true },
         }}
         projects={[]}

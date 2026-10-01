@@ -52,6 +52,18 @@ export interface ConfigSchemaResponse {
   algorithm: ConfigAlgorithmSchema;
   values: RuntimeConfig;
   sections: ConfigSectionSchema[];
+  class_presets?: ClassPreset[];
+}
+
+export interface ClassPreset {
+  id: string;
+  label: string;
+  note: string;
+  verified: boolean;
+  class_names: string[];
+  enabled_ids: number[];
+  weights: Record<string, number>;
+  roles: Record<string, "head" | "body" | "other">;
 }
 
 export interface ConfigUpdateResponse {
@@ -229,7 +241,26 @@ export function decodeConfigSchema(value: unknown): ConfigSchemaResponse {
       }
     },
     values: decodeRuntimeConfig(record.values),
-    sections
+    sections,
+    class_presets: Array.isArray(record.class_presets) ? record.class_presets.map((item, index): ClassPreset => {
+      const path = `config_schema.class_presets[${index}]`;
+      const preset = expectRecord(item, path);
+      const names = preset.class_names;
+      const enabled = preset.enabled_ids;
+      const weights = expectRecord(preset.weights, `${path}.weights`);
+      const roles = expectRecord(preset.roles, `${path}.roles`);
+      if (!Array.isArray(names) || !Array.isArray(enabled)) throw new ConfigContractError(path, "class preset");
+      return {
+        id: expectString(preset.id, `${path}.id`),
+        label: expectString(preset.label, `${path}.label`),
+        note: expectString(preset.note, `${path}.note`),
+        verified: expectBoolean(preset.verified, `${path}.verified`),
+        class_names: names.map((name, i) => expectString(name, `${path}.class_names[${i}]`)),
+        enabled_ids: enabled.map((id, i) => expectUnsignedInteger(id, `${path}.enabled_ids[${i}]`)),
+        weights: Object.fromEntries(Object.entries(weights).map(([id, weight]) => [id, expectFiniteNumber(weight, `${path}.weights.${id}`)])),
+        roles: Object.fromEntries(Object.entries(roles).map(([id, role]) => [id, expectLiteral(role, `${path}.roles.${id}`, ["head", "body", "other"])]))
+      };
+    }) : []
   };
 }
 

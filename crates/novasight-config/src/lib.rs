@@ -1,9 +1,11 @@
 #![deny(unsafe_code)]
 
+mod class_presets;
 mod endpoints;
 mod model;
 mod repository;
 
+pub use class_presets::{ClassPreset, builtin_class_presets};
 pub use endpoints::{NetworkEndpoint, StudioEndpointContract, studio_endpoint_contract};
 pub use model::{
     AppConfig, CURRENT_SCHEMA_VERSION, CaptureConfig, CaptureMemory, CapturePreference,

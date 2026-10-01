@@ -30,6 +30,7 @@ import {
   ParserPresetId,
   RuntimeConfig,
   ConfigSchemaResponse,
+  type ClassPreset,
   RuntimeConfigValue,
   RuntimeState,
   type RuntimeVisionDetectionState,
@@ -68,6 +69,8 @@ import {
   type ActionConfirmationRequest
 } from "./ActionConfirmationDialog";
 import { TargetClassEditor, classStyle, parseClassValues, setClassValue } from "./TargetClassEditor";
+import { ClassPresetPicker } from "./ClassPresetPicker";
+import { FireStabilizationPage } from "./FireStabilizationPage";
 import { TargetRangeControls } from "./TargetRangeControls";
 import { PredictionInsight, ResponseExperiment } from "./PredictionInsight";
 import type { AimRole } from "../targeting/types";
@@ -586,7 +589,7 @@ function parameterPageFieldChanges(
 
   const baselineControl = asRecord(baseline.control);
   const draftControl = asRecord(draft.control);
-  const supportedControlKeys = new Set(["aim"]);
+  const supportedControlKeys = new Set(["aim", "fire_stabilization"]);
   const unsupportedControlKeys = Array.from(new Set([
     ...Object.keys(baselineControl),
     ...Object.keys(draftControl)
@@ -603,6 +606,13 @@ function parameterPageFieldChanges(
         section: "control" as const,
         key: "aim",
         value: draftControl.aim as RuntimeConfigValue
+      };
+  const fireChange = runtimeConfigValuesEqual(baselineControl.fire_stabilization, draftControl.fire_stabilization)
+    ? null
+    : {
+        section: "control" as const,
+        key: "fire_stabilization",
+        value: draftControl.fire_stabilization as RuntimeConfigValue
       };
 
   const baselineInference = asRecord(baseline.inference);
@@ -635,6 +645,7 @@ function parameterPageFieldChanges(
 
   const changes: ParameterPageFieldChange[] = [];
   if (aimChange) changes.push(aimChange);
+  if (fireChange) changes.push(fireChange);
   changes.push(...inferenceChanges);
   changes.push(...pipelineChanges);
   return changes;
@@ -1251,6 +1262,10 @@ export function StudioConsoleView({
     "all"
   );
   const detectionClasses = detectionProfiles[activeDetectionProfile] ?? detectionProfiles.default ?? [];
+  const customClassPresets = Array.isArray(inferenceConfig.detection_custom_presets)
+    ? inferenceConfig.detection_custom_presets.filter((item) => typeof item === "object" && item !== null) as unknown as ClassPreset[]
+    : [];
+  const availableClassPresets = [...(configSchema?.class_presets ?? []), ...customClassPresets];
   const detectionClassPriority = readString(
     rustControlPlane
       ? Object.entries(parseClassValues(rustPipelineConfig.target_class_weights))
@@ -1305,6 +1320,9 @@ export function StudioConsoleView({
   const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
   const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, false);
   const outputEnabled = readBoolean(controlConfig.output_enabled, false);
+  const fireStabilizationConfig = asRecord(controlConfig.fire_stabilization);
+  const fireStabilizationEnabled = readBoolean(fireStabilizationConfig.enabled, false);
+  const fireStabilizationStrength = readNumber(fireStabilizationConfig.strength, 0.5);
   const controlModeLabel = controlAlgorithmLabel;
 
   useEffect(() => {
@@ -2282,7 +2300,7 @@ export function StudioConsoleView({
         stageConfigDialogDraft(next);
         return;
       }
-      if (activePage === "params" && options?.immediate !== true) {
+      if ((activePage === "params" || activePage === "fire") && options?.immediate !== true) {
         stageParameterPageDraft(next);
         return;
       }
@@ -2875,6 +2893,66 @@ export function StudioConsoleView({
     const pipeline = { ...asRecord(next.pipeline) };
     for (const [key, value] of Object.entries(changes)) pipeline[key] = setClassValue(pipeline[key], classId, value);
     next.pipeline = pipeline as RuntimeConfig[string];
+    stageConfigDialogDraft(next);
+  };
+
+  const applyClassPreset = (preset: ClassPreset) => {
+    const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+    if (!base) return;
+    const next = collapseClassProfiles(normalizeRuntimeConfig(base));
+    const filter = preset.enabled_ids.join(",");
+    const weights = Object.entries(preset.weights)
+      .sort(([left], [right]) => Number(left) - Number(right))
+      .map(([id, weight]) => `${id}:${weight}`).join(",");
+    const priority = [...preset.enabled_ids].sort((left, right) =>
+      (preset.weights[String(right)] ?? 0) - (preset.weights[String(left)] ?? 0) || left - right
+    ).join(",");
+    next.inference = {
+      ...asRecord(next.inference),
+      detection_class_profiles: { default: preset.class_names },
+      detection_class_filter: filter,
+      detection_class_filters: { default: filter },
+      detection_class_priority: priority,
+      detection_class_priorities: { default: priority }
+    } as RuntimeConfig[string];
+    next.pipeline = {
+      ...asRecord(next.pipeline),
+      target_class_filter: filter,
+      target_class_weights: weights,
+      target_class_aim_x_ratios: "",
+      target_class_aim_y_ratios: ""
+    } as RuntimeConfig[string];
+    const control = asRecord(next.control);
+    next.control = { ...control, aim: { ...asRecord(control.aim), class_roles: { default: preset.roles } } } as RuntimeConfig[string];
+    stageConfigDialogDraft(next);
+  };
+
+  const saveClassPreset = (label: string) => {
+    const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
+    if (!base) return;
+    const selected = Array.from(selectedDetectionClassIds).filter((id) => id < 8).sort((left, right) => left - right);
+    if (selected.length === 0) {
+      setDialogSaveError("至少选择一个参与类别，才能保存预设。");
+      return;
+    }
+    const roles = profileRoleRecords(asRecord(asRecord(base.control).aim).class_roles);
+    const currentRoles = roles[activeDetectionProfile] ?? roles.default ?? {};
+    const preset: ClassPreset = {
+      id: `custom_${crypto.randomUUID()}`,
+      label,
+      note: "由当前类别编排保存；应用前请核对模型输出。",
+      verified: false,
+      class_names: Array.from({ length: 8 }, (_, id) => detectionClasses[id]?.trim() || `cls${id}`),
+      enabled_ids: selected,
+      weights: Object.fromEntries(Object.entries(parseClassValues(asRecord(base.pipeline).target_class_weights))
+        .filter(([id]) => Number(id) < 8)),
+      roles: Object.fromEntries(Object.entries(currentRoles).filter(([id]) => Number(id) < 8))
+    };
+    const next = normalizeRuntimeConfig(base);
+    next.inference = {
+      ...asRecord(next.inference),
+      detection_custom_presets: [...customClassPresets, preset]
+    } as unknown as RuntimeConfig[string];
     stageConfigDialogDraft(next);
   };
 
@@ -4069,6 +4147,24 @@ export function StudioConsoleView({
           </section>
         ) : null}
 
+        {activePage === "fire" ? <section className="console-page">
+          {parameterPageDirty ? <div className="parameter-save-bar dirty">
+            <span className="parameter-save-bar-icon" aria-hidden="true"><NovaIcon name="save" size={18} /></span>
+            <div aria-live="polite" role="status"><b>有未应用的修改</b><small>保存后才会用于当前运行。</small></div>
+            <div className="parameter-save-bar-actions">
+              <button className="console-button" disabled={parameterPageSaving || pendingConfigWriteCount > 0} onClick={requestDiscardParameterPageDraft} type="button">放弃修改</button>
+              <button className="console-button primary" disabled={parameterPageSaving || pendingConfigWriteCount > 0} onClick={requestSaveParameterPageDraft} type="button"><NovaIcon name="save" size={15} />{parameterPageSaving ? "正在保存并应用…" : "保存并应用"}</button>
+            </div>
+          </div> : null}
+          {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
+          <FireStabilizationPage
+            enabled={fireStabilizationEnabled}
+            strength={fireStabilizationStrength}
+            onEnabled={(enabled) => updateConfigField("control", "fire_stabilization", { ...fireStabilizationConfig, enabled })}
+            onStrength={(strength) => updateConfigField("control", "fire_stabilization", { ...fireStabilizationConfig, strength })}
+          />
+        </section> : null}
+
         {activePage === "params" || activePage === "control-test" ? (
           <section className="console-page">
           {activePage === "params" ? (
@@ -4570,6 +4666,7 @@ export function StudioConsoleView({
               className="class-config-dialog-layout"
             >
               <div className="class-config-workspace class-point-workspace-shell">
+                <ClassPresetPicker presets={availableClassPresets} canSave={Array.from(selectedDetectionClassIds).some((id) => id < 8)} onApply={applyClassPreset} onSave={saveClassPreset} />
                 <TargetClassEditor
                   ids={classEditorIds} names={detectionClasses} selected={selectedDetectionClassIds}
                   weights={parseClassValues(rustPipelineConfig.target_class_weights)}

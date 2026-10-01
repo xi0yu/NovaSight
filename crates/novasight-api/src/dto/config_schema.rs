@@ -1,7 +1,11 @@
 use novasight_core::controller::DEFAULT_ATAN_SCALE_COUNTS;
 use novasight_runtime::{AppConfig, ConfigApplyMode};
+use novasight_store::config::{ClassPreset, builtin_class_presets};
 use serde::Serialize;
 use serde_json::Value;
+
+#[path = "fire_stabilization_schema.rs"]
+mod fire_stabilization_schema;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ConfigSchemaResponse {
@@ -9,6 +13,7 @@ pub(crate) struct ConfigSchemaResponse {
     algorithm: ConfigAlgorithmSchema,
     values: Value,
     sections: Vec<ConfigSectionSchema>,
+    class_presets: Vec<ClassPreset>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -78,6 +83,7 @@ impl ConfigSchemaResponse {
             },
             values: serde_json::to_value(config)
                 .expect("validated AppConfig must have a JSON representation"),
+            class_presets: builtin_class_presets(),
             sections: vec![
                 section(
                     "server",
@@ -134,6 +140,7 @@ impl ConfigSchemaResponse {
                         ),
                     ],
                 ),
+                fire_stabilization_schema::section(),
                 hot_section(
                     "pipeline",
                     "Rust 实时控制",
