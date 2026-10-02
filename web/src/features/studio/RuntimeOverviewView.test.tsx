@@ -77,7 +77,24 @@ describe("RuntimeOverviewView", () => {
     expect(screen.getByText("运行", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
     expect(screen.getByText("识别", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
     expect(screen.getByText("输出", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "当前目标选择" })).toHaveTextContent("当前未选中目标");
     expect(screen.queryByText(/已发送|正在交付|delivering/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the selected class without claiming that a hardware command was sent", () => {
+    render(<RuntimeOverviewView
+      runtime={{ ...runtime, vision: { ...runtime.vision, target: { cls: 0, track_id: 7 }, control: { will_emit: false } } } as RuntimeState}
+      projection={projection}
+      readiness={{ state: "ready", title: "运行中", detail: "运行状态正常。" }}
+      lastUpdated={null}
+      onAction={() => undefined}
+      {...controlProps}
+      classNames={["头部", "身体"]}
+    />);
+    const target = screen.getByRole("status", { name: "当前目标选择" });
+    expect(target).toHaveTextContent("已选中 · 头部");
+    expect(target).toHaveTextContent("本帧未生成输出计划");
+    expect(target).not.toHaveTextContent("已发送");
   });
 
   it("only exposes the mapped recovery action", async () => {

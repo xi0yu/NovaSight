@@ -48,6 +48,10 @@
 .algorithm-workspace .class-config-summary-card { background: var(--bg-subtle); border: 0; padding: 16px; margin-bottom: 16px; box-shadow: none; }
 .algorithm-workspace .class-config-summary-icon, .algorithm-workspace .class-config-eyebrow { display: none; }
 .algorithm-workspace .class-config-summary-main h3 { font-size: 14px; font-weight: 550; }
+.class-name-source { margin: -4px 0 14px; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+.class-map-empty { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 18px; border: 1px dashed var(--border-strong); border-radius: 12px; background: var(--bg-subtle); }
+.class-map-empty strong { flex: 1 1 100%; color: var(--text-primary); font-size: 14px; }
+.class-map-empty p { flex: 1 1 270px; margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
 .algorithm-class-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 10px; padding: 0; margin: 0 0 20px; list-style: none; }
 .algorithm-class-overview li { min-width: 0; padding: 14px; border: 1px solid var(--border-subtle); border-radius: 10px; background: linear-gradient(125deg, color-mix(in srgb, var(--class-color) 7%, transparent), transparent), var(--bg-surface); }
 .algorithm-class-overview li[data-enabled="false"] { background: var(--bg-surface); }
@@ -193,6 +197,25 @@
 .target-class-editor input[type="range"] { accent-color: var(--class-color); }
 .target-class-editor .parameter-control-field { padding: 0; border: 0; gap: 8px; }
 .class-edit-table td:nth-child(4) .parameter-control-header { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+@media (max-width: 900px) {
+  .class-table-scroll { overflow-x: visible; border: 0; }
+  .class-edit-table, .class-edit-table tbody { display: block; width: 100%; min-width: 0; }
+  .class-edit-table thead { display: none; }
+  .class-edit-table tbody { display: grid; gap: 10px; }
+  .class-edit-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 14px; border: 1px solid var(--border-subtle); border-top: 3px solid var(--class-color); border-radius: 10px; background: var(--bg-surface); }
+  .class-edit-table th, .class-edit-table td { display: block; width: auto !important; min-width: 0 !important; padding: 0; border: 0; }
+  .class-edit-table th { grid-column: 1; grid-row: 1; align-self: center; }
+  .class-edit-table td:first-child { grid-column: 2; grid-row: 1; display: flex; align-items: center; gap: 6px; }
+  .class-edit-table td:first-child .class-participation { margin-top: 0; }
+  .class-edit-table td:nth-child(n + 3) { grid-column: 1 / -1; }
+  .class-edit-table td:nth-child(3)::before, .class-edit-table td:nth-child(4)::before, .class-edit-table td:nth-child(5)::before { display: block; margin-bottom: 6px; color: var(--text-secondary); font-size: 12px; font-weight: 650; }
+  .class-edit-table td:nth-child(3)::before { content: "名称"; }
+  .class-edit-table td:nth-child(4)::before { content: "类别偏好"; }
+  .class-edit-table td:nth-child(5)::before { content: "框内瞄点"; }
+  .class-inline-point { flex-wrap: wrap; }
+  .class-inline-point > div { flex: 1 1 180px; }
+  .class-point-presets { flex-wrap: wrap; }
+}
 @media (max-width: 760px) {
   .algorithm-class-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .algorithm-workspace button { min-height: 44px; }

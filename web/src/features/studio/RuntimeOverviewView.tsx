@@ -18,12 +18,13 @@ type RuntimeOverviewViewProps = {
   launchPending: boolean;
   runtimeStopping: boolean;
   runtimeControlUnavailable: boolean;
+  classNames?: string[];
   onOpenErrors?: () => void;
   onToggle: () => void | Promise<void | boolean>;
   moduleOrder?: readonly string[];
 };
 
-const DEFAULT_MODULES = ["runtime", "metrics", "pipeline", "diagnostics"];
+const DEFAULT_MODULES = ["runtime", "metrics", "target", "pipeline", "diagnostics"];
 
 function toneForRuntime(projection: RuntimeProjection, phase: string, lifecycleActive: boolean): "idle" | "danger" | "warning" | "success" {
   if (projection.lifecycle.state === "faulted" || projection.perception.state === "faulted") return "danger";
@@ -50,6 +51,7 @@ export function RuntimeOverviewView({
   launchPending,
   runtimeStopping,
   runtimeControlUnavailable,
+  classNames = [],
   onOpenErrors,
   onToggle,
   moduleOrder = DEFAULT_MODULES,
@@ -90,6 +92,8 @@ export function RuntimeOverviewView({
       ? "warning"
       : lifecycleActive ? "success" : "idle";
   const chainStale = !metricsCurrent;
+  const selectedTarget = metricsCurrent && phase === "running" ? runtime.vision.target : null;
+  const selectedClassName = selectedTarget ? classNames[selectedTarget.cls]?.trim() || `类别 ${selectedTarget.cls}` : "";
   const chain = [
     { label: "采集输入", value: chainStale ? "状态已过期" : runtime.capture.running ? "正在接收" : runtime.capture.available ? "待运行" : "不可用", live: metricsCurrent && runtime.capture.running },
     { label: "感知数据", value: projection.perception.label, live: metricsCurrent && projection.perception.state === "current" },
@@ -135,6 +139,16 @@ export function RuntimeOverviewView({
         <div><dt>结果帧龄</dt><dd>{metricsAvailable ? formatLiveMetric(true, runtime.statistics.detection_data_age_ms, 1, " ms") : missingMetricLabel}</dd></div>
       </dl>
     ),
+    target: metricsCurrent && phase === "running" ? (
+      <section className={`runtime-target-note ${selectedTarget ? "acquired" : "searching"}`} aria-label="当前目标选择" role="status">
+        <span className="runtime-target-note-icon" aria-hidden="true"><NovaIcon name="target" size={19} /></span>
+        <div><small>实时目标</small><strong>{selectedTarget ? `已选中 · ${selectedClassName}` : "当前未选中目标"}</strong>
+          <p>{selectedTarget
+            ? runtime.vision.control.will_emit === true ? "本帧已生成输出计划" : "本帧未生成输出计划"
+            : "当前结果没有有效目标，本帧不产生目标输出。"}</p></div>
+        <span className="runtime-target-note-state">{selectedTarget ? "已选择" : "搜索中"}</span>
+      </section>
+    ) : null,
     pipeline: (
       <section className="runtime-overview-pipeline" aria-labelledby="runtime-pipeline-title">
         <header><div><small>实时路径</small><h3 id="runtime-pipeline-title">画面如何变成输出</h3></div><span>{metricsCurrent && runtime.semantic.phase === "running" ? "LIVE" : chainStale ? "状态已过期" : "状态快照"}</span></header>

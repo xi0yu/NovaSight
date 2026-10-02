@@ -15,6 +15,8 @@ import "./preview-states.css";
 
 const examples: Array<[string, string, string]> = [
   ["pages", "完整页面", "默认页面与真实组件；预览不连接设备，保存操作会被拒绝。"],
+  ["running-target", "首页 · 运行中且已选目标", "模拟新鲜的运行快照与已选目标；触发键未按下，不代表硬件已发送指令。"],
+  ["running-no-target", "首页 · 运行中但无目标", "模拟采集和推理正常、搜索范围内没有有效目标，因此本帧不输出。"],
   ["offline", "首页 · 服务断连", "没有运行快照时，不展示零值、不声称输出安全。"],
   ["stale", "首页 · 状态过期", "保留最近读数，但不把旧的开关状态当作实时状态。"],
   ["activity", "日志 · 搜索与清理失败", "可以搜索、筛选和展开详情；点击清理可查看失败后保留记录的状态。"],
@@ -59,7 +61,7 @@ function StateExample({ name }: { name: string }) {
   const [notice, setNotice] = useState("");
   const dialogRef = useRef<HTMLElement>(null);
   const close = () => setOpen(false);
-  if (name === "pages" || name === "offline" || name === "stale") return <FrontendPreview scenario={name} />;
+  if (["pages", "running-target", "running-no-target", "offline", "stale"].includes(name)) return <FrontendPreview scenario={name} />;
   let content;
   if (name === "activity") content = <ActivityView items={sampleActivity} onClear={() => { throw new Error("当前身份无权清理设备历史记录。"); }} onOpenDetails={() => setNotice("展开每条记录的“原始错误与开发者详情”查看证据。")} />;
   else if (name.startsWith("settings")) content = <SettingsView modules={["backup", "restore", "details"]} desiredRevision={12} effectiveRevision={11} restartRequired={false} configAvailable={name === "settings"} runtimeVerified={name === "settings"} operationPending={false} parameterChangesPending={false} onExport={() => setNotice("此处只预览备份入口，不生成设备配置。")} onImport={() => setNotice("文件未上传；正式页面会先显示变更确认。")} onNavigate={() => {}} />;
@@ -100,7 +102,7 @@ export function PreviewStates() {
       <label>状态<select aria-label="选择预览状态" value={name} onChange={(event) => {
         setName(event.target.value);
         const url = new URL(location.href); url.searchParams.set("showcase", event.target.value); history.replaceState(null, "", url);
-        if (event.target.value === "offline" || event.target.value === "stale") { url.searchParams.set("page", "overview"); history.replaceState(null, "", url); }
+        if (["running-target", "running-no-target", "offline", "stale"].includes(event.target.value)) { url.searchParams.set("page", "overview"); history.replaceState(null, "", url); }
       }}>{examples.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
     </aside>
     <StateExample key={name} name={name} />

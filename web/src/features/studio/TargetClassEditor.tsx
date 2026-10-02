@@ -26,7 +26,7 @@ export type ClassSettings = {
 };
 
 type Props = ClassSettings & {
-  ids: number[]; disabled?: boolean;
+  ids: number[]; disabled?: boolean; suggestedNames?: string[];
   onPoint: (id: number, x: number, y: number) => void;
   onWeight: (id: number, weight: number) => void;
   onToggle: (id: number) => void;
@@ -35,7 +35,7 @@ type Props = ClassSettings & {
   onReset: (id: number) => void;
 };
 
-export function TargetClassEditor({ ids, names, selected, weights, xs, ys, defaultY, disabled, onPoint, onWeight, onToggle, onName, saved, onReset }: Props) {
+export function TargetClassEditor({ ids, names, suggestedNames, selected, weights, xs, ys, defaultY, disabled, onPoint, onWeight, onToggle, onName, saved, onReset }: Props) {
   const legacyIds = ids.filter((id) => id > 7 && (selected.has(id) || names[id]?.trim() || weights[id] !== undefined || xs[id] !== undefined || ys[id] !== undefined));
   const ratio = (n: number) => Math.round(Math.max(0, Math.min(1, n)) * 100) / 100;
   const point = (id: number, event: PointerEvent<HTMLButtonElement>) => {
@@ -44,6 +44,7 @@ export function TargetClassEditor({ ids, names, selected, weights, xs, ys, defau
   };
   return <section className="target-class-editor" aria-label="类别选点与权重">
     <p className="class-table-note">类别偏好越大，首次选择时越倾向该类别；不会抢走已锁定的目标。0 不代表禁用，取消“参与”才会排除。</p>
+    {suggestedNames?.some((name) => name.trim()) ? <p className="class-table-note" role="note">名称输入框里的模型登记名只是参考。只有填写并保存后才会写入当前配置。</p> : null}
     {legacyIds.length > 0 && <p className="class-legacy-note" role="note">cls8 以上的参与状态或已有配置仍保留：{legacyIds.map((id) => `cls${id}`).join("、")}。本页仅编辑 cls0～7，不会自动删除或停用其他类别。</p>}
     <div className="class-table-scroll" role="region" aria-label="八个目标类别配置" tabIndex={0}>
       <table className="class-edit-table">
@@ -58,7 +59,7 @@ export function TargetClassEditor({ ids, names, selected, weights, xs, ys, defau
           return <tr key={id} style={classStyle(id)} data-enabled={selected.has(id)}>
             <td><input type="checkbox" aria-label={`cls ${id} 参与目标选择`} checked={selected.has(id)} disabled={disabled} onChange={() => onToggle(id)} /><small className="class-participation">{selected.has(id) ? "参与" : "不参与"}</small></td>
             <th scope="row"><span className="class-table-id">cls{id}</span>{dirty && <span className="class-row-dirty" role="status" aria-label={`cls ${id} 已修改`} title="已修改，尚未保存" />}</th>
-            <td><fieldset disabled={disabled} className="class-name-field"><InlineTextControl ariaLabel={`cls ${id} 名称`} value={names[id] ?? ""} placeholder="填写名称" onCommit={(name) => onName(id, name)} /></fieldset></td>
+            <td><fieldset disabled={disabled} className="class-name-field"><InlineTextControl ariaLabel={`cls ${id} 名称`} value={names[id] ?? ""} placeholder={suggestedNames?.[id]?.trim() ? `模型登记：${suggestedNames[id].trim()}` : "填写名称"} onCommit={(name) => onName(id, name)} /></fieldset></td>
             <td><ParameterNumberControl label={`cls ${id} 类别偏好`} value={weights[id] ?? 0} min={0} max={1} step={0.05} kind="slider" applyMode="save" disabled={disabled} onCommit={(n) => onWeight(id, n)} /></td>
             <td><div className="class-inline-point">
               <button type="button" className="class-point-pad" aria-label={`cls ${id} 瞄点平面，方向键移动，Home 居中`} disabled={disabled}

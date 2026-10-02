@@ -90,6 +90,16 @@
 .runtime-overview-metrics dd { margin: 0; overflow: hidden; color: var(--text-primary); font-family: var(--font-ui); font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
 .runtime-overview-metrics.is-live dd { color: var(--signal-info); }
 
+.runtime-target-note { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 13px 16px; border: 1px solid var(--status-waiting-border); border-radius: 10px; background: var(--bg-surface); }
+.runtime-target-note.acquired { border-color: var(--status-success-border); }
+.runtime-target-note-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 9px; background: var(--status-waiting-bg); color: var(--status-waiting-icon); }
+.runtime-target-note.acquired .runtime-target-note-icon { background: var(--status-success-bg); color: var(--status-success-icon); }
+.runtime-target-note small { display: block; color: var(--text-tertiary); font-size: 11px; }
+.runtime-target-note strong { display: block; margin-top: 2px; color: var(--text-primary); font-size: 14px; font-weight: 650; }
+.runtime-target-note p { margin: 3px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+.runtime-target-note-state { padding: 5px 10px; border-radius: 999px; background: var(--status-waiting-bg); color: var(--status-waiting-fg); font-size: 11px; font-weight: 650; white-space: nowrap; }
+.runtime-target-note.acquired .runtime-target-note-state { background: var(--status-success-bg); color: var(--status-success-fg); }
+
 .runtime-overview-pipeline {
   height: 100%;
   padding: 14px 16px;
@@ -159,6 +169,8 @@
 }
 
 @media (max-width: 680px) {
+  .runtime-target-note { grid-template-columns: 36px minmax(0, 1fr); }
+  .runtime-target-note-state { grid-column: 2; justify-self: start; }
   .runtime-overview-conclusion { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .runtime-overview-actions { flex-direction: row; }
   .runtime-overview-actions .console-button { flex: 1 1 0; min-width: 0; }

@@ -178,9 +178,10 @@ it("keeps a typed response gain visible while editing the page", async () => {
 it("shows one parameter workspace at a time and exposes entry ramp tuning", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
   expect(screen.getByRole("region", { name: "搜索范围调校" })).toBeVisible();
+  expect(screen.getByRole("textbox", { name: "力度渐增时长 数值" })).toHaveValue("200");
   await userEvent.click(screen.getByRole("tab", { name: "移动与输出" }));
   expect(screen.queryByRole("region", { name: "搜索范围调校" })).not.toBeInTheDocument();
-  expect(screen.getByRole("textbox", { name: "渐增时长 数值" })).toHaveValue("200");
+  expect(screen.queryByRole("textbox", { name: "力度渐增时长 数值" })).not.toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "比例增益 Kp 数值" })).toBeVisible();
   expect(screen.getByRole("textbox", { name: "单次 X 轴输出上限" })).toBeVisible();
   expect(screen.getByRole("textbox", { name: "单次 Y 轴输出上限" })).toBeVisible();
@@ -191,7 +192,7 @@ it("shows one parameter workspace at a time and exposes entry ramp tuning", asyn
   expect(screen.queryByText("加速介入时机")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("tab", { name: "目标与瞄点" }));
   expect(screen.getByRole("button", { name: "编辑目标类别" })).toBeVisible();
-  expect(screen.queryByRole("textbox", { name: "渐增时长 数值" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "力度渐增时长 数值" })).not.toBeInTheDocument();
   for (const label of ["距离权重 数值", "类别偏好权重 数值", "置信度权重 数值", "控制目标最低置信度 数值", "目标切换确认延迟 数值", "目标丢失保持 数值"]) {
     expect(screen.queryByRole("textbox", { name: label })).not.toBeInTheDocument();
   }
@@ -367,7 +368,7 @@ it("keeps failed capability detection visible beside capture controls", async ()
 
 it("does not let a pending parameter draft get overwritten by config import", async () => {
   render(<SafetyOperationProvider><StudioConsoleView {...props} /></SafetyOperationProvider>);
-  const delay = screen.getByRole("textbox", { name: "触发延迟" });
+  const delay = screen.getByRole("textbox", { name: "触发后等待时长" });
   fireEvent.change(delay, { target: { value: "25" } });
   fireEvent.blur(delay);
   await userEvent.click(screen.getByRole("button", { name: "设置" }));
@@ -400,6 +401,26 @@ it("keeps physical output off when an imported file requests it on", async () =>
   expect((submitted as unknown as { control: { output_enabled: boolean } }).control.output_enabled).toBe(false);
   const request = vi.mocked(fetch).mock.calls.find(([url, init]) => String(url).endsWith("/api/config") && init?.method === "POST")!;
   expect(new Headers(request[1]?.headers).get("x-novasight-physical-output-ack")).toBe("confirmed");
+});
+
+it("uses registered model class names only as display hints", async () => {
+  const runtimeWithModel = { ...runtime, active_model: {
+    project: { id: 1, name: "演示模型", description: "" },
+    version: { id: 1, project_id: 1, version: "1", source_kind: "engine", source_path: "", classes: ["头部", "身体"], input_shape: "640x640" },
+    artifact: { id: 1, version_id: 1, kind: "engine", path: "", checksum: "", status: "ready", size_bytes: null },
+    deployment: { id: 1, project_id: 1, artifact_id: 1, previous_artifact_id: null, updated_seq: 1 },
+    artifact_path: "",
+  } } as RuntimeState;
+  render(<SafetyOperationProvider><StudioConsoleView {...props} runtime={runtimeWithModel} /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("tab", { name: "目标与瞄点" }));
+  const overview = screen.getByRole("list", { name: "当前类别配置" });
+  expect(overview).toHaveTextContent("头部");
+  expect(overview).toHaveTextContent("身体");
+  expect(overview).not.toHaveTextContent("未命名类别");
+  await userEvent.click(screen.getByRole("button", { name: "编辑目标类别" }));
+  const name = within(screen.getByRole("dialog", { name: "编辑目标类别" })).getByRole("textbox", { name: "cls 0 名称" });
+  expect(name).toHaveValue("");
+  expect(name).toHaveAttribute("placeholder", "模型登记：头部");
 });
 
 it("shows one target-class configuration without profile management", async () => {
@@ -571,38 +592,28 @@ it("saves a disabled entry ramp as zero and restores its duration when toggled b
   }));
   render(<SafetyOperationProvider><StudioConsoleView {...props} runtimeConfig={configured} /></SafetyOperationProvider>);
 
-  const triggerDelay = screen.getByRole("textbox", { name: "触发延迟" });
+  const triggerDelay = screen.getByRole("textbox", { name: "触发后等待时长" });
   fireEvent.change(triggerDelay, { target: { value: "35" } });
   fireEvent.blur(triggerDelay);
-  await userEvent.click(screen.getByRole("tab", { name: "移动与输出" }));
   const ramp = screen.getByRole("region", { name: "力度渐增设置" });
   expect(within(ramp).getByRole("button", { name: /启用力度渐增/ })).toHaveAttribute("aria-pressed", "false");
   expect(within(ramp).getByRole("img", { name: "力度渐增关闭，开始时即为 100%" })).toBeVisible();
   expect(within(ramp).queryByText("超推荐")).not.toBeInTheDocument();
-  expect(screen.queryByRole("textbox", { name: "渐增时长 数值" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "力度渐增时长 数值" })).not.toBeInTheDocument();
   await userEvent.click(within(ramp).getByRole("button", { name: /启用力度渐增/ }));
-  const rampTime = screen.getByRole("textbox", { name: "渐增时长 数值" });
+  const rampTime = screen.getByRole("textbox", { name: "力度渐增时长 数值" });
   expect(rampTime).toHaveValue("200");
   fireEvent.change(rampTime, { target: { value: "350" } });
   fireEvent.blur(rampTime);
   await waitFor(() => expect(within(ramp).getByRole("img", { name: "力度从零渐增，350 ms 后达到 100%" })).toBeVisible());
   await userEvent.click(within(ramp).getByRole("button", { name: /启用力度渐增/ }));
   await userEvent.click(within(ramp).getByRole("button", { name: /启用力度渐增/ }));
-  expect(screen.getByRole("textbox", { name: "渐增时长 数值" })).toHaveValue("350");
+  expect(screen.getByRole("textbox", { name: "力度渐增时长 数值" })).toHaveValue("350");
   await userEvent.click(within(ramp).getByRole("button", { name: /启用力度渐增/ }));
+  await userEvent.click(screen.getByRole("tab", { name: "移动与输出" }));
   const distanceWeight = screen.getByRole("textbox", { name: "比例增益 Kp 数值" });
   fireEvent.change(distanceWeight, { target: { value: "0.7" } });
   fireEvent.blur(distanceWeight);
-  await userEvent.click(screen.getByRole("tab", { name: "进阶调校" }));
-  expect(screen.getByRole("textbox", { name: "力度基准频率 数值" })).not.toBeVisible();
-  await userEvent.click(screen.getByText("设备标定", { selector: "b" }));
-  const reference = screen.getByRole("textbox", { name: "力度基准频率 数值" });
-  expect(reference).toHaveValue("0");
-  fireEvent.change(reference, { target: { value: "60" } });
-  fireEvent.blur(reference);
-  await userEvent.click(screen.getByText("响应试算", { selector: "b" }));
-  fireEvent.change(screen.getByRole("combobox", { name: "模拟控制频率" }), { target: { value: "120" } });
-  expect(screen.getByRole("region", { name: "响应试算" })).toHaveTextContent("×0.50");
   const save = screen.getByRole("button", { name: "保存并应用" });
   await waitFor(() => expect(save).toBeEnabled());
   await userEvent.click(save);
@@ -614,7 +625,6 @@ it("saves a disabled entry ramp as zero and restores its duration when toggled b
       fire_delay_ms: 35,
       p_response_scale: 0.7,
       target_selection_distance_weight: 0.2,
-      response_reference_hz: 60,
       entry_ramp_ms: 0,
     }),
   });

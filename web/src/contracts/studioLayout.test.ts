@@ -36,7 +36,7 @@ describe("studio layout contract", () => {
       "overview", "capture", "params", "fire", "activity", "settings", "about",
     ]);
     expect(DEFAULT_STUDIO_LAYOUT.pages.find((page) => page.id === "overview")?.modules).toEqual([
-      "setup", "runtime", "metrics",
+      "setup", "runtime", "metrics", "target",
     ]);
   });
 

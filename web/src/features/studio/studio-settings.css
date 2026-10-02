@@ -2036,6 +2036,8 @@
   font-weight: 600;
 }
 
+.class-config-dialog-footer .console-button { flex: 0 0 auto; white-space: nowrap; }
+
 .class-role-select {
   min-width: 0;
   min-height: 34px;

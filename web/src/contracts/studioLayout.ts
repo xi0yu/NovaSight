@@ -3,7 +3,7 @@ export const STUDIO_LAYOUT_PAGE_IDS = ["overview", "capture", "params", "fire", 
 export type StudioLayoutPageId = typeof STUDIO_LAYOUT_PAGE_IDS[number];
 
 export const STUDIO_LAYOUT_MODULE_IDS = {
-  overview: ["setup", "runtime", "metrics", "pipeline", "diagnostics"],
+  overview: ["setup", "runtime", "metrics", "target", "pipeline", "diagnostics"],
   capture: ["source", "roi", "diagnostics"],
   params: ["response", "targeting", "motion", "output"],
   fire: ["stabilization"],
@@ -38,7 +38,7 @@ export const DEFAULT_STUDIO_LAYOUT: StudioLayout = {
   schemaVersion: 1,
   revision: "builtin-2026-09",
   pages: [
-    { id: "overview", label: "首页", modules: ["setup", "runtime", "metrics"] },
+    { id: "overview", label: "首页", modules: ["setup", "runtime", "metrics", "target"] },
     { id: "capture", label: "设备管理", modules: [...STUDIO_LAYOUT_MODULE_IDS.capture] },
     { id: "params", label: "算法参数", modules: [...STUDIO_LAYOUT_MODULE_IDS.params] },
     { id: "fire", label: "开火稳定", modules: [...STUDIO_LAYOUT_MODULE_IDS.fire] },

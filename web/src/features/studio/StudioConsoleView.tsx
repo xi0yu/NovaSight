@@ -205,6 +205,7 @@ function ModelManagerLoadingDialog({ onClose }: { onClose: () => void }) {
 }
 
 type StudioConsoleViewProps = {
+  previewOnly?: boolean;
   license: LicenseStatus | null;
   health: HealthResponse | null;
   runtime: RuntimeState | null;
@@ -685,6 +686,7 @@ function changedRuntimeConfigSections(current: RuntimeConfig, candidate: Runtime
 }
 
 export function StudioConsoleView({
+  previewOnly = false,
   license,
   health,
   runtime,
@@ -916,6 +918,7 @@ export function StudioConsoleView({
   }, []);
 
   useEffect(() => {
+    if (previewOnly) return;
     let cancelled = false;
     void getConfigSchema()
       .then((schema) => {
@@ -932,7 +935,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [applyConfigSchema]);
+  }, [applyConfigSchema, previewOnly]);
 
   const openConfigDialog = useCallback((dialog: ConfigDialogId) => {
     if (parameterPageSaving || pendingConfigWritesRef.current > 0) {
@@ -1419,6 +1422,10 @@ export function StudioConsoleView({
   const activeModelPublished = runtime?.active_model !== null && runtime?.active_model !== undefined;
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
+  const displayedClassNames = Array.from({ length: 8 }, (_, id) =>
+    detectionClasses[id]?.trim() || version?.classes[id]?.trim() || ""
+  );
+  const displayedClassIds = displayedClassNames.flatMap((name, id) => name ? [id] : []);
   const registeredInputShape = version?.input_shape === "engine-probe-required"
     ? "等待 TensorRT engine 探测"
     : version?.input_shape ?? "";
@@ -2128,10 +2135,10 @@ export function StudioConsoleView({
   }, []);
 
   useEffect(() => {
-    if (activePage === "capture" && deviceDiscoveryStatus === "idle") {
+    if (!previewOnly && activePage === "capture" && deviceDiscoveryStatus === "idle") {
       void refreshCaptureDevices();
     }
-  }, [activePage, deviceDiscoveryStatus, refreshCaptureDevices]);
+  }, [activePage, deviceDiscoveryStatus, previewOnly, refreshCaptureDevices]);
 
   const loadCaptureCapabilities = useCallback(async (selectedDevice: string) => {
     setBusy("caps");
@@ -3447,7 +3454,13 @@ export function StudioConsoleView({
 
         {activePage === "overview" ? (
           <>
-            <HomeWelcome onNavigate={navigatePage}>
+            <HomeWelcome
+              onNavigate={navigatePage}
+              mode={!setupStatusKnown || runtimeProjection?.transport !== "current" || runtime?.semantic.phase === "faulted"
+                ? "check"
+                : runtimeLifecycleActive ? runtime?.semantic.phase === "running" ? "running" : "check"
+                  : setupState.captureReady && setupState.modelReady ? "ready" : "setup"}
+            >
             {overviewModules.has("setup") ? <HomeSetupPrompt state={setupState} statusKnown={setupStatusKnown} onNavigate={navigatePage} /> : null}
             <RuntimeOverviewView
               runtime={runtime}
@@ -3459,6 +3472,7 @@ export function StudioConsoleView({
               launchPending={mainlineLaunchPending}
               runtimeStopping={runtimeStopping}
               runtimeControlUnavailable={runtimeControlUnavailable}
+              classNames={displayedClassNames}
               onOpenErrors={() => setErrorCenterOpen(true)}
               onToggle={() => requestRuntimeChange(!runtimeLifecycleActive)}
               moduleOrder={overviewModuleOrder}
@@ -4380,15 +4394,18 @@ export function StudioConsoleView({
                 </div>
 
                 <p className="console-section-note">优先考虑准星附近的瞄点，没有附近瞄点时参考类别偏好。选中的目标有效时保持；按键触发时，松开再按可重新选择。</p>
+                {displayedClassIds.length > 0 ? <>
+                <p className="class-name-source" role="note">类别名称优先使用当前配置；未命名项参考已发布模型的登记信息，仅用于显示。请按模型实际输出核对编号，不会自动改写配置。</p>
                 <ul className="algorithm-class-overview" aria-label="当前类别配置">
-                  {classEditorIds.filter((id) => id <= 7).map((id) => (
+                  {displayedClassIds.map((id) => (
                     <li key={id} style={classStyle(id)} data-enabled={selectedDetectionClassIds.has(id)}>
                       <span><i aria-hidden="true" />cls {id}<small>{selectedDetectionClassIds.has(id) ? "参与" : "未参与"}</small></span>
-                      <strong>{detectionClasses[id] || "未命名类别"}</strong>
+                      <strong>{displayedClassNames[id]}</strong>
                       <span className="algorithm-class-weight">类别偏好<b>{(parseClassValues(rustPipelineConfig.target_class_weights)[id] ?? 0).toFixed(2)}</b></span>
                     </li>
                   ))}
                 </ul>
+                </> : <div className="class-map-empty" role="note"><strong>还没有可核对的目标类别</strong><p>先选择模型，对照其实际输出编号，再在“编辑目标类别”中填写名称。</p><button className="console-button" type="button" onClick={() => navigatePage("models")}>选择模型</button></div>}
               </div>
             </section>
             </div>
@@ -4668,7 +4685,7 @@ export function StudioConsoleView({
               <div className="class-config-workspace class-point-workspace-shell">
                 <ClassPresetPicker presets={availableClassPresets} canSave={Array.from(selectedDetectionClassIds).some((id) => id < 8)} onApply={applyClassPreset} onSave={saveClassPreset} />
                 <TargetClassEditor
-                  ids={classEditorIds} names={detectionClasses} selected={selectedDetectionClassIds}
+                  ids={classEditorIds} names={detectionClasses} suggestedNames={version?.classes} selected={selectedDetectionClassIds}
                   weights={parseClassValues(rustPipelineConfig.target_class_weights)}
                   xs={parseClassValues(rustPipelineConfig.target_class_aim_x_ratios)}
                   ys={parseClassValues(rustPipelineConfig.target_class_aim_y_ratios)}

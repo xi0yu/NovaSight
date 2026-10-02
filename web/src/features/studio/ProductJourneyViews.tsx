@@ -24,7 +24,17 @@ function completedSetupSteps(state: SetupState): number {
     .filter(Boolean).length;
 }
 
-export function HomeWelcome({ onNavigate, children }: { onNavigate: Navigate; children: ReactNode }) {
+type CompanionMode = "setup" | "ready" | "running" | "check";
+
+const companionCopy: Record<CompanionMode, { lines: [string, string]; action: string; page: ConsolePage }> = {
+  setup: { lines: ["先调成喜欢的手感，", "再由你决定什么时候开始。"], action: "带我完成设置", page: "onboarding" },
+  ready: { lines: ["设备和参数已经备妥，", "什么时候开始，由你决定。"], action: "检查使用参数", page: "params" },
+  running: { lines: ["正在运行。重要状态已在本页汇总，", "需要时可以核对设备链路。"], action: "查看设备状态", page: "device" },
+  check: { lines: ["当前状态还没有核实，", "先核对运行结论，再决定下一步。"], action: "查看使用记录", page: "activity" },
+};
+
+export function HomeWelcome({ onNavigate, mode, children }: { onNavigate: Navigate; mode: CompanionMode; children: ReactNode }) {
+  const guidance = companionCopy[mode];
   return <section className="home-room" aria-labelledby="home-welcome-title">
     <header className="home-room-heading">
       <div><span className="studio-kicker">NOVA / DAYLIGHT STUDIO</span><h2 id="home-welcome-title">今天，也请多关照。</h2></div>
@@ -37,8 +47,8 @@ export function HomeWelcome({ onNavigate, children }: { onNavigate: Navigate; ch
         <img className="companion-portrait" src={companionArt} width="1024" height="1536" alt="" aria-hidden="true" />
         <div className="companion-dialogue">
           <span className="companion-name">NOVA <small>工作室向导</small></span>
-          <p>先调成喜欢的手感，<br />再由你决定什么时候开始。</p>
-          <button type="button" onClick={() => onNavigate("onboarding")}>带我完成设置 <span aria-hidden="true">↗</span></button>
+          <p>{guidance.lines[0]}<br />{guidance.lines[1]}</p>
+          <button type="button" onClick={() => onNavigate(guidance.page)}>{guidance.action} <span aria-hidden="true">↗</span></button>
         </div>
       </aside>
       <div className="home-control-desk">{children}</div>
