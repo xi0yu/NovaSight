@@ -1,0 +1,32 @@
+[package]
+name = "novasight-platform-jetson"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+deepstream = [
+  "dep:crossbeam-queue",
+  "dep:gstreamer",
+  "dep:novasight-deepstream-bridge",
+  "dep:novasight-pipeline",
+  "dep:novasight-store",
+  "novasight-deepstream-bridge/ffi",
+  "novasight-tensorrt/gpu-frame",
+]
+
+[dependencies]
+novasight-core = { path = "../novasight-core" }
+novasight-tensorrt = { path = "../novasight-tensorrt" }
+novasight-store = { path = "../novasight-store", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.29", features = ["ioctl"] }
+crossbeam-queue = { workspace = true, optional = true }
+gstreamer = { workspace = true, optional = true }
+novasight-deepstream-bridge = { path = "../novasight-deepstream-bridge", optional = true }
+novasight-pipeline = { path = "../novasight-pipeline", optional = true }

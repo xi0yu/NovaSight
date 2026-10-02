@@ -1,0 +1,25 @@
+.preview-root { padding-top: 48px; }
+.preview-tools { position: fixed; z-index: 1600; top: 0; left: 0; right: 0; height: 48px; padding: 0 18px; display: flex; align-items: center; gap: 14px; background: var(--art-sky); border-bottom: 1px solid var(--realtime-border); color: var(--text-secondary); font-size: 11px; }
+.preview-tools strong { color: var(--text-primary); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.preview-tools i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--signal-info); margin-right: 7px; }
+.preview-tools label { margin-left: auto; width: auto; display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.preview-tools select { max-width: 240px; min-height: 32px; padding: 0 8px; border: 1px solid var(--realtime-border); border-radius: 6px; color: var(--text-primary); background: var(--bg-surface); font-size: 12px; }
+.preview-root .console-app { height: calc(100dvh - 48px); min-height: calc(100dvh - 48px); }
+.preview-root :is(.action-confirmation-layer, .model-manager-dialog-layer, .model-switch-dialog-layer, .error-center-layer, .class-config-dialog-layer) { top: 48px; }
+.preview-root .model-manager-dialog { max-height: calc(100dvh - 80px); }
+.preview-state-stage { max-width: 1120px; padding: 30px 24px; margin: auto; }
+.preview-state-stage > header { margin-bottom: 26px; }
+.preview-state-stage > header > span { color: var(--signal-info); font-size: 11px; }
+.preview-state-stage h1 { font-size: 21px; font-weight: 600; margin: 9px 0; }
+.preview-state-stage > header p, .preview-local-notice { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+.preview-local-notice { padding: 12px; border: 1px solid var(--brand-border); border-radius: 8px; background: var(--brand-soft); }
+.preview-inline-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.preview-state-stage .license-panel { max-width: 850px; margin: auto; }
+.preview-state-stage .app-shell { min-height: auto; }
+.preview-state-stage .auth-shell { min-height: 0; padding: 12px 0; }
+@media (max-width: 600px) {
+  .preview-tools { padding: 0 10px; gap: 8px; }
+  .preview-tools > span, .preview-tools label { font-size: 0; }
+  .preview-tools select { max-width: 205px; }
+  .preview-state-stage { padding: 22px 14px; }
+}

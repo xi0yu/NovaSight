@@ -1,0 +1,123 @@
+/* One visual language for the room, controls and transient surfaces.
+   Decorative shapes never encode device status; semantic status colors stay intact. */
+[data-theme="nova-daylight"] .console-main {
+  background: radial-gradient(circle, #bfd4df55 .7px, transparent .9px) 0 0 / 16px 16px, var(--bg-app);
+}
+.studio-kicker { font-size: 10px; font-weight: 800; letter-spacing: .14em; color: var(--signal-info); }
+.home-room { max-width: 1100px; margin: 0 auto; }
+.home-room-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 22px; }
+.home-room-heading h2 { margin: 6px 0 0; font-size: 22px; font-weight: 700; letter-spacing: .02em; }
+.home-theme-stamp { flex-shrink: 0; padding: 8px 13px; color: var(--brand-primary); background: #fff5f8; border: 1px solid var(--brand-border); border-radius: 6px 15px 6px 15px; font-size: 11px; transform: rotate(3deg); }
+.home-room-layout { display: grid; grid-template-columns: minmax(250px, .8fr) minmax(0, 1.2fr); gap: 24px; align-items: start; }
+.home-companion { position: relative; isolation: isolate; min-height: 460px; overflow: hidden; border-radius: 120px 120px 24px 24px; background: linear-gradient(150deg, #e5f3fc, #f9e3e9 70%, #fff5dd); border: 1px solid #dddde9; }
+.companion-orbit { position: absolute; top: 46px; left: 7%; width: 86%; aspect-ratio: 1; border: 1px dashed #8dbacf; border-radius: 50%; box-shadow: 0 0 0 24px #ffffff45, 0 0 0 25px #ffffff90; transform: rotate(-25deg); }
+.companion-orbit::before, .companion-orbit::after { position: absolute; content: "✦"; color: #fff; font-size: 30px; left: 10px; top: 30px; text-shadow: 1px 2px #a5c8dc; }
+.companion-orbit::after { left: auto; top: auto; right: -16px; bottom: 16px; font-size: 45px; color: #ffdf8d; text-shadow: none; }
+.companion-portrait { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); width: 105%; height: auto; max-width: none; pointer-events: none; }
+.companion-sticker { position: absolute; top: 38px; left: 16px; z-index: 1; padding: 7px 11px; background: #fffdf4; border: 1px solid #d2bda8; color: #825c37; border-radius: 5px; font-size: 9px; font-weight: 800; letter-spacing: .1em; transform: rotate(-9deg); box-shadow: 2px 3px 0 #dec7b24d; }
+.companion-sticker i { font-style: normal; color: var(--brand-primary); margin-left: 5px; }
+.companion-dialogue { position: absolute; bottom: 17px; left: 16px; right: 16px; padding: 24px 18px 14px; border: 2px solid #fff; outline: 1px solid #e1bbce; border-radius: 6px 20px 20px 20px; background: #fffafdf2; box-shadow: 4px 5px 0 #85607e16; }
+.companion-name { position: absolute; left: 12px; top: -13px; display: flex; align-items: center; gap: 12px; background: var(--brand-primary); color: #fff; padding: 4px 14px; border: 2px solid #fff; border-radius: 6px; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
+.companion-name small { font-size: 10px; font-weight: 500; letter-spacing: 0; }
+.companion-dialogue p { margin: 0 0 12px; font-size: 12px; line-height: 1.7; color: var(--text-secondary); }
+.companion-dialogue button { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 36px; padding: 6px 0; border: 0; border-top: 1px dashed var(--brand-border); background: transparent; color: var(--brand-primary); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+.companion-dialogue button:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }
+.home-control-desk { min-width: 0; display: grid; gap: 16px; }
+.home-control-desk .runtime-overview { width: 100%; gap: 14px; }
+.home-control-desk .runtime-overview-conclusion { grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 20px; border-radius: 8px 22px 8px 22px; border-left-width: 4px; }
+.home-control-desk .runtime-overview-identity { border-bottom: 1px dashed var(--border-default); padding-bottom: 12px; }
+.home-control-desk .runtime-overview-conclusion-copy > small { display: none; }
+.home-control-desk .runtime-overview-actions { flex-wrap: wrap; justify-content: space-between; }
+.home-control-desk .runtime-master-switch { flex: 1; justify-content: space-between; border-radius: 12px; }
+.home-control-desk .runtime-overview-metrics { border: 0; border-radius: 0; background: transparent; box-shadow: none; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.home-control-desk .runtime-overview-metrics > div { position: relative; min-height: 76px; border: 1px solid #cbdde8; border-radius: 12px 12px 4px 12px; padding: 13px 16px; background: #f0f8fd; }
+.home-control-desk .runtime-overview-metrics > div:nth-child(2) { background: #f6f0fc; border-color: #dcd0eb; }
+.home-control-desk .runtime-overview-metrics > div:nth-child(3) { background: #eff8f5; border-color: #c8ded4; }
+.home-control-desk .runtime-overview-metrics > div:nth-child(4) { background: #fff6e8; border-color: #ead9bd; }
+.home-control-desk .runtime-overview-metrics > div::after { content: ""; position: absolute; top: 12px; right: 12px; width: 5px; height: 5px; border: 1px solid var(--border-strong); transform: rotate(45deg); }
+.home-control-desk .home-setup-prompt { width: 100%; margin: 0; grid-template-columns: 36px minmax(0, 1fr) auto; border-radius: 12px; }
+.home-control-desk .home-setup-prompt .console-button { grid-column: auto; justify-self: start; }
+.home-room + .home-shortcuts { margin-top: 20px; }
+.home-room + .home-shortcuts button { min-height: 58px; padding: 10px 15px; border: 1px solid var(--border-default); border-left: 3px solid currentColor; border-radius: 5px 13px 13px 5px; box-shadow: 3px 3px 0 #dedce930; }
+.home-room + .home-shortcuts small { font-size: 11px; margin-top: 3px; }
+
+.studio-nav-caption { display: flex; justify-content: space-between; padding: 8px 14px 0; font-size: 9px; font-weight: 800; letter-spacing: .16em; color: var(--text-tertiary); }
+.studio-nav-caption > span:last-child { color: var(--brand-primary); }
+.console-nav-index { margin-left: auto; font-size: 10px; font-weight: 800; color: var(--nav-accent); }
+[data-theme="nova-daylight"] .console-sidebar { padding-inline: 12px; background: linear-gradient(180deg, #fffcf8, #f7f1f5); }
+[data-theme="nova-daylight"] .console-primary-navigation { gap: 9px; }
+[data-theme="nova-daylight"] .console-nav { min-height: 52px; padding: 0 10px; border-radius: 6px 15px 15px 6px; color: var(--text-secondary); }
+[data-theme="nova-daylight"] .console-nav-icon { width: 32px; height: 32px; border-radius: 9px; border: 1px solid color-mix(in srgb, var(--nav-accent) 26%, white); box-shadow: 2px 2px 0 color-mix(in srgb, var(--nav-accent) 10%, transparent); }
+[data-theme="nova-daylight"] .console-nav.active { background: #fff; border: 1px solid color-mix(in srgb, var(--nav-accent) 40%, white); box-shadow: 3px 4px 0 color-mix(in srgb, var(--nav-accent) 14%, transparent); color: var(--nav-accent); }
+[data-theme="nova-daylight"] .console-nav.active::after { content: none; }
+[data-theme="nova-daylight"] .console-logo { border-radius: 10px 10px 10px 3px; transform: rotate(-5deg); box-shadow: 3px 3px 0 var(--brand-border); border: 2px solid #fff; }
+[data-theme="nova-daylight"] .console-logo svg { transform: rotate(5deg); }
+[data-theme="nova-daylight"] .console-top { border-bottom: 1px solid #ddd2dc; }
+[data-theme="nova-daylight"] .console-page-header { padding-bottom: 15px; border-bottom: 1px dashed #c9c9db; }
+[data-theme="nova-daylight"] .console-page-heading h1 { font-size: 20px; font-weight: 700; padding-left: 13px; border-left: 4px solid var(--brand-primary); }
+[data-theme="nova-daylight"] .console-page-heading p { font-size: 12px; }
+[data-theme="nova-daylight"] .studio-guide-card { border-style: dashed; border-radius: 6px 16px 6px 16px; background: #fffaf1; }
+[data-theme="nova-daylight"] .console-button { border-radius: 8px 12px 8px 12px; box-shadow: 0 2px 0 var(--border-default); font-size: 12px; }
+[data-theme="nova-daylight"] .console-button.primary:not(:disabled) { box-shadow: 0 3px 0 var(--brand-primary-active), inset 0 1px 0 #ffffff42; }
+[data-theme="nova-daylight"] .console-button:active:not(:disabled) { transform: translateY(2px); box-shadow: none; }
+[data-theme="nova-daylight"] :is(.action-confirmation-dialog, .class-config-dialog, .model-manager-dialog, .model-switch-dialog, .error-center-dialog) { border: 1px solid #d6cada; border-radius: 10px 24px 10px 24px; box-shadow: 6px 8px 0 #d9ceda66, var(--shadow-dialog); }
+[data-theme="nova-daylight"] :is(.action-confirmation-dialog, .class-config-dialog, .model-switch-dialog, .error-center-dialog) > header { border-bottom: 1px dashed var(--brand-border); background: linear-gradient(110deg, #fff7fb, #f2faff); }
+[data-theme="nova-daylight"] .action-confirmation-icon { transform: rotate(-5deg); border-radius: 10px; box-shadow: 3px 3px 0 #dedce961; }
+[data-theme="nova-daylight"] .action-confirmation-dialog footer { background: #fffcf8; }
+[data-theme="nova-daylight"] .settings-transfer-row { border-radius: 6px 18px 6px 18px; box-shadow: var(--shadow-card); }
+[data-theme="nova-daylight"] .settings-transfer-icon { transform: rotate(-5deg); border: 1px solid currentColor; box-shadow: 3px 3px 0 #dedce94d; }
+[data-theme="nova-daylight"] .activity-list { border-radius: 8px 18px 8px 18px; box-shadow: var(--shadow-card); }
+[data-theme="nova-daylight"] .activity-list-header { background: var(--art-sky); }
+[data-theme="nova-daylight"] .activity-level-tag { border-radius: 4px 8px 4px 8px; }
+
+[data-theme="nova-daylight"] .algorithm-tabs { padding: 5px; border-radius: 9px 20px 9px 20px; border-color: #d6d5e6; box-shadow: 3px 4px 0 #dedce94d; }
+[data-theme="nova-daylight"] .algorithm-tabs button { padding-top: 22px; padding-bottom: 12px; min-height: 82px; }
+.algorithm-tab-number { position: absolute; top: 6px; right: 12px; font-size: 10px; font-weight: 800; letter-spacing: .08em; color: var(--text-tertiary); }
+[data-theme="nova-daylight"] .algorithm-tab-indicator { border-radius: 5px 15px 5px 15px; border-color: var(--algorithm-accent); background: color-mix(in srgb, var(--algorithm-accent) 12%, white); box-shadow: 2px 2px 0 color-mix(in srgb, var(--algorithm-accent) 16%, transparent); }
+[data-theme="nova-daylight"] .algorithm-tabs button[aria-selected="true"] .algorithm-tab-number { color: var(--algorithm-accent); }
+[data-theme="nova-daylight"] .algorithm-tab-icon { border: 1px solid color-mix(in srgb, var(--tab-accent, var(--signal-info)) 40%, white); transform: rotate(-5deg); background: #fff; }
+[data-theme="nova-daylight"] .search-range-workbench { border-color: #bfd7e6; border-radius: 8px 24px 8px 24px; box-shadow: 4px 5px 0 #bfd7e64d; }
+[data-theme="nova-daylight"] .search-range-scene { background: radial-gradient(circle, #aacbde66 .8px, transparent 1px) 0 0 / 14px 14px, #edf7ff; }
+[data-theme="nova-daylight"] .search-range-scene-heading > span:first-child { background: #fff; border: 1px solid #bdd6e6; padding: 5px 9px; border-radius: 4px; transform: rotate(-2deg); color: var(--signal-info); }
+[data-theme="nova-daylight"] :is(.startup-response, .algorithm-workspace .control-chain-setting) { border-radius: 8px 20px 8px 20px; border-top: 3px solid color-mix(in srgb, var(--algorithm-accent) 50%, white); box-shadow: var(--shadow-card); }
+[data-theme="nova-daylight"] :is(.algorithm-setting-icon, .algorithm-workspace .control-chain-step) { border: 1px solid color-mix(in srgb, var(--algorithm-accent) 40%, white); border-radius: 8px; box-shadow: 3px 3px 0 color-mix(in srgb, var(--algorithm-accent) 12%, white); transform: rotate(-5deg); }
+[data-theme="nova-daylight"] .algorithm-class-overview li { border-color: color-mix(in srgb, var(--class-color) 35%, white); border-top: 3px solid var(--class-color); border-radius: 6px 14px 6px 14px; box-shadow: 2px 3px 0 color-mix(in srgb, var(--class-color) 12%, transparent); }
+[data-theme="nova-daylight"] .class-point-pad { background-image: linear-gradient(#ffffff90 1px, transparent 1px), linear-gradient(90deg, #ffffff90 1px, transparent 1px); background-size: 20px 20px; border-style: solid; border-radius: 10px 22px 10px 22px; box-shadow: 5px 5px 0 color-mix(in srgb, var(--class-color) 10%, transparent); }
+[data-theme="nova-daylight"] .parameter-save-bar { border-radius: 8px 16px 8px 16px; box-shadow: 3px 4px 0 #ddccdd70; }
+
+.ui-empty-illustration { position: relative; width: 118px; height: 120px; margin: 0 auto 10px; }
+.ui-empty-illustration img { width: 100px; height: 112px; object-fit: contain; }
+.ui-empty .ui-empty-illustration [data-slot="empty-icon"] { position: absolute; right: 0; bottom: 0; width: 36px; height: 36px; border-radius: 12px; background: white; transform: rotate(7deg); }
+[data-theme="nova-daylight"] .studio-guide-card { grid-template-columns: 48px minmax(0, 1fr) 12px; padding: 6px 8px; }
+[data-theme="nova-daylight"] .studio-guide-card img { width: 48px; height: 58px; object-fit: contain; border-radius: 0; }
+@media (max-width: 1024px) {
+  .studio-nav-caption, .console-nav-index { display: none; }
+  [data-theme="nova-daylight"] .console-nav { min-height: 40px; }
+  [data-theme="nova-daylight"] .console-sidebar { padding-inline: 8px 96px; }
+}
+@media (max-width: 760px) {
+  .home-room-layout { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .home-room-heading { margin-bottom: 14px; }
+  .home-room-heading h2 { font-size: 18px; }
+  .home-theme-stamp { font-size: 9px; padding: 6px 9px; }
+  .home-companion { min-height: 180px; border-radius: 16px 44px 16px 16px; }
+  .companion-portrait { width: 195px; top: -4px; left: auto; right: -14px; transform: none; }
+  .companion-orbit { width: 190px; top: 20px; left: auto; right: -8px; }
+  .companion-sticker { display: none; }
+  .companion-dialogue { position: relative; width: calc(100% - 125px); margin: 28px 0 18px 12px; inset: auto; padding: 22px 12px 8px; }
+  .companion-dialogue p { font-size: 11px; margin-bottom: 6px; }
+  .companion-name { gap: 6px; padding-inline: 8px; }
+  .companion-name small { font-size: 9px; }
+  .home-control-desk .runtime-overview-conclusion { padding: 16px; }
+  .home-control-desk .home-setup-prompt { grid-template-columns: 36px minmax(0, 1fr); }
+  .home-control-desk .home-setup-prompt .console-button { grid-column: 2; width: auto; }
+  [data-theme="nova-daylight"] .algorithm-tabs button { min-height: 78px; padding-inline: 8px; }
+  [data-theme="nova-daylight"] .console-page-heading p { font-size: 11px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="nova-daylight"] .console-button:active:not(:disabled) { transform: none; }
+}
+@media (prefers-contrast: more) {
+  [data-theme="nova-daylight"] .console-main { background: var(--bg-app); }
+  .companion-dialogue { background: white; }
+}

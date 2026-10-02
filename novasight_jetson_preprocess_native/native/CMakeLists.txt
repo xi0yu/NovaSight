@@ -1,0 +1,278 @@
+cmake_minimum_required(VERSION 3.18)
+
+project(novasight_jetson_preprocess_native LANGUAGES CXX)
+
+option(NOVASIGHT_JETSON_PREPROCESS_BUILD_TESTS
+    "Build portable preprocess C ABI contract tests" ON)
+
+set(NOVASIGHT_JETSON_PREPROCESS_IMPL "reference" CACHE STRING
+    "Native preprocess implementation: reference, jetson_scaffold, or jetson")
+set_property(CACHE NOVASIGHT_JETSON_PREPROCESS_IMPL PROPERTY STRINGS
+    reference jetson_scaffold jetson)
+
+set(NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE "" CACHE FILEPATH
+    "Production Jetson .cpp or .cu source file exporting the NovaSight C ABI")
+
+set(NOVASIGHT_JETSON_PREPROCESS_SUPPORT_SOURCES
+    src/jetson/novasight_jetson_preprocess_native_jetson_support.cpp
+    src/jetson/novasight_jetson_preprocess_native_jetson_gst_buffer.cpp
+)
+
+if(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "reference")
+    set(NOVASIGHT_JETSON_PREPROCESS_SOURCES
+        src/novasight_jetson_preprocess_native.cpp
+    )
+elseif(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "jetson_scaffold")
+    set(NOVASIGHT_JETSON_PREPROCESS_SOURCES
+        src/jetson/novasight_jetson_preprocess_native_jetson_scaffold.cpp
+    )
+elseif(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "jetson")
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR
+            "NOVASIGHT_JETSON_PREPROCESS_IMPL=jetson requires Linux on Jetson.")
+    endif()
+    if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+        message(FATAL_ERROR
+            "NOVASIGHT_JETSON_PREPROCESS_IMPL=jetson requires aarch64/arm64.")
+    endif()
+    if(NOT NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE)
+        message(FATAL_ERROR
+            "Set NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE to the real "
+            "Jetson CUDA/NvBufSurface implementation. The reference and "
+            "scaffold implementations are fail-closed and must not be used as "
+            "production zero-copy preprocess.")
+    endif()
+    if(NOT EXISTS "${NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE}")
+        message(FATAL_ERROR
+            "NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE does not exist: "
+            "${NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE}")
+    endif()
+
+    find_package(CUDAToolkit REQUIRED)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(NOVASIGHT_GSTREAMER REQUIRED gstreamer-1.0)
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    set(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR
+        "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}"
+        CACHE PATH "Override directory containing nvbufsurface.h"
+    )
+    set(NOVASIGHT_NVBUFSURFACE_LIBRARY
+        "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}"
+        CACHE FILEPATH "Override path to libnvbufsurface"
+    )
+    set(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY
+        "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}"
+        CACHE FILEPATH "Override path to libnvbufsurftransform"
+    )
+    set(_nvbuf_inc_candidates
+        /usr/src/jetson_multimedia_api/include
+        /opt/nvidia/deepstream/deepstream-7.1/sources/includes
+        /usr/include/aarch64-linux-gnu
+        /usr/include
+    )
+    set(_nvbuf_lib_candidates
+        /usr/lib/aarch64-linux-gnu
+        /usr/lib/aarch64-linux-gnu/nvidia
+        /opt/nvidia/deepstream/deepstream-7.1/lib
+        /usr/lib
+    )
+    set(_nvbuf_inc_search ${_nvbuf_inc_candidates})
+    set(_nvbuf_lib_search ${_nvbuf_lib_candidates})
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR})
+        list(INSERT _nvbuf_inc_search 0 "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}")
+    endif()
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY})
+        get_filename_component(_env_lib_dir "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}" DIRECTORY)
+        if(_env_lib_dir)
+            list(INSERT _nvbuf_lib_search 0 "${_env_lib_dir}")
+        endif()
+        set(_nvbuf_lib_env_path "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}")
+    endif()
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY})
+        get_filename_component(_env_tx_dir "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}" DIRECTORY)
+        if(_env_tx_dir)
+            list(INSERT _nvbuf_lib_search 0 "${_env_tx_dir}")
+        endif()
+    endif()
+    foreach(_d IN LISTS _nvbuf_inc_search _nvbuf_lib_search)
+        if(IS_DIRECTORY "${_d}")
+            message(STATUS "novasight: probe ${_d} -> EXISTS")
+        else()
+            message(STATUS "novasight: probe ${_d} -> MISSING")
+        endif()
+    endforeach()
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}
+            AND EXISTS "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}/nvbufsurface.h")
+        set(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR
+            "$ENV{NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}")
+    elseif(NOT NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR)
+        foreach(_d IN LISTS _nvbuf_inc_search)
+            if(EXISTS "${_d}/nvbufsurface.h")
+                set(NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR "${_d}")
+                break()
+            endif()
+        endforeach()
+    endif()
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}
+            AND EXISTS "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}")
+        set(NOVASIGHT_NVBUFSURFACE_LIBRARY
+            "$ENV{NOVASIGHT_NVBUFSURFACE_LIBRARY}")
+    elseif(NOT NOVASIGHT_NVBUFSURFACE_LIBRARY)
+        foreach(_d IN LISTS _nvbuf_lib_search)
+            if(EXISTS "${_d}/libnvbufsurface.so")
+                set(NOVASIGHT_NVBUFSURFACE_LIBRARY "${_d}/libnvbufsurface.so")
+                break()
+            endif()
+        endforeach()
+    endif()
+    if(DEFINED ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}
+            AND EXISTS "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}")
+        set(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY
+            "$ENV{NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}")
+    elseif(NOT NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY)
+        foreach(_d IN LISTS _nvbuf_lib_search)
+            if(EXISTS "${_d}/libnvbufsurftransform.so")
+                set(NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY "${_d}/libnvbufsurftransform.so")
+                break()
+            endif()
+        endforeach()
+    endif()
+    set(_novasight_missing_requirements "")
+    if(NOT NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR)
+        list(APPEND _novasight_missing_requirements
+            "  - nvbufsurface.h (searched /usr/src/jetson_multimedia_api/include,"
+            "    /opt/nvidia/deepstream/deepstream-7.1/sources/includes,"
+            "    /usr/include/aarch64-linux-gnu, /usr/include; or set"
+            "    NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR=...)"
+        )
+    endif()
+    if(NOT NOVASIGHT_NVBUFSURFACE_LIBRARY)
+        list(APPEND _novasight_missing_requirements
+            "  - libnvbufsurface.so (searched /usr/lib/aarch64-linux-gnu,"
+            "    /usr/lib/aarch64-linux-gnu/nvidia,"
+            "    /opt/nvidia/deepstream/deepstream-7.1/lib, /usr/lib; or set"
+            "    NOVASIGHT_NVBUFSURFACE_LIBRARY=...)"
+        )
+    endif()
+    if(NOT NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY)
+        list(APPEND _novasight_missing_requirements
+            "  - libnvbufsurftransform.so (searched /usr/lib/aarch64-linux-gnu,"
+            "    /usr/lib/aarch64-linux-gnu/nvidia,"
+            "    /opt/nvidia/deepstream/deepstream-7.1/lib, /usr/lib; or set"
+            "    NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY=...)"
+        )
+    endif()
+    if(_novasight_missing_requirements)
+        list(JOIN _novasight_missing_requirements "\n" _novasight_missing_block)
+        message(FATAL_ERROR
+            "Jetson production preprocess requires nvbufsurface.h and the "
+            "libnvbufsurface / libnvbufsurftransform libraries, which were not found.\n"
+            "On a JetPack device install:\n"
+            "  sudo apt update\n"
+            "  sudo apt install nvidia-l4t-jetson-multimedia-api\n"
+            "If the headers/libs are in a non-standard location, export:\n"
+            "  NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR=/path/to/include\n"
+            "  NOVASIGHT_NVBUFSURFACE_LIBRARY=/path/to/libnvbufsurface.so\n"
+            "  NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY=/path/to/libnvbufsurftransform.so\n"
+            "Verify the install with:\n"
+            "  find /usr/src/jetson_multimedia_api -name nvbufsurface.h 2>/dev/null\n"
+            "  ldconfig -p | grep -E 'libnvbuf(surface|surftransform)'\n"
+            "Missing:\n${_novasight_missing_block}"
+        )
+    endif()
+    set(NOVASIGHT_JETSON_PREPROCESS_SOURCES
+        ${NOVASIGHT_JETSON_PREPROCESS_SUPPORT_SOURCES}
+        "${NOVASIGHT_JETSON_PREPROCESS_PRODUCTION_SOURCE}"
+    )
+else()
+    message(FATAL_ERROR
+        "Unsupported NOVASIGHT_JETSON_PREPROCESS_IMPL="
+        "${NOVASIGHT_JETSON_PREPROCESS_IMPL}. Expected reference, "
+        "jetson_scaffold, or jetson.")
+endif()
+
+add_library(novasight_jetson_preprocess_native SHARED
+    ${NOVASIGHT_JETSON_PREPROCESS_SOURCES}
+)
+
+target_compile_features(novasight_jetson_preprocess_native PRIVATE cxx_std_17)
+target_include_directories(novasight_jetson_preprocess_native
+    PUBLIC
+        ${CMAKE_CURRENT_LIST_DIR}/../include
+)
+
+if(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "jetson")
+    target_compile_features(novasight_jetson_preprocess_native
+        PRIVATE
+            cuda_std_17
+    )
+    target_include_directories(novasight_jetson_preprocess_native
+        PRIVATE
+            ${NOVASIGHT_NVBUFSURFACE_INCLUDE_DIR}
+            ${NOVASIGHT_GSTREAMER_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_LIST_DIR}/src/jetson
+    )
+    target_link_directories(novasight_jetson_preprocess_native
+        PRIVATE
+            ${NOVASIGHT_GSTREAMER_LIBRARY_DIRS}
+    )
+    target_link_libraries(novasight_jetson_preprocess_native
+        PRIVATE
+            CUDA::cuda_driver
+            CUDA::cudart
+            ${NOVASIGHT_GSTREAMER_LIBRARIES}
+            ${NOVASIGHT_NVBUFSURFACE_LIBRARY}
+            ${NOVASIGHT_NVBUFSURFTRANSFORM_LIBRARY}
+    )
+    target_compile_definitions(novasight_jetson_preprocess_native
+        PRIVATE
+            NOVASIGHT_JETSON_PREPROCESS_IMPL_JETSON=1
+    )
+endif()
+
+set_target_properties(novasight_jetson_preprocess_native PROPERTIES
+    OUTPUT_NAME novasight_preprocess
+)
+
+add_custom_command(TARGET novasight_jetson_preprocess_native POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:novasight_jetson_preprocess_native>
+        $<TARGET_FILE_DIR:novasight_jetson_preprocess_native>/libnovasight_jetson_preprocess_native.so
+    COMMENT "Writing legacy NovaSight Jetson preprocess library alias"
+)
+
+if(NOVASIGHT_JETSON_PREPROCESS_BUILD_TESTS)
+    enable_testing()
+    if(NOVASIGHT_JETSON_PREPROCESS_IMPL STREQUAL "reference")
+        # This test deliberately passes a synthetic non-null GstBuffer pointer
+        # to prove portable schema validation. Never run that pointer through
+        # the production Jetson importer.
+        add_executable(novasight_jetson_preprocess_abi_contract_test
+            tests/abi_contract_test.cpp
+        )
+        target_compile_features(novasight_jetson_preprocess_abi_contract_test PRIVATE cxx_std_17)
+        target_link_libraries(novasight_jetson_preprocess_abi_contract_test
+            PRIVATE novasight_jetson_preprocess_native
+        )
+        add_test(
+            NAME novasight_jetson_preprocess_abi_contract
+            COMMAND novasight_jetson_preprocess_abi_contract_test
+        )
+    endif()
+    add_executable(novasight_jetson_preprocess_support_contract_test
+        tests/jetson_support_contract_test.cpp
+        src/jetson/novasight_jetson_preprocess_native_jetson_support.cpp
+    )
+    target_compile_features(novasight_jetson_preprocess_support_contract_test PRIVATE cxx_std_17)
+    target_include_directories(novasight_jetson_preprocess_support_contract_test
+        PRIVATE
+            ${CMAKE_CURRENT_LIST_DIR}/../include
+            ${CMAKE_CURRENT_LIST_DIR}/src/jetson
+    )
+    add_test(
+        NAME novasight_jetson_preprocess_support_contract
+        COMMAND novasight_jetson_preprocess_support_contract_test
+    )
+endif()
