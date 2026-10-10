@@ -1,0 +1,303 @@
+import { useCallback, useSyncExternalStore } from "react";
+
+import { ApiError, ApiTransportError } from "../api";
+import { type ErrorSeverity, isQuietErrorsEnabled, normalizeError } from "./api-error";
+
+export type ToastTone = ErrorSeverity | "success";
+
+export type Toast = {
+  id: number;
+  tone: ToastTone;
+  title: string;
+  detail?: string;
+  technicalDetail?: string;
+  requestId?: string | null;
+  source: string;
+  status: number | null;
+  count: number;
+  firstSeenAt: number;
+  createdAt: number;
+};
+
+type Listener = () => void;
+
+export const TOAST_DURATION_MS = 3000;
+const MAX_TOASTS = 4;
+const MAX_ACTIVITY_NOTICES = 200;
+const NOTICE_HISTORY_KEY = "novasight.operation-history.v1";
+const DUPLICATE_WINDOW_MS = 1500;
+
+function readNoticeHistory(): Toast[] {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(NOTICE_HISTORY_KEY) ?? "[]");
+    if (!Array.isArray(stored)) return [];
+    return stored.filter((item): item is Toast => !!item && typeof item === "object"
+      && ["info", "success", "warn", "error"].includes(item.tone)
+      && Number.isSafeInteger(item.id) && item.id >= 0
+      && Number.isFinite(item.createdAt) && Math.abs(item.createdAt) <= 8640000000000000
+      && Number.isFinite(item.firstSeenAt) && Number.isSafeInteger(item.count) && item.count > 0
+      && (item.status === null || Number.isSafeInteger(item.status))
+      && (item.requestId === undefined || item.requestId === null || typeof item.requestId === "string")
+      && typeof item.title === "string" && typeof item.source === "string"
+      && (item.detail === undefined || typeof item.detail === "string")
+      && (item.technicalDetail === undefined || typeof item.technicalDetail === "string"))
+      .slice(-MAX_ACTIVITY_NOTICES);
+  } catch { return []; }
+}
+const restoredNotices = readNoticeHistory();
+let nextId = Math.max(0, ...restoredNotices.map((notice) => notice.id)) + 1;
+let toasts: Toast[] = [];
+let errorNotices = restoredNotices.filter((notice) => notice.tone === "warn" || notice.tone === "error");
+let activityNotices = restoredNotices.filter((notice) => notice.tone === "info" || notice.tone === "success");
+function persistNoticeHistory(): void {
+  try {
+    window.localStorage.setItem(NOTICE_HISTORY_KEY, JSON.stringify([...errorNotices, ...activityNotices]
+      .sort((left, right) => left.createdAt - right.createdAt).slice(-MAX_ACTIVITY_NOTICES)));
+  } catch { /* Logging must not block the operation when browser storage is unavailable. */ }
+}
+const listeners = new Set<Listener>();
+const errorListeners = new Set<Listener>();
+const activityListeners = new Set<Listener>();
+const lastToastAtBySignature = new Map<string, number>();
+const expiryTimers = new Map<number, number>();
+
+function emit(): void {
+  for (const listener of listeners) {
+    listener();
+  }
+}
+
+function emitErrors(): void {
+  persistNoticeHistory();
+  for (const listener of errorListeners) {
+    listener();
+  }
+}
+
+function emitActivities(): void {
+  persistNoticeHistory();
+  for (const listener of activityListeners) listener();
+}
+
+function setToasts(next: Toast[]): void {
+  toasts = next;
+  emit();
+}
+
+function subscribe(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function getSnapshot(): Toast[] {
+  return toasts;
+}
+
+export function useToasts(): Toast[] {
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+export function useErrorNotices(): Toast[] {
+  return useSyncExternalStore(
+    (listener) => {
+      errorListeners.add(listener);
+      return () => errorListeners.delete(listener);
+    },
+    () => errorNotices,
+    () => errorNotices
+  );
+}
+
+export function useActivityNotices(): Toast[] {
+  return useSyncExternalStore(
+    (listener) => {
+      activityListeners.add(listener);
+      return () => activityListeners.delete(listener);
+    },
+    () => activityNotices,
+    () => activityNotices
+  );
+}
+
+export function useClearErrorNotices(): (ids?: readonly number[]) => void {
+  return useCallback((ids?: readonly number[]) => {
+    errorNotices = ids ? errorNotices.filter((notice) => !ids.includes(notice.id)) : [];
+    emitErrors();
+  }, []);
+}
+
+export function useClearActivityNotices(): () => void {
+  return useCallback(() => {
+    activityNotices = [];
+    emitActivities();
+  }, []);
+}
+
+function dismiss(id: number): void {
+  window.clearTimeout(expiryTimers.get(id));
+  expiryTimers.delete(id);
+  setToasts(toasts.filter((toast) => toast.id !== id));
+}
+
+export function useDismissToast(): (id: number) => void {
+  return useCallback((id: number) => {
+    dismiss(id);
+  }, []);
+}
+
+function buildToast(input: {
+  tone: ToastTone;
+  title: string;
+  detail?: string;
+  technicalDetail?: string;
+  requestId?: string | null;
+  source: string;
+  status: number | null;
+}): Toast {
+  return {
+    id: nextId++,
+    tone: input.tone,
+    title: input.title,
+    detail: input.detail,
+    technicalDetail: input.technicalDetail,
+    requestId: input.requestId,
+    source: input.source,
+    status: input.status,
+    count: 1,
+    firstSeenAt: Date.now(),
+    createdAt: Date.now()
+  };
+}
+
+function pushToast(toast: Toast, popup: boolean | "feedback" = true): void {
+  for (const [signature, createdAt] of lastToastAtBySignature) {
+    if (toast.createdAt - createdAt > DUPLICATE_WINDOW_MS) {
+      lastToastAtBySignature.delete(signature);
+    }
+  }
+  const signature = `${toast.tone}\u0000${toast.source}\u0000${toast.title}\u0000${toast.detail ?? ""}\u0000${toast.status}`;
+  if (toast.tone === "info" || toast.tone === "success") {
+    activityNotices = [...activityNotices, toast].slice(-MAX_ACTIVITY_NOTICES);
+    emitActivities();
+  }
+  if (toast.tone === "warn" || toast.tone === "error") {
+    const existingIndex = errorNotices.findIndex((notice) => (
+      notice.source === toast.source
+      && notice.title === toast.title
+      && notice.detail === toast.detail
+      && notice.technicalDetail === toast.technicalDetail
+      && notice.status === toast.status
+    ));
+    if (existingIndex >= 0) {
+      errorNotices = errorNotices.map((notice, index) => index === existingIndex
+        ? { ...notice, count: notice.count + 1, createdAt: toast.createdAt, requestId: toast.requestId }
+        : notice);
+    } else {
+      errorNotices = [...errorNotices, toast].slice(-MAX_ACTIVITY_NOTICES);
+    }
+    emitErrors();
+  }
+  // Quiet mode suppresses popups, never the diagnostic history above.
+  if (!popup || (popup !== "feedback" && isQuietErrorsEnabled())) return;
+  const repeated = toasts.find((notice) => notice.tone === toast.tone && notice.source === toast.source
+    && notice.title === toast.title && notice.detail === toast.detail && notice.status === toast.status);
+  if (repeated) {
+    window.clearTimeout(expiryTimers.get(repeated.id));
+    setToasts(toasts.map((notice) => notice.id === repeated.id
+      ? { ...notice, count: notice.count + 1, createdAt: toast.createdAt, requestId: toast.requestId }
+      : notice));
+    expiryTimers.set(repeated.id, window.setTimeout(() => dismiss(repeated.id), TOAST_DURATION_MS));
+    lastToastAtBySignature.set(signature, toast.createdAt);
+    return;
+  }
+  const previousCreatedAt = lastToastAtBySignature.get(signature);
+  if (popup !== "feedback" && previousCreatedAt !== undefined && toast.createdAt - previousCreatedAt <= DUPLICATE_WINDOW_MS) {
+    return;
+  }
+  lastToastAtBySignature.set(signature, toast.createdAt);
+  const next = [...toasts, toast].slice(-MAX_TOASTS);
+  for (const removed of toasts.filter((notice) => !next.includes(notice))) {
+    window.clearTimeout(expiryTimers.get(removed.id));
+    expiryTimers.delete(removed.id);
+  }
+  setToasts(next);
+  expiryTimers.set(toast.id, window.setTimeout(() => {
+    dismiss(toast.id);
+  }, TOAST_DURATION_MS));
+}
+
+export function pushToastRaw(toast: Omit<Toast, "id" | "count" | "firstSeenAt" | "createdAt">, popup = true): void {
+  pushToast(buildToast(toast), popup);
+}
+
+export function reportError(
+  error: unknown,
+  options: {
+    source: string;
+    title?: string;
+    tone?: "error";
+    fallback?: string;
+    publicDetail?: string;
+    exposeStatus?: boolean;
+    popup?: boolean | "feedback";
+  }
+): void {
+  const normalized = normalizeError(error, {
+    source: options.source,
+    fallback: options.fallback
+  });
+  // Never write the raw API response (which may contain credentials) to the browser console.
+  // eslint-disable-next-line no-console
+  console.error({
+    event: "frontend_request_failed",
+    source: options.source,
+    http_status: error instanceof ApiError ? error.status : null,
+    request_id: error instanceof ApiError ? error.requestId : null,
+    error_name: error instanceof Error ? error.name : "UnknownError"
+  });
+  pushToast(
+    buildToast({
+      tone: options.tone ?? normalized.severity,
+      title: options.title ?? errorTitleForSource(options.source),
+      detail: options.publicDetail ?? normalized.message,
+      technicalDetail: error instanceof ApiError
+        ? JSON.stringify(
+          { source: options.source, http_status: error.status, response: error.detail },
+          (key, value: unknown) => /password|secret|token|license_key|authorization|credential|api.?key|uuid|^key$/i.test(key) ? "[redacted]" : value,
+          2
+        )
+        : error instanceof ApiTransportError
+          ? JSON.stringify({ source: options.source, path: error.path, browser_error: error.originalMessage }, null, 2)
+        : undefined,
+      requestId: error instanceof ApiError ? error.requestId : null,
+      source: normalized.source,
+      status: options.exposeStatus === false ? null : normalized.status
+    }),
+    options.popup ?? true
+  );
+}
+
+function errorTitleForSource(source: string): string {
+  if (source.includes("runtime")) return "运行态失败";
+  if (source.includes("config")) return "配置读取失败";
+  if (source.includes("capture")) return "采集失败";
+  if (source.includes("model")) return "模型任务失败";
+  if (source.includes("license")) return "授权校验失败";
+  if (source.includes("kmnet") || source.includes("kmNet")) return "kmNet 失败";
+  if (source.includes("websocket") || source.includes("ws")) return "实时通道异常";
+  return "请求失败";
+}
+
+export function reportInfo(title: string, detail?: string, source = "system", popup: boolean | "feedback" = true): void {
+  pushToast(
+    buildToast({ tone: "info", title, detail, source, status: null }), popup
+  );
+}
+
+export function reportSuccess(title: string, detail?: string, source = "system", popup: boolean | "feedback" = true): void {
+  pushToast(
+    buildToast({ tone: "success", title, detail, source, status: null }), popup
+  );
+}

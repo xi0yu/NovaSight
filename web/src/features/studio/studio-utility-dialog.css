@@ -1,0 +1,10 @@
+.studio-utility-dialog-layer { position: fixed; inset: 0; z-index: 1400; display: grid; place-items: center; padding: 16px; background: var(--overlay-scrim-bg); }
+.studio-utility-dialog { display: flex; flex-direction: column; width: min(860px, 100%); max-height: calc(100dvh - 32px); overflow: hidden; border: 1px solid var(--border-default); border-radius: 24px; background: var(--bg-surface); box-shadow: var(--shadow-dialog); color: var(--text-primary); }
+.studio-utility-dialog > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--border-subtle); }
+.studio-utility-dialog > header > div { display: flex; align-items: center; gap: 10px; }
+.studio-utility-dialog h2#studio-utility-title { margin: 0; font-family: var(--font-heading); font-size: 20px; }
+.studio-utility-dialog > header .console-button { width: 44px; min-height: 44px; padding: 0; }
+.studio-utility-dialog-content { min-height: 0; overflow: auto; padding: 24px; }
+@media (max-width: 760px) { .studio-utility-dialog > header { padding: 12px 16px; } .studio-utility-dialog-content { padding: 16px; } }
+.preview-root .studio-utility-dialog-layer { top: 48px; }
+.preview-root .studio-utility-dialog { max-height: calc(100dvh - 80px); }

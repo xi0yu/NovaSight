@@ -1,0 +1,261 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+
+import type { RuntimeState } from "../../api";
+import type { RuntimeProjection } from "../runtime/runtimeProjection";
+import { RuntimeOverviewView } from "./RuntimeOverviewView";
+
+const runtime = {
+  semantic: { daemon_instance_id: "daemon-abc123", phase: "running", snapshot_sequence: 9 },
+  presentation: { lifecycle: { can_start: false, can_stop: true }, output: { state: "armed", daemon_confirmed_safe: false } },
+  capture: { running: true, available: true },
+  executor: { executors: { kmnet: { runtime_connected: true } } },
+  statistics: {
+    metrics_available: true,
+    nvinfer_input_fps: 240,
+    detection_batch_fps: 238,
+    inference_latency_ms: 8.2,
+    detection_data_age_ms: 4.1,
+  },
+  vision: { target: null, control: { will_emit: true } },
+} as unknown as RuntimeState;
+
+const projection: RuntimeProjection = {
+  transport: "current",
+  lifecycle: { state: "running", label: "运行中", detail: "快照 #9" },
+  perception: { state: "current", label: "感知数据新鲜", detail: "帧龄 4 ms" },
+  output: { state: "armed", label: "输出已具备条件", detail: "当前样本满足门控" },
+  conclusion: "主链正在运行，输出条件已满足",
+  daemonConfirmedSafe: false,
+  nextAction: "open-latency",
+  nextActionLabel: "检查延迟",
+};
+
+const controlProps = {
+  controlBusy: false,
+  launchPending: false,
+  runtimeStopping: false,
+  runtimeControlUnavailable: false,
+  onToggle: vi.fn(),
+};
+
+describe("RuntimeOverviewView", () => {
+  it("opens actionable errors when the authoritative runtime is unavailable", async () => {
+    const onOpenErrors = vi.fn();
+    render(
+      <RuntimeOverviewView
+        runtime={null}
+        projection={null}
+        readiness={{ state: "action", title: "不可用", detail: "检查连接" }}
+        lastUpdated={null}
+        onAction={() => undefined}
+        {...controlProps}
+        runtimeControlUnavailable
+        onOpenErrors={onOpenErrors}
+      />
+    );
+    expect(screen.getByText("无法确认运行状态")).toBeInTheDocument();
+    expect(screen.queryByText("输出保持锁定")).not.toBeInTheDocument();
+    expect(screen.queryByText("实时画面")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "查看异常信息" }));
+    expect(onOpenErrors).toHaveBeenCalledOnce();
+  });
+
+  it("shows one conclusion, three independent axes and no delivery claim", () => {
+    render(
+      <RuntimeOverviewView
+        runtime={runtime}
+        projection={projection}
+        readiness={{ state: "action", title: "需处理", detail: "请检查端到端延迟。" }}
+        lastUpdated={new Date("2026-08-20T08:00:00Z")}
+        onAction={() => undefined}
+        {...controlProps}
+      />
+    );
+    expect(screen.getByRole("heading", { name: projection.conclusion })).toBeInTheDocument();
+    expect(screen.getByText("运行", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
+    expect(screen.getByText("识别", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
+    expect(screen.getByText("输出", { selector: ".runtime-overview-axes span" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "当前目标选择" })).toHaveTextContent("当前未选中目标");
+    expect(screen.queryByText(/已发送|正在交付|delivering/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the selected class without claiming that a hardware command was sent", () => {
+    render(<RuntimeOverviewView
+      runtime={{ ...runtime, vision: { ...runtime.vision, target: { cls: 0, track_id: 7 }, control: { will_emit: false } } } as RuntimeState}
+      projection={projection}
+      readiness={{ state: "ready", title: "运行中", detail: "运行状态正常。" }}
+      lastUpdated={null}
+      onAction={() => undefined}
+      {...controlProps}
+      classNames={["头部", "身体"]}
+    />);
+    const target = screen.getByRole("status", { name: "当前目标选择" });
+    expect(target).toHaveTextContent("已选中 · 头部");
+    expect(target).toHaveTextContent("本帧未生成输出计划");
+    expect(target).not.toHaveTextContent("已发送");
+  });
+
+  it("only exposes the mapped recovery action", async () => {
+    const onAction = vi.fn();
+    render(
+      <RuntimeOverviewView
+        runtime={runtime}
+        projection={projection}
+        readiness={{ state: "action", title: "需处理", detail: "请检查端到端延迟。" }}
+        lastUpdated={null}
+        onAction={onAction}
+        {...controlProps}
+      />
+    );
+    await userEvent.click(screen.getByRole("button", { name: "检查延迟" }));
+    expect(onAction).toHaveBeenCalledWith("open-latency");
+  });
+
+  it("keeps daemon and output proof collapsed until the operator asks for diagnostics", () => {
+    render(
+      <RuntimeOverviewView
+        runtime={runtime}
+        projection={projection}
+        readiness={{ state: "action", title: "需处理", detail: "请检查端到端延迟。" }}
+        lastUpdated={new Date("2026-08-20T08:00:00Z")}
+        onAction={() => undefined}
+        {...controlProps}
+      />
+    );
+
+    const disclosure = screen.getByText("运行诊断证据").closest("details");
+    expect(disclosure).not.toHaveAttribute("open");
+    expect(disclosure).toHaveTextContent("Daemon");
+    expect(disclosure).toHaveTextContent("当前样本可输出");
+  });
+
+  it("puts real core metrics and runtime controls in the first-screen conclusion", async () => {
+    const onToggle = vi.fn();
+    render(
+      <RuntimeOverviewView
+        runtime={runtime}
+        projection={projection}
+        readiness={{ state: "action", title: "需处理", detail: "请检查端到端延迟。" }}
+        lastUpdated={new Date("2026-08-20T08:00:00Z")}
+        onAction={() => undefined}
+        controlBusy={false}
+        launchPending={false}
+        runtimeStopping={false}
+        runtimeControlUnavailable={false}
+        onToggle={onToggle}
+      />
+    );
+
+    const metrics = screen.getByLabelText("核心运行数据");
+    expect(metrics).toHaveClass("is-live");
+    expect(metrics).toHaveTextContent("推理输入240 FPS");
+    expect(metrics).toHaveTextContent("检测结果238 FPS");
+    expect(metrics).toHaveTextContent("推理耗时8.2 ms");
+
+    expect(screen.getByRole("switch", { name: "运行总开关，运行中" })).toHaveAttribute("data-tone", "success");
+    expect(screen.getByRole("heading", { name: projection.conclusion }).closest("article")).toHaveClass("success");
+    await userEvent.click(screen.getByRole("switch", { name: "运行总开关，运行中" }));
+    expect(onToggle).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "紧急停止" })).not.toBeInTheDocument();
+  });
+
+  it("uses neutral gray when the mainline is stopped", () => {
+    const stoppedRuntime = {
+      ...runtime,
+      semantic: { ...runtime.semantic, phase: "stopped" },
+      presentation: { ...runtime.presentation, lifecycle: { can_start: true, can_stop: false } },
+    } as RuntimeState;
+    render(
+      <RuntimeOverviewView
+        runtime={stoppedRuntime}
+        projection={{ ...projection, lifecycle: { state: "stopped", label: "已停止", detail: "" }, conclusion: "主链已关闭", daemonConfirmedSafe: true }}
+        readiness={{ state: "action", title: "已关闭", detail: "启动后开始采集和推理。" }}
+        lastUpdated={null}
+        onAction={() => undefined}
+        {...controlProps}
+      />
+    );
+    expect(screen.getByRole("heading", { name: "主链已关闭" }).closest("article")).toHaveClass("idle");
+    expect(screen.getByRole("switch", { name: "运行总开关，已关闭" })).toHaveAttribute("data-tone", "idle");
+  });
+
+  it("does not present missing live samples as zero", () => {
+    const runtimeWithoutSamples = {
+      ...runtime,
+      statistics: {
+        ...runtime.statistics,
+        metrics_available: false,
+        nvinfer_input_fps: null,
+        detection_batch_fps: null,
+        inference_latency_ms: null,
+        detection_data_age_ms: null,
+      },
+    } as unknown as RuntimeState;
+
+    render(
+      <RuntimeOverviewView
+        runtime={runtimeWithoutSamples}
+        projection={projection}
+        readiness={{ state: "action", title: "需处理", detail: "请检查端到端延迟。" }}
+        lastUpdated={null}
+        onAction={() => undefined}
+        {...controlProps}
+      />
+    );
+
+    const metrics = screen.getByLabelText("核心运行数据");
+    expect(metrics).not.toHaveClass("is-live");
+    expect(metrics).not.toHaveTextContent(/FPS0/);
+    expect(screen.getAllByText("等待样本")).toHaveLength(4);
+  });
+
+  it("does not present stale statistics as current live metrics", () => {
+    render(
+      <RuntimeOverviewView
+        runtime={runtime}
+        projection={{ ...projection, transport: "stale" }}
+        readiness={{ state: "action", title: "需处理", detail: "请恢复实时连接。" }}
+        lastUpdated={null}
+        onAction={() => undefined}
+        {...controlProps}
+      />
+    );
+
+    expect(screen.getAllByText("状态已过期").length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByLabelText("核心运行数据")).not.toHaveTextContent("240");
+    expect(screen.getByRole("switch", { name: "运行总开关，状态待确认" })).toBeDisabled();
+    expect(screen.getByRole("heading", { name: "画面如何变成输出" }).closest("section")).not.toHaveTextContent("LIVE");
+  });
+
+  it("shows pending start and stop feedback before the next runtime snapshot", () => {
+    const { rerender } = render(
+      <RuntimeOverviewView
+        runtime={runtime}
+        projection={projection}
+        readiness={{ state: "action", title: "需处理", detail: "请检查端到端延迟。" }}
+        lastUpdated={null}
+        onAction={() => undefined}
+        {...controlProps}
+        controlBusy
+        runtimeStopping
+      />
+    );
+    expect(screen.getByRole("switch", { name: "运行总开关，正在停止" })).toHaveAttribute("data-tone", "warning");
+
+    rerender(
+      <RuntimeOverviewView
+        runtime={{ ...runtime, presentation: { ...runtime.presentation, lifecycle: { can_start: true, can_stop: false }, output: { ...runtime.presentation.output, state: "safe", daemon_confirmed_safe: true } }, semantic: { ...runtime.semantic, phase: "stopped" } } as RuntimeState}
+        projection={{ ...projection, lifecycle: { state: "stopped", label: "已停止", detail: "" } }}
+        readiness={{ state: "action", title: "需处理", detail: "正在启动。" }}
+        lastUpdated={null}
+        onAction={() => undefined}
+        {...controlProps}
+        controlBusy
+        launchPending
+      />
+    );
+    expect(screen.getByRole("switch", { name: "运行总开关，正在启动" })).toHaveAttribute("data-tone", "warning");
+  });
+});

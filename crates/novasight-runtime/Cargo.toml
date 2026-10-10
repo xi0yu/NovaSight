@@ -1,0 +1,29 @@
+[package]
+name = "novasight-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+tensorrt-model-ingress = [
+  "dep:novasight-tensorrt",
+  "novasight-tensorrt/ffi",
+]
+
+[dependencies]
+novasight-core = { path = "../novasight-core" }
+novasight-pipeline = { path = "../novasight-pipeline" }
+novasight-store = { path = "../novasight-store" }
+novasight-tensorrt = { path = "../novasight-tensorrt", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+uuid.workspace = true

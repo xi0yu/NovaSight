@@ -1,0 +1,9 @@
+.startup-screen { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; padding: 24px; font-family: system-ui, "PingFang SC", sans-serif; background: var(--bg-app, #faf8f3); color: var(--text-primary, #353344); }
+.startup-screen-content { display: grid; justify-items: center; gap: 16px; max-width: 480px; text-align: center; }
+.startup-screen-mark { width: 72px; height: 72px; display: grid; place-items: center; border-radius: 20px; background: var(--brand-soft, #fff0f4); color: var(--brand-primary, #ba4069); }
+.startup-screen h2 { margin: 0; font-size: 24px; line-height: 32px; font-weight: 600; }
+.startup-screen p { min-height: 44px; margin: 0; color: var(--text-secondary, #655c70); font-size: 14px; line-height: 22px; }
+.startup-screen-progress { width: 160px; height: 4px; overflow: hidden; border-radius: 4px; background: var(--border-subtle, #ece3ea); }
+.startup-screen-progress::after { content: ""; display: block; width: 40%; height: 100%; background: var(--brand-primary, #ba4069); animation: startup-progress 1.2s ease-in-out infinite alternate; }
+@keyframes startup-progress { from { transform: translateX(0); } to { transform: translateX(150%); } }
+@media (prefers-reduced-motion: reduce) { .startup-screen-progress::after { animation: none; } }
