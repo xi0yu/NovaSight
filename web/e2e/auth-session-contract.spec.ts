@@ -3,15 +3,23 @@ import stoppedRuntime from "./fixtures/stopped-runtime.json" with { type: "json"
 import { activeLicense, authenticatedSession, unauthenticatedSession } from "./fixtures/studio";
 
 async function broker(context: BrowserContext) {
-  const state = { access: true, online: true, expired: false, refreshes: 0, writes: 0, timeOutWrites: false };
+  const state = { access: true, online: true, expired: false, refreshes: 0, writes: 0, timeOutWrites: false, needsAuthorization: false, official: false, applications: [] as string[], serverOffset: 0, clockTime: null as number | null, deadline: Math.floor(Date.now() / 1000) + 86400 };
   const config = { revision: 1, control: { output_enabled: false }, hardware: { backend: "null" }, pipeline: { p_response_scale: 0.2 } };
   await context.routeWebSocket("**/ws/**", () => undefined);
   await context.route("**/healthz", (route) => state.online ? route.fulfill({ json: { ok: true } }) : route.abort("failed"));
   await context.route("**/api/**", async (route) => {
     if (!state.online) return route.abort("failed");
     const path = new URL(route.request().url()).pathname;
-    const now = Math.floor(Date.now() / 1000);
-    const session = () => ({ ...authenticatedSession, auth_state: "authorized", server_time: now, expires_at: now + 3600, license_expires_at: now + 86400 });
+    const now = (state.clockTime ?? Math.floor(Date.now() / 1000)) + state.serverOffset;
+    const session = () => ({ ...authenticatedSession, auth_state: "authorized", server_time: now, expires_at: now + 3600, license_expires_at: state.deadline });
+    if (path === "/api/auth/session" && route.request().method() === "POST") {
+      const key = route.request().postDataJSON().key;
+      state.applications.push(key);
+      if (state.official && !key) return route.fulfill({ status: 400, json: { code: "LICENSE_KEY_INVALID", message: "正式版不支持空授权码，请填写有效授权码。" } });
+      state.access = true; state.needsAuthorization = false;
+      return route.fulfill({ json: session() });
+    }
+    if (path === "/api/auth/session" && state.needsAuthorization) return route.fulfill({ json: { ...unauthenticatedSession, auth_state: "required", server_time: now } });
     if (path === "/api/auth/session") return route.fulfill({ json: state.access ? session() : { ...unauthenticatedSession, auth_state: "checking", server_time: now } });
     if (path === "/api/auth/refresh") {
       state.refreshes++;
@@ -20,7 +28,7 @@ async function broker(context: BrowserContext) {
       return route.fulfill({ json: session() });
     }
     if (!state.access) return route.fulfill({ status: 401, json: { code: "AUTHENTICATION_REQUIRED" } });
-    if (path === "/api/license") return route.fulfill({ json: { ...activeLicense, device_model: "Browser contract fixture", valid: !state.expired, expires_at: now + 86400 } });
+    if (path === "/api/license") return route.fulfill({ json: { ...activeLicense, device_model: "Browser contract fixture", valid: !state.expired, expires_at: state.deadline } });
     if (path === "/api/config") return route.fulfill({ json: config });
     if (path === "/api/studio/v1/status") return route.fulfill({ json: { ...stoppedRuntime, semantic: { ...stoppedRuntime.semantic, snapshot_updated_at_ms: Date.now() } } });
     if (path === "/api/v1/config/parameters") { state.writes++; return state.timeOutWrites ? route.abort("timedout") : route.fulfill({ status: 409, json: { code: "TEST_DRAFT_RETAINED", message: "测试保留草稿" } }); }
@@ -48,7 +56,7 @@ for (const elapsed of [3_700_000, 7_200_000]) {
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect.poll(() => state.refreshes).toBeGreaterThan(0);
     await expect(input).toHaveValue(/^0\.7(?:00)?$/);
-    await expect(page.getByRole("heading", { name: "输入授权码" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "设备授权" })).toHaveCount(0);
     await expect(page.locator("body")).not.toContainText("会话过期");
     expect(page.url()).toContain("page=params");
   });
@@ -63,7 +71,7 @@ for (const scenario of ["network", "restart"] as const) {
     await page.evaluate(() => window.dispatchEvent(new Event("novasight:auth-required")));
     await expect(page.getByText("正在恢复连接，页面内容已保留")).toBeVisible();
     await expect(input).toBeVisible();
-    await expect(page.getByRole("heading", { name: "输入授权码" })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "设备授权" })).toHaveCount(0);
     state.online = true; state.access = false;
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await expect.poll(() => state.refreshes).toBe(1);
@@ -78,7 +86,7 @@ test("S5 only a server-confirmed expiration opens authorization", async ({ conte
   await openDraft(page);
   state.expired = true; state.access = false;
   await page.evaluate(() => window.dispatchEvent(new Event("novasight:auth-required")));
-  await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "设备授权" })).toBeVisible();
   await expect(page.getByRole("alert")).toContainText("授权已到期");
 });
 
@@ -89,7 +97,7 @@ test("S7 two tabs share recovery and neither is sent to authorization", async ({
   await Promise.all([page.goto("/?page=params"), other.goto("/?page=fire")]);
   for (const tab of [page, other]) {
     await expect(tab.getByRole("navigation", { name: "NovaSight Studio 导航" })).toBeVisible();
-    await expect(tab.getByRole("heading", { name: "输入授权码" })).toHaveCount(0);
+    await expect(tab.getByRole("heading", { name: "设备授权" })).toHaveCount(0);
   }
   expect(state.refreshes).toBe(1);
   await other.close();
@@ -126,4 +134,51 @@ test("P1 new versions never reload automatically and protect unfinished input", 
   await expect(input).toHaveValue(/^0\.7(?:00)?$/);
   expect(page.url()).toBe(original);
   expect(state.refreshes).toBe(0);
+});
+
+
+for (const official of [false, true]) {
+  test(`N1/N4 ${official ? "official" : "internal"} empty application is decided by the server`, async ({ context, page }) => {
+    const state = await broker(context); state.access = false; state.needsAuthorization = true; state.official = official;
+    await page.goto("/?page=capture");
+    await expect(page.getByRole("heading", { name: "设备授权" })).toBeVisible();
+    await page.getByRole("button", { name: "进入控制台" }).click();
+    await expect.poll(() => state.applications).toEqual([""]);
+    if (official) {
+      await expect(page.getByRole("alert")).toContainText("正式版不支持空授权码");
+      await expect(page.getByRole("heading", { name: "设备授权" })).toBeVisible();
+    } else {
+      await expect(page.getByRole("navigation", { name: "NovaSight Studio 导航" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "设备授权" })).toHaveCount(0);
+    }
+  });
+}
+
+test("N5/N6 one-hour warning uses a non-danger toast, expires in three seconds and survives navigation", async ({ context, page }) => {
+  const state = await broker(context); state.clockTime = Math.floor(Date.now() / 1000); state.deadline = state.clockTime + 3601;
+  await page.addInitScript(() => localStorage.setItem("ns-quiet-errors", "1"));
+  await page.clock.install();
+  await page.clock.pauseAt(new Date(Date.now() + 1000));
+  await page.goto("/?page=fire");
+  await expect(page.getByRole("navigation", { name: "NovaSight Studio 导航" })).toBeVisible();
+  await expect(page.locator('[data-source="license-expiry"]')).toHaveCount(0);
+  state.serverOffset = 2;
+  await page.clock.fastForward(1200);
+  const toast = page.locator('[data-source="license-expiry"]');
+  await expect(toast).toContainText("授权将在 1 小时内到期");
+  await expect(toast).toHaveClass(/tone-info/);
+  await expect(toast).not.toHaveClass(/tone-error|tone-warn/);
+  const color = await toast.locator(".toast-card-tag").evaluate((element) => getComputedStyle(element).color.match(/\d+/g)!.map(Number));
+  expect(color[2]).toBeGreaterThan(color[0]);
+  expect(await toast.locator('.toast-card-timer > span').evaluate((element) => {
+    const style = getComputedStyle(element); return [style.animationDuration, style.animationTimingFunction];
+  })).toEqual(["3s", "linear"]);
+  await page.clock.fastForward(3100);
+  await expect(toast).toHaveCount(0);
+  await page.goto("/?page=params");
+  await expect(page.getByRole("navigation", { name: "NovaSight Studio 导航" })).toBeVisible();
+  await expect(toast).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("navigation", { name: "NovaSight Studio 导航" })).toBeVisible();
+  await expect(toast).toHaveCount(0);
 });

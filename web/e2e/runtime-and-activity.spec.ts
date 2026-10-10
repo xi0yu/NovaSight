@@ -110,7 +110,7 @@ test("one license code establishes an authenticated and activated Studio session
 
   await expect(page.locator("html")).toHaveAttribute("data-theme", "nova-daylight");
   await expect(page.locator("#auth-code-help")).toHaveText(
-    "支持正式授权码或本次启动的临时授权码；不另设接入码。",
+    "内测版留空即可申请 1 天授权；正式版须填写授权码。",
   );
   await page.getByLabel("授权码", { exact: true }).fill("one-license-code");
   const login = page.waitForRequest((request) => request.url().endsWith("/api/auth/session") && request.method() === "POST");
@@ -126,7 +126,7 @@ test("obsolete access links are cleared and cannot bypass license login", async 
   await mockStudioApi(page, unauthenticatedSession);
   await page.goto("/#access=one-time-access-code");
 
-  await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "设备授权" })).toBeVisible();
   expect(new URL(page.url()).hash).toBe("");
   await expect(page.locator("body")).not.toContainText("one-time-access-code");
 });

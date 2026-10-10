@@ -10,9 +10,8 @@ use tokio::process::Child;
 use tokio::time;
 
 use super::{
-    LayoutMode, PROCESS_SHUTDOWN_TIMEOUT, PortableLayout, ReadyDocument,
-    create_temporary_license_access, daemon_status_succeeds, ensure_portable_config, health_check,
-    http_url, lifecycle, log_tail, open_studio, print_temporary_license_access,
+    LayoutMode, PROCESS_SHUTDOWN_TIMEOUT, PortableLayout, ReadyDocument, daemon_status_succeeds,
+    ensure_portable_config, health_check, http_url, lifecycle, log_tail, open_studio,
     read_daemon_ready_file, read_ready_file, request_daemon_shutdown, spawn_daemon,
     spawn_logged_process, spawn_web, stop_child, stop_owned_daemon, tcp_port_accepts_connections,
 };
@@ -40,10 +39,9 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     stop_preexisting_daemon(layout).await?;
     let _ = fs::remove_file(&layout.web_ready_file);
     let _ = fs::remove_file(&layout.daemon_ready_file);
-    let temporary_license = create_temporary_license_access(layout)?;
 
     eprintln!("NovaSight 开发：启动后台与界面服务…");
-    let mut daemon = spawn_daemon(layout, temporary_license.as_ref())?;
+    let mut daemon = spawn_daemon(layout)?;
     let mut web = match spawn_web(layout, hmr) {
         Ok(web) => web,
         Err(error) => {
@@ -65,7 +63,7 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
             };
         eprintln!("NovaSight：静态界面已就绪，采集与控制需在首页开启");
         open_studio(&ready);
-        print_temporary_license_access(temporary_license.as_ref());
+        eprintln!("内测版：授权页面留空即可申请 1 天授权。");
         return lifecycle::supervise(layout, daemon, web, None).await;
     }
     let mut vite = match spawn_vite(layout) {
@@ -94,7 +92,7 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     }
     eprintln!("NovaSight 开发：界面已就绪，采集与控制需在首页开启");
     open_studio(&studio_ready);
-    print_temporary_license_access(temporary_license.as_ref());
+    eprintln!("内测版：授权页面留空即可申请 1 天授权。");
     lifecycle::supervise(layout, daemon, web, Some(vite)).await
 }
 

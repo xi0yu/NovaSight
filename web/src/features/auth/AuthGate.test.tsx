@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +10,8 @@ const api = vi.hoisted(() => ({
 vi.mock("../../api", async (original) => ({
   ...await original<typeof import("../../api")>(), ...api,
 }));
+const reportInfo = vi.hoisted(() => vi.fn());
+vi.mock("../../lib/toast", async (original) => ({ ...await original<typeof import("../../lib/toast")>(), reportInfo }));
 const activeSession = {
   authenticated: true, principal: "local-operator", role: "operator", permissions: [],
   csrf_token: "session-token", expires_at: Math.floor(Date.now() / 1000) + 3600,
@@ -36,6 +38,7 @@ describe("single authorization entry", () => {
   });
   beforeEach(() => {
     vi.clearAllMocks();
+    api.establishAuthSession.mockRejectedValue(new Error("正式版不支持空授权码"));
     api.recoverAuthSession.mockImplementation(() => api.getAuthSession());
     api.getHealth.mockResolvedValue({ ok: true });
     api.getAuthSession.mockResolvedValue({ ...activeSession, authenticated: false });
@@ -66,14 +69,14 @@ describe("single authorization entry", () => {
     render(<AuthGate><div>识别工作台</div></AuthGate>);
     await userEvent.click(await screen.findByRole("button", { name: "退出登录" }));
     await waitFor(() => expect(api.logoutAuthSession).toHaveBeenCalledTimes(1));
-    expect(await screen.findByRole("heading", { name: "输入授权码" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "设备授权" })).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent("服务端撤销尚未确认");
   });
 
   it("clears an old input error once a new authorization code is entered", async () => {
     render(<AuthGate><div>识别工作台</div></AuthGate>);
     await userEvent.click(await screen.findByRole("button", { name: "进入控制台" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("请输入授权码");
+    expect(await screen.findByRole("alert")).toHaveTextContent("正式版不支持空授权码");
     await userEvent.type(screen.getByLabelText("授权码"), "replacement");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
@@ -103,6 +106,60 @@ describe("single authorization entry", () => {
     } }));
     expect(await screen.findByLabelText("授权码")).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent("授权已到期");
+  });
+
+  it.each(["", "   "])("submits %j as an explicit internal application", async (code) => {
+    api.establishAuthSession.mockResolvedValue(activeSession);
+    render(<AuthGate><div>识别工作台</div></AuthGate>);
+    fireEvent.change(await screen.findByLabelText("授权码"), { target: { value: code } });
+    await userEvent.click(screen.getByRole("button", { name: "进入控制台" }));
+    expect(await screen.findByText("识别工作台")).toBeVisible();
+    expect(api.establishAuthSession).toHaveBeenCalledWith("");
+  });
+
+  it.each([0, 3600, 3601])("uses confirmed machine time for a %i second expiry warning", async (remaining) => {
+    const now = Math.floor(Date.now() / 1000);
+    api.getAuthSession.mockResolvedValue({ ...activeSession, server_time: now, license_expires_at: now + remaining });
+    render(<AuthGate><div>任意工作页面</div></AuthGate>);
+    await screen.findByText("任意工作页面");
+    expect(reportInfo).toHaveBeenCalledTimes(remaining === 3600 ? 1 : 0);
+  });
+
+  it("confirms the warning threshold with the server and deduplicates renewal and page remount", async () => {
+    vi.useFakeTimers();
+    const now = Math.floor(Date.now() / 1000);
+    const deadline = now + 3601;
+    api.getAuthSession.mockResolvedValue({ ...activeSession, server_time: now, license_expires_at: deadline });
+    const view = render(<AuthGate><div>任意工作页面</div></AuthGate>);
+    await act(async () => { await Promise.resolve(); });
+    api.getAuthSession.mockRejectedValueOnce(new TypeError("offline"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(reportInfo).not.toHaveBeenCalled();
+    api.getAuthSession.mockResolvedValue({ ...activeSession, server_time: now + 2, license_expires_at: deadline });
+    await act(async () => { fireEvent(window, new Event("online")); });
+    expect(reportInfo).toHaveBeenCalledTimes(1);
+    await act(async () => { fireEvent(window, new Event("focus")); });
+    expect(reportInfo).toHaveBeenCalledTimes(1);
+    view.unmount();
+    render(<AuthGate><div>重新打开的页面</div></AuthGate>);
+    await act(async () => { await Promise.resolve(); });
+    expect(reportInfo).toHaveBeenCalledTimes(1);
+    await act(async () => { fireEvent(window, new CustomEvent("novasight:auth-session", { detail: { ...activeSession, server_time: now + 100, license_expires_at: deadline + 50 } })); });
+    expect(reportInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("defers a background-tab warning until visibility returns and identity is confirmed", async () => {
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      api.getAuthSession.mockImplementation(async () => ({ ...activeSession, server_time: now, license_expires_at: now + 1800 }));
+      render(<AuthGate><div>后台页面</div></AuthGate>);
+      await screen.findByText("后台页面");
+      expect(reportInfo).not.toHaveBeenCalled();
+      visibility.mockReturnValue("visible");
+      fireEvent(document, new Event("visibilitychange"));
+      await waitFor(() => expect(reportInfo).toHaveBeenCalledTimes(1));
+    } finally { visibility.mockRestore(); }
   });
 
 });

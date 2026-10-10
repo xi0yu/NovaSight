@@ -263,9 +263,9 @@ function errorTitleForSource(source: string): string {
   return "请求失败";
 }
 
-export function reportInfo(title: string, detail?: string, source = "system"): void {
+export function reportInfo(title: string, detail?: string, source = "system", popup: boolean | "feedback" = true): void {
   pushToast(
-    buildToast({ tone: "info", title, detail, source, status: null })
+    buildToast({ tone: "info", title, detail, source, status: null }), popup
   );
 }
 

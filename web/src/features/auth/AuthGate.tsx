@@ -21,7 +21,7 @@ import {
 } from "../../api";
 import { Button, LoadedImage } from "../../components/ui";
 import { NovaIcon } from "../../components/visual";
-import { reportError } from "../../lib/toast";
+import { reportError, reportInfo } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import { transitionAuth, type AuthAuthority } from "./authStateMachine";
 import type { AuthState } from "../../contracts/auth";
@@ -193,13 +193,29 @@ export function AuthGate({ children }: AuthGateProps) {
     return () => window.clearInterval(interval);
   }, [refreshSession, verifyDaemon]);
 
+  const remindedDeadlineRef = useRef<number | null>(null);
+  useEffect(() => {
+    const deadline = session?.license_expires_at;
+    if (!session?.authenticated || !deadline || session.server_time === undefined || document.visibilityState === "hidden") return;
+    const remaining = deadline - session.server_time;
+    const key = "novasight.license-expiry-notice";
+    let reminded = remindedDeadlineRef.current === deadline;
+    try { reminded ||= window.sessionStorage.getItem(key) === String(deadline); } catch { /* In-memory deduplication remains available. */ }
+    if (reminded || remaining <= 0) return;
+    if (remaining <= 3600) {
+      remindedDeadlineRef.current = deadline;
+      try { window.sessionStorage.setItem(key, String(deadline)); } catch { /* Storage may be disabled. */ }
+      reportInfo("授权将在 1 小时内到期", "到期后采集与输出会停止，请提前保存配置。", "license-expiry", "feedback");
+      return;
+    }
+    // A local timer asks the server; it never proves license expiry or eligibility for a warning.
+    const timer = window.setTimeout(() => { void recoverAuthSession().catch(() => undefined); }, Math.min(2147483647, (remaining - 3600) * 1000));
+    return () => window.clearTimeout(timer);
+  }, [session]);
+
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const code = accessCode.trim();
-    if (!code) {
-      setIssue("请输入授权码。");
-      return;
-    }
     requestRef.current += 1;
     setSubmitting(true);
     setIssue("");
@@ -268,7 +284,7 @@ export function AuthGate({ children }: AuthGateProps) {
         <header className="auth-card-heading">
           <div>
             <span className="auth-eyebrow">开始使用</span>
-            <h2 id="auth-title">输入授权码</h2>
+            <h2 id="auth-title">设备授权</h2>
           </div>
         </header>
         <p className="auth-intro">只需一次授权。进入后会先带你核对画面、模型与运行状态。</p>
@@ -296,7 +312,7 @@ export function AuthGate({ children }: AuthGateProps) {
               <NovaIcon name={showAccessCode ? "hide" : "show"} size={17} />
             </button>
           </div>
-          <small id="auth-code-help">支持正式授权码或本次启动的临时授权码；不另设接入码。</small>
+          <small id="auth-code-help">内测版留空即可申请 1 天授权；正式版须填写授权码。</small>
           <Button variant="primary" type="submit" loading={submitting} leadingIcon="shield-check">
             进入控制台
           </Button>

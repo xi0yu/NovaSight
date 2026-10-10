@@ -1072,7 +1072,6 @@ dependencies = [
  "anyhow",
  "fs2",
  "novasight-config",
- "rand 0.8.7",
  "serde",
  "serde_json",
  "serde_yaml",

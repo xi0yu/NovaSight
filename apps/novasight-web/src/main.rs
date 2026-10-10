@@ -252,7 +252,7 @@ async fn login(
         return auth_error_response(error);
     }
     let key = request.key.trim();
-    if key.is_empty() || key.len() > 64 * 1024 {
+    if key.len() > 64 * 1024 {
         return api_error(
             StatusCode::BAD_REQUEST,
             "LICENSE_KEY_INVALID",
@@ -266,7 +266,7 @@ async fn login(
         .body(Body::from(serde_json::json!({"key": key}).to_string()))
         .expect("static license activation request");
     // Only this fixed IPC endpoint is reachable before authentication. Never
-    // mint a browser session from the machine's existing license status alone.
+    // mint a session without an explicit application validated by the daemon.
     let validation = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let response = state
             .daemon
@@ -923,16 +923,25 @@ mod tests {
     async fn one_license_submission_validates_before_issuing_a_browser_session() {
         let socket = std::env::temp_dir().join(format!("ns-login-{}.sock", std::process::id()));
         let listener = UnixListener::bind(&socket).unwrap();
+        let internal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let mode = internal.clone();
         let upstream = Router::new().route(
             "/api/license/activate",
             axum::routing::post(
-                |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                move |axum::Json(body): axum::Json<serde_json::Value>| {
+                    let mode = mode.clone();
+                    async move {
+                    use axum::response::IntoResponse;
+                    if body["key"] == "" && !mode.load(std::sync::atomic::Ordering::Relaxed) {
+                        return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({"code": "LICENSE_KEY_INVALID", "message": "正式版不支持空授权码"}))).into_response();
+                    }
                     axum::Json(serde_json::json!({
                         "configured": true,
-                        "valid": body["key"] == "valid-license",
+                        "valid": body["key"] == "valid-license" || body["key"] == "",
                         "license_id": "test", "fingerprint": "machine", "created_at": 1.0,
                         "expires_at": super::auth::unix_seconds().unwrap() + 86400,
-                    }))
+                    })).into_response()
+                    }
                 },
             ),
         );
@@ -942,10 +951,14 @@ mod tests {
             daemon: DaemonProxy::new(&socket),
             web_root: None,
         });
-        for (key, expected) in [
-            ("expired-license", StatusCode::UNAUTHORIZED),
-            ("valid-license", StatusCode::OK),
+        for (key, internal_mode, expected) in [
+            ("expired-license", true, StatusCode::UNAUTHORIZED),
+            ("valid-license", true, StatusCode::OK),
+            ("", true, StatusCode::OK),
+            ("   ", true, StatusCode::OK),
+            ("", false, StatusCode::BAD_REQUEST),
         ] {
+            internal.store(internal_mode, std::sync::atomic::Ordering::Relaxed);
             let response = app
                 .clone()
                 .oneshot(

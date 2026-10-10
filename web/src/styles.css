@@ -4453,8 +4453,10 @@ body {
 }
 
 .toast-card.tone-info {
+  background: var(--realtime-soft);
+  border-color: var(--realtime-border);
   box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--primary) 26%, var(--border-subtle)),
+    0 0 0 1px color-mix(in srgb, var(--info) 26%, var(--border-subtle)),
     0 8px 24px rgba(15, 23, 42, 0.12);
 }
 
@@ -4492,7 +4494,9 @@ body {
   letter-spacing: 0.06em;
 }
 
-.toast-card.tone-info .toast-card-tag { color: var(--primary); }
+.toast-card.tone-info .toast-card-tag,
+.toast-card.tone-info .toast-card-head > svg,
+.toast-card.tone-info .toast-card-timer { color: var(--info); }
 .toast-card.tone-warn .toast-card-tag { color: var(--warning); }
 .toast-card.tone-error .toast-card-tag { color: var(--danger); }
 .toast-card.tone-success .toast-card-tag { color: var(--success); }

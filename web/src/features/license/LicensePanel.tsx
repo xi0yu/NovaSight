@@ -118,9 +118,9 @@ export function LicensePanel({
           <strong>{licenseValid ? "当前授权" : remaining === 0 ? "授权已到期" : license ? "等待授权" : "授权待核实"}</strong>
           <p>{licenseValid
             ? license.credential_format === "ephemeral_code"
-              ? "临时授权从本次启动起仅限 24 小时，重复登录不续期；重启后需要新授权码。"
+              ? "内测授权限 24 小时，有效期内重复申请和重启均不延长期限。"
               : `授权已生效${license.expires_at ? `，到期时间 ${formatEpoch(license.expires_at)}` : ""}。`
-            : "输入一个授权码即可开始使用；临时码与正式许可证共用下方入口。"}</p>
+            : "内测版留空即可申请 1 天授权；正式版须填写授权码。"}</p>
         </div>
         <StatusIndicator tone={licenseValid ? "good" : "idle"}>
           {licenseValid ? "授权有效" : "尚未授权"}
@@ -227,7 +227,7 @@ export function LicenseActivationForm({
   const activate = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalized = credential.trim();
-    if (!normalized) {
+    if (!normalized && !temporarySupported) {
       setFailure({ title: "请输入授权码", message: "授权码不能为空。" });
       return;
     }
@@ -246,7 +246,7 @@ export function LicenseActivationForm({
       }
       setCredential("");
       setMessage(status.tier === "temporary"
-        ? "本次启动临时授权已生效，仅限 24 小时，重复登录不会续期。"
+        ? "内测授权已生效，有效期内无需重复授权，原期限不会重置。"
         : "正式许可证已激活，完整凭证不会在界面中回显。");
     } catch (err) {
       const nextFailure = describeLicenseActionFailure(err, "activate");
@@ -261,14 +261,14 @@ export function LicenseActivationForm({
     } finally {
       setActivating(false);
     }
-  }, [credential, onLicenseChange]);
+  }, [credential, onLicenseChange, temporarySupported]);
 
   return (
     <div className={gate ? "license-activation-form is-gate" : "license-activation-form"}>
       <div className="license-activation-copy">
         <strong>{gate ? "输入授权码" : active ? "更换授权" : "激活授权"}</strong>
         <span>{temporarySupported
-          ? "可使用本次启动生成的临时授权码，或正式签名许可证。两者经过同一服务端验证流程。"
+          ? "留空即可申请 1 天内测授权；已有有效授权沿用原到期时间。"
           : "请输入正式签名许可证。授权码只发送给本机服务验证，不会在页面中保存或回显。"}</span>
       </div>
       <form className="license-activation-controls" onSubmit={activate}>
@@ -277,7 +277,7 @@ export function LicenseActivationForm({
           <input
             type="password"
             value={credential}
-            placeholder={temporarySupported ? "临时授权码或正式许可证" : "正式许可证"}
+            placeholder={temporarySupported ? "留空申请内测授权，或填写正式许可证" : "正式许可证"}
             autoComplete="off"
             autoFocus={gate}
             spellCheck={false}
@@ -331,7 +331,7 @@ function formatCredentialFormat(format: string | null | undefined): string {
   const labels: Record<string, string> = {
     jwt_rs256: "JWT（RS256）",
     legacy_ns1: "旧版 NS1",
-    ephemeral_code: "本次启动临时码",
+    ephemeral_code: "内测授权",
     legacy_document: "旧版授权文件"
   };
   return format ? labels[format] ?? format : "未授权";

@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use novasight_config::{YamlConfigRepository, studio_endpoint_contract};
-use rand::{RngCore, rngs::OsRng};
 use serde::Deserialize;
 use serde_yaml::{Mapping, Number, Value};
 use tokio::process::{Child, Command};
@@ -30,8 +29,6 @@ const RUN_DIR: &str = "run";
 const CONTROL_SOCKET: &str = "run/novasightd.sock";
 const WEB_READY_FILE: &str = "run/ready.json";
 const DAEMON_READY_FILE: &str = "run/novasightd-ready.json";
-const TEMPORARY_LICENSE_ACCESS_FILE: &str = "run/temporary-license-code";
-const TEMPORARY_LICENSE_CODE_ENV: &str = "NOVASIGHT_TEMPORARY_LICENSE_CODE";
 const PROCESS_READY_TIMEOUT: Duration = Duration::from_secs(20);
 const PROCESS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const LOG_TAIL_BYTES: u64 = 3 * 1024;
@@ -77,11 +74,6 @@ struct ReadyDocument {
 struct DaemonReadyDocument {
     control_socket: String,
     transport: String,
-}
-
-#[derive(Clone, Debug)]
-struct TemporaryLicenseAccess {
-    code: String,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -139,9 +131,8 @@ async fn run() -> Result<()> {
     eprintln!("NovaSight：检查配置…");
     remove_stale_ready_files(&layout)?;
     ensure_portable_config(&layout)?;
-    let temporary_license = create_temporary_license_access(&layout)?;
     eprintln!("NovaSight：启动后台服务…");
-    let mut daemon = spawn_daemon(&layout, temporary_license.as_ref())?;
+    let mut daemon = spawn_daemon(&layout)?;
     if let Err(error) = wait_for_daemon_ready(&layout, &mut daemon, PROCESS_READY_TIMEOUT).await {
         let _ = stop_child("novasightd", &mut daemon).await;
         return Err(error);
@@ -165,7 +156,9 @@ async fn run() -> Result<()> {
         };
     eprintln!("NovaSight：界面已就绪，采集与控制需在首页开启");
     open_studio(&ready);
-    print_temporary_license_access(temporary_license.as_ref());
+    if cfg!(debug_assertions) {
+        eprintln!("内测版：授权页面留空即可申请 1 天授权。");
+    }
     lifecycle::supervise(&layout, daemon, web, None).await
 }
 
@@ -485,24 +478,12 @@ fn spawn_logged_process(
         .with_context(|| format!("start {}", executable.display()))
 }
 
-fn spawn_daemon(
-    layout: &PortableLayout,
-    temporary_license: Option<&TemporaryLicenseAccess>,
-) -> Result<Child> {
+fn spawn_daemon(layout: &PortableLayout) -> Result<Child> {
     let args = [
         OsString::from("--config"),
         layout.config.as_os_str().to_owned(),
     ];
-    match temporary_license {
-        Some(access) => spawn_logged_process(
-            &layout.daemon,
-            &layout.root,
-            &layout.daemon_log,
-            &args,
-            &[(TEMPORARY_LICENSE_CODE_ENV, access.code.as_str())],
-        ),
-        None => spawn_logged_process(&layout.daemon, &layout.root, &layout.daemon_log, &args, &[]),
-    }
+    spawn_logged_process(&layout.daemon, &layout.root, &layout.daemon_log, &args, &[])
 }
 
 fn spawn_web(layout: &PortableLayout, frontend_dev: bool) -> Result<Child> {
@@ -757,45 +738,6 @@ fn studio_ready_messages(ready: &ReadyDocument, lan_ips: &[IpAddr]) -> Vec<Strin
     messages
 }
 
-fn create_temporary_license_access(
-    layout: &PortableLayout,
-) -> Result<Option<TemporaryLicenseAccess>> {
-    let path = layout.root.join(TEMPORARY_LICENSE_ACCESS_FILE);
-    match fs::remove_file(&path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(error).with_context(|| format!("remove stale {}", path.display()));
-        }
-    }
-    if !cfg!(debug_assertions) {
-        return Ok(None);
-    }
-    Ok(Some(TemporaryLicenseAccess {
-        code: random_access_code(),
-    }))
-}
-
-fn random_access_code() -> String {
-    let mut bytes = [0_u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn print_temporary_license_access(access: Option<&TemporaryLicenseAccess>) {
-    let Some(access) = access else {
-        return;
-    };
-    if std::io::stderr().is_terminal() {
-        eprintln!("NovaSight 测试授权码 {}", access.code);
-    } else {
-        eprintln!("测试授权码已准备；仅在交互终端显示，不写入服务日志。");
-    }
-    eprintln!(
-        "测试授权最多 24 小时；已有授权重启保留原期限，到期停止资源服务，保留前台；重复登录不会续期。"
-    );
-}
-
 fn ready_address(ready: &ReadyDocument) -> Option<SocketAddr> {
     ready.address.parse().ok()
 }
@@ -971,11 +913,19 @@ mod tests {
 
     use super::{
         CONFIG_PATH, DEVELOPMENT_CONFIG_PATH, LayoutMode, PortableLayout, ReadyDocument,
-        TEMPORARY_LICENSE_ACCESS_FILE, create_temporary_license_access, ensure_portable_config,
-        parse_ifconfig_lan_ips, parse_startup_request, random_access_code, studio_ready_messages,
+        ensure_portable_config, parse_ifconfig_lan_ips, parse_startup_request,
+        studio_ready_messages,
     };
     use novasight_config::YamlConfigRepository;
     use serde_yaml::Value;
+
+    fn test_id() -> String {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string()
+    }
 
     struct TestRoot(PathBuf);
 
@@ -1010,9 +960,8 @@ mod tests {
         use std::net::TcpListener;
         use std::os::unix::fs::PermissionsExt;
 
-        let root = TestRoot(
-            std::env::temp_dir().join(format!("novasight-launcher-reuse-{}", random_access_code())),
-        );
+        let root =
+            TestRoot(std::env::temp_dir().join(format!("novasight-launcher-reuse-{}", test_id())));
         fs::create_dir_all(root.0.join("run")).unwrap();
         let control = root.0.join("novasightctl");
         fs::write(&control, "#!/bin/sh\ntest \"$1 $2\" = 'license status' && test \"$NOVASIGHT_CONTROL_SOCKET\" = \"${0%/*}/run/novasightd.sock\" && test ! -f daemon-unavailable\n").unwrap();
@@ -1059,15 +1008,6 @@ mod tests {
     }
 
     #[test]
-    fn generated_access_codes_are_full_width_hex_and_not_reused() {
-        let first = random_access_code();
-        let second = random_access_code();
-        assert_eq!(first.len(), 64);
-        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        assert_ne!(first, second);
-    }
-
-    #[test]
     fn developer_and_package_layouts_use_separate_config_files() {
         let root = std::env::temp_dir().join("novasight-layout-test");
         let developer = PortableLayout::new(
@@ -1091,10 +1031,9 @@ mod tests {
 
     #[test]
     fn first_developer_config_inherits_production_without_rewriting_it() {
-        let root = TestRoot(std::env::temp_dir().join(format!(
-            "novasight-launcher-config-test-{}",
-            random_access_code()
-        )));
+        let root = TestRoot(
+            std::env::temp_dir().join(format!("novasight-launcher-config-test-{}", test_id())),
+        );
         let production_config = root.0.join(CONFIG_PATH);
         YamlConfigRepository::initialize_default(&production_config).unwrap();
         let mut production_document = fs::read_to_string(&production_config).unwrap();
@@ -1171,34 +1110,5 @@ utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST>\n\
                 IpAddr::V4(Ipv4Addr::new(100, 106, 210, 36)),
             ]
         );
-    }
-
-    #[test]
-    fn temporary_license_is_unique_per_start_and_never_persisted() {
-        let root = TestRoot(std::env::temp_dir().join(format!(
-            "novasight-launcher-license-test-{}",
-            random_access_code()
-        )));
-        fs::create_dir_all(root.0.join("run")).unwrap();
-        let stale_path = root.0.join(TEMPORARY_LICENSE_ACCESS_FILE);
-        fs::write(&stale_path, "stale-license").unwrap();
-        let layout = PortableLayout::new(
-            LayoutMode::Developer,
-            root.0.clone(),
-            root.0.join("novasightd"),
-            root.0.join("novasight-web"),
-            root.0.join("novasightctl"),
-        );
-
-        let first = create_temporary_license_access(&layout)
-            .unwrap()
-            .expect("debug launcher must create temporary authorization");
-        assert!(!stale_path.exists());
-        let second = create_temporary_license_access(&layout)
-            .unwrap()
-            .expect("debug launcher must create temporary authorization");
-
-        assert_ne!(first.code, second.code);
-        assert!(!stale_path.exists());
     }
 }

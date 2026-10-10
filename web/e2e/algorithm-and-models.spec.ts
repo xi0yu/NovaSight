@@ -427,7 +427,7 @@ test("silent checking retains the real parameter input without showing authoriza
   const gain = page.getByRole("textbox", { name: "比例增益 Kp 数值" });
   await gain.fill("0.7");
   await page.evaluate(() => window.dispatchEvent(new CustomEvent("novasight:auth-required")));
-  await expect(page.getByRole("heading", { name: "输入授权码" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "设备授权" })).toHaveCount(0);
   await expect(gain).toBeVisible();
   await expect(page.getByRole("heading", { level: 1, name: "算法参数" })).toBeVisible();
   await expect(gain).toHaveValue(/^0\.7(?:00)?$/);

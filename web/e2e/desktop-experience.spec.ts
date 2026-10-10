@@ -97,7 +97,7 @@ test("conditional UI preview stays isolated and exposes recoverable states", { t
   await page.getByRole("button", { name: "模拟未确认" }).click();
   await expect(page.getByText("紧急停止尚未确认", { exact: true })).toBeVisible();
   await choose.selectOption("auth");
-  await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "设备授权" })).toBeVisible();
   await choose.selectOption("license");
   await expect(page.getByText("授权有效", { exact: true })).toBeVisible();
   for (const state of ["offline", "stale", "models-empty", "models", "settings", "switch-running", "switch-success", "confirmation", "toast"]) {

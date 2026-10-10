@@ -26,7 +26,7 @@ export function LicenseGate({
       ? "连接本机服务后进入 Jetson 实时视觉工作台"
       : license?.valid
         ? "授权已激活，进入 Jetson 实时视觉工作台"
-        : "输入临时授权码或正式许可证后进入工作台";
+        : "内测版可留空申请授权，正式版填写授权码后进入工作台";
 
   return (
     <main className="app-shell license-shell">

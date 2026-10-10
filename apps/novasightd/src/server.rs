@@ -228,11 +228,7 @@ fn license_policy(
     mode: DaemonMode,
     production_verifier_required: bool,
 ) -> Result<LicensePolicy, DaemonRunError> {
-    // A debug build exposes process-local development access through the
-    // local API. It never creates a license document and disappears when this
-    // daemon exits. Release artifacts require a deployment verifier before a
-    // formal license can be activated, but missing provisioning does not keep
-    // the license UI offline.
+    // Build mode owns empty-code eligibility; requests cannot enable it.
     let development_build = cfg!(debug_assertions);
     let temporary_access_code = development_build
         .then(|| std::env::var("NOVASIGHT_TEMPORARY_LICENSE_CODE").ok())
@@ -272,6 +268,11 @@ fn license_policy(
         None => Ok(LicensePolicy::new(public_key)),
     }
     .map_err(DaemonRunError::LicensePolicyInvalid)?;
+    let policy = if development_build {
+        policy.with_internal_testing()
+    } else {
+        policy
+    };
     // Keep the product online when deployment provisioning is incomplete so
     // the license UI can explain the missing verifier. Runtime authorization
     // remains fail-closed, and a configured malformed key still prevents

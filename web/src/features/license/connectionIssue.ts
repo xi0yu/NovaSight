@@ -36,7 +36,7 @@ export function describeLicenseConnectionIssue(error: unknown): LicenseConnectio
         kind: "service-error",
         title: "正式授权验证器尚未配置完成",
         description: "novasightd 在线，但 Release 构建所需的生产授权公钥缺失或格式无效。",
-        recovery: "正式环境请修复 NOVASIGHT_LICENSE_PUBLIC_KEY；Debug 构建可使用本次启动生成的临时授权码。"
+        recovery: "正式环境请修复 NOVASIGHT_LICENSE_PUBLIC_KEY；内测构建可留空申请 1 天授权。"
       };
     }
     if (code === "LICENSE_SERVICE_UNAVAILABLE") {
@@ -108,7 +108,7 @@ export function describeLicenseActionFailure(
       if (action === "activate") {
         return {
           title: "授权码未通过校验",
-          message: "请检查临时授权码是否属于本次启动，或正式许可证是否完整、有效并适用于当前版本。"
+          message: "内测版可留空申请；正式版请检查授权码是否完整、有效并适用于当前版本。"
         };
       }
       return {

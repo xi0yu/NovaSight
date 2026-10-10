@@ -47,6 +47,7 @@ static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub struct LicensePolicy {
+    internal_testing: bool,
     temporary_access_digest: Option<[u8; 32]>,
     temporary_issued_at: Option<f64>,
     temporary_started_at: Option<Instant>,
@@ -56,11 +57,17 @@ pub struct LicensePolicy {
 impl LicensePolicy {
     pub fn new(public_key_pem: Option<String>) -> Self {
         Self {
+            internal_testing: false,
             temporary_access_digest: None,
             temporary_issued_at: None,
             temporary_started_at: None,
             public_key_pem,
         }
+    }
+
+    pub fn with_internal_testing(mut self) -> Self {
+        self.internal_testing = true;
+        self
     }
 
     pub fn with_temporary_access_code(mut self, code: &str) -> Result<Self, LicenseError> {
@@ -86,7 +93,7 @@ impl LicensePolicy {
     }
 
     pub fn temporary_access_supported(&self) -> bool {
-        self.temporary_access_digest.is_some()
+        self.internal_testing || self.temporary_access_digest.is_some()
     }
 
     fn matches_temporary_access_code(&self, candidate: &str) -> bool {
@@ -328,6 +335,15 @@ impl FileLicenseRepository {
             self.status()?;
         }
         let key = key.trim();
+        if key.is_empty() {
+            return if self.policy.internal_testing {
+                self.grant_temporary(true)
+            } else {
+                Err(LicenseError::InvalidKey(
+                    "正式版不支持空授权码，请填写有效授权码。".into(),
+                ))
+            };
+        }
         if key.len() < 8 {
             return Err(LicenseError::InvalidKey(
                 "license key must be at least 8 characters".to_owned(),
@@ -350,7 +366,7 @@ impl FileLicenseRepository {
                     .is_ok_and(|now| now < grant.issued_at + TEMPORARY_LICENSE_SECONDS as f64)
             });
         if self.policy.matches_temporary_access_code(key) || persisted_code_matches {
-            return self.grant_temporary();
+            return self.grant_temporary(false);
         }
         let _operation = self
             .operation_lock
@@ -404,17 +420,19 @@ impl FileLicenseRepository {
     fn temporary_status(&self, grant: TemporaryGrant) -> Result<LicenseStatus, LicenseError> {
         let mut status =
             development_session_status(grant.granted_at, grant.issued_at, now_seconds()?);
-        if self.policy.temporary_started_at.is_some_and(|started| {
-            started.elapsed() >= Duration::from_secs(TEMPORARY_LICENSE_SECONDS)
-        }) {
+        if grant.code_digest.is_some()
+            && self.policy.temporary_started_at.is_some_and(|started| {
+                started.elapsed() >= Duration::from_secs(TEMPORARY_LICENSE_SECONDS)
+            })
+        {
             status.valid = false;
-            status.message = "本次启动的临时授权已到期，请更换正式授权或重新启动。".into();
+            status.message = "内测授权已到期，请主动重新申请或填写正式授权码。".into();
         }
         Ok(status)
     }
 
     /// Persist the original grant deadline so ordinary restarts cannot extend it.
-    fn grant_temporary(&self) -> Result<LicenseStatus, LicenseError> {
+    fn grant_temporary(&self, request_based: bool) -> Result<LicenseStatus, LicenseError> {
         if !self.temporary_access_supported() {
             return Err(LicenseError::TemporaryGrantDisabled);
         }
@@ -425,8 +443,16 @@ impl FileLicenseRepository {
         let now = now_seconds()?;
         let grant = TemporaryGrant {
             granted_at: now,
-            issued_at: self.policy.temporary_issued_at.unwrap_or(now),
-            code_digest: self.policy.temporary_access_digest,
+            issued_at: if request_based {
+                now
+            } else {
+                self.policy.temporary_issued_at.unwrap_or(now)
+            },
+            code_digest: if request_based {
+                None
+            } else {
+                self.policy.temporary_access_digest
+            },
         };
         if !self.temporary_status(grant)?.valid {
             return Err(LicenseError::InvalidKey(
@@ -440,8 +466,9 @@ impl FileLicenseRepository {
         {
             let previous = self.temporary_status(granted_at)?;
             if previous.valid
-                || grant.issued_at <= granted_at.issued_at
-                || grant.code_digest == granted_at.code_digest
+                || (!request_based
+                    && (grant.issued_at <= granted_at.issued_at
+                        || grant.code_digest == granted_at.code_digest))
             {
                 return Ok(previous);
             }
@@ -860,9 +887,9 @@ fn development_session_status(granted_at: f64, issued_at: f64, now: f64) -> Lice
         duration_unit: "day".to_owned(),
         updated_at: Some(granted_at),
         message: if valid {
-            "本次启动临时授权限 24 小时，重复登录不会续期；到期停止资源服务，保留前台。"
+            "内测授权限 24 小时，有效期内重复申请和重启不会续期；到期停止资源服务，保留前台。"
         } else {
-            "本次启动临时授权已到期；请更换正式授权或重新启动。"
+            "内测授权已到期；请主动重新申请或填写正式授权码。"
         }
         .to_owned(),
     }
@@ -1357,6 +1384,105 @@ mod authorization_tests {
         assert!(repository.activate(TEMPORARY_CODE).is_err());
         assert!(!repository.path().exists());
         repository.clear().unwrap();
+    }
+
+    #[test]
+    fn internal_empty_application_uses_request_time_and_reuses_it_across_restarts() {
+        let root = std::env::temp_dir().join(format!(
+            "ns-empty-grant-{}-{}",
+            std::process::id(),
+            super::NEXT_TEMPORARY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let mut policy = LicensePolicy::new(None)
+            .with_internal_testing()
+            .with_temporary_access_code(TEMPORARY_CODE)
+            .unwrap();
+        policy.temporary_issued_at = Some(super::now_seconds().unwrap() - 7200.0);
+        policy.temporary_started_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(90000));
+        let repository = FileLicenseRepository::new(root.join("license.json"), policy);
+        let before = super::now_seconds().unwrap();
+        let first = repository.activate("").unwrap();
+        let after = super::now_seconds().unwrap();
+        assert!(first.valid);
+        assert!((before..=after).contains(&first.created_at.unwrap()));
+        assert_eq!(
+            first.expires_at.unwrap() - first.created_at.unwrap(),
+            86400.0
+        );
+        let calls: Vec<_> = (0..8)
+            .map(|_| {
+                let repository = repository.clone();
+                std::thread::spawn(move || repository.activate("   ").unwrap().expires_at)
+            })
+            .collect();
+        for call in calls {
+            assert_eq!(call.join().unwrap(), first.expires_at);
+        }
+        let restarted = FileLicenseRepository::new(
+            repository.path(),
+            LicensePolicy::new(None).with_internal_testing(),
+        );
+        assert_eq!(restarted.status().unwrap().expires_at, first.expires_at);
+        assert_eq!(restarted.activate("").unwrap().expires_at, first.expires_at);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expiry_does_not_create_a_grant_but_a_new_explicit_internal_application_does() {
+        let root = std::env::temp_dir().join(format!(
+            "ns-empty-expired-{}-{}",
+            std::process::id(),
+            super::NEXT_TEMPORARY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let repository = FileLicenseRepository::new(
+            root.join("license.json"),
+            LicensePolicy::new(None).with_internal_testing(),
+        );
+        let old = super::now_seconds().unwrap() - 86401.0;
+        repository
+            .write_value(
+                &repository.temporary_grant_path(),
+                &super::TemporaryGrant {
+                    granted_at: old,
+                    issued_at: old,
+                    code_digest: None,
+                },
+            )
+            .unwrap();
+        let expired = repository.status().unwrap();
+        assert!(!expired.valid);
+        assert_eq!(repository.status().unwrap().expires_at, expired.expires_at);
+        let next = repository.activate("").unwrap();
+        assert!(next.valid);
+        assert!(next.created_at.unwrap() > expired.expires_at.unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn official_empty_codes_are_rejected_without_creating_any_grant() {
+        let root = std::env::temp_dir().join(format!(
+            "ns-official-empty-{}-{}",
+            std::process::id(),
+            super::NEXT_TEMPORARY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let repository =
+            FileLicenseRepository::new(root.join("license.json"), LicensePolicy::new(None));
+        for key in ["", "   ", "\n"] {
+            assert!(
+                repository
+                    .activate(key)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("正式版不支持空授权码")
+            );
+            assert!(!repository.path().exists());
+            assert!(!repository.temporary_grant_path().exists());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -552,7 +552,7 @@ export function establishAuthSession(
   licenseKey: string,
   signal?: AbortSignal
 ): Promise<AuthSession> {
-  const checkedKey = requireNonBlank(licenseKey, "key");
+  const checkedKey = licenseKey.trim();
   const epoch = ++authEpoch;
   authPaused = false;
   rememberSignedOut(false);

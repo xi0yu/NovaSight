@@ -101,7 +101,7 @@ describe("LicensePanel", () => {
     expect(screen.queryByText("专业版")).not.toBeInTheDocument();
   });
   it("removes a stale authorization error while the operator corrects the code", async () => {
-    render(<LicensePanel license={activeLicense} onLicenseChange={vi.fn()} />);
+    render(<LicensePanel license={{ ...activeLicense, temporary_access_supported: false }} onLicenseChange={vi.fn()} />);
     await userEvent.click(screen.getByText("更换授权码"));
     await userEvent.click(screen.getByRole("button", { name: "验证并更换" }));
     expect(screen.getByText("授权码不能为空。")).toBeInTheDocument();
