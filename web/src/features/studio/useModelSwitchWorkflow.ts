@@ -1,6 +1,5 @@
 import {
   useCallback,
-  useEffect,
   useRef,
   useState,
   type Dispatch,
@@ -22,7 +21,6 @@ import type { ModelSwitchDialogStatus } from "../models/ModelSwitchDialog";
 import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
 import type { ActionConfirmationRequest } from "./ActionConfirmationDialog";
-import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
 
 const MODEL_SWITCH_STAGE_COUNT = 3;
 
@@ -95,28 +93,6 @@ export function useModelSwitchWorkflow({
   const closeDialog = useCallback(() => {
     setDialogOpen(false);
   }, []);
-
-  useEffect(() => {
-    if (!dialogOpen) {
-      return undefined;
-    }
-    acquireBodyScrollLock();
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    window.requestAnimationFrame(() => dialogRef.current?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && dialogStatus !== "running") {
-        setDialogOpen(false);
-      } else {
-        trapDialogTabKey(event, dialogRef.current);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      releaseBodyScrollLock();
-      document.removeEventListener("keydown", onKeyDown);
-      previousFocus?.focus();
-    };
-  }, [dialogOpen, dialogStatus]);
 
   const ensureCatalogModelRegistration = useCallback(async (model: ModelCatalogModel) => {
     if (typeof model.project_id === "number" && typeof model.artifact_id === "number") {

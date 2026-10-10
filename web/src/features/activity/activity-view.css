@@ -68,7 +68,12 @@
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   background: var(--bg-surface);
+  overflow-anchor: none;
 }
+
+.activity-copy > .console-button { min-height: 28px; padding: 3px 8px; margin-top: 4px; font-size: 11px; }
+.activity-copy-manual { display: grid; gap: 6px; margin-top: 8px; color: var(--text-secondary); font-size: 11px; }
+.activity-copy-manual textarea { width: 100%; min-width: 0; resize: vertical; padding: 8px; border: 1px solid var(--border-default); border-radius: var(--radius-2); background: var(--bg-subtle); color: var(--text-primary); font: 11px/1.5 var(--font-mono); }
 
 .activity-list-header {
   position: sticky;

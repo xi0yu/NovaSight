@@ -20,6 +20,8 @@ test("toast shows its countdown and disappears while the failed input remains", 
   await page.goto("/preview.html?page=control-test");
   await page.getByRole("button", { name: "新增协议" }).click();
   const dialog = page.getByRole("dialog", { name: "新增协议" });
+  expect(await page.locator(".mouse-protocol-toolbar").evaluate((element) => !!element.closest("[inert]"))).toBe(true);
+  expect(await page.locator(".console-emergency-stop").evaluate((element) => !!element.closest("[inert]"))).toBe(false);
   await dialog.getByRole("textbox", { name: "IP", exact: true }).fill("bad-ip");
   await dialog.getByRole("button", { name: "添加协议" }).click();
   const toast = page.locator(".toast-card.tone-error").filter({ hasText: "协议参数无效" });
@@ -36,6 +38,37 @@ test("toast shows its countdown and disappears while the failed input remains", 
   await expect(toast).toHaveCount(0, { timeout: 8000 });
   await expect(dialog.getByRole("textbox", { name: "IP", exact: true })).toHaveValue("bad-ip");
   await expect(dialog.getByRole("alert")).toContainText("IPv4");
+});
+
+test("repeated invalid protocol input stays in one toast and correction clears the field error", async ({ page }) => {
+  await page.goto("/preview.html?page=control-test");
+  await page.getByRole("button", { name: "新增协议" }).click();
+  const dialog = page.getByRole("dialog", { name: "新增协议" });
+  const ip = dialog.getByRole("textbox", { name: "IP", exact: true });
+  await ip.fill("bad-ip");
+  await dialog.getByRole("button", { name: "添加协议" }).click();
+  await expect(ip).toBeFocused();
+  await expect(ip).toHaveAttribute("aria-invalid", "true");
+  await dialog.getByRole("button", { name: "添加协议" }).click();
+  const toast = page.locator(".toast-card").filter({ hasText: "协议参数无效" });
+  await expect(toast).toHaveCount(1);
+  await expect(toast).toContainText("2 次");
+  await expect(dialog.getByRole("alert")).toContainText("IPv4");
+  await ip.fill("192.168.2.188");
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await expect(ip).not.toHaveAttribute("aria-invalid", "true");
+});
+
+test("desktop log copying offers selected text when the browser clipboard is unavailable", async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined }));
+  await page.goto("/preview.html?page=activity&showcase=activity");
+  await page.getByRole("button", { name: "复制日志：模型读取失败" }).click();
+  const text = page.getByRole("textbox", { name: "手动复制日志：模型读取失败" });
+  await expect(text).toBeFocused();
+  await expect(text).toHaveValue(/preview-request-001/);
+  await expect(text).toHaveValue(/ENOENT/);
+  expect(await text.evaluate((element: HTMLTextAreaElement) => element.selectionEnd - element.selectionStart)).toBe((await text.inputValue()).length);
+  await expect(page.getByRole("button", { name: "恢复实时", exact: true })).toBeVisible();
 });
 
 test("backup download carries time and revision with accurate toast feedback", async ({ page }) => {

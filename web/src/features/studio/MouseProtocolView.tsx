@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { LoadedImage } from "../../components/ui";
 import { reportError, reportInfo, reportSuccess } from "../../lib/toast";
 import { NovaIcon } from "../../components/visual";
 import { getErrorMessage } from "../shared/format";
-import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
+import { useDialogInteraction } from "./dialogFocus";
 import netImage from "../../assets/output-consumers/kmbox-net-official.png";
 import netProImage from "../../assets/output-consumers/kmbox-net-pro-8k-official.png";
 import nbImage from "../../assets/output-consumers/kmbox-nb-official.png";
@@ -115,6 +115,8 @@ function ProtocolEditor({ protocols, onPick, protocol, disabled, disabledReason,
   const draftChanged = protocol !== undefined && (draft.model !== protocol.model || draft.host !== protocol.host || draft.port !== protocol.port || draft.uuid !== protocol.uuid);
   const [id] = useState(() => protocol?.id ?? crypto.randomUUID());
   const [error, setError] = useState("");
+  const [invalidField, setInvalidField] = useState<"host" | "port" | "uuid" | null>(null);
+  const errorId = useId();
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [operation, setOperation] = useState<"save" | "probe" | "remove" | null>(null);
@@ -122,37 +124,31 @@ function ProtocolEditor({ protocols, onPick, protocol, disabled, disabledReason,
   const [result, setResult] = useState<number | null>(null);
   useEffect(() => { setResult(null); }, [draft, canProbe]);
   const dialogRef = useRef<HTMLElement>(null);
-  const closeRef = useRef(onClose); closeRef.current = onClose;
-  useEffect(() => {
-    acquireBodyScrollLock();
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    (dialogRef.current?.querySelector<HTMLSelectElement>("select:not(:disabled)") ?? dialogRef.current)?.focus();
-    const keydown = (event: KeyboardEvent) => {
-      const focusedDialog = document.activeElement?.closest('[role="dialog"], [role="alertdialog"]');
-      if (focusedDialog && focusedDialog !== dialogRef.current) return;
-      if (event.key === "Escape" && !busyRef.current) { event.preventDefault(); event.stopImmediatePropagation(); closeRef.current(); }
-      else if (event.key === "Tab") { event.stopImmediatePropagation(); trapDialogTabKey(event, dialogRef.current); }
-    };
-    document.addEventListener("keydown", keydown, { capture: true });
-    return () => { releaseBodyScrollLock(); document.removeEventListener("keydown", keydown, { capture: true }); previous?.focus(); };
-  }, []);
+  useDialogInteraction(dialogRef, true, onClose, { blocked: busy, initialFocus: "select:not(:disabled)" });
+  const updateDraft = (values: Partial<Omit<MouseProtocol, "id">>) => {
+    setDraft((current) => ({ ...current, ...values }));
+    setError(""); setInvalidField(null);
+  };
+  const fieldError = (field: "host" | "port" | "uuid") => invalidField === field && error
+    ? <small className="protocol-field-error" id={errorId} role="alert">{error}</small> : null;
   const validatedDraft = () => {
-    const reject = (message: string) => {
-      setError(message);
+    const reject = (field: "host" | "port" | "uuid", message: string) => {
+      setError(message); setInvalidField(field);
+      dialogRef.current?.querySelector<HTMLInputElement>(`[data-protocol-field="${field}"]`)?.focus();
       reportError(new Error(message), { source: "mouse-protocol-validation", title: "协议参数无效", tone: "error", popup: "feedback", publicDetail: message });
     };
     const next = { ...draft, host: draft.host.trim() || defaults.host, port: Number.isNaN(draft.port) ? defaults.port : draft.port, uuid: draft.uuid.trim() || defaults.uuid };
     const parts = next.host.split(".");
-    if (parts.length !== 4 || parts.some((part) => !/^(0|[1-9]\d{0,2})$/.test(part) || Number(part) > 255)) { reject("IP 需为有效的 IPv4 地址。"); return; }
-    if (!Number.isInteger(next.port) || next.port < 1 || next.port > 65535) { reject("Port 需为 1–65535 的整数。"); return; }
-    if (!/^[\da-f]{8}$/i.test(next.uuid)) { reject("UUID 需为 8 位十六进制字符。"); return; }
+    if (parts.length !== 4 || parts.some((part) => !/^(0|[1-9]\d{0,2})$/.test(part) || Number(part) > 255)) { reject("host", "IP 需为有效的 IPv4 地址。"); return; }
+    if (!Number.isInteger(next.port) || next.port < 1 || next.port > 65535) { reject("port", "Port 需为 1–65535 的整数。"); return; }
+    if (!/^[\da-f]{8}$/i.test(next.uuid)) { reject("uuid", "UUID 需为 8 位十六进制字符。"); return; }
     return { ...next, id };
   };
   const perform = async (operation: "save" | "probe" | "remove", action: (next: MouseProtocol) => Promise<void>) => {
     if (busyRef.current || disabled) return;
     const next = operation === "remove" && protocol ? protocol : validatedDraft();
     if (!next) return;
-    busyRef.current = true; setBusy(true); setOperation(operation); setError(""); setResult(null);
+    busyRef.current = true; setBusy(true); setOperation(operation); setError(""); setInvalidField(null); setResult(null);
     try { await action(next); }
     catch (error) { setError(getErrorMessage(error)); }
     finally { busyRef.current = false; setBusy(false); setOperation(null); }
@@ -170,12 +166,12 @@ function ProtocolEditor({ protocols, onPick, protocol, disabled, disabledReason,
       {protocol ? <label>协议<select aria-label="配置的协议" value={protocol.id} disabled={busy || draftChanged} onChange={(event) => onPick(event.target.value)}>
         {protocols.map((item) => <option key={item.id} value={item.id}>{models[item.model].label} · {item.host}:{item.port}{item.id === protocol.id && selected ? " · 已启用" : ""}</option>)}</select>
         {draftChanged ? <small className="mouse-protocol-test-hint">当前有未保存修改，请先保存或取消，再切换要配置的协议。</small> : null}</label> : null}
-      <label>型号<select value={draft.model} disabled={busy || disabled} onChange={(event) => setDraft({ ...draft, model: event.target.value as MouseProtocol["model"] })}>
+      <label>型号<select value={draft.model} disabled={busy || disabled} onChange={(event) => updateDraft({ model: event.target.value as MouseProtocol["model"] })}>
         {Object.entries(models).map(([value, model]) => <option key={value} value={value}>{model.label}</option>)}</select></label>
-      <label>IP<input type="text" inputMode="decimal" autoComplete="off" placeholder={defaults.host} value={draft.host} disabled={busy || disabled} onChange={(event) => setDraft({ ...draft, host: event.target.value })} /></label>
-      <label>Port<input type="number" inputMode="numeric" min={1} max={65535} placeholder={String(defaults.port)} value={Number.isNaN(draft.port) ? "" : draft.port} disabled={busy || disabled} onChange={(event) => setDraft({ ...draft, port: event.target.value === "" ? NaN : Number(event.target.value) })} /></label>
-      <label>UUID<input type="text" autoComplete="off" maxLength={8} placeholder={defaults.uuid} value={draft.uuid} disabled={busy || disabled} onChange={(event) => setDraft({ ...draft, uuid: event.target.value })} /></label>
-      {error ? <p className="action-confirmation-error" role="alert">{error}</p> : null}
+      <label>IP<input aria-label="IP" data-protocol-field="host" aria-invalid={invalidField === "host" || undefined} aria-describedby={invalidField === "host" ? errorId : undefined} type="text" inputMode="decimal" autoComplete="off" placeholder={defaults.host} value={draft.host} disabled={busy || disabled} onChange={(event) => updateDraft({ host: event.target.value })} />{fieldError("host")}</label>
+      <label>Port<input aria-label="Port" data-protocol-field="port" aria-invalid={invalidField === "port" || undefined} aria-describedby={invalidField === "port" ? errorId : undefined} type="number" inputMode="numeric" min={1} max={65535} placeholder={String(defaults.port)} value={Number.isNaN(draft.port) ? "" : draft.port} disabled={busy || disabled} onChange={(event) => updateDraft({ port: event.target.value === "" ? NaN : Number(event.target.value) })} />{fieldError("port")}</label>
+      <label>UUID<input aria-label="UUID" data-protocol-field="uuid" aria-invalid={invalidField === "uuid" || undefined} aria-describedby={invalidField === "uuid" ? errorId : undefined} type="text" autoComplete="off" maxLength={8} placeholder={defaults.uuid} value={draft.uuid} disabled={busy || disabled} onChange={(event) => updateDraft({ uuid: event.target.value })} />{fieldError("uuid")}</label>
+      {error && invalidField === null ? <p className="action-confirmation-error" role="alert">{error}</p> : null}
       {result !== null ? <div className="mouse-protocol-result success" role="status"><NovaIcon name="check-circle" size={18} />设备握手成功 · {result} ms · 测试会话已断开</div> : null}
       <p className="mouse-protocol-test-hint">{previewOnly ? "预览模式不连接真实设备。" : "测试只握手并断开，不保存配置、不启用协议，也不发送位移。"}</p>
       {protocol && onRemove ? <div className="mouse-protocol-remove">

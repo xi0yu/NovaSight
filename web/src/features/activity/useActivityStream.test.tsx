@@ -30,3 +30,34 @@ it("exposes history failure, retries, and keeps records visible when the socket 
   expect(result.current.error).toContain("已有记录不代表实时状态");
   unmount();
 });
+
+it("retries a failed constructor and a stalled connection, then recognizes recovery without new events", async () => {
+  vi.useFakeTimers();
+  let attempts = 0;
+  const sockets: FakeSocket[] = [];
+  class FakeSocket {
+    onopen: (() => void) | null = null;
+    onclose: (() => void) | null = null;
+    onmessage: ((message: { data: string }) => void) | null = null;
+    constructor() { if (attempts++ === 0) throw new Error("offline"); sockets.push(this); }
+    close() { this.onclose?.(); }
+  }
+  vi.stubGlobal("WebSocket", FakeSocket);
+  api.getActivityHistory.mockResolvedValue({ events: [] });
+  const { result, unmount } = renderHook(useActivityStream);
+  try {
+    await act(async () => { await Promise.resolve(); });
+    expect(result.current.state).toBe("error");
+    act(() => vi.advanceTimersByTime(1000));
+    act(() => vi.advanceTimersByTime(8000));
+    expect(result.current.state).toBe("disconnected");
+    act(() => vi.advanceTimersByTime(2000));
+    act(() => sockets[1].onopen?.());
+    expect(result.current.state).toBe("connected");
+    expect(result.current.error).toBe("");
+    expect(result.current.events).toEqual([]);
+  } finally {
+    unmount();
+    vi.useRealTimers();
+  }
+});

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import { NovaIcon } from "../../components/visual";
-import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "../studio/dialogFocus";
+import { useDialogInteraction } from "../studio/dialogFocus";
 import { ModelSelectionPanel, type ModelSelectionPanelProps } from "./ModelSelectionPanel";
 
 export function ModelManagerDialog({
@@ -21,30 +21,11 @@ export function ModelManagerDialog({
   busyRef.current = panelProps.busy;
   const activeFile = panelProps.activeArtifactPath.split(/[\\/]/).pop();
 
-  useEffect(() => {
-    if (!open) return undefined;
-    acquireBodyScrollLock();
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    scrolledToActiveRef.current = false;
-    const frame = window.requestAnimationFrame(() => dialogRef.current?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && busyRef.current === null) {
-        onClose();
-      } else {
-        trapDialogTabKey(event, dialogRef.current);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      releaseBodyScrollLock();
-      document.removeEventListener("keydown", onKeyDown);
-      previousFocus?.focus();
-    };
-  }, [onClose, open]);
+  useDialogInteraction(dialogRef, open, onClose, { blocked: panelProps.busy !== null });
 
   useEffect(() => {
-    if (!open || !panelProps.root || scrolledToActiveRef.current) return;
+    if (!open) { scrolledToActiveRef.current = false; return; }
+    if (!panelProps.root || scrolledToActiveRef.current) return;
     const activeRow = dialogRef.current?.querySelector<HTMLElement>('.model-catalog-row[data-active="true"]');
     if (!activeRow) return;
     activeRow.scrollIntoView({ block: "center" });

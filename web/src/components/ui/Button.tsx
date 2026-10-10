@@ -34,7 +34,7 @@ export function Button({
       disabled={disabled || loading}
       type={type}
     >
-      {leadingIcon ? <NovaIcon name={leadingIcon} size={16} /> : null}
+      {loading ? <NovaIcon name="refresh" size={16} className="ui-button-spinner" aria-hidden="true" /> : leadingIcon ? <NovaIcon name={leadingIcon} size={16} /> : null}
       {children}
       {trailingIcon ? <NovaIcon name={trailingIcon} size={16} /> : null}
     </button>

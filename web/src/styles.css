@@ -4576,6 +4576,10 @@ body {
   color: var(--text-primary);
 }
 
+.toast-card-repeat { font-size: .75em; font-weight: 500; }
+.ui-button-spinner { flex-shrink: 0; animation: launch-spin 1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .ui-button-spinner { animation: none; } }
+
 .toast-card-detail {
   margin: 0;
   font-size: 0.82rem;

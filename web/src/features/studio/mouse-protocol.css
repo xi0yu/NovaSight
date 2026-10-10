@@ -67,3 +67,5 @@
 .mouse-protocol-select:not(:disabled):hover { background: color-mix(in srgb, var(--protocol-pink) 12%, transparent); }
 .mouse-protocol-card:has(.mouse-protocol-select:focus-visible) { outline: 3px dashed var(--protocol-focus); outline-offset: 7px; }
 .mouse-protocol-configure:focus-visible { outline: 3px dashed var(--protocol-focus); outline-offset: 4px; }
+.mouse-protocol-editor input[aria-invalid="true"] { border-color: var(--status-error-border); outline-color: var(--status-error-icon); }
+.mouse-protocol-editor .protocol-field-error { color: var(--status-error-fg); font-size: 12px; line-height: 1.5; }

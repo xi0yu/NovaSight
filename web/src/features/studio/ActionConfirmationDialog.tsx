@@ -1,7 +1,7 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useId, useRef, type ReactNode } from "react";
 
 import { NovaIcon } from "../../components/visual";
-import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
+import { useDialogInteraction } from "./dialogFocus";
 
 export type ActionConfirmationRequest = {
   eyebrow: string;
@@ -31,33 +31,7 @@ export function ActionConfirmationDialog({
 }) {
   const titleId = useId();
   const dialogRef = useRef<HTMLElement | null>(null);
-  const busyRef = useRef(busy);
-  const onCancelRef = useRef(onCancel);
-  busyRef.current = busy;
-  onCancelRef.current = onCancel;
-
-  useEffect(() => {
-    acquireBodyScrollLock();
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const frame = window.requestAnimationFrame(() => dialogRef.current?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !busyRef.current) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        onCancelRef.current();
-      } else if (event.key === "Tab") {
-        event.stopImmediatePropagation();
-        trapDialogTabKey(event, dialogRef.current);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => {
-      window.cancelAnimationFrame(frame);
-      releaseBodyScrollLock();
-      document.removeEventListener("keydown", onKeyDown, { capture: true });
-      previousFocus?.focus();
-    };
-  }, [request]);
+  useDialogInteraction(dialogRef, true, onCancel, { blocked: busy });
 
   return (
     <div

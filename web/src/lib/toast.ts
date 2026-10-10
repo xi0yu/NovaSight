@@ -34,6 +34,7 @@ const listeners = new Set<Listener>();
 const errorListeners = new Set<Listener>();
 const activityListeners = new Set<Listener>();
 const lastToastAtBySignature = new Map<string, number>();
+const expiryTimers = new Map<number, number>();
 
 function emit(): void {
   for (const listener of listeners) {
@@ -108,6 +109,8 @@ export function useClearActivityNotices(): () => void {
 }
 
 function dismiss(id: number): void {
+  window.clearTimeout(expiryTimers.get(id));
+  expiryTimers.delete(id);
   setToasts(toasts.filter((toast) => toast.id !== id));
 }
 
@@ -147,7 +150,7 @@ function pushToast(toast: Toast, popup: boolean | "feedback" = true): void {
       lastToastAtBySignature.delete(signature);
     }
   }
-  const signature = `${toast.source}\u0000${toast.title}\u0000${toast.detail ?? ""}`;
+  const signature = `${toast.tone}\u0000${toast.source}\u0000${toast.title}\u0000${toast.detail ?? ""}\u0000${toast.status}`;
   if (toast.tone === "info" || toast.tone === "success") {
     activityNotices = [...activityNotices, toast].slice(-MAX_ACTIVITY_NOTICES);
     emitActivities();
@@ -171,16 +174,31 @@ function pushToast(toast: Toast, popup: boolean | "feedback" = true): void {
   }
   // Quiet mode suppresses popups, never the diagnostic history above.
   if (!popup || (popup !== "feedback" && isQuietErrorsEnabled())) return;
+  const repeated = toasts.find((notice) => notice.tone === toast.tone && notice.source === toast.source
+    && notice.title === toast.title && notice.detail === toast.detail && notice.status === toast.status);
+  if (repeated) {
+    window.clearTimeout(expiryTimers.get(repeated.id));
+    setToasts(toasts.map((notice) => notice.id === repeated.id
+      ? { ...notice, count: notice.count + 1, createdAt: toast.createdAt, requestId: toast.requestId }
+      : notice));
+    expiryTimers.set(repeated.id, window.setTimeout(() => dismiss(repeated.id), TOAST_DURATION_MS));
+    lastToastAtBySignature.set(signature, toast.createdAt);
+    return;
+  }
   const previousCreatedAt = lastToastAtBySignature.get(signature);
   if (popup !== "feedback" && previousCreatedAt !== undefined && toast.createdAt - previousCreatedAt <= DUPLICATE_WINDOW_MS) {
     return;
   }
   lastToastAtBySignature.set(signature, toast.createdAt);
   const next = [...toasts, toast].slice(-MAX_TOASTS);
+  for (const removed of toasts.filter((notice) => !next.includes(notice))) {
+    window.clearTimeout(expiryTimers.get(removed.id));
+    expiryTimers.delete(removed.id);
+  }
   setToasts(next);
-  window.setTimeout(() => {
+  expiryTimers.set(toast.id, window.setTimeout(() => {
     dismiss(toast.id);
-  }, TOAST_DURATION_MS);
+  }, TOAST_DURATION_MS));
 }
 
 export function pushToastRaw(toast: Omit<Toast, "id" | "count" | "firstSeenAt" | "createdAt">, popup = true): void {

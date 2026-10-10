@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 
 import { NovaIcon } from "../../components/visual";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -29,6 +29,37 @@ type ActivityFilter = "all" | "error" | "warn" | "success" | "info";
 
 const DEFAULT_MODULES = ["summary", "filters", "feed"];
 
+function ActivityCopy({ item, onInspect }: { item: ActivityItem; onInspect: () => void }) {
+  const [copying, setCopying] = useState(false);
+  const [manualCopy, setManualCopy] = useState(false);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  const text = [item.time ? new Date(item.time).toISOString() : "时间未提供", item.tag || "NovaSight",
+    item.title, item.detail, item.count && item.count > 1 ? `重复 ${item.count} 次` : "",
+    item.requestId ? `排查编号：${item.requestId}` : "", item.technicalDetail].filter(Boolean).join("\n");
+  const copy = async () => {
+    onInspect();
+    setCopying(true);
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(text);
+      setManualCopy(false);
+      reportSuccess("日志已复制", item.title, "activity-copy", "feedback");
+    } catch {
+      setManualCopy(true);
+      window.requestAnimationFrame(() => { textRef.current?.focus(); textRef.current?.select(); });
+    } finally { setCopying(false); }
+  };
+  return <div className="activity-copy">
+    <button className="console-button" type="button" aria-label={`复制日志：${item.title}`} aria-busy={copying} disabled={copying} onClick={() => void copy()}>
+      <NovaIcon name="copy" size={13} />{copying ? "正在复制…" : "复制记录"}
+    </button>
+    {manualCopy ? <div className="activity-copy-manual" role="status">
+      <span>浏览器未允许自动复制。内容已选中，按 Ctrl+C / ⌘C 复制。</span>
+      <textarea ref={textRef} aria-label={`手动复制日志：${item.title}`} readOnly value={text} rows={4} />
+    </div> : null}
+  </div>;
+}
+
 export function ActivityView({
   items,
   onClear,
@@ -52,6 +83,8 @@ export function ActivityView({
   const [clearError, setClearError] = useState("");
   const [source, setSource] = useState("all");
   const [pausedItems, setPausedItems] = useState<ActivityItem[] | null>(null);
+  const listRef = useRef<HTMLElement>(null);
+  const clearingRef = useRef(false);
   const shownItems = pausedItems ?? items;
   const sourceOptions = useMemo(() => [...new Set([...shownItems, ...items].map((item) => item.tag || "NovaSight"))].sort(), [shownItems, items]);
   const pausedKeys = new Set(pausedItems?.map((item) => item.key));
@@ -64,11 +97,13 @@ export function ActivityView({
     && [item.title, item.detail, item.tag, item.requestId, item.technicalDetail].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
   ), [filter, shownItems, query, source]);
   const clearHistory = async () => {
+    if (clearingRef.current) return;
+    clearingRef.current = true;
     setClearing(true);
     setClearError("");
     try { await onClear(); setPausedItems(null); reportSuccess("历史记录已清理", "新事件仍会继续记录。", "activity-clear", "feedback"); }
     catch (error) { setClearError(getErrorMessage(error)); }
-    finally { setClearing(false); }
+    finally { clearingRef.current = false; setClearing(false); }
   };
   const counts = useMemo(() => ({
     all: shownItems.length,
@@ -101,7 +136,10 @@ export function ActivityView({
           <input aria-label="搜索日志" type="search" placeholder="搜索事件、来源或排查编号" value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
         <label className="activity-source">来源<select aria-label="日志来源" value={source} onChange={(event) => setSource(event.target.value)}><option value="all">全部来源</option>{sourceOptions.map((tag) => <option key={tag} value={tag}>{tag}</option>)}</select></label>
-        <button className="console-button" type="button" aria-pressed={pausedItems !== null} onClick={() => setPausedItems(pausedItems ? null : [...items])}>{pausedItems ? `恢复实时${unseenCount > 0 ? ` · ${unseenCount} 条新记录` : ""}` : "暂停查看"}</button>
+        <button className="console-button" type="button" aria-pressed={pausedItems !== null} onClick={() => {
+          if (pausedItems) { listRef.current?.scrollTo({ top: 0 }); setPausedItems(null); }
+          else setPausedItems([...items]);
+        }}>{pausedItems ? `恢复实时${unseenCount > 0 ? ` · ${unseenCount} 条新记录` : ""}` : "暂停查看"}</button>
         <span role="status">{pausedItems ? "已暂停查看 · " : ""}显示 {filteredItems.length} / {shownItems.length} 条</span>
       </div>
       <div className="activity-toolbar">
@@ -134,7 +172,9 @@ export function ActivityView({
       </>
     ),
     feed: (
-      <section className="activity-list" aria-label="实时日志列表">
+      <section className="activity-list" aria-label="实时日志列表" ref={listRef} onScroll={(event) => {
+        if (pausedItems === null && event.currentTarget.scrollTop > 24) setPausedItems([...items]);
+      }}>
         <div className="activity-list-header" aria-hidden="true"><span /><span>等级</span><span>事件</span><span>来源</span><span>时间</span></div>
         <ul className="activity-feed" aria-label="最近活动">
           {filteredItems.length > 0 ? filteredItems.map((item) => (
@@ -144,6 +184,7 @@ export function ActivityView({
               <div className="activity-item-copy">
                 <strong>{item.title}</strong>
                 <p>{item.detail}</p>
+                <ActivityCopy item={item} onInspect={() => { if (pausedItems === null) setPausedItems([...items]); }} />
                 {(item.count ?? 1) > 1 ? <small>本次会话重复 {item.count} 次</small> : null}
                 {item.technicalDetail || item.requestId ? (
                   <details>

@@ -31,7 +31,7 @@ export function ToastHost() {
 
   return (
     <div className="toast-host" role="region" aria-label="系统提示">
-      <output className="toast-host-list" aria-live="polite" aria-relevant="additions">
+      <output className="toast-host-list" aria-live="polite" aria-relevant="additions text">
         {toasts.map((toast) => (
           <article
             key={toast.id}
@@ -54,9 +54,9 @@ export function ToastHost() {
                 ×
               </button>
             </div>
-            <p className="toast-card-title">{toast.title}</p>
+            <p className="toast-card-title">{toast.title}{toast.count > 1 ? <small className="toast-card-repeat"> · {toast.count} 次</small> : null}</p>
             {toast.detail ? <p className="toast-card-detail">{toast.detail}</p> : null}
-            <ToastTimer createdAt={toast.createdAt} />
+            <ToastTimer key={toast.createdAt} createdAt={toast.createdAt} />
             {toast.requestId ? <details className="toast-card-request-id"><summary>排查信息</summary><span>来源：{toast.source}<br />编号：{toast.requestId}</span></details> : null}
           </article>
         ))}

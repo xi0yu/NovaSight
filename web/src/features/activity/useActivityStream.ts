@@ -11,6 +11,7 @@ import { useWorkspaceAuthorization } from "../auth/AuthGate";
 
 const HISTORY_LIMIT = 200;
 const RECONNECT_MAX_MS = 15_000;
+const CONNECT_TIMEOUT_MS = 8000;
 export type ActivityConnectionState = "loading" | "connected" | "disconnected" | "error" | "paused";
 
 function mergeActivityEvent(current: ServerActivityEvent[], event: ServerActivityEvent): ServerActivityEvent[] {
@@ -33,7 +34,9 @@ export function useActivityStream() {
     let active = true;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let connectTimer: number | null = null;
     let reconnectAttempt = 0;
+    let historyFailed = false;
     setState("loading");
     setError("");
 
@@ -42,6 +45,7 @@ export function useActivityStream() {
       setEvents((current) => history.events.reduce(mergeActivityEvent, current));
     }).catch((error: unknown) => {
       if (!active) return;
+      historyFailed = true;
       setState("error");
       setError(error instanceof Error ? error.message : "日志历史未读取成功。");
     });
@@ -60,9 +64,15 @@ export function useActivityStream() {
         return;
       }
       socket = nextSocket;
+      connectTimer = window.setTimeout(() => {
+        if (active && socket === nextSocket) nextSocket.close();
+      }, CONNECT_TIMEOUT_MS);
       nextSocket.onopen = () => {
+        if (!active || socket !== nextSocket) return;
+        if (connectTimer !== null) window.clearTimeout(connectTimer);
         reconnectAttempt = 0;
-        if (active) setState((current) => current === "error" ? current : "connected");
+        setState(historyFailed ? "error" : "connected");
+        if (!historyFailed) setError("");
       };
       nextSocket.onmessage = (message) => {
         if (!active || socket !== nextSocket || typeof message.data !== "string") return;
@@ -77,6 +87,7 @@ export function useActivityStream() {
       };
       nextSocket.onclose = () => {
         if (!active || socket !== nextSocket) return;
+        if (connectTimer !== null) window.clearTimeout(connectTimer);
         socket = null;
         setState("disconnected");
         setError("日志通道已断开，正在自动重试。已有记录不代表实时状态。");
@@ -90,6 +101,7 @@ export function useActivityStream() {
     return () => {
       active = false;
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      if (connectTimer !== null) window.clearTimeout(connectTimer);
       socket?.close(1000, "activity stream suspended");
     };
   }, [authorized, retryIndex]);

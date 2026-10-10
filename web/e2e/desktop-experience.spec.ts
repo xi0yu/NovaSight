@@ -1,6 +1,34 @@
 import { expect, test } from "@playwright/test";
 import { mockStudioApi, openUtility, authenticatedSession } from "./fixtures/studio";
 
+for (const workspace of ["params", "fire"]) {
+  test(`${workspace} waits for actual configuration and offers recovery without editable defaults`, async ({ page }) => {
+    await mockStudioApi(page);
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    let first = true;
+    await page.route("**/api/config", async (route) => {
+      if (first) {
+        first = false;
+        await waiting;
+        return route.fulfill({ status: 503, json: { code: "CONFIG_UNAVAILABLE", message: "配置暂时不可达" } });
+      }
+      return route.fulfill({ json: { revision: 1, pipeline: { target_fov_radius_px: 330 }, control: { fire_stabilization: { enabled: false, strength: 0.6 } } } });
+    });
+    try {
+      await page.goto(`/?page=${workspace}`, { waitUntil: "domcontentloaded" });
+      await expect(page.getByText("正在读取参数配置", { exact: true })).toBeVisible();
+      await expect(page.locator(".console-main input[type=range]")).toHaveCount(0);
+      release();
+      await expect(page.getByText("参数配置未读取", { exact: true })).toBeVisible();
+      await page.getByRole("button", { name: "重新读取参数" }).click();
+      await expect(page.locator(".parameter-config-gate")).toHaveCount(0);
+      const actual = workspace === "params" ? page.getByRole("textbox", { name: "搜索半径 数值" }) : page.getByRole("textbox", { name: "抑制强度 数值" });
+      await expect(actual).toHaveValue(workspace === "params" ? "330" : "0.60");
+    } finally { release(); }
+  });
+}
+
 test("device preview scans a simulated input and saves quality locally without network mutations", { tag: "@mobile" }, async ({ page }) => {
   const requests: string[] = [];
   page.on("request", (request) => { if (/\/(api\/|ws\/|healthz)/.test(request.url())) requests.push(request.url()); });
@@ -106,7 +134,7 @@ test("Studio navigation uses a desktop rail and returns to a top strip on narrow
 });
 
 test("Studio navigation restores each page scroll position", async ({ page }) => {
-  await mockStudioApi(page);
+  await mockStudioApi(page, authenticatedSession, { revision: 1, pipeline: {}, control: { trigger_mode: "always" } });
   await page.goto("/?page=params");
 
   const main = page.locator("main.console-main");

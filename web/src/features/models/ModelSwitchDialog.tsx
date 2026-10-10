@@ -1,4 +1,5 @@
-import type { Ref } from "react";
+import type { RefObject } from "react";
+import { useDialogInteraction } from "../studio/dialogFocus";
 
 export type ModelSwitchDialogStatus = "running" | "success" | "failed";
 
@@ -27,8 +28,9 @@ export function ModelSwitchDialog({
   onClose: () => void;
   open: boolean;
   status: ModelSwitchDialogStatus;
-  dialogRef: Ref<HTMLElement>;
+  dialogRef: RefObject<HTMLElement>;
 }) {
+  useDialogInteraction(dialogRef, open, onClose, { blocked: status === "running" });
   if (!open) return null;
   return (
     <div className="model-switch-dialog-layer">

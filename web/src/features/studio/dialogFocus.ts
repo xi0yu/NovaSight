@@ -1,3 +1,5 @@
+import { useEffect, useRef, type RefObject } from "react";
+
 const FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
   "[href]",
@@ -67,4 +69,68 @@ export function releaseBodyScrollLock(): void {
   if (lockCount === 0) {
     document.body.style.overflow = savedOverflow;
   }
+}
+const dialogStack: HTMLElement[] = [];
+const inertLocks = new Map<HTMLElement, { count: number; previous: boolean }>();
+
+export function useDialogInteraction(
+  dialogRef: RefObject<HTMLElement>,
+  open: boolean,
+  onDismiss: () => void,
+  options: { blocked?: boolean; initialFocus?: string } = {},
+): void {
+  const latest = useRef({ onDismiss, ...options });
+  latest.current = { onDismiss, ...options };
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!open || !dialog) return;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const workspace = dialog.closest(".console-app");
+    // Keep the emergency-stop toolbar reachable while ordinary workspace controls are inert.
+    const background: HTMLElement[] = [];
+    if (workspace) {
+      for (let layer: HTMLElement = dialog; layer !== workspace && layer.parentElement; layer = layer.parentElement) {
+        for (const sibling of Array.from(layer.parentElement.children)) {
+          if (sibling instanceof HTMLElement && sibling !== layer && !sibling.querySelector(".console-emergency-stop")) background.push(sibling);
+        }
+      }
+    }
+    for (const element of background) {
+      const lock = inertLocks.get(element) ?? { count: 0, previous: element.inert };
+      lock.count += 1;
+      inertLocks.set(element, lock);
+      element.inert = true;
+    }
+    acquireBodyScrollLock();
+    dialogStack.push(dialog);
+    const target = latest.current.initialFocus ? dialog.querySelector<HTMLElement>(latest.current.initialFocus) : null;
+    (target ?? dialog).focus();
+    const keydown = (event: KeyboardEvent) => {
+      if (dialogStack[dialogStack.length - 1] !== dialog) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!latest.current.blocked) latest.current.onDismiss();
+      } else if (event.key === "Tab") {
+        event.stopImmediatePropagation();
+        trapDialogTabKey(event, dialog);
+      }
+    };
+    document.addEventListener("keydown", keydown, { capture: true });
+    return () => {
+      document.removeEventListener("keydown", keydown, { capture: true });
+      const wasTop = dialogStack[dialogStack.length - 1] === dialog;
+      dialogStack.splice(dialogStack.indexOf(dialog), 1);
+      releaseBodyScrollLock();
+      for (const element of background) {
+        const lock = inertLocks.get(element)!;
+        lock.count -= 1;
+        if (lock.count === 0) { element.inert = lock.previous; inertLocks.delete(element); }
+      }
+      if (wasTop) {
+        if (previousFocus?.isConnected && !previousFocus.closest("[inert]")) previousFocus.focus();
+        else dialogStack[dialogStack.length - 1]?.focus();
+      }
+    };
+  }, [dialogRef, open]);
 }

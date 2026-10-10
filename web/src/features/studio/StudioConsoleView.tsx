@@ -105,7 +105,7 @@ import { StudioPageHeader } from "./StudioPageHeader";
 import { KvCard, Metric, SectionTitle, WorkspaceNotice } from "./StudioPresentation";
 import { StudioRuntimeBar } from "./StudioRuntimeBar";
 import { SettingsView } from "./SettingsView";
-import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
+import { useDialogInteraction } from "./dialogFocus";
 import {
   buildLaunchReadiness,
   type LaunchReadinessAction
@@ -179,10 +179,14 @@ const ModelWorkspace = lazy(() =>
 );
 
 function ModelManagerLoadingDialog({ onClose }: { onClose: () => void }) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useDialogInteraction(dialogRef, true, onClose);
   return (
     <div className="model-manager-dialog-layer">
       <section
         aria-labelledby="model-manager-loading-title"
+        ref={dialogRef}
+        tabIndex={-1}
         aria-modal="true"
         className="model-manager-dialog"
         role="dialog"
@@ -1089,54 +1093,10 @@ export function StudioConsoleView({
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
-  useEffect(() => {
-    if (!errorCenterOpen) {
-      return undefined;
-    }
-    acquireBodyScrollLock();
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    // Save the frame id and cancel on cleanup so a fast close (Escape or
-    // backdrop click immediately after open) doesn't yank focus back into the
-    // just-closed dialog on the next frame.
-    const focusFrame = window.requestAnimationFrame(() => errorCenterDialogRef.current?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setErrorCenterOpen(false);
-      } else {
-        trapDialogTabKey(event, errorCenterDialogRef.current);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.cancelAnimationFrame(focusFrame);
-      releaseBodyScrollLock();
-      document.removeEventListener("keydown", onKeyDown);
-      previousFocus?.focus();
-    };
-  }, [errorCenterOpen]);
-
-  useEffect(() => {
-    if (!classConfigDialogOpen) {
-      return undefined;
-    }
-    acquireBodyScrollLock();
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const focusFrame = window.requestAnimationFrame(() => classConfigDialogRef.current?.focus());
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        void requestDismissConfigDialog("class-config");
-      } else {
-        trapDialogTabKey(event, classConfigDialogRef.current);
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.cancelAnimationFrame(focusFrame);
-      releaseBodyScrollLock();
-      document.removeEventListener("keydown", onKeyDown);
-      previousFocus?.focus();
-    };
-  }, [classConfigDialogOpen, requestDismissConfigDialog]);
+  useDialogInteraction(errorCenterDialogRef, errorCenterOpen, () => setErrorCenterOpen(false));
+  useDialogInteraction(classConfigDialogRef, classConfigDialogOpen,
+    () => { void requestDismissConfigDialog("class-config"); },
+    { blocked: parameterPageSaving || pendingConfigWriteCount > 0 });
 
   const runtimeTransportConfidence: RuntimeTransportConfidence =
     realtimeStatus === "connected" || realtimeStatus === "fallback" ? "current"
@@ -3487,6 +3447,17 @@ export function StudioConsoleView({
           inferenceStatus={inferenceStatusText}
         />
 
+        {(activePage === "params" || activePage === "fire") && runtimeConfig === null && !previewOnly ? (
+          <section className="parameter-config-gate" aria-busy={!errors.config}>
+            <WorkspaceNotice icon={errors.config ? "signal-lost" : "settings"}
+              title={errors.config ? "参数配置未读取" : "正在读取参数配置"}
+              detail={errors.config ? `${errors.config}。重新读取后即可编辑。` : "设备配置到达后再显示实际参数。"}
+              action={errors.config ? <button className="console-button primary" type="button" onClick={() => void onRefresh()}>重新读取参数</button> : undefined} />
+            {activePage === "params" ? <nav className="algorithm-model-link" aria-label="算法使用的模型"><span><NovaIcon name="models" size={18} /><small>当前模型</small><b>{activeModelName}</b></span><button className="console-button" type="button" onClick={() => navigatePage("models")}>管理模型</button></nav> : null}
+            {!errors.config ? <div className="parameter-config-skeleton" aria-hidden="true"><span /><span /><span /></div> : null}
+          </section>
+        ) : null}
+
         {activePage === "overview" ? (
           <>
             <HomeWelcome
@@ -4183,7 +4154,7 @@ export function StudioConsoleView({
           </section>
         ) : null}
 
-        {activePage === "fire" ? <section className="console-page">
+        {activePage === "fire" && (runtimeConfig !== null || previewOnly) ? <section className="console-page">
           {parameterPageDirty ? <div className="parameter-save-bar dirty">
             <span className="parameter-save-bar-icon" aria-hidden="true"><NovaIcon name="save" size={18} /></span>
             <div aria-live="polite" role="status"><b>{previewOnly ? "预览修改已保留" : parameterPageSaving ? "正在自动保存并应用" : dialogSaveError ? "自动保存失败，修改已保留" : "修改等待自动保存"}</b><small>{previewOnly ? "仅保留当前页面，不写入设备文件。" : "日常参数自动更新运行时并写入配置文件。"}</small></div>
@@ -4202,7 +4173,7 @@ export function StudioConsoleView({
           />
         </section> : null}
 
-        {activePage === "params" || activePage === "control-test" ? (
+        {(activePage === "params" && (runtimeConfig !== null || previewOnly)) || activePage === "control-test" ? (
           <section className="console-page">
           {activePage === "params" ? (
           <>

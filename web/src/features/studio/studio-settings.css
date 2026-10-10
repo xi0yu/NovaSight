@@ -2895,3 +2895,8 @@
 .device-workspace-links small { color: var(--text-tertiary); font-size: 11px; }
 .device-workspace-links b { color: var(--text-primary); font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .device-workspace-links .console-button { min-height: 44px; } }
+.parameter-config-gate { display: grid; gap: 18px; width: 100%; max-width: 1100px; margin-inline: auto; }
+.parameter-config-skeleton { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.parameter-config-skeleton span { height: 180px; border-radius: var(--radius-4); background: var(--bg-subtle); animation: image-placeholder-pulse 1.6s ease-in-out infinite; }
+@media (max-width: 760px) { .parameter-config-skeleton { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .parameter-config-skeleton span { animation: none; } }

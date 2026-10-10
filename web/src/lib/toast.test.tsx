@@ -178,7 +178,7 @@ it("shows red validation failure and green completion feedback even in quiet mod
   }
 });
 
-it("delivers every explicit action feedback while deduplicating passive notices", () => {
+it("merges repeated action feedback and passive notices without mixing their outcomes", () => {
   const { result } = renderHook(() => ({ toasts: useToasts(), dismiss: useDismissToast() }));
   try {
     act(() => {
@@ -188,9 +188,31 @@ it("delivers every explicit action feedback while deduplicating passive notices"
       reportSuccess("后台状态更新", "same status", "passive-feedback-test");
       reportSuccess("后台状态更新", "same status", "passive-feedback-test");
     });
-    expect(result.current.toasts.map((toast) => toast.title)).toEqual(["协议已启用", "协议已启用", "后台状态更新"]);
+    expect(result.current.toasts.map((toast) => [toast.title, toast.count])).toEqual([["协议已启用", 2], ["后台状态更新", 2]]);
   } finally {
     act(() => { for (const toast of result.current.toasts) result.current.dismiss(toast.id); });
+  }
+});
+
+it("gives merged feedback three seconds from the latest occurrence", () => {
+  vi.useFakeTimers();
+  const { result } = renderHook(() => ({ toasts: useToasts(), dismiss: useDismissToast() }));
+  const view = render(<ToastHost />);
+  try {
+    act(() => { for (const toast of result.current.toasts) result.current.dismiss(toast.id); });
+    act(() => reportSuccess("保存完成", "已确认", "merged-expiry", "feedback"));
+    act(() => vi.advanceTimersByTime(2000));
+    act(() => reportSuccess("保存完成", "已确认", "merged-expiry", "feedback"));
+    expect(result.current.toasts).toHaveLength(1);
+    expect(view.getByText("· 2 次")).toBeVisible();
+    expect(view.getByText("3 秒后关闭")).toBeVisible();
+    act(() => vi.advanceTimersByTime(2999));
+    expect(result.current.toasts).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(1));
+    expect(result.current.toasts).toHaveLength(0);
+  } finally {
+    act(() => { for (const toast of result.current.toasts) result.current.dismiss(toast.id); });
+    vi.useRealTimers();
   }
 });
 

@@ -288,7 +288,8 @@ test("mouse protocol preview adds cards locally without device API traffic", { t
   await page.getByRole("button", { name: "空", exact: true }).click();
   await expect(page.locator(".toast-card.tone-success").filter({ hasText: "协议已取消" })).toBeVisible();
   await card.getByRole("button", { name: /kmBox NetPro8K ·/ }).click();
-  await expect(page.locator(".toast-card.tone-success").filter({ hasText: "协议已启用" })).toHaveCount(2);
+  await expect(page.locator(".toast-card.tone-success").filter({ hasText: "协议已启用" })).toHaveCount(1);
+  await expect(page.locator(".toast-card.tone-success").filter({ hasText: "协议已启用" })).toContainText("2 次");
   await page.getByRole("button", { name: "配置协议", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "配置协议" }).getByRole("button", { name: "测试连通性" })).toBeDisabled();
   const editDialog = page.getByRole("dialog", { name: "配置协议" });
