@@ -184,10 +184,10 @@ describe("ModelSelectionPanel", () => {
     expect(screen.queryByRole("button", { name: "验证并切换到所选模型" })).not.toBeInTheDocument();
   });
 
-  it("does not call an active but unverified model qualified", () => {
-    render(<ModelWorkspace activeModelName="test" activeArtifactStatus="failed" onOpenInference={vi.fn()}
+  it("keeps the running model visible while the catalog is loading", () => {
+    render(<ModelWorkspace activeModelName="test" onOpenInference={vi.fn()}
       panelProps={panelProps({ activeArtifactPath: "stable.engine", activeLoaded: true })} />);
-    expect(screen.getByText("待验证")).toBeVisible();
+    expect(screen.getByText("运行已装载")).toBeVisible();
     expect(screen.queryByText("已有验证记录")).not.toBeInTheDocument();
   });
 

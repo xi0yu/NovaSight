@@ -253,7 +253,7 @@ export function ModelSelectionPanel({
         : "按模型自动选择";
   const previewInputShape = selectedVersion?.input_shape ||
     (selectedIsActive ? runtimeInputShape : "") ||
-    "切换时验证输入输出";
+    "选择后检查适配";
   const switchLabel = busy === "model.switch"
     ? "正在验证并切换..."
     : selectedIsActive ? "已是当前部署模型" : "验证并切换到所选模型";
@@ -268,12 +268,12 @@ export function ModelSelectionPanel({
   useEffect(() => () => onDraftChange?.(false), [onDraftChange]);
   const metadataEditable = selectedModel?.kind === "engine" && busy === null;
   const selectionHiddenByFilter = selectedModel !== null && !filteredModels.some((model) => model.relative_path === selectedModel.relative_path);
-  const selectedProject = selectedModel?.project_name ?? (selectedModel?.kind === "engine" ? "首次保存整理或切换时登记" : "不适用");
+  const selectedProject = selectedModel?.project_name ?? (selectedModel?.kind === "engine" ? "选择后自动整理" : "不适用");
   const selectedPreparation = selectedModel?.kind !== "engine"
     ? "当前主链不支持"
     : selectedModel?.artifact_status === "ready"
-      ? "有验证记录 · 切换时复核"
-      : "切换时验证";
+      ? "可选择 · 切换前检查适配"
+      : "切换时检查";
   const saveMetadata = () => {
     const tags = pendingTagIsNew ? [...draftTags, pendingTag] : draftTags;
     setDraftTags(tags);
@@ -480,6 +480,7 @@ export function ModelSelectionPanel({
               </select>
             </label>
           </div>
+          {reading && root ? <p className="model-list-refreshing" role="status"><NovaIcon name="refresh" size={16} />正在更新模型列表，已有文件保留显示</p> : null}
           {root && catalogError ? <div className="model-catalog-stale" role="alert">
             <strong>刷新失败 · 显示上次读取的文件</strong>
             <p>{catalogError}</p><small>重新读取成功前，暂不允许切换模型。</small>
@@ -617,7 +618,7 @@ export function ModelSelectionPanel({
               </div>
               <div>
                 <dt>切换准备</dt>
-                <dd>{selectedArtifact ? modelStatusLabel(selectedArtifact.status) : selectedModel?.kind === "engine" ? "后缀已接受，切换时验证" : "不可加载"}</dd>
+                <dd>{selectedArtifact ? modelStatusLabel(selectedArtifact.status) : selectedModel?.kind === "engine" ? "切换时检查兼容性" : "不可加载"}</dd>
               </div>
               <div className="wide model-parser-preset">
                 <dt>解析格式</dt>

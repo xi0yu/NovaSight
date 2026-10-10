@@ -7,9 +7,18 @@
     <meta name="color-scheme" content="light" />
     <meta name="description" content="NovaSight 本地视觉控制工作台" />
     <title>NovaSight Studio</title>
+    <link rel="stylesheet" href="/src/components/startup-screen.css" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="startup-screen" role="status" aria-label="正在打开 NovaSight">
+        <div class="startup-screen-content">
+          <span class="startup-screen-mark" aria-hidden="true"><svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15c2-5 4-5 6-1s4 4 6-1 3-5 4-4"/><path d="M4 18c5-1 9-2 16-9" opacity="0.55"/></svg></span>
+          <h2>NovaSight Studio</h2><p>正在打开你的工作台…</p>
+          <span class="startup-screen-progress" aria-hidden="true"></span>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

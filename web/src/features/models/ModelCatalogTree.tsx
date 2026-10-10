@@ -156,7 +156,7 @@ function ModelCatalogRow({
         {model.recommendation === "recommended" ? <Badge tone="good">推荐</Badge> : null}
         {model.recommendation === "not_recommended" ? <Badge tone="warn">不推荐</Badge> : null}
         <StatusIndicator tone={modelStatusTone(status)}>
-          {model.artifact_id ? modelStatusLabel(status) : "未登记"}
+          {model.artifact_id ? modelStatusLabel(status) : model.kind === "engine" ? "切换时检查" : "仅供查看"}
         </StatusIndicator>
       </aside>
     </button>

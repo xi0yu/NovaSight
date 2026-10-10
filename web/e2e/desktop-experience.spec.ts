@@ -75,7 +75,7 @@ test("conditional UI preview stays isolated and exposes recoverable states", { t
   await page.getByRole("searchbox").fill("");
   await page.screenshot({ path: testInfo.outputPath("activity-states.png"), animations: "disabled" });
   await choose.selectOption("settings-unavailable");
-  await expect(page.getByRole("status")).toContainText("设置未读取");
+  await expect(page.getByRole("status")).toContainText("正在读取设置");
   await choose.selectOption("models-stale");
   await expect(page.getByRole("alert")).toContainText("显示上次读取的文件");
   await expect(page.getByRole("button", { name: "验证并切换到所选模型" })).toBeDisabled();
@@ -220,7 +220,7 @@ test("Studio action feedback respects reduced motion, transparency and higher co
   await mockStudioApi(page);
   await page.goto("/?page=overview");
 
-  const action = page.locator(".console-button:visible:not(:disabled)").first();
+  const action = page.getByRole("button", { name: "选择画面设备", exact: true });
   await action.scrollIntoViewIfNeeded();
   const session = await page.context().newCDPSession(page);
   await session.send("Emulation.setEmulatedMedia", {
@@ -320,7 +320,7 @@ test("utility dialogs preserve the workspace and keep output last in the busines
   await page.keyboard.press("Tab");
   await expect(settings.getByRole("button", { name: "关闭设置" })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
-  await expect(settings.locator("summary")).toBeFocused();
+  await expect(settings.getByRole("button", { name: "查看问题记录" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(settings).toHaveCount(0);
   await expect(page.viewportSize()!.width <= 1024 ? navigation.getByRole("button", { name: "更多" }) : settingsButton).toBeFocused();
@@ -330,10 +330,10 @@ test("utility dialogs preserve the workspace and keep output last in the busines
   const about = page.getByRole("dialog", { name: "关于 NovaSight", exact: true });
   await expect(about).toBeVisible();
   await expect(about.getByText(/产品信息 · 版本/)).toBeVisible();
-  const scope = about.getByRole("region", { name: "授权范围", exact: true });
-  await expect(scope.getByText("采集与运行")).toBeVisible();
-  await expect(scope.getByText("模型与推理")).toBeVisible();
-  await expect(scope.getByText("控制与配置")).toBeVisible();
+  const scope = about.getByRole("region", { name: "你的专属能力", exact: true });
+  await expect(scope.getByText("看清每一帧")).toBeVisible();
+  await expect(scope.getByText("拓展你的视觉能力")).toBeVisible();
+  await expect(scope.getByText("打造你的工作台")).toBeVisible();
   await expect(scope.getByText("画面采集")).toBeVisible();
   await expect(scope.getByText("硬件控制")).toHaveCount(0);
   await expect(about.getByText("开发者诊断与凭证追踪码")).toHaveCount(0);
@@ -342,7 +342,11 @@ test("utility dialogs preserve the workspace and keep output last in the busines
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
   expect(await about.evaluate((element) => element.scrollWidth)).toBeLessThanOrEqual(Math.ceil(box.width));
-  await about.getByRole("button", { name: "打开实时日志" }).click();
+  await expect(about.getByRole("button")).toHaveCount(1);
+  await expect(about.getByText("界面组件许可")).toHaveCount(0);
+  await about.getByRole("button", { name: "关闭关于" }).click();
+  await openUtility(page, "设置");
+  await page.getByRole("button", { name: "查看问题记录" }).click();
   await expect(about).toHaveCount(0);
   await expect(main).toHaveAttribute("data-page", "activity");
   await page.goBack();

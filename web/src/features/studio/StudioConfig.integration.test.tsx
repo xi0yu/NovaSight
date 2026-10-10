@@ -230,7 +230,7 @@ describe("Runtime control and physical-output consent", () => {
     await userEvent.click(control);
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "关于 NovaSight" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "设备授权" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "设备授权摘要" })).toBeVisible();
     expect(location.search).toBe("?page=overview");
   });
 
@@ -738,7 +738,11 @@ describe("Settings and authorization navigation", () => {
     await userEvent.click(screen.getByRole("button", { name: "关于" }));
     const about = screen.getByRole("dialog", { name: "关于 NovaSight" });
     expect(main).toHaveAttribute("data-page", "params");
-    await userEvent.click(within(about).getByRole("button", { name: "打开实时日志" }));
+    expect(within(about).queryByRole("button", { name: "退出当前授权" })).not.toBeInTheDocument();
+    expect(within(about).queryByText("界面组件许可")).not.toBeInTheDocument();
+    await userEvent.click(within(about).getByRole("button", { name: "关闭关于" }));
+    await userEvent.click(screen.getByRole("button", { name: "设置" }));
+    await userEvent.click(screen.getByRole("button", { name: "查看问题记录" }));
     expect(screen.queryByRole("dialog", { name: "关于 NovaSight" })).not.toBeInTheDocument();
     expect(main).toHaveAttribute("data-page", "activity");
   });

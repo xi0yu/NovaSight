@@ -2,12 +2,10 @@ import { ModelSelectionPanel, type ModelSelectionPanelProps } from "./ModelSelec
 
 export function ModelWorkspace({
   activeModelName,
-  activeArtifactStatus,
   onOpenInference,
   panelProps,
 }: {
   activeModelName: string;
-  activeArtifactStatus: string | null;
   onOpenInference: () => void;
   panelProps: ModelSelectionPanelProps;
 }) {
@@ -25,10 +23,8 @@ export function ModelWorkspace({
           </div>
           <b title={panelProps.activeArtifactPath}>{activeFile || "尚未部署模型"}</b>
           <div className="model-production-slot-facts">
-            <span title={activeModelName}>项目 <strong>{activeModelName}</strong></span>
-            <span>验证 <strong>{activeArtifactStatus === "ready" ? "已有验证记录" : "待验证"}</strong></span>
-            <span>输入 <strong>{panelProps.runtimeInputShape || "未上报"}</strong></span>
-            <span>后端 <strong>{panelProps.runtimeBackend || "未上报"}</strong></span>
+            <span title={activeModelName}>分组 <strong>{activeModelName}</strong></span>
+            <span>识别尺寸 <strong>{panelProps.runtimeInputShape || "未上报"}</strong></span>
           </div>
           <button className="console-button secondary" onClick={onOpenInference} type="button">
             {activeFile ? "查看实时推理" : "查看推理状态"}

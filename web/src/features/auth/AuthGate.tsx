@@ -20,6 +20,7 @@ import {
   logoutAuthSession
 } from "../../api";
 import { Button, LoadedImage } from "../../components/ui";
+import { StartupScreen } from "../../components/StartupScreen";
 import { NovaIcon } from "../../components/visual";
 import { reportError, reportInfo } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
@@ -344,11 +345,9 @@ export function AuthGate({ children }: AuthGateProps) {
         </aside> : null}
         {children}
       </div> : null}
-      {!workspaceOpened && !needsAuthorization ? <main className="auth-shell"><section className="auth-card" role="status">
-        <h2>{authState === "reconnecting" ? "正在恢复连接" : "正在连接 NovaSight"}</h2>
-        <p>连接后自动恢复，无需重新输入授权码。</p>
-        <Button variant="secondary" onClick={() => void refreshSession()}>重新连接</Button>
-      </section></main> : null}
+      {!workspaceOpened && !needsAuthorization ? <StartupScreen message={authState === "reconnecting" ? "正在恢复连接，你的授权与页面会保留" : undefined}>
+        {authState === "reconnecting" ? <Button variant="secondary" onClick={() => void refreshSession()}>重新连接</Button> : null}
+      </StartupScreen> : null}
       {login}
     </WorkspaceRecovery.Provider>
   </WorkspaceAuthorization.Provider>;

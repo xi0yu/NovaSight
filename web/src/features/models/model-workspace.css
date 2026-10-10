@@ -166,3 +166,5 @@
   .model-selection-prompt { min-height: 160px; }
 }
 @media (max-width: 620px) { .model-vault-search-row { grid-template-columns: minmax(0, 1fr); } }
+
+.model-list-refreshing { display: flex; align-items: center; gap: 8px; margin: 0; padding: 12px 16px; color: var(--text-secondary); font-size: 14px; line-height: 22px; background: var(--status-running-bg); }

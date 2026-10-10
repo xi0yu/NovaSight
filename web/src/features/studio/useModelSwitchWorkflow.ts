@@ -53,16 +53,6 @@ type UseModelSwitchWorkflowInput = {
   setSelectedModelVersionId: (id: number | "") => void;
 };
 
-function parserOutputFamilyLabel(outputFamily: string | undefined): string {
-  if (outputFamily === "yolov5") {
-    return "YOLO v5 解析格式";
-  }
-  if (outputFamily === "yolov8_yolo11") {
-    return "YOLO v8 / v11 解析格式";
-  }
-  return "";
-}
-
 export function useModelSwitchWorkflow({
   applyModelCatalogResult,
   onRefresh,
@@ -102,7 +92,7 @@ export function useModelSwitchWorkflow({
     setSelectedModelProjectId(registered.project.id);
     setSelectedModelVersionId(registered.version.id);
     setSelectedModelArtifactId(registered.artifact.id);
-    setModelCatalogMessage(`已登记模型引用：${model.relative_path}；Engine 文件保持原位。`);
+    setModelCatalogMessage(`模型已加入列表：${model.relative_path}；文件保留在原位置。`);
     return {
       artifactId: registered.artifact.id,
       created: registered.created,
@@ -146,13 +136,13 @@ export function useModelSwitchWorkflow({
         try {
           applyModelCatalogResult(await getModelCatalog(false));
         } catch {
-          detail = "；模型列表也未能重新读取，请点击“刷新模型”核对登记状态";
+          detail = "；模型列表也未能重新读取，请点击“刷新模型”核对文件状态";
         }
       }
       setLocalError(metadataSaved
         ? `模型标签已保存，但页面更新失败：${getErrorMessage(err)}。请点击“刷新模型”核对。`
         : registered
-          ? `模型引用已登记，标签保存结果未确认：${getErrorMessage(err)}${detail}。当前整理输入已保留。`
+          ? `模型已加入列表，标签保存结果未确认：${getErrorMessage(err)}${detail}。当前整理输入已保留。`
           : `模型整理结果保存失败：${getErrorMessage(err)}`);
       reportError(err, { source: "model-metadata", title: "模型整理失败" });
     } finally {
@@ -186,14 +176,14 @@ export function useModelSwitchWorkflow({
     setStageIndex(0);
     setCompletedStages(0);
     setDialogError("");
-    setProgressDetail("已按 .engine 后缀接受候选，准备登记模型引用。");
+    setProgressDetail("已选择模型文件，正在准备使用。");
     try {
       setCompletedStages(1);
       setStageIndex(1);
       if (typeof model.project_id !== "number" || typeof model.artifact_id !== "number") {
-        setProgressDetail("模型尚未登记，正在建立轻量文件引用；此步骤不会读取 Engine 内容。");
+        setProgressDetail("正在整理所选模型，随后由设备检查兼容性。");
       } else {
-        setProgressDetail("已找到现有模型登记，跳过重复登记。");
+        setProgressDetail("所选模型已准备，正在交给设备检查。");
       }
       const { projectId, artifactId } = await ensureCatalogModelRegistration(model);
       setCompletedStages(2);
@@ -209,20 +199,11 @@ export function useModelSwitchWorkflow({
       if (!response.report.applied && !activeNoOp) {
         throw new Error(response.report.message);
       }
-      const parserLabel = parserOutputFamilyLabel(response.parser_contract?.output_family);
       const switchSummary = activeNoOp
-        ? "所选模型已是当前模型，运行态保持不变"
-        : response.report.message;
-      const manifestSummary = response.preparation.manifest_action === "generated"
-        ? "已自动生成运行配置"
-        : response.preparation.manifest_action === "reused"
-          ? "已复用匹配的运行配置"
-          : "运行配置保持不变";
-      setMessage(
-        parserLabel
-          ? `${switchSummary} · 已验证 ${parserLabel} · NovaSight 内置解析器`
-          : switchSummary
-      );
+        ? "所选模型已在使用，保持当前运行状态"
+        : "模型已切换，可在设备页查看识别画面";
+      const manifestSummary = "模型设置已准备";
+      setMessage(switchSummary);
       setCompletedStages(MODEL_SWITCH_STAGE_COUNT);
       setStageIndex(MODEL_SWITCH_STAGE_COUNT - 1);
       setDialogStatus("success");
@@ -274,11 +255,11 @@ export function useModelSwitchWorkflow({
       eyebrow: runtimeMainlineRunning ? "运行中切换模型" : "部署模型",
       title: runtimeMainlineRunning ? "停止并重启推理主链？" : "验证并部署所选模型？",
       description: runtimeMainlineRunning
-        ? "当前主链正在运行。模型发布会停止现有管线、验证所选 Engine，并在成功后使用新模型重新启动。"
-        : "将验证所选 Engine 并保存为当前模型；主链保持停止，下一次启动时使用它。",
+        ? "当前主链正在运行。切换会停止当前识别，检查模型兼容性，成功后用新模型恢复识别。"
+        : "将检查并保存所选模型；设备保持停止，下次启动时使用它。",
       details: [
         `所选模型：${candidatePath}`,
-        ...(needsRegistration ? ["首次使用会登记此 Engine 的路径引用；登记后不能直接移动或改名文件。"] : []),
+        ...(needsRegistration ? ["使用后请保留模型文件的位置与名称，否则下次无法找到它。"] : []),
         physicalOutputEnabled
           ? "当前物理输出已开启。确认后，切换或失败回滚可能重新开启设备输出；请确保设备有人看管。"
           : runtimeMainlineRunning

@@ -26,17 +26,17 @@ export function modelStatusTone(status: string): "good" | "warn" | "bad" | "idle
 
 export function modelStatusLabel(status: string): string {
   const labels: Record<string, string> = {
-    ready: "有验证记录",
-    pending: "待验证",
+    ready: "可选择",
+    pending: "切换时检查",
     running: "处理中",
-    need_confirm: "切换时验证",
-    invalid: "无效",
-    failed: "失败",
+    need_confirm: "切换时检查",
+    invalid: "模型不可用",
+    failed: "处理未完成",
     unsupported: "不支持"
   };
-  return labels[status] ?? status;
+  return labels[status] ?? "待确认";
 }
 
 export function artifactStatus(artifact: ModelArtifact | null): string {
-  return artifact?.status ?? "未登记";
+  return artifact?.status ?? "pending";
 }

@@ -313,12 +313,10 @@ export function AboutView({
   licenseContent,
   serviceConnected,
   modules,
-  onNavigate,
 }: {
   licenseContent?: ReactNode;
   serviceConnected: boolean;
   modules: readonly string[];
-  onNavigate: Navigate;
 }) {
   const moduleViews: Record<string, ReactNode> = {
     identity: (
@@ -336,12 +334,7 @@ export function AboutView({
       </header>
     ),
     version: licenseContent ? <section className="about-license" aria-label="授权与设备">{licenseContent}</section> : null,
-    support: (
-      <footer className="about-actions">
-        <button className="console-button primary" onClick={() => onNavigate("activity")} type="button">打开实时日志</button>
-        <a className="console-button" href="/third-party-ui.txt" target="_blank" rel="noreferrer">界面组件许可</a>
-      </footer>
-    ),
+
   };
   return (
     <section className="product-journey about-view" aria-labelledby="about-product-title">

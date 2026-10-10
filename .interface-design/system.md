@@ -57,7 +57,7 @@ Professional information is not removed. It is revealed in response to user inte
 
 - Platform typography first: SF Pro / system UI / Noto Sans SC / PingFang SC.
 - Large headings use tighter tracking; body copy uses comfortable leading.
-- The shipped Studio appearance is **Arena Signal**: warm white `#f4f1ec` canvas, clean `#fffefa` surfaces, ink `#1b1a18`, action red `#d8273f`, attention yellow `#f0bd2c`, verified green `#29975a`, and live teal `#147c87`.
+- Historical direction, superseded by Nova Daylight in 1.10.535: **Arena Signal**: warm white `#f4f1ec` canvas, clean `#fffefa` surfaces, ink `#1b1a18`, action red `#d8273f`, attention yellow `#f0bd2c`, verified green `#29975a`, and live teal `#147c87`.
 - Color communicates state. Black and gray carry information, red marks the primary target or physical risk, yellow marks progress and attention, green verifies success, and teal marks a live signal. No decorative purple-blue AI gradients.
 - Competitive character comes from asymmetric rails, clipped corners, signal ticks, and disciplined high contrast—not copied game art, ornamental glow, or a card wall.
 - Do not expose a theme chooser. One coherent product appearance is easier to recognize, test, and maintain than three partial skins.
@@ -102,7 +102,7 @@ Professional information is not removed. It is revealed in response to user inte
 - Equal card walls, giant KPI numbers, dense filters, and database-first model views.
 - AI-template gradients, stars, glassmorphism, oversized shadows, and decorative animation.
 - Hiding primary actions inside tabs, hover-only controls, or unexplained icon menus.
-- Marketing copy where a direct status is clearer.
+- Marketing that invents capabilities, tiers, performance or verification.
 
 ## Shipping checks
 
@@ -112,3 +112,11 @@ Professional information is not removed. It is revealed in response to user inte
 - **Runtime honesty check:** is every displayed fact labeled as runtime, saved configuration, requested state, or diagnostic evidence?
 - **Discoverability check:** are first-layer tasks visible without guessing a sub-tab or menu?
 - **Browser check:** verify desktop and narrow layouts, keyboard focus, real state transitions, errors, and zero horizontal overflow.
+
+## Studio 1.10.535 frozen product direction
+
+Follow `docs/designs/studio-product-contract-1.10.535.md` and the auth session contract. Current Studio uses Nova Daylight tokens, pink action accents, blue live-state accents, soft surfaces and the existing original chibi artwork. Desktop is the primary canvas; mobile must remain safe and usable.
+
+About presents product identity, version, machine authorization and benefits filtered by actual rights. It has only the standard close control. Authorization management belongs in Settings. Ordinary parameter saves retain the established save/apply behavior. Settings separates backup, restore, authorization management and recent issue records. Local history is limited to 200 notices and is not a permanent server audit.
+
+Startup uses one visual through identity, license and application loading. Model lists keep old content during refresh and describe actual readiness. Device inputs remain disabled until a current capability check proves availability. Commercial expression may celebrate confirmed rights; actions and faults use direct language.

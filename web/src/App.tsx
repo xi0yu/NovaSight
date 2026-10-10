@@ -26,6 +26,7 @@ import {
   getRuntimeState,
   statusWebSocketUrl,
 } from "./api";
+import { StartupScreen } from "./components/StartupScreen";
 import { ToastHost } from "./components/ToastHost";
 import { BuildUpdateNotice } from "./features/auth/BuildUpdateNotice";
 import { AuthGate, useWorkspaceAuthorization, useWorkspaceRecovery } from "./features/auth/AuthGate";
@@ -202,22 +203,11 @@ const LastUpdatedText = memo(function LastUpdatedText({ date }: { date: Date | n
   return <span className="last-updated">更新于 {formatTime(displayed)}</span>;
 });
 
-const StudioConsoleView = lazy(() =>
-  import("./features/studio/StudioConsoleView").then((module) => ({
-    default: module.StudioConsoleView
-  }))
-);
-function RouteLoadingShell() {
-  return (
-    <main className="route-loading-shell" role="status">
-      <span className="route-loading-mark" aria-hidden="true" />
-      <strong>NovaSight Studio</strong>
-      <small>正在载入控制台…</small>
-    </main>
-  );
-}
+const loadStudioConsole = () => import("./features/studio/StudioConsoleView").then((module) => ({ default: module.StudioConsoleView }));
+const StudioConsoleView = lazy(loadStudioConsole);
 
 export default function App() {
+  useEffect(() => { void loadStudioConsole().catch(() => undefined); }, []);
   return (
     <SafetyOperationProvider>
       <AuthGate><BuildUpdateNotice />
@@ -364,6 +354,9 @@ function StudioApp() {
   }, []);
 
   const handleLicenseChange = useCallback((status: LicenseStatus) => {
+    licenseRequestSeqRef.current += 1;
+    setLicenseLoading(false);
+    setLicenseIssue(null);
     setLicense(status);
     if (!status.valid) {
       loadRequestSeqRef.current += 1;
@@ -845,7 +838,7 @@ function StudioApp() {
 
   return (
     <>
-      <Suspense fallback={<RouteLoadingShell />}>
+      <Suspense fallback={<StartupScreen />}>
         <StudioConsoleView
           license={license}
           health={state.health}

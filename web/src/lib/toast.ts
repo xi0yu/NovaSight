@@ -23,13 +23,38 @@ type Listener = () => void;
 
 export const TOAST_DURATION_MS = 3000;
 const MAX_TOASTS = 4;
-const MAX_ACTIVITY_NOTICES = 20;
+const MAX_ACTIVITY_NOTICES = 200;
+const NOTICE_HISTORY_KEY = "novasight.operation-history.v1";
 const DUPLICATE_WINDOW_MS = 1500;
 
-let nextId = 1;
+function readNoticeHistory(): Toast[] {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(NOTICE_HISTORY_KEY) ?? "[]");
+    if (!Array.isArray(stored)) return [];
+    return stored.filter((item): item is Toast => !!item && typeof item === "object"
+      && ["info", "success", "warn", "error"].includes(item.tone)
+      && Number.isSafeInteger(item.id) && item.id >= 0
+      && Number.isFinite(item.createdAt) && Math.abs(item.createdAt) <= 8640000000000000
+      && Number.isFinite(item.firstSeenAt) && Number.isSafeInteger(item.count) && item.count > 0
+      && (item.status === null || Number.isSafeInteger(item.status))
+      && (item.requestId === undefined || item.requestId === null || typeof item.requestId === "string")
+      && typeof item.title === "string" && typeof item.source === "string"
+      && (item.detail === undefined || typeof item.detail === "string")
+      && (item.technicalDetail === undefined || typeof item.technicalDetail === "string"))
+      .slice(-MAX_ACTIVITY_NOTICES);
+  } catch { return []; }
+}
+const restoredNotices = readNoticeHistory();
+let nextId = Math.max(0, ...restoredNotices.map((notice) => notice.id)) + 1;
 let toasts: Toast[] = [];
-let errorNotices: Toast[] = [];
-let activityNotices: Toast[] = [];
+let errorNotices = restoredNotices.filter((notice) => notice.tone === "warn" || notice.tone === "error");
+let activityNotices = restoredNotices.filter((notice) => notice.tone === "info" || notice.tone === "success");
+function persistNoticeHistory(): void {
+  try {
+    window.localStorage.setItem(NOTICE_HISTORY_KEY, JSON.stringify([...errorNotices, ...activityNotices]
+      .sort((left, right) => left.createdAt - right.createdAt).slice(-MAX_ACTIVITY_NOTICES)));
+  } catch { /* Logging must not block the operation when browser storage is unavailable. */ }
+}
 const listeners = new Set<Listener>();
 const errorListeners = new Set<Listener>();
 const activityListeners = new Set<Listener>();
@@ -43,12 +68,14 @@ function emit(): void {
 }
 
 function emitErrors(): void {
+  persistNoticeHistory();
   for (const listener of errorListeners) {
     listener();
   }
 }
 
 function emitActivities(): void {
+  persistNoticeHistory();
   for (const listener of activityListeners) listener();
 }
 
@@ -168,7 +195,7 @@ function pushToast(toast: Toast, popup: boolean | "feedback" = true): void {
         ? { ...notice, count: notice.count + 1, createdAt: toast.createdAt, requestId: toast.requestId }
         : notice);
     } else {
-      errorNotices = [...errorNotices, toast].slice(-20);
+      errorNotices = [...errorNotices, toast].slice(-MAX_ACTIVITY_NOTICES);
     }
     emitErrors();
   }
@@ -238,7 +265,7 @@ export function reportError(
       technicalDetail: error instanceof ApiError
         ? JSON.stringify(
           { source: options.source, http_status: error.status, response: error.detail },
-          (key, value: unknown) => /password|secret|token|license_key|authorization|credential|api.?key|uuid/i.test(key) ? "[redacted]" : value,
+          (key, value: unknown) => /password|secret|token|license_key|authorization|credential|api.?key|uuid|^key$/i.test(key) ? "[redacted]" : value,
           2
         )
         : error instanceof ApiTransportError

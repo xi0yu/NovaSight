@@ -15,11 +15,11 @@ const incomplete = {
 it("only calls revisions consistent when both saved and running settings are known", () => {
   const props = { modules: ["backup", "restore", "details"], desiredRevision: 2, effectiveRevision: 1, restartRequired: false, operationPending: false, parameterChangesPending: false, onExport: vi.fn(), onImport: vi.fn(), onNavigate: vi.fn() };
   const view = render(<SettingsView {...props} configAvailable={false} runtimeVerified={false} />);
-  expect(screen.getByRole("status")).toHaveTextContent("设置未读取");
+  expect(screen.getByRole("status")).toHaveTextContent("正在读取设置");
   view.rerender(<SettingsView {...props} configAvailable runtimeVerified={false} />);
-  expect(screen.getByRole("status")).toHaveTextContent("运行版本待确认");
+  expect(screen.getByRole("status")).toHaveTextContent("正在确认运行状态");
   view.rerender(<SettingsView {...props} configAvailable runtimeVerified />);
-  expect(screen.getByRole("status")).toHaveTextContent("等待生效");
+  expect(screen.getByRole("status")).toHaveTextContent("设置正在应用");
 });
 
 describe("guided product journeys", () => {

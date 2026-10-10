@@ -1,27 +1,17 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 import {
   type LicenseStatus,
   clearLicenseKey,
-  getLicenseStatus,
   saveLicenseKey
 } from "../../api";
-import { Button, InlineError, StatusIndicator } from "../../components/ui";
-import { reportError } from "../../lib/toast";
-import { NovaIcon, type NovaIconName } from "../../components/visual";
-import type { LicenseFeature } from "../../contracts/license";
-import { formatEpoch } from "../shared/format";
-import { formatLicenseCategory } from "./format";
+import { Button, InlineError } from "../../components/ui";
+import { reportError, reportSuccess } from "../../lib/toast";
+import { NovaIcon } from "../../components/visual";
 import {
   describeLicenseActionFailure,
   type LicenseActionFailure
 } from "./connectionIssue";
-
-const FEATURE_GROUPS: { title: string; icon: NovaIconName; features: LicenseFeature[] }[] = [
-  { title: "采集与运行", icon: "capture", features: ["capture", "runtime"] },
-  { title: "模型与推理", icon: "ai-model", features: ["models", "tensorrt", "plugins"] },
-  { title: "控制与配置", icon: "device-send", features: ["hardware_control", "config_read", "config_write"] },
-];
 
 const LICENSE_CLEAR_CONFIRMATION_MESSAGE = "再次点击将先紧急停止当前设备并验证输出安全，再退出授权；5 秒后自动取消确认。";
 
@@ -36,25 +26,8 @@ export function LicensePanel({
   const [clearArmed, setClearArmed] = useState(false);
   const [message, setMessage] = useState<string | undefined>();
   const [failure, setFailure] = useState<LicenseActionFailure | null>(null);
-  const [now, setNow] = useState(Date.now);
-  const expiresAt = license?.expires_at ? license.expires_at * 1000 : null;
-  const remaining = expiresAt === null ? null : Math.max(0, Math.ceil((expiresAt - now) / 1000));
-  const expiredNotified = useRef<number | null>(null);
-  useEffect(() => {
-    if (expiresAt === null) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [expiresAt]);
-  useEffect(() => {
-    if (license?.valid && expiresAt !== null && now >= expiresAt && expiredNotified.current !== expiresAt) {
-      expiredNotified.current = expiresAt;
-      void getLicenseStatus().then(onLicenseChange).catch(() => { expiredNotified.current = null; });
-    }
-  }, [now, expiresAt, license, onLicenseChange]);
   const licenseValid = license?.valid === true;
   const temporarySupported = license?.temporary_access_supported === true;
-  const features = licenseValid ? license.features : [];
 
   useEffect(() => {
     if (!clearArmed) return undefined;
@@ -80,6 +53,7 @@ export function LicensePanel({
     setClearing(true);
     try {
       const status = await clearLicenseKey();
+      reportSuccess("设备授权已退出", "设备输出已先停止。", "license-clear", "feedback");
       onLicenseChange(status);
       setMessage("当前授权已退出。");
     } catch (err) {
@@ -102,31 +76,6 @@ export function LicensePanel({
     <div className="license-panel">
       <InlineError message={failure?.message} title={failure?.title} />
       {message ? <div className="inline-note" role="status">{message}</div> : null}
-      <section className="license-summary" aria-label="设备授权摘要">
-        <header>
-          <div className="license-summary-title"><NovaIcon name="shield-check" size={24} /><h3>设备授权</h3></div>
-          <StatusIndicator tone={licenseValid ? "good" : "idle"}>
-            {licenseValid ? "授权有效" : license ? "尚未授权" : "授权待核实"}
-          </StatusIndicator>
-        </header>
-        <dl className="license-device-expiry" aria-label="设备授权状态">
-          <div className="license-deadline"><dt>到期时间</dt><dd>{license?.expires_at ? formatEpoch(license.expires_at) : "尚未确认"}<small className="license-expiry-countdown">{remaining === null ? "到期时间待核实" : remaining === 0 ? (licenseValid ? "正在核验到期状态" : "授权不可用") : `倒计时 ${String(Math.floor(remaining / 3600)).padStart(2, "0")}:${String(Math.floor(remaining / 60) % 60).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`}</small></dd></div>
-          <div><dt>设备模型 ID</dt><dd>{license?.device_model || "设备型号待核实"}</dd></div>
-          <div><dt>授权类别</dt><dd><span className="license-category">{formatLicenseCategory(license)}</span></dd></div>
-        </dl>
-      </section>
-      <section className="license-scope" aria-labelledby="license-scope-title">
-        <h3 id="license-scope-title">授权范围</h3>
-        {features.length > 0 ? <div className="license-scope-grid">
-          {FEATURE_GROUPS.map((group) => {
-            const enabled = group.features.filter((feature) => features.includes(feature));
-            return enabled.length > 0 ? <article key={group.title}>
-              <h4><NovaIcon name={group.icon} size={20} />{group.title}</h4>
-              <ul>{enabled.map((feature) => <li key={feature}><NovaIcon name="check-circle" size={16} />{formatFeature(feature)}</li>)}</ul>
-            </article> : null;
-          })}
-        </div> : <p className="license-scope-empty">{licenseValid ? "此授权未包含可用功能。" : license ? "授权生效后，可在这里查看可用功能。" : "正在核实授权范围。"}</p>}
-      </section>
       <section className="license-management" aria-labelledby="license-management-title">
         <h3 id="license-management-title">授权管理</h3>
         <details className="license-change-disclosure" open={!licenseValid || undefined}>
@@ -185,6 +134,7 @@ export function LicenseActivationForm({
         return;
       }
       setCredential("");
+      reportSuccess("设备授权已更新", "有效期以服务端确认的到期时间为准。", "license-activate", "feedback");
       setMessage(status.tier === "temporary"
         ? "内测授权已生效，有效期内无需重复授权，原期限不会重置。"
         : "正式许可证已激活，完整凭证不会在界面中回显。");
@@ -237,18 +187,4 @@ export function LicenseActivationForm({
       {message ? <div className="inline-note">{message}</div> : null}
     </div>
   );
-}
-
-function formatFeature(feature: string): string {
-  const labels: Record<string, string> = {
-    capture: "画面采集",
-    runtime: "运行控制",
-    models: "模型仓库",
-    plugins: "插件扩展",
-    tensorrt: "TensorRT 加速",
-    hardware_control: "硬件控制",
-    config_read: "读取配置",
-    config_write: "写入配置"
-  };
-  return labels[feature] ?? feature;
 }

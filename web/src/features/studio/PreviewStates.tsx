@@ -4,6 +4,7 @@ import { ToastHost } from "../../components/ToastHost";
 import { pushToastRaw } from "../../lib/toast";
 import { ActivityView, type ActivityItem } from "../activity/ActivityView";
 import { AuthGate } from "../auth/AuthGate";
+import { LicenseOverview } from "../license/LicenseOverview";
 import { LicensePanel } from "../license/LicensePanel";
 import { ModelManagerDialog } from "../models/ModelManagerDialog";
 import { ModelSwitchDialog } from "../models/ModelSwitchDialog";
@@ -78,7 +79,7 @@ function StateExample({ name }: { name: string }) {
   else if (name.startsWith("switch-")) content = <ModelSwitchDialog open={open} dialogRef={dialogRef} modelName={sampleModel.name} status={name === "switch-running" ? "running" : name === "switch-success" ? "success" : "failed"} completedStages={name === "switch-success" ? 3 : 2} currentStage={2} detail={name === "switch-success" ? "设备已确认切换。最新状态读取失败，请重新连接后核对。" : "等待设备完成验证与切换；尚无最终回执。"} error={name === "switch-failed" ? "请求超时。请核对当前模型和运行状态，不能假定切换未生效。" : ""} onClose={close} />;
   else if (name.startsWith("confirmation")) content = open ? <ActionConfirmationDialog request={{ eyebrow: "配置修改", title: "放弃未保存的修改？", description: "当前编辑尚未保存到设备。取消可继续编辑，设备仍使用原来的配置。", details: ["搜索半径：180 → 240 px", "触发延迟：0 → 100 ms"], confirmLabel: "放弃修改", danger: true, onConfirm: close }} busy={false} error={error} onCancel={close} onConfirm={() => name === "confirmation-error" ? setError("设备暂时无法保存。修改仍保留在当前页面。") : close()} /> : null;
   else if (name === "auth") content = <AuthGate><p>授权完成</p></AuthGate>;
-  else if (name === "license") content = <LicensePanel license={demoLicense} onLicenseChange={() => {}} />;
+  else if (name === "license") content = <><LicenseOverview license={demoLicense} /><LicensePanel license={demoLicense} onLicenseChange={() => {}} /></>;
   else if (name === "safety") content = <SafetyOperationProvider><SafetyPreview /></SafetyOperationProvider>;
   else content = <div className="preview-inline-actions">
     <button className="console-button primary" onClick={() => pushToastRaw({ tone: "success", source: "preview", status: null, title: "设置已保存", detail: "设备已确认应用新的画面规格。" })}>展示成功通知</button>

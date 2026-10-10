@@ -51,6 +51,9 @@ it("shows non-quiet failures immediately and retains the backend code for diagno
     expect(result.current.notices[result.current.notices.length - 1]?.technicalDetail).toContain("TEST_OUTPUT_REJECTED");
     expect(result.current.notices[result.current.notices.length - 1]?.technicalDetail).toContain('"http_status": 409');
     expect(result.current.notices[result.current.notices.length - 1]?.technicalDetail).not.toContain("private");
+    const persisted = localStorage.getItem("novasight.operation-history.v1");
+    expect(persisted).toContain("TEST_OUTPUT_REJECTED");
+    expect(persisted).not.toContain("private");
   } finally {
     console.error = originalConsoleError;
     act(() => {
@@ -262,4 +265,14 @@ it.each(["info", "warn", "error", "success"] as const)("shows a three-second cou
     view.unmount();
     vi.useRealTimers();
   }
+});
+
+
+it("keeps feedback available when local history cannot be written", () => {
+  const { result } = renderHook(() => useActivityNotices());
+  const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota exceeded"); });
+  try {
+    act(() => reportSuccess("备份请求已完成", "请查看浏览器下载列表", "storage-fallback", false));
+    expect(result.current[result.current.length - 1]?.title).toBe("备份请求已完成");
+  } finally { storage.mockRestore(); }
 });

@@ -49,8 +49,9 @@ import {
   updateRuntimeParameters,
   probeMouseProtocol,
 } from "../../api";
-import { pushToastRaw, reportError, reportSuccess, useActivityNotices, useClearActivityNotices, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
+import { pushToastRaw, reportError, reportInfo, reportSuccess, useActivityNotices, useClearActivityNotices, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { formatRuntimeErrorMessage, getErrorMessage } from "../shared/format";
+import { LicenseOverview } from "../license/LicenseOverview";
 import { LicensePanel } from "../license/LicensePanel";
 import { ActivityView } from "../activity/ActivityView";
 import { useWorkspaceAuthorization } from "../auth/AuthGate";
@@ -76,6 +77,8 @@ import {
 import { TargetClassEditor, classStyle, parseClassValues, setClassValue } from "./TargetClassEditor";
 import { ClassPresetPicker } from "./ClassPresetPicker";
 import { StudioUtilityDialog } from "./StudioUtilityDialog";
+import { downloadJson } from "../../lib/downloadJson";
+import { decodeRuntimeConfig } from "../../contracts/config";
 import { configDifferences } from "./configDiff";
 import { MouseProtocolView, readMouseProtocols, sameMouseProtocol, type MouseProtocol } from "./MouseProtocolView";
 import { FireStabilizationPage } from "./FireStabilizationPage";
@@ -197,7 +200,7 @@ function ModelManagerLoadingDialog({ onClose }: { onClose: () => void }) {
             <div>
               <span className="class-config-eyebrow">模型管理</span>
               <h2 id="model-manager-loading-title">模型管理与切换</h2>
-              <p>正在读取模型管理界面，运行主链不受影响。</p>
+              <p>正在打开你的模型库。</p>
             </div>
           </div>
           <button aria-label="关闭模型管理" className="launch-dialog-close" onClick={onClose} type="button">
@@ -206,8 +209,8 @@ function ModelManagerLoadingDialog({ onClose }: { onClose: () => void }) {
         </header>
         <div className="model-manager-dialog-body model-manager-loading-body" role="status">
           <span className="route-loading-mark" aria-hidden="true" />
-          <strong>正在加载模型目录组件…</strong>
-          <small>弱网下可能需要几秒，当前模型和推理不会切换。</small>
+          <ListSkeleton label="正在读取模型列表" rows={5} />
+          <small>当前模型保持使用，读取完成后直接展示。</small>
         </div>
       </section>
     </div>
@@ -730,7 +733,6 @@ export function StudioConsoleView({
       return;
     }
     if (activePage === "models" || activePage === "management") {
-      void import("../models/ModelWorkspace");
       void onEnsureProjects(false).catch(() => undefined);
     }
   }, [activePage, onEnsureProjects]);
@@ -741,9 +743,11 @@ export function StudioConsoleView({
   const [caps, setCaps] = useState<CaptureCapabilitiesResponse | null>(null);
   const [capsReadFailed, setCapsReadFailed] = useState(false);
   const [captureDevices, setCaptureDevices] = useState<string[]>([]);
+  const [captureDeviceChecks, setCaptureDeviceChecks] = useState<Record<string, { state: "checking" | "available" | "unavailable" | "error"; reason: string; capabilities?: CaptureCapabilitiesResponse }>>({});
+  const captureScanGenerationRef = useRef(0);
+  const captureCapabilityRequestRef = useRef<Record<string, number>>({});
   const [deviceDiscoveryStatus, setDeviceDiscoveryStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [deviceDiscoveryError, setDeviceDiscoveryError] = useState<string | null>(null);
-  const autoQueriedCaptureDeviceRef = useRef("");
   const [selectedModelProjectId, setSelectedModelProjectId] = useState<number | "">("");
   const [selectedModelVersionId, setSelectedModelVersionId] = useState<number | "">("");
   const [selectedModelArtifactId, setSelectedModelArtifactId] = useState<number | "">("");
@@ -1130,6 +1134,7 @@ export function StudioConsoleView({
   const captureDeviceChoices = useMemo(() => configuredCaptureDevice && !captureDevices.includes(configuredCaptureDevice)
     ? [configuredCaptureDevice, ...captureDevices]
     : captureDevices, [captureDevices, configuredCaptureDevice]);
+  const selectedCaptureAvailable = captureDeviceChecks[device]?.state === "available" && captureDeviceChecks[device]?.capabilities?.device === device;
   const configuredRoiLeft = readNumber(captureConfig.roi_left, 0);
   const configuredRoiTop = readNumber(captureConfig.roi_top, 0);
   const configuredRoiWidth = readNumber(captureConfig.roi_width, 0);
@@ -1928,14 +1933,8 @@ export function StudioConsoleView({
     let cancelled = false;
     setModelCatalogLoading(true);
     getModelCatalog()
-      .then(async (result) => {
-        if (cancelled) {
-          return;
-        }
-        applyModelCatalogResult(result);
-        if (result.updated_files > 0) {
-          await onRefresh();
-        }
+      .then((result) => {
+        if (!cancelled) applyModelCatalogResult(result);
       })
       .catch((err) => {
         if (cancelled) {
@@ -2093,13 +2092,36 @@ export function StudioConsoleView({
   }, [modelDetailsRefreshKey, modelManagerActive, selectedModelVersionId]);
 
   const refreshCaptureDevices = useCallback(async () => {
+    const generation = ++captureScanGenerationRef.current;
     setDeviceDiscoveryStatus("loading");
     setDeviceDiscoveryError(null);
+    setCaptureDeviceChecks({});
     try {
       const result = await getCaptureDevices();
+      if (generation !== captureScanGenerationRef.current) return;
       setCaptureDevices(result.devices);
       setDeviceDiscoveryStatus("ready");
+      setCaptureDeviceChecks(Object.fromEntries(result.devices.map((path) => [path, { state: "checking", reason: "正在检查是否支持画面采集" }])));
+      await Promise.all(result.devices.map(async (path) => {
+        const request = (captureCapabilityRequestRef.current[path] ?? 0) + 1;
+        captureCapabilityRequestRef.current[path] = request;
+        try {
+          const capabilities = await getCaptureCapabilities(path);
+          if (capabilities.device !== path) throw new Error("返回的设备能力与请求输入不一致。");
+          if (generation !== captureScanGenerationRef.current || request !== captureCapabilityRequestRef.current[path]) return;
+          setCaptureDeviceChecks((current) => ({ ...current, [path]: {
+            state: capabilities.available ? "available" : "unavailable",
+            reason: capabilities.available ? "支持画面采集" : "此输入未提供可用画质，请检查设备连接或选择其他输入",
+            capabilities,
+          } }));
+        } catch (error) {
+          if (generation !== captureScanGenerationRef.current || request !== captureCapabilityRequestRef.current[path]) return;
+          setCaptureDeviceChecks((current) => ({ ...current, [path]: { state: "error", reason: "暂时无法检查，重新扫描后再试" } }));
+          reportError(error, { source: "capture-device-check", title: "采集输入检查失败", publicDetail: `${path} 尚未确认可用，请重新扫描。`, popup: false });
+        }
+      }));
     } catch (error) {
+      if (generation !== captureScanGenerationRef.current) return;
       const message = `设备扫描失败：${getErrorMessage(error)}`;
       setDeviceDiscoveryStatus("error");
       setDeviceDiscoveryError(message);
@@ -2114,6 +2136,10 @@ export function StudioConsoleView({
   }, [activePage, deviceDiscoveryStatus, previewOnly, refreshCaptureDevices]);
 
   const loadCaptureCapabilities = useCallback(async (selectedDevice: string) => {
+    const generation = captureScanGenerationRef.current;
+    const request = (captureCapabilityRequestRef.current[selectedDevice] ?? 0) + 1;
+    captureCapabilityRequestRef.current[selectedDevice] = request;
+    setCaptureDeviceChecks((current) => ({ ...current, [selectedDevice]: { state: "checking", reason: "正在重新检查输入" } }));
     setBusy("caps");
     setLocalError(null);
     setCaptureActionError(null);
@@ -2121,46 +2147,45 @@ export function StudioConsoleView({
     setCaps((current) => current?.device === selectedDevice ? current : null);
     try {
       const result = await getCaptureCapabilities(selectedDevice);
+      if (generation !== captureScanGenerationRef.current || request !== captureCapabilityRequestRef.current[selectedDevice]) return;
+      if (result.device !== selectedDevice) throw new Error("返回的设备能力与请求输入不一致。");
       setCaps(result);
+      setCaptureDeviceChecks((current) => ({ ...current, [selectedDevice]: { state: result.available ? "available" : "unavailable", reason: result.available ? "支持画面采集" : "此输入未提供可用画质，请选择其他输入", capabilities: result } }));
       if (!result.available) {
         const reason = result.reason || "设备不可用";
         setLocalError(reason);
         reportError(new Error(reason), { source: "capture-caps", title: "采集设备不可用" });
       }
     } catch (err) {
+      if (generation !== captureScanGenerationRef.current || request !== captureCapabilityRequestRef.current[selectedDevice]) return;
+      setCaptureDeviceChecks((current) => ({ ...current, [selectedDevice]: { state: "error", reason: "暂时无法检查，请重新读取规格" } }));
       setCapsReadFailed(true);
       const message = `设备能力检测失败：${getErrorMessage(err)}`;
       setLocalError(message);
       setCaptureActionError(message);
       reportError(err, { source: "capture-caps", title: "设备能力检测失败", popup: false });
     } finally {
-      setBusy(null);
+      if (request === captureCapabilityRequestRef.current[selectedDevice]) setBusy(null);
     }
   }, []);
 
   useEffect(() => {
-    if (
-      activePage === "capture"
-      && deviceDiscoveryStatus === "ready"
-      && configuredCaptureDevice
-      && captureDevices.includes(configuredCaptureDevice)
-      && autoQueriedCaptureDeviceRef.current !== configuredCaptureDevice
-    ) {
-      autoQueriedCaptureDeviceRef.current = configuredCaptureDevice;
-      void loadCaptureCapabilities(configuredCaptureDevice);
-    }
-  }, [activePage, captureDevices, configuredCaptureDevice, deviceDiscoveryStatus, loadCaptureCapabilities]);
+    const checked = captureDeviceChecks[device]?.capabilities;
+    if (activePage === "capture" && checked) { setCaps(checked); setCapsReadFailed(false); }
+  }, [activePage, captureDeviceChecks, device]);
 
   const refreshCapabilities = useCallback(async () => {
     await loadCaptureCapabilities(device);
   }, [device, loadCaptureCapabilities]);
 
   const chooseCaptureDevice = useCallback((selectedDevice: string) => {
-    if (busy !== null) return;
-    if (selectedDevice !== device) setDevice(selectedDevice);
+    const checked = captureDeviceChecks[selectedDevice];
+    if (busy !== null || checked?.state !== "available" || !checked.capabilities) return;
+    setDevice(selectedDevice);
+    setCaps(checked.capabilities);
+    setCapsReadFailed(false);
     setCaptureActionError(null);
-    void loadCaptureCapabilities(selectedDevice);
-  }, [busy, device, loadCaptureCapabilities]);
+  }, [busy, captureDeviceChecks]);
 
   const buildCapturePayload = useCallback((choice: CapabilityChoice): CaptureSelectPayload => ({
     device,
@@ -2172,6 +2197,10 @@ export function StudioConsoleView({
   }), [device]);
 
   const applyCapture = useCallback(async (choice: CapabilityChoice) => {
+    if (!selectedCaptureAvailable || caps?.device !== device) {
+      reportInfo("请先检查采集输入", "重新扫描并确认设备可用后，再保存画质。", "capture-profile", "feedback");
+      return;
+    }
     if (!device.trim()) {
       setCaptureActionError("请先填写视频设备并明确选择采集格式，再保存配置。");
       return;
@@ -2208,7 +2237,7 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [buildCapturePayload, captureConfig, device, onRefresh, onRuntimeConfigChange, previewOnly, roiSize, runtimeConfig]);
+  }, [selectedCaptureAvailable, caps, device, buildCapturePayload, captureConfig, onRefresh, onRuntimeConfigChange, previewOnly, roiSize, runtimeConfig]);
 
   const {
     start: startMainlineLaunch,
@@ -3070,20 +3099,16 @@ export function StudioConsoleView({
     });
   }, [diagnosticMoveHardware, kmnetHost, kmnetPort]);
 
-  const exportConfig = () => {
-    if (!runtimeConfig) {
-      return;
-    }
-    const blob = new Blob([JSON.stringify(runtimeConfig, null, 2)], {
-      type: "application/json"
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `novasight-config-${new Date().toISOString().replace(/[:.]/g, "-")}-r${runtimeConfig.revision}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-    reportSuccess("已发起备份下载", link.download, "config-export", "feedback");
+  const exportConfig = async () => {
+    setBusy("export");
+    try {
+      const saved = await getRuntimeConfig();
+      const fileName = `novasight-config-${new Date().toISOString().replace(/[:.]/g, "-")}-r${saved.revision}.json`;
+      downloadJson(saved, fileName);
+      reportSuccess("已发起备份下载", fileName, "config-export", "feedback");
+    } catch (error) {
+      reportError(error, { source: "config-export", title: "配置备份未完成", publicDetail: "未能读取已保存的配置，请检查连接后重新导出。" });
+    } finally { setBusy(null); }
   };
 
   const requestConfigImportConfirmation = (
@@ -3099,11 +3124,11 @@ export function StudioConsoleView({
       eyebrow: canonicalChanged ? "配置已在后台更新" : "导入运行配置",
       title: canonicalChanged ? "请按最新配置重新确认" : `应用 ${fileName}？`,
       description: canonicalChanged
-        ? "你确认前，当前配置已被其他操作更新。NovaSight 没有覆盖新 revision，下面的差异已按最新配置重新计算。"
-        : "导入会在确认时重新读取当前配置版本，再以该事务基线替换整份运行配置。",
+        ? "设备上的设置刚刚更新，已保留较新的设置。请重新核对下面的改动。"
+        : "确认后将保存这些改动，并应用到设备设置。",
       details: [
         `将修改：${changedSections.join("、") || "没有差异"}`,
-        "运行参数会立即应用；监听地址或存储根目录等进程级配置会单独提示。",
+        "普通参数会立即应用，需要重启的改动会单独标明。",
         "导入不会改变首页运行总开关；运行中导入仍可能立即改变控制行为。"
       ],
       content: <details className="config-restore-diff" open><summary>查看 {differences.length} 项具体改动</summary><div className="config-restore-diff-scroll"><table><thead><tr><th>设置项</th><th>当前值</th><th>恢复后</th></tr></thead><tbody>{differences.map((item) => <tr key={item.path}><th scope="row">{CONFIG_SECTION_LABELS[item.path.split(".")[0]!] ?? item.path.split(".")[0]}<small>{item.path}</small><span>{item.restart ? "重启后生效" : "应用到运行配置"}</span></th><td>{item.before}</td><td>{item.after}</td></tr>)}</tbody></table></div></details>,
@@ -3132,10 +3157,10 @@ export function StudioConsoleView({
             reportSuccess(
               "配置导入成功",
               result.restart_required
-                ? "运行参数已生效；仅进程级基础配置留待下次服务启动接管。"
+                ? "设置已保存；部分基础设置需要重启服务后生效。"
                 : result.apply_mode === "epoch_reload"
-                  ? "配置已由当前进程重载，并进入新的运行 epoch。"
-                  : "配置已经即时进入当前运行状态。",
+                  ? "设置已保存并应用。"
+                  : "设置已保存并立即应用。",
               "config-import"
             );
             return true;
@@ -3171,18 +3196,28 @@ export function StudioConsoleView({
   const importConfig = async (file: File) => {
     setLocalError(null);
     try {
-      const decoded = JSON.parse(await file.text()) as unknown;
-      if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
-        throw new Error("配置文件根节点必须是 JSON 对象。");
+      if (file.size > 5 * 1024 * 1024) throw new Error("配置文件超过 5 MB，请选择导出的配置备份。");
+      const decoded = decodeRuntimeConfig(JSON.parse(await file.text(), (key, value: unknown) => {
+        if (["__proto__", "constructor", "prototype"].includes(key)) throw new Error("配置文件包含不安全字段。");
+        return value;
+      }));
+      const requiredObjects = ["server", "replay", "pipeline", "control", "paths", "consumers", "limits"];
+      const optionalObjects = ["capture", "inference", "hardware", "device"];
+      const isObject = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value);
+      if (![...requiredObjects, ...optionalObjects].some((key) => isObject(decoded[key]))
+        || requiredObjects.some((key) => key in decoded && !isObject(decoded[key]))
+        || optionalObjects.some((key) => key in decoded && decoded[key] !== null && !isObject(decoded[key]))
+        || ["schema_version", "revision"].some((key) => key in decoded && (!Number.isSafeInteger(decoded[key]) || Number(decoded[key]) < 0))) {
+        throw new Error("请选择 NovaSight 导出的配置文件，配置分组或版本号不正确。");
       }
       const current = cloneRuntimeConfig(runtimeConfigLatestRef.current);
       if (!current) {
         throw new Error("尚未读取当前配置，不能安全导入。");
       }
-      const payload = preserveOutputGate(decoded as RuntimeConfig, current);
+      const payload = preserveOutputGate(decoded, current);
       const changedSections = changedRuntimeConfigSections(current, payload);
       if (changedSections.length === 0) {
-        setLocalError("导入文件与当前配置一致，没有需要应用的修改。");
+        reportSuccess("配置无需恢复", "文件中的设置与当前配置一致。", "config-import", "feedback");
         return;
       }
       requestConfigImportConfirmation(file.name, payload, current);
@@ -3222,10 +3257,7 @@ export function StudioConsoleView({
       const result = await getModelCatalog(true);
       applyModelCatalogResult(result);
       setModelDetailsRefreshKey((current) => current + 1);
-      await onRefresh();
-      setModelCatalogMessage(
-        `刷新完成：发现 ${result.model_count} 个模型文件；仅刷新目录与元数据，未读取 Engine 内容。`
-      );
+      setModelCatalogMessage(`已更新模型列表，共 ${result.model_count} 个文件。`);
     } catch (err) {
       setModelCatalogError(getErrorMessage(err));
       setLocalError(`模型列表刷新失败：${getErrorMessage(err)}`);
@@ -3533,7 +3565,6 @@ export function StudioConsoleView({
         {activePage === "models" ? (
             <ModelWorkspace
               activeModelName={activeModelName}
-              activeArtifactStatus={artifact?.status ?? null}
               onOpenInference={() => navigatePage("infer")}
               panelProps={{
                 root: modelCatalog,
@@ -3643,19 +3674,22 @@ export function StudioConsoleView({
                       const saved = captureDevice === configuredCaptureDevice;
                       const discovered = captureDevices.includes(captureDevice);
                       const selected = captureDevice === device;
+                      const checked = captureDeviceChecks[captureDevice];
+                      const available = discovered && checked?.state === "available";
+                      const stateLabel = !discovered ? "未发现" : checked?.state === "checking" || !checked ? "检查中" : checked.state === "error" ? "待确认" : available ? "可选择" : "不可用";
                       return (
                         <button
                           aria-selected={selected}
-                          className={selected ? "selected" : ""}
-                          disabled={busy !== null || runtimeLifecycleActive}
+                          className={`${selected ? "selected" : ""}${!available ? " unavailable" : ""}`}
+                          disabled={busy !== null || runtimeLifecycleActive || !available}
                           key={captureDevice}
                           onClick={() => chooseCaptureDevice(captureDevice)}
                           role="option"
                           type="button"
                         >
-                          <span aria-hidden="true"><NovaIcon name="capture-card" size={18} /></span>
-                          <span><b>{captureDevice}</b><small>{saved ? "已保存" : "可选择"}{!discovered ? " · 当前未发现" : ""}</small></span>
-                          <i>{selected && busy === "caps" ? "读取中" : selected ? "已选" : "选择"}</i>
+                          <span aria-hidden="true"><NovaIcon name={available ? "capture-card" : checked?.state === "unavailable" ? "signal-lost" : "clock"} size={18} /></span>
+                          <span><b>{captureDevice}</b><small>{saved ? "已保存 · " : ""}{stateLabel}</small><small>{discovered ? checked?.reason || "正在确认设备能力" : "检查连接后重新扫描"}</small></span>
+                          <i>{available ? selected ? "已选" : "选择" : stateLabel}</i>
                         </button>
                       );
                     })}
@@ -3672,7 +3706,7 @@ export function StudioConsoleView({
                 </div>
                 <div className="capture-quality-browser" aria-label="分辨率与帧率">
                   <header>
-                    <div><b>设备支持的画面规格</b><small role="status">{busy === "caps" ? caps ? "正在刷新，保留上次读取的规格" : "正在读取设备规格…" : capsReadFailed ? caps ? "读取失败，显示上次规格；重新读取后可选择" : "读取失败，请重新读取设备规格" : caps ? `按格式分类，共 ${detectedChoices.length} 个组合；分辨率和帧率从高到低排列。` : "选择设备后读取规格"}</small></div>
+                    <div><b>设备支持的画面规格</b><small role="status">{busy === "caps" ? caps ? "正在刷新，保留上次读取的规格" : "正在读取设备规格…" : capsReadFailed ? caps ? "读取失败，显示上次规格；重新读取后可选择" : "读取失败，请重新读取设备规格" : !selectedCaptureAvailable ? caps ? "输入尚未确认可用，显示上次规格；检查成功后可保存" : "请先选择检查通过的设备" : caps ? `按格式分类，共 ${detectedChoices.length} 个组合；分辨率和帧率从高到低排列。` : "选择设备后读取规格"}</small></div>
                     {configuredCaptureProfile ? <span>当前：{choiceLabel(configuredCaptureProfile)}</span> : null}
                   </header>
                   {capabilityGroups.length > 0 ? capabilityGroups.map((group) => (
@@ -3689,7 +3723,7 @@ export function StudioConsoleView({
                                   <button
                                     aria-pressed={active}
                                     className={active ? "active" : ""}
-                                    disabled={busy !== null || capsReadFailed || runtimeLifecycleActive || runtimeControlUnavailable}
+                                    disabled={busy !== null || capsReadFailed || !selectedCaptureAvailable || runtimeLifecycleActive || runtimeControlUnavailable}
                                     key={choice.fps}
                                     onClick={() => void applyCapture(choice)}
                                     type="button"
@@ -4563,6 +4597,7 @@ export function StudioConsoleView({
             runtimeVerified={runtime !== null && runtimeTransportConfidence === "current"}
             operationPending={busy !== null || pendingConfigWriteCount > 0}
             parameterChangesPending={parameterPageDirty}
+            licenseContent={<LicensePanel license={license} onLicenseChange={onLicenseChange} />}
             onExport={exportConfig}
             onImport={importConfig}
             onNavigate={navigatePage}
@@ -4571,10 +4606,9 @@ export function StudioConsoleView({
 
         {utilityDialog === "about" ? (
           <AboutView
-            licenseContent={<LicensePanel license={license} onLicenseChange={onLicenseChange} />}
+            licenseContent={<LicenseOverview license={license} />}
             serviceConnected={health?.ok === true && runtimeTransportConfidence === "current"}
             modules={aboutModules}
-            onNavigate={navigatePage}
           />
         ) : null}
 

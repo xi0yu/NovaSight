@@ -144,8 +144,8 @@ test("algorithm parameters separate daily tuning from advanced tools", { tag: "@
   await openUtility(page, "设置");
   await expect(page.getByRole("dialog", { name: "设置", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "备份与恢复" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "备份设置" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "恢复设置" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "导出配置" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "导入配置" })).toBeVisible();
 });
 
 test("model search keeps selection and verification together", { tag: "@mobile" }, async ({ page }) => {
@@ -200,7 +200,7 @@ test("stopped mainline asks before model registration and deployment", async ({ 
   await page.getByRole("button", { name: /candidate.engine，路径 candidate.engine/ }).click();
   await page.getByRole("button", { name: "验证并切换到所选模型" }).click();
   const confirmation = page.getByRole("alertdialog", { name: "验证并部署所选模型？" });
-  await expect(confirmation).toContainText("登记后不能直接移动或改名文件");
+  await expect(confirmation).toContainText("使用后请保留模型文件的位置与名称");
   await confirmation.getByRole("button", { name: "取消" }).click();
   await expect(confirmation).not.toBeVisible();
   expect(mutations).toEqual([]);

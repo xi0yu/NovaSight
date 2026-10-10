@@ -5,7 +5,9 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { ListSkeleton } from "../../components/ui";
 import { getErrorMessage } from "../shared/format";
 import type { ActivityConnectionState } from "./useActivityStream";
-import { reportSuccess } from "../../lib/toast";
+import { downloadJson } from "../../lib/downloadJson";
+import { version as productVersion } from "../../../package.json";
+import { reportError, reportSuccess } from "../../lib/toast";
 
 import "./activity-view.css";
 
@@ -107,6 +109,12 @@ export function ActivityView({
     catch (error) { setClearError(getErrorMessage(error)); }
     finally { clearingRef.current = false; setClearing(false); }
   };
+  const exportHistory = () => {
+    try {
+      downloadJson({ product: "NovaSight Studio", version: productVersion, exported_at: new Date().toISOString(), records: shownItems }, `novasight-logs-${Date.now()}.json`);
+      reportSuccess("已发起日志下载", "已包含操作结果与可用的排查信息。", "activity-export", "feedback");
+    } catch (error) { reportError(error, { source: "activity-export", title: "日志导出未完成" }); }
+  };
   const counts = useMemo(() => ({
     all: shownItems.length,
     error: shownItems.filter((item) => (item.tone ?? "error") === "error").length,
@@ -141,6 +149,7 @@ export function ActivityView({
           if (pausedItems) { listRef.current?.scrollTo({ top: 0 }); setPausedItems(null); }
           else setPausedItems([...items]);
         }}>{pausedItems ? `恢复实时${unseenCount > 0 ? ` · ${unseenCount} 条新记录` : ""}` : "暂停查看"}</button>
+        <button className="console-button" type="button" disabled={shownItems.length === 0} onClick={exportHistory}><NovaIcon name="export" size={16} />导出日志</button>
         <span role="status">{loading && shownItems.length === 0 ? "正在读取" : `${pausedItems ? "已暂停查看 · " : ""}显示 ${filteredItems.length} / ${shownItems.length} 条`}</span>
       </div>
       <div className="activity-toolbar">

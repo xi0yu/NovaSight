@@ -1067,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "novasight"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "anyhow",
  "fs2",
@@ -1080,7 +1080,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-api"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "axum",
  "futures-util",
@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-client"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "axum",
  "bytes",
@@ -1123,7 +1123,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-config"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "exacl",
  "libc",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-core"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "async-trait",
  "serde",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-deepstream-bridge"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "cc",
  "novasight-core",
@@ -1158,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-packager"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "anyhow",
  "clap",
@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-pipeline"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "novasight-core",
  "serde",
@@ -1181,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-platform-jetson"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "crossbeam-queue",
  "gstreamer",
@@ -1198,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-runtime"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "novasight-core",
  "novasight-pipeline",
@@ -1216,7 +1216,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-store"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "base64",
  "exacl",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-tensorrt"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "cc",
  "novasight-core",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "novasight-web"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "axum",
  "base64",
@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "novasightctl"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "axum",
  "clap",
@@ -1291,7 +1291,7 @@ dependencies = [
 
 [[package]]
 name = "novasightd"
-version = "0.1.0"
+version = "1.10.535"
 dependencies = [
  "axum",
  "clap",

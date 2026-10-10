@@ -4,9 +4,9 @@ import { useDialogInteraction } from "../studio/dialogFocus";
 export type ModelSwitchDialogStatus = "running" | "success" | "failed";
 
 const MODEL_SWITCH_STAGES = [
-  ["确认所选文件", "已选择 Engine 文件；此时尚未验证模型内容。"],
-  ["登记模型引用", "取得设备返回的模型登记编号。"],
-  ["等待设备切换回执", "设备完成验证、配置与切换后，统一返回结果。"]
+  ["确认文件", "确认所选模型文件，兼容性由设备接下来检查。"],
+  ["准备使用", "整理所选文件，为设备检查做准备。"],
+  ["设备检查与切换", "设备检查适配并确认切换后，才更新当前模型。"]
 ] as const;
 
 export function ModelSwitchDialog({

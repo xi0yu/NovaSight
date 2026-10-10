@@ -38,32 +38,35 @@ test("model directory keeps its frame, search and selection during delayed reads
   } finally { release(); }
 });
 
-test("capture capabilities stay visible during refresh and cannot apply a failed or different-device result", async ({ page }, testInfo) => {
+test("capture checks disable unavailable inputs and old quality during a failed rescan", async ({ page }, testInfo) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, capture: { device: "/dev/video0", pixel_format: "MJPG", width: 1920, height: 1080, fps: 60 } });
   await page.route("**/api/capture/devices", async (route) => route.fulfill({ json: { devices: ["/dev/video0", "/dev/video1"] } }));
-  let reads = 0;
+  let rescanning = false;
   let release!: () => void;
   const waiting = new Promise<void>((resolve) => { release = resolve; });
+  let writes = 0;
+  await page.route("**/api/capture/select", async (route) => { writes += 1; await route.abort(); });
   await page.route("**/api/capture/capabilities", async (route) => {
-    reads += 1;
-    if (reads > 1) { await waiting; return route.fulfill({ status: 503, json: { message: "设备不可达" } }); }
-    return route.fulfill({ json: { available: true, device: "/dev/video0", reason: "", capabilities: [{ pixel_format: "MJPG", width: 1920, height: 1080, fps_list: [60] }] } });
+    const device = route.request().postDataJSON().device;
+    if (rescanning) { await waiting; return route.fulfill({ status: 503, json: { message: "设备不可达" } }); }
+    return route.fulfill({ json: { available: device === "/dev/video0", device, reason: "", capabilities: device === "/dev/video0" ? [{ pixel_format: "MJPG", width: 1920, height: 1080, fps_list: [60] }] : [] } });
   });
   try {
     await page.goto("/?page=capture");
     const row = page.locator(".capture-resolution-row");
     await expect(row).toContainText("1920 × 1080");
-    const before = (await row.boundingBox())!;
-    await page.getByRole("option", { name: /\/dev\/video0/ }).click();
-    await expect(page.getByText("正在刷新，保留上次读取的规格")).toBeVisible();
-    await expect(row).toHaveCount(1);
-    expect(Math.abs((await row.boundingBox())!.y - before.y)).toBeLessThan(2);
-    await page.screenshot({ path: testInfo.outputPath("capture-refreshing.png"), animations: "disabled" });
-    release();
-    await expect(page.getByText("读取失败，显示上次规格；重新读取后可选择")).toBeVisible();
+    await expect(page.getByRole("option", { name: /\/dev\/video1/ })).toBeDisabled();
+    await expect(page.getByRole("option", { name: /\/dev\/video1/ })).toContainText("未提供可用画质");
+    rescanning = true;
+    await page.getByRole("button", { name: "重新扫描", exact: true }).click();
     await expect(row.getByRole("button", { name: "60 FPS" })).toBeDisabled();
-    await page.getByRole("option", { name: /\/dev\/video1/ }).click();
-    await expect(row).toHaveCount(0);
+    await expect(row).toHaveCount(1);
+    await expect(page.getByRole("option", { name: /\/dev\/video0/ })).toBeDisabled();
+    await page.screenshot({ path: testInfo.outputPath("capture-checking.png"), animations: "disabled" });
+    release();
+    await expect(page.getByRole("option", { name: /\/dev\/video0/ })).toContainText("暂时无法检查");
+    await expect(row.getByRole("button", { name: "60 FPS" })).toBeDisabled();
+    expect(writes).toBe(0);
   } finally { release(); }
 });
 
@@ -91,4 +94,32 @@ test("activity history uses a stable local placeholder and reveals records toget
     expect(Math.abs((await list.boundingBox())!.y - before.y)).toBeLessThan(2);
     await page.screenshot({ path: testInfo.outputPath("activity-ready.png"), animations: "disabled" });
   } finally { release(); releaseRuntime(); }
+});
+
+test("a late scan cannot overwrite a newer manual check for the same device", async ({ page }) => {
+  await mockStudioApi(page, authenticatedSession, { revision: 1, capture: { device: "/dev/video0", pixel_format: "MJPG", width: 1920, height: 1080, fps: 60 } });
+  await page.route("**/api/capture/devices", async (route) => route.fulfill({ json: { devices: ["/dev/video0"] } }));
+  let release!: () => void;
+  const waiting = new Promise<void>((resolve) => { release = resolve; });
+  let reads = 0, oldReplyDelivered = false;
+  await page.route("**/api/capture/capabilities", async (route) => {
+    reads += 1;
+    if (reads === 1) {
+      await waiting;
+      await route.fulfill({ json: { available: true, device: "/dev/video0", reason: "", capabilities: [{ pixel_format: "MJPG", width: 1920, height: 1080, fps_list: [60] }] } });
+      oldReplyDelivered = true;
+    } else await route.fulfill({ json: { available: false, device: "/dev/video0", reason: "输入不可用", capabilities: [] } });
+  });
+  try {
+    await page.goto("/?page=capture");
+    await expect.poll(() => reads).toBe(1);
+    await page.getByText("输入其他设备路径", { exact: true }).click();
+    await page.getByRole("button", { name: "读取设备规格", exact: true }).click();
+    await expect(page.getByRole("option", { name: /\/dev\/video0/ })).toContainText("未提供可用画质");
+    release();
+    await expect.poll(() => oldReplyDelivered).toBe(true);
+    await expect(page.getByRole("option", { name: /\/dev\/video0/ })).toBeDisabled();
+    await expect(page.locator(".capture-quality-empty")).toContainText("当前设备不可用");
+    await expect(page.getByRole("button", { name: "60 FPS", exact: true })).toHaveCount(0);
+  } finally { release(); }
 });

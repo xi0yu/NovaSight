@@ -43,29 +43,7 @@ body {
   color: var(--text);
 }
 
-.route-loading-shell {
-  width: min(460px, calc(100vw - 32px));
-  min-height: 180px;
-  display: grid;
-  place-content: center;
-  justify-items: center;
-  gap: 8px;
-  margin: min(18vh, 160px) auto 0;
-  padding: 28px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-6);
-  background: color-mix(in srgb, var(--bg-surface) 96%, transparent);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-dialog);
-}
 
-.route-loading-shell strong {
-  font-size: 18px;
-}
-
-.route-loading-shell small {
-  color: var(--text-tertiary);
-}
 
 .app-error-actions {
   display: flex;
@@ -2016,11 +1994,11 @@ tbody tr:hover {
 }
 
 /* Authorization information shares the same hierarchy in About and preview states. */
-.license-panel { gap: 24px; background: transparent; box-shadow: none; font-size: 14px; line-height: 22px; }
+.license-panel, .license-overview { display: grid; gap: 24px; background: transparent; box-shadow: none; font-size: 14px; line-height: 22px; }
 .license-summary { padding: 24px; border: 1px solid var(--status-running-border); border-radius: 16px; background: var(--status-running-bg); }
 .license-summary > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .license-summary-title { display: flex; align-items: center; gap: 8px; color: var(--text-primary); font-size: 18px; }
-.license-summary-title h3 { margin: 0; font-size: inherit; line-height: 26px; font-weight: 600; }
+.license-summary-title strong { margin: 0; font-size: inherit; line-height: 26px; font-weight: 600; }
 .license-summary-title svg { color: var(--status-running-fg); }
 .license-device-expiry { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) auto; gap: 24px; margin: 24px 0 0; }
 .license-device-expiry dt { margin-bottom: 8px; color: var(--text-secondary); font-size: 14px; }
@@ -4486,3 +4464,19 @@ body {
 .toast-card-timer { display: block; height: 3px; border-radius: 3px; overflow: hidden; background: color-mix(in srgb, currentColor 12%, transparent); }
 .toast-card-timer > span { display: block; height: 100%; background: currentColor; transform-origin: left; animation: toast-countdown linear both; }
 @keyframes toast-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+
+.license-summary { background: linear-gradient(120deg, var(--brand-soft), var(--status-running-bg)); border-color: var(--brand-border); }
+.license-summary > header { align-items: center; }
+.license-access-copy > span { color: var(--brand-primary); font-size: 14px; font-weight: 600; }
+.license-access-copy h3 { margin: 8px 0; font-size: 24px; line-height: 32px; font-weight: 600; text-wrap: balance; }
+.license-access-copy p { margin: 0; color: var(--text-secondary); font-size: 14px; }
+.license-access-character { flex: 0 0 96px; width: 96px; height: 96px; }
+.license-summary-status { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+.license-scope-grid h4 { font-size: 16px; line-height: 24px; }
+.license-scope-grid article > p { margin: 0 0 16px; color: var(--text-secondary); font-size: 14px; line-height: 22px; }
+.settings-license .license-management { padding-top: 0; border-top: 0; }
+@media (max-width: 760px) { .license-access-copy h3 { font-size: 20px; line-height: 28px; } .license-access-character { flex-basis: 64px; width: 64px; height: 64px; } .license-summary > header { flex-wrap: nowrap; gap: 8px; } }
+
+.capture-device-options > button.unavailable { background: var(--bg-subtle); color: var(--text-secondary); opacity: 1; cursor: not-allowed; }
+.capture-device-options > button.unavailable > span:first-child { color: var(--text-secondary); background: var(--bg-surface); }
+.capture-device-options > button.unavailable i { color: var(--text-secondary); }

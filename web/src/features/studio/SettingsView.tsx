@@ -7,6 +7,7 @@ import "./settings-view.css";
 
 export function SettingsView({
   modules,
+  licenseContent,
   desiredRevision,
   effectiveRevision,
   restartRequired,
@@ -19,6 +20,7 @@ export function SettingsView({
   onNavigate,
 }: {
   modules: readonly string[];
+  licenseContent?: ReactNode;
   desiredRevision: number;
   effectiveRevision: number;
   restartRequired: boolean;
@@ -31,9 +33,9 @@ export function SettingsView({
   onNavigate: (page: ConsolePage) => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const revisionStatus = !configAvailable ? "设置未读取" : !runtimeVerified ? "运行版本待确认"
-    : restartRequired ? "等待重启" : desiredRevision !== effectiveRevision ? "等待生效" : "版本一致";
-  const revisionTone = !configAvailable || !runtimeVerified ? "unknown" : revisionStatus === "版本一致" ? "" : "attention";
+  const revisionStatus = !configAvailable ? "正在读取设置" : !runtimeVerified ? "正在确认运行状态"
+    : restartRequired ? "部分设置重启后生效" : desiredRevision !== effectiveRevision ? "设置正在应用" : "设置已生效";
+  const revisionTone = !configAvailable || !runtimeVerified ? "unknown" : revisionStatus === "设置已生效" ? "" : "attention";
   const onFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -45,8 +47,8 @@ export function SettingsView({
         <span className="settings-transfer-icon" aria-hidden="true"><NovaIcon name="export" size={20} /></span>
         <div>
           <small>保存一份当前状态</small>
-          <h2>备份设置</h2>
-          <p>下载当前设备已经保存的设置。算法页尚未应用的修改不会混入备份。</p>
+          <h2>导出配置</h2>
+          <p>一键保存当前配置，换机或恢复时直接使用。</p>
         </div>
         <button className="console-button primary" disabled={!configAvailable || operationPending} onClick={onExport} type="button">
           <NovaIcon name="export" size={16} />
@@ -59,10 +61,10 @@ export function SettingsView({
         <span className="settings-transfer-icon" aria-hidden="true"><NovaIcon name="import" size={20} /></span>
         <div>
           <small>从已有文件恢复</small>
-          <h2>恢复设置</h2>
+          <h2>导入配置</h2>
           <p>{parameterChangesPending
             ? "算法参数还有未应用的修改。先决定保存或放弃，回来后即可继续恢复。"
-            : "选择备份后先预览会改变的部分，确认后才会写入设备；首页运行状态不属于配置备份。"}</p>
+            : "选择配置文件，预览改动后确认恢复。不会自动启动设备。"}</p>
         </div>
         {parameterChangesPending ? (
           <button className="console-button attention" onClick={() => onNavigate("params")} type="button">先处理参数</button>
@@ -83,20 +85,7 @@ export function SettingsView({
         />
       </article>
     ),
-    details: (
-      <details className="settings-technical-details">
-        <summary>
-          <span><b>技术信息</b><small>仅在迁移失败或需要人工核对时查看</small></span>
-          <NovaIcon name="forward" size={16} />
-        </summary>
-        <dl>
-          <div><dt>保存版本</dt><dd>{configAvailable ? desiredRevision : "—"}</dd></div>
-          <div><dt>运行版本</dt><dd>{runtimeVerified ? effectiveRevision : "—"}</dd></div>
-          <div><dt>生效状态</dt><dd>{revisionStatus}</dd></div>
-          <div><dt>备份格式</dt><dd>NovaSight JSON</dd></div>
-        </dl>
-      </details>
-    ),
+
   };
 
   return (
@@ -104,17 +93,21 @@ export function SettingsView({
       <header className="settings-hero">
         <div>
           <h2 id="settings-transfer-title">备份与恢复</h2>
-          <p>日常调整留在各自页面。这里仅处理整套设备设置的备份、迁移和恢复。</p>
+          <p>把调好的设置留住，随时安心恢复。</p>
         </div>
         <div className={`settings-revision ${revisionTone}`} role="status">
           <small>当前设置</small>
           <strong>{revisionStatus}</strong>
-          <span>{configAvailable ? desiredRevision : "—"} / {runtimeVerified ? effectiveRevision : "—"}</span>
         </div>
       </header>
       <div className="settings-transfer-list">
         {modules.map((moduleId) => moduleViews[moduleId] ? <div data-module={moduleId} key={moduleId}>{moduleViews[moduleId]}</div> : null)}
       </div>
+      {licenseContent ? <div className="settings-license">{licenseContent}</div> : null}
+      <footer className="settings-records">
+        <div><strong>查看最近操作与问题记录</strong><p>本地最多保留 200 条操作记录，可在实时日志导出。浏览器存储不可用时仅本页保留。</p></div>
+        <button className="console-button" type="button" onClick={() => onNavigate("activity")}><NovaIcon name="logs" size={18} />查看问题记录</button>
+      </footer>
     </section>
   );
 }

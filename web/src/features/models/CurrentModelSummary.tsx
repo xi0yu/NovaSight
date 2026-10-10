@@ -23,16 +23,16 @@ export function CurrentModelSummary({
           <NovaIcon name="engine" size={24} strokeWidth={1.7} />
         </span>
         <div>
-          <span className="class-config-eyebrow">当前运行模型</span>
+          <span className="class-config-eyebrow">当前使用的模型</span>
           <h3 title={modelName}>{modelName}</h3>
         </div>
         <StatusIndicator tone={loaded ? "good" : "idle"}>
-          {loaded ? "运行已装载" : deployed ? "已部署，未装载" : "未部署"}
+          {loaded ? "正在使用" : deployed ? "已选定，等待使用" : "尚未选择"}
         </StatusIndicator>
       </div>
       <dl className="current-model-runtime-facts">
-        <div><dt>登记输入</dt><dd>{inputShape || "-"}</dd></div>
-        <div><dt>运行状态</dt><dd>{loaded ? "已装载" : "未装载"}</dd></div>
+        <div><dt>识别尺寸</dt><dd>{inputShape || "-"}</dd></div>
+        <div><dt>运行状态</dt><dd>{loaded ? "正在使用" : "尚未使用"}</dd></div>
         <div><dt>模型文件</dt><dd>{artifactKind || "-"}</dd></div>
       </dl>
       <button className="console-button primary current-model-manage-button" onClick={onOpenManager} type="button">

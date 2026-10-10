@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { LicenseStatus } from "../../api";
+import { LicenseOverview } from "./LicenseOverview";
 import { LicensePanel } from "./LicensePanel";
 
 const { clearLicenseKeyMock, getLicenseStatusMock } = vi.hoisted(() => ({
@@ -63,22 +64,22 @@ function LicenseTransitionHarness() {
 }
 
 describe("LicensePanel", () => {
-  it("uses a local deadline only to request server confirmation", async () => {
+  it("shows a local countdown without making authorization decisions", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-09T00:00:00Z"));
     const changed = vi.fn();
     getLicenseStatusMock.mockResolvedValue(activeLicense);
     const license = { ...activeLicense, device_model: "Mac16,11", expires_at: Date.now() / 1000 + 2 };
-    const view = render(<LicensePanel license={license} onLicenseChange={changed} />);
+    const view = render(<LicenseOverview license={license} />);
     try {
       expect(screen.getByText("Mac16,11")).toBeVisible();
       expect(screen.getByText("倒计时 00:00:02")).toBeVisible();
       act(() => vi.advanceTimersByTime(2000));
       expect(screen.getByText("正在核验到期状态")).toBeVisible();
       await act(async () => {});
-      expect(changed).toHaveBeenCalledWith(activeLicense);
+      expect(changed).not.toHaveBeenCalled();
       act(() => vi.advanceTimersByTime(2000));
-      expect(changed).toHaveBeenCalledTimes(1);
+      expect(getLicenseStatusMock).not.toHaveBeenCalled();
     } finally {
       view.unmount();
       vi.useRealTimers();
@@ -90,7 +91,7 @@ describe("LicensePanel", () => {
     { credential_format: "legacy_ns1", tier: "premium", category: "正式" },
     { credential_format: "legacy_document", tier: "pro", category: "待核实" },
   ])("shows license metadata rather than a tier title for $credential_format", ({ credential_format, tier, category }) => {
-    render(<LicensePanel license={{ ...activeLicense, credential_format, tier, device_model: "Mac16,11" }} onLicenseChange={vi.fn()} />);
+    render(<LicenseOverview license={{ ...activeLicense, credential_format, tier, device_model: "Mac16,11" }} />);
     const metadata = within(screen.getByLabelText("设备授权状态"));
     expect(metadata.getByText("设备模型 ID")).toBeVisible();
     expect(metadata.getByText("Mac16,11")).toBeVisible();
@@ -108,13 +109,32 @@ describe("LicensePanel", () => {
     await userEvent.type(screen.getByLabelText("授权码"), "replacement");
     expect(screen.queryByText("授权码不能为空。")).not.toBeInTheDocument();
   });
+  it("shows only purchased rights and never credential metadata in About", () => {
+    render(<LicenseOverview license={activeLicense} />);
+    const scope = within(screen.getByRole("region", { name: "你的专属能力" }));
+    expect(scope.getByText("画面采集")).toBeVisible();
+    expect(scope.getByText("模型仓库")).toBeVisible();
+    expect(scope.queryByText("硬件控制")).not.toBeInTheDocument();
+    for (const technical of ["credential-fingerprint", "license-a", "token-a", "key-a", "开发者诊断与凭证追踪码"]) expect(screen.queryByText(technical)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("授权码")).not.toBeInTheDocument();
+  });
+  it.each(["plugins", "config_read"] as const)("does not promise broader capabilities for %s alone", (feature) => {
+    render(<LicenseOverview license={{ ...activeLicense, features: [feature] }} />);
+    const scope = within(screen.getByRole("region", { name: "你的专属能力" }));
+    expect(scope.getAllByRole("listitem")).toHaveLength(1);
+    expect(scope.queryByText("硬件控制")).not.toBeInTheDocument();
+    expect(scope.queryByText("模型仓库")).not.toBeInTheDocument();
+    expect(scope.queryByText("掌控你的设备")).not.toBeInTheDocument();
+    expect(scope.queryByText("让识别模型成为你的专属视觉助手")).not.toBeInTheDocument();
+  });
   it.each([
     { title: "unconfirmed", license: null, message: "正在核实授权范围。" },
     { title: "invalid with stale features", license: { ...activeLicense, valid: false }, message: "授权生效后，可在这里查看可用功能。" },
     { title: "valid without features", license: { ...activeLicense, features: [] }, message: "此授权未包含可用功能。" },
   ])("does not advertise unavailable capabilities for $title", ({ license, message }) => {
-    render(<LicensePanel license={license} onLicenseChange={vi.fn()} />);
-    const scope = within(screen.getByRole("region", { name: "授权范围" }));
+    render(<LicenseOverview license={license} />);
+    const scope = within(screen.getByRole("region", { name: "你的专属能力" }));
     expect(scope.getByText(message)).toBeVisible();
     expect(scope.queryByRole("list")).not.toBeInTheDocument();
     expect(scope.queryByText("画面采集")).not.toBeInTheDocument();
@@ -124,18 +144,8 @@ describe("LicensePanel", () => {
     const user = userEvent.setup();
     render(<LicenseTransitionHarness />);
 
-    expect(screen.getByLabelText("设备授权状态")).toBeInTheDocument();
     expect(screen.getByText("更换授权码")).toBeInTheDocument();
-    const scope = within(screen.getByRole("region", { name: "授权范围" }));
-    expect(scope.getByText("采集与运行")).toBeVisible();
-    expect(scope.getByText("模型与推理")).toBeVisible();
-    expect(scope.getByText("控制与配置")).toBeVisible();
-    expect(scope.getByText("画面采集")).toBeVisible();
-    expect(scope.getByText("写入配置")).toBeVisible();
-    expect(scope.queryByText("硬件控制")).not.toBeInTheDocument();
-    for (const technical of ["开发者诊断与凭证追踪码", "credential-fingerprint", "license-a", "token-a", "key-a", "凭证格式"]) {
-      expect(screen.queryByText(technical)).not.toBeInTheDocument();
-    }
+    expect(screen.queryByLabelText("设备授权状态")).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "退出当前授权" }));
     expect(clearLicenseKeyMock).not.toHaveBeenCalled();
     expect(screen.getByText(/再次点击将先紧急停止当前设备/)).toHaveAttribute("role", "status");

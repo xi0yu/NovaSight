@@ -254,9 +254,9 @@ test("authenticated operator can manage and safely exit the current license", as
 
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
   await expect(navigation).toBeVisible();
-  await openUtility(page, "关于");
-  await expect(page.getByRole("dialog", { name: "关于 NovaSight" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "授权与设备" })).toBeVisible();
+  await openUtility(page, "设置");
+  await expect(page.getByRole("dialog", { name: "设置", exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "授权管理", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "退出当前授权" }).click();
   await page.getByRole("button", { name: "确认：先紧急停止设备，再退出授权" }).click();
 

@@ -1,5 +1,6 @@
 import { type LicenseStatus } from "../../api";
 import { NovaIcon } from "../../components/visual";
+import { StartupScreen } from "../../components/StartupScreen";
 import { LicenseActivationForm } from "./LicensePanel";
 import { type LicenseConnectionIssue } from "./connectionIssue";
 
@@ -19,10 +20,9 @@ export function LicenseGate({
   onLicenseChange
 }: Required<Pick<LicenseProps, "loading" | "onRefresh">> &
   Pick<LicenseProps, "license" | "issue" | "onLicenseChange">) {
+  if (loading) return <StartupScreen />;
   const serviceUnavailable = !loading && license === null && issue !== null;
-  const gateSubtitle = loading
-    ? "正在校验本机服务与授权状态"
-    : serviceUnavailable
+  const gateSubtitle = serviceUnavailable
       ? "连接本机服务后进入 Jetson 实时视觉工作台"
       : license?.valid
         ? "授权已激活，进入 Jetson 实时视觉工作台"
@@ -55,16 +55,6 @@ export function LicenseGate({
               <div className="service-connection-actions">
                 <button className="button" type="button" onClick={onRefresh}>重新连接</button>
               </div>
-            </div>
-          </section>
-        ) : loading ? (
-          <section className="service-connection-panel waiting" role="status" aria-live="polite">
-            <span className="service-connection-icon" aria-hidden="true">
-              <NovaIcon name="activity-pulse" size={24} />
-            </span>
-            <div>
-              <h2>正在连接 NovaSight 服务</h2>
-              <p>正在读取本机服务与授权状态，请稍候。</p>
             </div>
           </section>
         ) : (
