@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import {
   type LicenseStatus,
@@ -9,6 +9,7 @@ import { Button, InlineError, StatusIndicator } from "../../components/ui";
 import { reportError } from "../../lib/toast";
 import { Field } from "../shared/Field";
 import { formatEpoch } from "../shared/format";
+import { formatLicenseCategory } from "./format";
 import {
   describeLicenseActionFailure,
   type LicenseActionFailure
@@ -27,7 +28,24 @@ export function LicensePanel({
   const [clearArmed, setClearArmed] = useState(false);
   const [message, setMessage] = useState<string | undefined>();
   const [failure, setFailure] = useState<LicenseActionFailure | null>(null);
-  const currentTime = new Date().toLocaleString("zh-CN", { hour12: false });
+  const [now, setNow] = useState(Date.now);
+  const expiresAt = license?.expires_at ? license.expires_at * 1000 : null;
+  const remaining = expiresAt === null ? null : Math.max(0, Math.ceil((expiresAt - now) / 1000));
+  const expiredNotified = useRef<number | null>(null);
+  useEffect(() => {
+    if (expiresAt === null) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [expiresAt]);
+  useEffect(() => {
+    if (license?.valid && expiresAt !== null && now >= expiresAt && expiredNotified.current !== expiresAt) {
+      expiredNotified.current = expiresAt;
+      onLicenseChange({ ...license, valid: false, message: "授权已到期，运行操作已锁定；前台保留以便重新授权。" });
+    }
+  }, [now, expiresAt, license, onLicenseChange]);
+  const licenseValid = license?.valid === true && (remaining === null || remaining > 0);
+  const currentTime = new Date(now).toLocaleString("zh-CN", { hour12: false });
   const temporarySupported = license?.temporary_access_supported === true;
   const traceSource = license?.token_id || license?.license_id || license?.fingerprint || "";
   const statusTraceCode = formatTraceFragment(traceSource);
@@ -35,13 +53,13 @@ export function LicensePanel({
   const licenseTraceCode = formatTraceFragment(license?.license_id);
   const tokenTraceCode = formatTraceFragment(license?.token_id);
   const keyTraceCode = formatTraceFragment(license?.key_id);
-  const validFrom = license?.valid
+  const validFrom = licenseValid
     ? formatEpoch(license.not_before ?? license.created_at)
     : "等待签发";
-  const activatedAt = license?.valid
+  const activatedAt = licenseValid
     ? formatEpoch(license.activated_at ?? license.created_at)
     : "等待激活";
-  const licenseStatusTitle = license?.valid
+  const licenseStatusTitle = licenseValid
     ? "授权已激活"
     : "等待授权激活";
   const backendMessage = license?.message?.trim();
@@ -58,7 +76,7 @@ export function LicensePanel({
 
   useEffect(() => {
     setClearArmed(false);
-  }, [license?.token_id, license?.valid]);
+  }, [license?.token_id, licenseValid]);
 
   const clearLicense = useCallback(async () => {
     if (!clearArmed) {
@@ -93,27 +111,32 @@ export function LicensePanel({
     <div className="license-panel">
       <InlineError message={failure?.message} title={failure?.title} />
       {message ? <div className="inline-note" role="status">{message}</div> : null}
-      <div className={license?.valid ? "license-hero valid" : "license-hero"}>
+      <div className={licenseValid ? "license-hero valid" : "license-hero"}>
         <div>
           <span>使用权限</span>
-          <strong>{license?.valid ? formatTier(license.tier) : license ? "尚未授权" : "授权待核实"}</strong>
-          <p>{license?.valid
+          <strong>{licenseValid ? "当前授权" : remaining === 0 ? "授权已到期" : license ? "等待授权" : "授权待核实"}</strong>
+          <p>{licenseValid
             ? license.credential_format === "ephemeral_code"
-              ? "临时授权仅在本次服务运行期间有效；重启后需要输入新授权码。"
+              ? "临时授权从本次启动起仅限 24 小时，重复登录不续期；重启后需要新授权码。"
               : `授权已生效${license.expires_at ? `，到期时间 ${formatEpoch(license.expires_at)}` : ""}。`
             : "输入一个授权码即可开始使用；临时码与正式许可证共用下方入口。"}</p>
         </div>
-        <StatusIndicator tone={license?.valid ? "good" : "idle"}>
-          {license?.valid ? "授权有效" : "尚未授权"}
+        <StatusIndicator tone={licenseValid ? "good" : "idle"}>
+          {licenseValid ? "授权有效" : "尚未授权"}
         </StatusIndicator>
       </div>
-      <p className="license-help-copy">{license?.valid
+      <dl className="license-device-expiry" aria-label="设备授权状态">
+        <div><dt>设备模型 ID</dt><dd>{license?.device_model || "设备型号待核实"}</dd></div>
+        <div className={remaining === 0 ? "expired" : ""}><dt>到期时间</dt><dd>{formatEpoch(license?.expires_at)}<small className="license-expiry-countdown">{remaining === null ? "到期时间待核实" : remaining === 0 ? "已到期 · 操作已锁定" : `倒计时 ${String(Math.floor(remaining / 3600)).padStart(2, "0")}:${String(Math.floor(remaining / 60) % 60).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`}</small></dd></div>
+        <div><dt>授权类别</dt><dd>{formatLicenseCategory(license)}</dd></div>
+      </dl>
+      <p className="license-help-copy">{licenseValid
         ? "你可以查看当前可用能力，或在需要时更换授权。退出授权前，系统会先停止设备输出并再次确认。"
         : "授权码由本机服务验证；页面不会保存或回显完整凭证。"}</p>
-      <details className="license-change-disclosure" open={!license?.valid || undefined}>
-        <summary>{license?.valid ? "更换授权码" : "输入授权码"}</summary>
+      <details className="license-change-disclosure" open={!licenseValid || undefined}>
+        <summary>{licenseValid ? "更换授权码" : "输入授权码"}</summary>
         <LicenseActivationForm
-          active={license?.valid === true}
+          active={licenseValid}
           temporarySupported={temporarySupported}
           onLicenseChange={onLicenseChange}
         />
@@ -133,15 +156,13 @@ export function LicensePanel({
             : <span>等待授权功能范围</span>}
         </div>
         <div className="field-grid">
-          <Field label="授权类型" value={license?.tier ? formatTier(license.tier) : "未授权"} />
+          <Field label="授权类别" value={formatLicenseCategory(license)} />
           <Field label="凭证格式" value={formatCredentialFormat(license?.credential_format)} />
-          <Field label="当前状态" value={license?.valid ? "可用" : "等待申请"} />
+          <Field label="当前状态" value={licenseValid ? "可用" : "等待申请"} />
           <Field label="当前时间" value={currentTime} />
           <Field label="激活时间" value={formatEpoch(license?.activated_at)} />
-          <Field label="到期时间" value={license?.credential_format === "ephemeral_code" ? "进程退出即失效" : formatEpoch(license?.expires_at)} />
-          <Field label="期限" value={license?.credential_format === "ephemeral_code"
-            ? "当前服务进程"
-            : formatDuration(license?.duration_value, license?.duration_unit)} />
+          <Field label="到期时间" value={formatEpoch(license?.expires_at)} />
+          <Field label="期限" value={formatDuration(license?.duration_value, license?.duration_unit)} />
         </div>
         <details className="compact-settings-details">
           <summary>开发者诊断与凭证追踪码</summary>
@@ -224,7 +245,7 @@ export function LicenseActivationForm({
       }
       setCredential("");
       setMessage(status.tier === "temporary"
-        ? "本次进程临时授权已生效，重启后需要使用新临时码。"
+        ? "本次启动临时授权已生效，仅限 24 小时，重复登录不会续期。"
         : "正式许可证已激活，完整凭证不会在界面中回显。");
     } catch (err) {
       const nextFailure = describeLicenseActionFailure(err, "activate");
@@ -286,22 +307,6 @@ function formatTraceFragment(value: string | null | undefined): string {
     return normalized.toUpperCase();
   }
   return `${normalized.slice(0, 8).toUpperCase()}-${normalized.slice(-6).toUpperCase()}`;
-}
-
-function formatTier(tier: string): string {
-  if (!tier) {
-    return "无";
-  }
-  if (tier === "temporary") {
-    return "临时测试授权";
-  }
-  if (tier === "pro") {
-    return "专业版";
-  }
-  if (tier === "premium" || tier === "ultimate") {
-    return "旗舰版";
-  }
-  return tier;
 }
 
 function formatDuration(value: number | null | undefined, unit: string | undefined): string {

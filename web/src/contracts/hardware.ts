@@ -37,6 +37,21 @@ export class HardwareContractError extends Error {
   }
 }
 
+export interface DeviceConnectionProbe {
+  reachable: boolean;
+  elapsed_ms: number;
+  checked_at_ms: number;
+}
+
+export function decodeDeviceConnectionProbe(value: unknown): DeviceConnectionProbe {
+  const record = expectRecord(value, "device_probe");
+  return {
+    reachable: expectBoolean(record.reachable, "device_probe.reachable"),
+    elapsed_ms: expectUnsignedInteger(record.elapsed_ms, "device_probe.elapsed_ms"),
+    checked_at_ms: expectUnsignedInteger(record.checked_at_ms, "device_probe.checked_at_ms"),
+  };
+}
+
 function expectRecord(value: unknown, path: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new HardwareContractError(path, "object");

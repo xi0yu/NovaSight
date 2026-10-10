@@ -43,6 +43,7 @@ function CausalHarness() {
     <>
       <button type="button" onClick={() => beginEmergencyStop(safeRuntime("daemon-a", 8))}>开始紧停</button>
       <button type="button" onClick={() => reconcileEmergencyStop(safeRuntime("daemon-a", 9))}>同实例确认</button>
+      <button type="button" onClick={() => reconcileEmergencyStop({ ...safeRuntime("daemon-a", 9), semantic: { ...safeRuntime("daemon-a", 9).semantic, phase: "running" } })}>空协议运行中</button>
       <button type="button" onClick={() => reconcileEmergencyStop(safeRuntime("daemon-b", 1))}>重启后安全</button>
     </>
   );
@@ -74,4 +75,14 @@ describe("SafetyOperationProvider", () => {
     await userEvent.click(screen.getByRole("button", { name: "同实例确认" }));
     expect(screen.getByText("紧急停止尚未确认")).toBeInTheDocument();
   });
+});
+
+it("waits for lifecycle stopped even when a newer silent-output snapshot is safe", async () => {
+  render(<SafetyOperationProvider><CausalHarness /></SafetyOperationProvider>);
+  await userEvent.click(screen.getByRole("button", { name: "开始紧停" }));
+  await userEvent.click(screen.getByRole("button", { name: "空协议运行中" }));
+  expect(screen.getByText("紧急停止确认中")).toBeVisible();
+  expect(screen.queryByText("紧急停止已确认")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "同实例确认" }));
+  expect(screen.getByText("紧急停止已确认")).toBeVisible();
 });

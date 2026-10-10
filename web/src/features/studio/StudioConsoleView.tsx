@@ -46,17 +46,21 @@ import {
   setCapturePreviewEnabled,
   streamUrl,
   updateRuntimeConfig,
+  updateRuntimeParameters,
+  probeMouseProtocol,
 } from "../../api";
 import { pushToastRaw, reportError, reportSuccess, useActivityNotices, useClearActivityNotices, useClearErrorNotices, useErrorNotices } from "../../lib/toast";
 import { formatRuntimeErrorMessage, getErrorMessage } from "../shared/format";
-import { LicenseView } from "../license/LicenseView";
+import { LicensePanel } from "../license/LicensePanel";
 import { ActivityView } from "../activity/ActivityView";
+import { useWorkspaceAuthorization } from "../auth/AuthGate";
 import { useActivityStream } from "../activity/useActivityStream";
 import { getRuntimeMainlineStatus } from "../shared/runtimeStatus";
 import { useStableSemanticValue } from "../shared/useStableSemanticValue";
 import { NovaIcon } from "../../components/visual";
 import { moduleOrderForPage, modulesForPage } from "../../contracts/studioLayout";
 import { CurrentModelSummary } from "../models/CurrentModelSummary";
+import { StudioTaskIntro } from "./StudioTaskIntro";
 import { ModelSwitchDialog } from "../models/ModelSwitchDialog";
 import {
   runtimeDeliveryDescription,
@@ -70,8 +74,12 @@ import {
 } from "./ActionConfirmationDialog";
 import { TargetClassEditor, classStyle, parseClassValues, setClassValue } from "./TargetClassEditor";
 import { ClassPresetPicker } from "./ClassPresetPicker";
+import { StudioUtilityDialog } from "./StudioUtilityDialog";
+import { configDifferences } from "./configDiff";
+import { MouseProtocolView, readMouseProtocols, sameMouseProtocol, type MouseProtocol } from "./MouseProtocolView";
 import { FireStabilizationPage } from "./FireStabilizationPage";
 import { TargetRangeControls } from "./TargetRangeControls";
+import { StartupResponsePreview, SingleOutputPreview } from "./AlgorithmResponsePreview";
 import { PredictionInsight, ResponseExperiment } from "./PredictionInsight";
 import type { AimRole } from "../targeting/types";
 import { ControlTracePanel } from "./ControlTracePanel";
@@ -92,7 +100,7 @@ import {
   type TargetingNumberParameter,
   type TargetingPipelineField
 } from "./algorithmParameterModel";
-import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, type ConsolePage } from "./StudioNavigation";
+import { CONSOLE_PAGES, DEFAULT_CONSOLE_PAGE, StudioNavigation, isConsoleUtility, type ConsolePage, type ConsoleUtility, type ConsoleWorkspacePage } from "./StudioNavigation";
 import { StudioPageHeader } from "./StudioPageHeader";
 import { KvCard, Metric, SectionTitle, WorkspaceNotice } from "./StudioPresentation";
 import { StudioRuntimeBar } from "./StudioRuntimeBar";
@@ -239,9 +247,14 @@ type CapabilityFormatGroup = {
 
 type ConfigDialogId = "class-config";
 
-function pageFromUrl(): ConsolePage {
+function utilityFromUrl(): ConsoleUtility | null {
   const raw = new URLSearchParams(window.location.search).get("page");
-  return CONSOLE_PAGES.has(raw as ConsolePage) ? (raw as ConsolePage) : DEFAULT_CONSOLE_PAGE;
+  return raw === "license" ? "about" : raw === "settings" || raw === "about" ? raw : null;
+}
+
+function pageFromUrl(): ConsoleWorkspacePage {
+  const raw = new URLSearchParams(window.location.search).get("page");
+  return CONSOLE_PAGES.has(raw as ConsolePage) && !utilityFromUrl() ? (raw as ConsoleWorkspacePage) : DEFAULT_CONSOLE_PAGE;
 }
 
 function writePageToUrl(page: ConsolePage, mode: "push" | "replace" = "push") {
@@ -348,6 +361,17 @@ function clampNumber(value: number, min: number, max: number): number {
 
 function readString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function activitySourceTag(source: string): string {
+  if (source.startsWith("capture")) return "采集";
+  if (source.startsWith("model")) return "模型";
+  if (source.startsWith("parameter")) return "算法参数";
+  if (source.startsWith("mouse-protocol") || source.startsWith("kmnet")) return "鼠标协议";
+  if (source.startsWith("license") || source.startsWith("auth")) return "授权";
+  if (source.startsWith("activity")) return "日志";
+  if (source.startsWith("runtime") || source.includes("websocket")) return "运行";
+  return "操作";
 }
 
 const NO_SAMPLE = "—";
@@ -578,29 +602,8 @@ function parameterPageFieldChanges(
   baseline: RuntimeConfig,
   draft: RuntimeConfig
 ): ParameterPageFieldChange[] {
-  const allowedSections = new Set(["control", "inference", "pipeline"]);
-  const ignoredSections = new Set(["revision", "version", "roi_size"]);
-  const unsupportedSections = Array.from(new Set([...Object.keys(baseline), ...Object.keys(draft)]))
-    .filter((section) => !ignoredSections.has(section))
-    .filter((section) => !allowedSections.has(section))
-    .filter((section) => !runtimeConfigValuesEqual(baseline[section], draft[section]));
-  if (unsupportedSections.length > 0) {
-    throw new Error(`参数页包含不支持保存的配置区：${unsupportedSections.join("、")}`);
-  }
-
   const baselineControl = asRecord(baseline.control);
   const draftControl = asRecord(draft.control);
-  const supportedControlKeys = new Set(["aim", "fire_stabilization"]);
-  const unsupportedControlKeys = Array.from(new Set([
-    ...Object.keys(baselineControl),
-    ...Object.keys(draftControl)
-  ]))
-    .filter((key) => !supportedControlKeys.has(key))
-    .filter((key) => !runtimeConfigValuesEqual(baselineControl[key], draftControl[key]));
-  if (unsupportedControlKeys.length > 0) {
-    throw new Error(`参数页包含不支持保存的控制字段：${unsupportedControlKeys.join("、")}`);
-  }
-
   const aimChange = runtimeConfigValuesEqual(baselineControl.aim, draftControl.aim)
     ? null
     : {
@@ -672,7 +675,7 @@ const CONFIG_SECTION_LABELS: Record<string, string> = {
   preprocess: "预处理",
   pipeline: "目标选择与控制算法",
   control: "控制输出",
-  hardware: "kmNet 硬件",
+  hardware: "鼠标协议与连接",
   limits: "安全限制",
   consumers: "数据消费",
   server: "NovaSight 服务"
@@ -701,8 +704,10 @@ export function StudioConsoleView({
   onRuntimeConfigChange,
   onRuntimeStateChange
 }: StudioConsoleViewProps) {
-  const [activePage, setActivePage] = useState<ConsolePage>(() => pageFromUrl());
-  const { events: serverActivityEvents, clear: clearServerActivity } = useActivityStream();
+  const authorized = useWorkspaceAuthorization();
+  const [activePage, setActivePage] = useState<ConsoleWorkspacePage>(() => pageFromUrl());
+  const [utilityDialog, setUtilityDialog] = useState<ConsoleUtility | null>(utilityFromUrl);
+  const { events: serverActivityEvents, clear: clearServerActivity, state: activityConnectionState, error: activityConnectionError, retry: retryActivity } = useActivityStream();
   const studioLayout = useStudioLayout();
   const overviewModules = modulesForPage(studioLayout, "overview");
   const captureModules = modulesForPage(studioLayout, "capture");
@@ -796,11 +801,13 @@ export function StudioConsoleView({
   const [configDialogDirty, setConfigDialogDirty] = useState(false);
   const [parameterPageDirty, setParameterPageDirty] = useState(false);
   const [parameterPageSaving, setParameterPageSaving] = useState(false);
+  const parameterSaveInFlightRef = useRef(false);
   const [dialogSaveError, setDialogSaveError] = useState<string | null>(null);
   const configFieldIndex = useMemo(() => buildConfigFieldIndex(configSchema), [configSchema]);
   const mainRef = useRef<HTMLElement | null>(null);
   const configDraftRef = useRef<RuntimeConfig | null>(cloneRuntimeConfig(runtimeConfig));
   const lastEnabledEntryRampMs = useRef(200);
+  const [curveDraft, setCurveDraft] = useState<Record<string, number>>({});
   const runtimeConfigLatestRef = useRef<RuntimeConfig | null>(runtimeConfig);
   const activeConfigDialogRef = useRef<ConfigDialogId | null>(null);
   const configDialogBaselineRef = useRef<RuntimeConfig | null>(null);
@@ -858,7 +865,6 @@ export function StudioConsoleView({
     activeConfigDialogRef.current = null;
     configDialogBaselineRef.current = null;
     setConfigDialogDirty(false);
-    setDialogSaveError(null);
   }, [setConfigDialogVisibility]);
 
   const setParameterPageDirtyState = useCallback((dirty: boolean) => {
@@ -888,17 +894,6 @@ export function StudioConsoleView({
     setDialogSaveError(null);
   }, [setParameterPageDirtyState]);
 
-  const requestDiscardParameterPageDraft = useCallback(() => {
-    setConfirmationRequest({
-      eyebrow: "未保存修改",
-      title: "放弃未保存的修改？",
-      description: "当前页面的未保存参数会被丢弃，恢复为最新已保存配置。此操作不能撤销。",
-      confirmLabel: "确认放弃修改",
-      danger: true,
-      onConfirm: discardParameterPageDraft
-    });
-  }, [discardParameterPageDraft]);
-
   const applyConfigSchema = useCallback((schema: ConfigSchemaResponse) => {
     const issues = validateStudioConfigSchema(schema);
     setConfigSchema(schema);
@@ -918,7 +913,7 @@ export function StudioConsoleView({
   }, []);
 
   useEffect(() => {
-    if (previewOnly) return;
+    if (previewOnly || !authorized) return;
     let cancelled = false;
     void getConfigSchema()
       .then((schema) => {
@@ -935,7 +930,7 @@ export function StudioConsoleView({
     return () => {
       cancelled = true;
     };
-  }, [applyConfigSchema, previewOnly]);
+  }, [applyConfigSchema, previewOnly, authorized]);
 
   const openConfigDialog = useCallback((dialog: ConfigDialogId) => {
     if (parameterPageSaving || pendingConfigWritesRef.current > 0) {
@@ -955,8 +950,7 @@ export function StudioConsoleView({
     setConfigDialogVisibility(dialog, true);
   }, [parameterPageSaving, setConfigDialogVisibility]);
 
-  // Closing the editor keeps changes in the shared parameter draft. Only the
-  // parameter-page save writes to the device, so closing never discards edits.
+  // The shared draft owns automatic persistence, including edits inside this dialog.
   const requestDismissConfigDialog = useCallback(async (dialog: ConfigDialogId) => {
     if (activeConfigDialogRef.current !== dialog) return;
     if (document.activeElement instanceof HTMLElement) {
@@ -1012,13 +1006,8 @@ export function StudioConsoleView({
     setConfigDraft(next);
     setConfigDialogDirty(!runtimeConfigsEqual(configDialogBaselineRef.current, next));
     setDialogSaveError(null);
-  }, []);
-
-  useEffect(() => {
-    if (!classConfigDialogOpen) {
-      setDialogSaveError(null);
-    }
-  }, [classConfigDialogOpen]);
+    stageParameterPageDraft(collapseClassProfiles(next));
+  }, [stageParameterPageDraft]);
 
   useEffect(() => {
     writePageToUrl(activePage, "replace");
@@ -1029,7 +1018,15 @@ export function StudioConsoleView({
         restored();
         return;
       }
+      const legacyUtility = utilityFromUrl();
+      if (legacyUtility) {
+        setUtilityDialog(legacyUtility);
+        writePageToUrl(activePageRef.current, "replace");
+        historyIndexRef.current = Number(window.history.state.studioPageIndex);
+        return;
+      }
       const nextPage = pageFromUrl();
+      setUtilityDialog(null);
       const nextIndex = Number(window.history.state?.studioPageIndex ?? 0);
       const delta = historyIndexRef.current - nextIndex;
       if (modelDraftDirtyRef.current && nextPage !== activePageRef.current && delta !== 0) {
@@ -1062,10 +1059,13 @@ export function StudioConsoleView({
   }, [activePage, rememberStudioScroll, restoreStudioScroll, withModelDraftGuard]);
 
   const navigatePage = useCallback((page: ConsolePage) => {
+    if (page === "license" || isConsoleUtility(page)) { setUtilityDialog(page === "license" ? "about" : page); return; }
     if (page === activePage) {
+      setUtilityDialog(null);
       return;
     }
     withModelDraftGuard(() => {
+      setUtilityDialog(null);
       rememberStudioScroll(activePage);
       activePageRef.current = page;
       setActivePage(page);
@@ -1315,12 +1315,14 @@ export function StudioConsoleView({
   const trackerKalmanNisHardReject = readNumber(rustPipelineConfig.tracker_kalman_nis_hard_reject, 16);
   const fireDelayEnabled = readBoolean(rustPipelineConfig.fire_delay_enabled, false);
   const fireDelayMs = fireDelayEnabled ? readNumber(rustPipelineConfig.fire_delay_ms, 0) : 0;
-  const hardwareTriggerRequired = readString(controlConfig.trigger_mode, "hardware") === "hardware";
+  const isNullMouseProtocol = hardwareConfig.backend === "null";
+  const mouseProtocols = readMouseProtocols(hardwareConfig);
+  const selectedMouseProtocolId = isNullMouseProtocol ? "empty" : readString(hardwareConfig.active_mouse_protocol_id, mouseProtocols.some((protocol) => protocol.id === "legacy") ? "legacy" : "unconfigured");
+  const hardwareTriggerRequired = !isNullMouseProtocol && readString(controlConfig.trigger_mode, "hardware") === "hardware";
   const controlAlgorithmLabel = readString(configSchema?.algorithm?.label, CONTROL_ALGORITHM_LABEL);
-  const kmnetHost = readString(hardwareConfig.host, "192.168.2.188");
+  const kmnetHost = readString(hardwareConfig.host, "");
   const kmnetPort = readNumber(hardwareConfig.port, 8888);
-  const kmnetUuid = readString(hardwareConfig.uuid, "12345678");
-  const kmnetMonitorPort = readNumber(hardwareConfig.monitor_port, 5001);
+  const kmnetUuid = readString(hardwareConfig.uuid, "");
   const kmnetAutoConnect = readBoolean(hardwareConfig.auto_connect, false);
   const outputEnabled = readBoolean(controlConfig.output_enabled, false);
   const fireStabilizationConfig = asRecord(controlConfig.fire_stabilization);
@@ -1363,7 +1365,6 @@ export function StudioConsoleView({
   const kmnetConnectionState = useDebouncedValue(kmnetConnectionStateRaw, 280);
   const kmnetConnected = kmnetConnectionState === "connected";
   const kmnetRuntimeConnected = kmnetConnected;
-  const kmnetConnecting = kmnetConnectionState === "connecting";
   const kmnetConnectionFailed = kmnetConnectionState === "failed";
   const kmnetConnectionDegraded = kmnetConnectionState === "degraded";
   const kmnetLastError = kmnetStatus?.last_error ?? "";
@@ -1422,7 +1423,7 @@ export function StudioConsoleView({
   const activeModelPublished = runtime?.active_model !== null && runtime?.active_model !== undefined;
   const artifact = runtime?.active_model?.artifact;
   const version = runtime?.active_model?.version;
-  const displayedClassNames = Array.from({ length: 8 }, (_, id) =>
+  const displayedClassNames = Array.from({ length: Math.min(256, Math.max(detectionClasses.length, version?.classes.length ?? 0)) }, (_, id) =>
     detectionClasses[id]?.trim() || version?.classes[id]?.trim() || ""
   );
   const displayedClassIds = displayedClassNames.flatMap((name, id) => name ? [id] : []);
@@ -1780,6 +1781,7 @@ export function StudioConsoleView({
     willEmit: controlWillEmit,
     triggerActive: controlTriggerActive,
     noSendReason: controlNoSendReason,
+    nullMouseProtocol: runtime?.executor.selected === "null",
     kmnetRuntimeConnected,
     kmnetConnectionLabel: kmnetRuntimeConnectionLabel,
     deviceLastError: kmnetLastError || kmnetLastDeviceError,
@@ -1854,7 +1856,7 @@ export function StudioConsoleView({
   }, [runtimeFaultDetail, runtimeFaultEvidence]);
 
   const currentErrorDetails = useMemo(() => {
-    const items: Array<{ key: string; title: string; detail: string; technicalDetail?: string; requestId?: string | null; time?: number; count?: number }> = [];
+    const items: Array<{ key: string; title: string; detail: string; technicalDetail?: string; requestId?: string | null; time?: number; count?: number; tag?: string }> = [];
     const noticeStates = new Set(errorNotices.map((notice) => `${notice.source}\u0000${notice.detail}`));
     for (const notice of errorNotices) {
       items.push({
@@ -1864,15 +1866,16 @@ export function StudioConsoleView({
         technicalDetail: `${notice.requestId ? `排查编号: ${notice.requestId}\n` : ""}${notice.technicalDetail || `来源: ${notice.source}${notice.status === null ? "" : `\nHTTP: ${notice.status}`}\n${notice.detail ?? ""}`}`,
         requestId: notice.requestId,
         time: notice.createdAt,
-        count: notice.count
+        count: notice.count,
+        tag: activitySourceTag(notice.source)
       });
     }
     if (runtimeFaultDetail && !errorNotices.some((notice) => notice.technicalDetail === runtimeFaultEvidence)) {
-      items.push({ key: "runtime-fault", title: "运行故障", detail: formatRuntimeErrorMessage(runtimeFaultDetail), technicalDetail: runtimeFaultEvidence });
+      items.push({ key: "runtime-fault", tag: "运行", title: "运行故障", detail: formatRuntimeErrorMessage(runtimeFaultDetail), technicalDetail: runtimeFaultEvidence });
     }
     for (const [source, detail] of Object.entries(errors)) {
       if (detail && !noticeStates.has(`${source}\u0000${detail}`)) {
-        items.push({ key: `state-${source}`, title: `${source} 通道异常`, detail: formatRuntimeErrorMessage(detail), technicalDetail: detail });
+        items.push({ key: `state-${source}`, tag: activitySourceTag(source), title: `${source} 通道异常`, detail: formatRuntimeErrorMessage(detail), technicalDetail: detail });
       }
     }
     const formattedLocalError = localError ? formatRuntimeErrorMessage(localError) : "";
@@ -1885,7 +1888,7 @@ export function StudioConsoleView({
       items.push({ key: "local", title: "当前操作未完成", detail: formattedLocalError, technicalDetail: localError });
     }
     if (capture?.last_error) {
-      items.push({ key: "capture", title: "采集链路异常", detail: formatRuntimeErrorMessage(capture.last_error), technicalDetail: capture.last_error });
+      items.push({ key: "capture", tag: "采集", title: "采集链路异常", detail: formatRuntimeErrorMessage(capture.last_error), technicalDetail: capture.last_error });
     }
     return items.filter((item, index, all) => (
       all.findIndex((candidate) => candidate.title === item.title && candidate.detail === item.detail && candidate.technicalDetail === item.technicalDetail) === index
@@ -1906,13 +1909,24 @@ export function StudioConsoleView({
     ...currentErrorDetails.map((item) => ({ ...item, tone: "error" as const })),
     ...activityNotices.map((notice) => ({
       key: `activity-${notice.id}`,
+      tag: activitySourceTag(notice.source),
       title: notice.title,
       detail: notice.detail ?? "操作已完成。",
+      requestId: notice.requestId,
+      technicalDetail: notice.technicalDetail,
       time: notice.createdAt,
       count: notice.count,
       tone: notice.tone,
     })),
-  ].sort((left, right) => (right.time ?? Number.MAX_SAFE_INTEGER) - (left.time ?? Number.MAX_SAFE_INTEGER)), [activityNotices, currentErrorDetails, serverActivityEvents]);
+  ].filter((item, index, items) => !item.requestId || items.findIndex((other) => other.requestId === item.requestId) === index).sort((left, right) => (right.time ?? Number.MAX_SAFE_INTEGER) - (left.time ?? Number.MAX_SAFE_INTEGER)), [activityNotices, currentErrorDetails, serverActivityEvents]);
+
+  const errorCenterItems = useMemo(() => {
+    const backendFaults = activityItems.filter((item) => item.tone === "error" || item.tone === "warn");
+    const items = [...currentErrorDetails, ...backendFaults];
+    return items.filter((item, index) => items.findIndex((other) =>
+      item.requestId ? other.requestId === item.requestId : other.key === item.key
+    ) === index);
+  }, [activityItems, currentErrorDetails]);
 
   useEffect(() => {
     if (configuredCaptureDevice) {
@@ -1931,7 +1945,7 @@ export function StudioConsoleView({
     applyModelCatalogResult,
     onRefresh,
     parserPreset,
-    physicalOutputEnabled: runtimeMainlineRunning && (runtimeOutputEnabled === true || outputEnabled),
+    physicalOutputEnabled: !isNullMouseProtocol && runtimeMainlineRunning && (runtimeOutputEnabled === true || outputEnabled),
     runtimeMainlineRunning,
     selectedCatalogModel,
     setBusy,
@@ -1945,8 +1959,8 @@ export function StudioConsoleView({
     setSelectedModelProjectId,
     setSelectedModelVersionId
   });
-  const modelManagerActive = activePage === "models"
-    || (activePage === "infer" && modelManagerDialogOpen);
+  const modelManagerActive = authorized && (activePage === "models"
+    || (activePage === "infer" && modelManagerDialogOpen));
 
   useEffect(() => {
     if (!modelManagerActive) {
@@ -2208,7 +2222,13 @@ export function StudioConsoleView({
     const payload = buildCapturePayload(choice);
     let operationFailed = false;
     try {
-      await selectCaptureProfile(payload);
+      if (previewOnly) {
+        onRuntimeConfigChange({ ...runtimeConfig, revision: readNumber(runtimeConfig?.revision, 0) + 1, capture: { ...captureConfig, ...payload, roi_left: Math.max(0, Math.floor((choice.width - roiSize) / 2)), roi_top: Math.max(0, Math.floor((choice.height - roiSize) / 2)), roi_width: roiSize, roi_height: roiSize } });
+        reportSuccess("画质已更新（预览）", `${choiceLabel(choice)} · 仅更新当前页面，不连接设备。`, "capture-select", "feedback");
+      } else {
+        await selectCaptureProfile(payload);
+        reportSuccess("画质已保存", `${choiceLabel(choice)} · 已保存设备配置，运行规格会单独核对。`, "capture-select", "feedback");
+      }
     } catch (err) {
       operationFailed = true;
       const message = `切换失败，已保留上一组可用配置：${getErrorMessage(err)}`;
@@ -2228,11 +2248,13 @@ export function StudioConsoleView({
     } finally {
       setBusy(null);
     }
-  }, [buildCapturePayload, device, onRefresh]);
+  }, [buildCapturePayload, captureConfig, device, onRefresh, onRuntimeConfigChange, previewOnly, roiSize, runtimeConfig]);
 
   const {
     start: startMainlineLaunch,
-    stop: stopMainlineLaunch
+    stop: stopMainlineLaunch,
+    emergencyStop,
+    emergencyStopping
   } = useMainlineLaunch({
     onRefresh,
     onRuntimeStateChange,
@@ -2438,12 +2460,12 @@ export function StudioConsoleView({
       if (gateError) throw gateError;
       return stopped;
     }
-    if (!hardwareControlLicensed) {
+    if (!isNullMouseProtocol && !hardwareControlLicensed) {
       setLocalError("当前授权没有硬件控制权限。请先完成授权。");
       navigatePage("license");
       return false;
     }
-    if (!kmnetHost.trim() || !kmnetUuid.trim()) {
+    if (!isNullMouseProtocol && (!kmnetHost.trim() || !kmnetUuid.trim())) {
       setLocalError("请先设置控制设备地址和设备编号。");
       navigatePage("control-test");
       return false;
@@ -2470,7 +2492,7 @@ export function StudioConsoleView({
       if (!runtimeLifecycleActive) {
         const started = await startMainlineLaunch(true);
         if (!started) throw new Error("服务没有确认启动，请查看异常信息后重试。");
-      } else if (!kmnetRuntimeConnected) {
+      } else if (!isNullMouseProtocol && !kmnetRuntimeConnected) {
         await connectKmNet(undefined, true);
         await onRefresh();
       }
@@ -2487,127 +2509,79 @@ export function StudioConsoleView({
       }
       throw error;
     }
-  }, [hardwareControlLicensed, kmnetAutoConnect, kmnetHost, kmnetRuntimeConnected, kmnetUuid, navigatePage, onRefresh, outputEnabled, runtimeLifecycleActive, runtimeOutputEnabled, startMainlineLaunch, stopMainlineLaunch, updateConfigField]);
+  }, [isNullMouseProtocol, hardwareControlLicensed, kmnetAutoConnect, kmnetHost, kmnetRuntimeConnected, kmnetUuid, navigatePage, onRefresh, outputEnabled, runtimeLifecycleActive, runtimeOutputEnabled, startMainlineLaunch, stopMainlineLaunch, updateConfigField]);
 
-  const saveParameterPageDraft = useCallback(async (physicalOutputAcknowledged = false) => {
-    if (!parameterPageDirtyRef.current || parameterPageSaving) {
-      return;
-    }
-    if (document.activeElement instanceof HTMLElement) {
-      document.activeElement.blur();
-      await Promise.resolve();
-    }
+  const saveParameterPageDraft = useCallback(async () => {
+    if (!authorized || !parameterPageDirtyRef.current || parameterSaveInFlightRef.current) return;
     const draft = cloneRuntimeConfig(configDraftRef.current);
-    const baseline = cloneRuntimeConfig(
-      parameterPageBaselineRef.current ?? runtimeConfigLatestRef.current
-    );
-    if (!draft || !baseline) {
-      return;
-    }
+    const baseline = cloneRuntimeConfig(parameterPageBaselineRef.current ?? runtimeConfigLatestRef.current);
+    if (!draft || !baseline) return;
     let changes: ParameterPageFieldChange[];
-    try {
-      changes = parameterPageFieldChanges(baseline, draft);
-    } catch (error) {
-      const message = getErrorMessage(error);
-      setLocalError(`参数保存失败：${message}`);
-      setDialogSaveError(message);
-      reportError(error, { source: "parameter-page", title: "参数保存失败" });
-      return;
-    }
-    const payload = preserveOutputGate(draft, baseline);
-    payload.revision = baseline.revision;
-    beginPendingConfigWrite();
+    try { changes = parameterPageFieldChanges(baseline, draft); }
+    catch (error) { setDialogSaveError(getErrorMessage(error)); return; }
+    if (changes.length === 0) { setParameterPageDirtyState(false); return; }
+    parameterSaveInFlightRef.current = true;
     setParameterPageSaving(true);
-    setBusy("parameter-page.save");
+    beginPendingConfigWrite();
     setDialogSaveError(null);
-    setLocalError(null);
     try {
-      if (changes.length === 0) {
-        configDraftRef.current = baseline;
-        setConfigDraft(baseline);
-        parameterPageBaselineRef.current = null;
-        setParameterPageDirtyState(false);
-        return;
-      }
-      const executeSave = async () => {
-        const result = await updateRuntimeConfig(payload, physicalOutputAcknowledged);
-        if (result.apply_mode !== "epoch_reload" || !result.applied || result.rolled_back) {
-          throw new Error(`整组参数未在当前进程生效，后端返回 ${result.apply_mode}`);
+      const request = configWriteQueueRef.current.then(async () => {
+        const submit = () => updateRuntimeParameters(
+          changes.map((change) => ({ ...change, value: change.value ?? null })),
+          readNumber(runtimeConfigLatestRef.current?.revision, 0),
+        );
+        try { return await submit(); }
+        catch (error) {
+          if (getApiErrorCode(error) !== "CONFIG_REVISION_CONFLICT") throw error;
+          runtimeConfigLatestRef.current = normalizeRuntimeConfig(await getRuntimeConfig());
+          return submit();
         }
-        return result;
-      };
-      const request = configWriteQueueRef.current.then(executeSave);
-      configWriteQueueRef.current = request.then(
-        () => undefined,
-        () => undefined
-      );
+      });
+      configWriteQueueRef.current = request.then(() => undefined, () => undefined);
       const result = await request;
-      finalizeRuntimeConfigWrite(normalizeRuntimeConfig(result.config));
-      parameterPageBaselineRef.current = null;
-      setParameterPageDirtyState(false);
-      reportSuccess(
-        result.restart_required ? "参数已应用，其他配置待重启" : "参数已保存并生效",
-        result.restart_required
-          ? "本页参数已作为一个整体应用；与本页无关的进程级配置仍等待服务重启。"
-          : "本页修改已作为一个整体写入并重新加载；首页运行状态未改变。",
-        "parameter-page"
-      );
+      if (result.apply_mode !== "hot_update" || !result.applied || result.rolled_back) {
+        throw new Error("设备未确认参数热更新。修改仍保留，可以重试。");
+      }
+      const remaining = parameterPageFieldChanges(draft, configDraftRef.current ?? draft);
+      const canonical = normalizeRuntimeConfig(result.config);
+      finalizeRuntimeConfigWrite(canonical);
+      const next = applyParameterPageFieldChanges(canonical, remaining);
+      parameterPageBaselineRef.current = remaining.length > 0 ? canonical : null;
+      configDialogBaselineRef.current = activeConfigDialogRef.current ? canonical : null;
+      configDraftRef.current = next;
+      setConfigDraft(next);
+      setConfigDialogDirty(remaining.length > 0);
+      setParameterPageDirtyState(remaining.length > 0);
+      if (remaining.length === 0) {
+        reportSuccess("参数已自动保存并应用", result.restart_required
+          ? "本次参数已生效并写入配置文件；其他配置仍等待重启。"
+          : "运行参数已更新，配置文件已保存。", "parameter-page", "feedback");
+      }
     } catch (error) {
-      let canonical: RuntimeConfig | null = null;
-      try {
-        canonical = normalizeRuntimeConfig(await getRuntimeConfig());
-      } catch {
-        // Preserve the local draft when the authoritative read also fails.
-      }
-      if (canonical) {
-        if (runtimeConfigsEqual(canonical, { ...payload, revision: canonical.revision })) {
-          finalizeRuntimeConfigWrite(canonical);
-          parameterPageBaselineRef.current = null;
-          setParameterPageDirtyState(false);
-          reportSuccess("参数已保存并生效", "响应中断，但重新读取后已确认整组参数生效。", "parameter-page");
-          return;
-        }
-        const retryDraft = applyParameterPageFieldChanges(canonical, changes);
-        retryDraft.revision = canonical.revision;
-        finalizeRuntimeConfigWrite(canonical);
-        parameterPageBaselineRef.current = canonical;
-        configDraftRef.current = retryDraft;
-        setConfigDraft(retryDraft);
-        setParameterPageDirtyState(true);
-      }
-      const message = getErrorMessage(error);
-      const failureMessage = `整组参数未生效，${changes.length} 项修改仍保留在页面中。${message}`;
-      setLocalError(`参数保存失败：${failureMessage}`);
-      setDialogSaveError(failureMessage);
-      reportError(error, { source: "parameter-page", title: "参数保存失败" });
+      const message = `自动保存未确认，修改仍保留。${getErrorMessage(error)}`;
+      setDialogSaveError(message);
+      reportError(error, { source: "parameter-page", title: "参数自动保存失败", tone: "error", popup: "feedback", publicDetail: message });
     } finally {
+      parameterSaveInFlightRef.current = false;
       setParameterPageSaving(false);
-      setBusy(null);
       finishPendingConfigWrite();
     }
-  }, [beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, parameterPageSaving, setParameterPageDirtyState]);
+  }, [authorized, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, setParameterPageDirtyState]);
+
+  useEffect(() => {
+    if (!authorized || previewOnly || !parameterPageDirty || parameterPageSaving || dialogSaveError) return;
+    const timer = window.setTimeout(() => void saveParameterPageDraft(), 350);
+    return () => window.clearTimeout(timer);
+  }, [authorized, previewOnly, parameterPageDirty, parameterPageSaving, configDraft, dialogSaveError, saveParameterPageDraft]);
 
   const requestSaveParameterPageDraft = useCallback(() => {
-    if (!parameterPageDirtyRef.current || parameterPageSaving) return;
-    if (!runtimeLifecycleActive || (runtimeOutputEnabled !== true && !outputEnabled)) {
-      void saveParameterPageDraft();
-      return;
-    }
-    setConfirmationRequest({
-      eyebrow: "运行参数",
-      title: "物理输出仍开启，确认保存参数？",
-      description: "保存会把修改应用到当前主链；主链运行时，设备的控制量可能立即改变。取消后修改会继续保留在当前页面。",
-      details: ["若要先暂停设备，请取消并回到首页关闭运行。"],
-      confirmLabel: "确认保存并保持输出开启",
-      danger: true,
-      onConfirm: () => saveParameterPageDraft(true)
-    });
-  }, [outputEnabled, parameterPageSaving, runtimeLifecycleActive, runtimeOutputEnabled, saveParameterPageDraft]);
+    void saveParameterPageDraft();
+  }, [saveParameterPageDraft]);
 
   const updateConfigSection = useCallback(
     async (
       section: string,
-      values: Record<string, RuntimeConfigValue>,
+      values: Record<string, RuntimeConfigValue> | ((current: Record<string, unknown>) => Record<string, RuntimeConfigValue>),
       physicalOutputAcknowledged = false
     ) => {
       const persistSection = async (source: RuntimeConfig) => {
@@ -2618,12 +2592,13 @@ export function StudioConsoleView({
         const currentSection = asRecord(current[section]);
         const nextSection = {
           ...currentSection,
-          ...values
+          ...(typeof values === "function" ? values(currentSection) : values)
         };
         if (runtimeConfigValuesEqual(currentSection, nextSection)) {
           return null;
         }
         current[section] = nextSection as RuntimeConfig[string];
+        if (previewOnly) return { config: { ...current, revision: readNumber(current.revision, 0) + 1 }, applied: true, rolled_back: false, restart_required: false, apply_mode: "hot_update" as const, message: "仅更新本地预览" };
         return updateRuntimeConfig(current, physicalOutputAcknowledged);
       };
       beginPendingConfigWrite();
@@ -2643,7 +2618,8 @@ export function StudioConsoleView({
           // canonical document and replay only this section's intended keys;
           // never resend an entire stale configuration.
           const latest = normalizeRuntimeConfig(await getRuntimeConfig());
-          finalizeRuntimeConfigWrite(latest);
+          runtimeConfigLatestRef.current = latest;
+          onRuntimeConfigChange(latest);
           return persistSection(latest);
         }
       });
@@ -2657,14 +2633,68 @@ export function StudioConsoleView({
           return null;
         }
         const applied = normalizeRuntimeConfig(result.config);
+        const parameterChanges = parameterPageDirtyRef.current && configDraftRef.current && parameterPageBaselineRef.current
+          ? parameterPageFieldChanges(parameterPageBaselineRef.current, configDraftRef.current) : [];
         finalizeRuntimeConfigWrite(applied);
+        if (parameterChanges.length > 0) {
+          parameterPageBaselineRef.current = applied;
+          const draft = applyParameterPageFieldChanges(applied, parameterChanges);
+          configDraftRef.current = draft;
+          setConfigDraft(draft);
+        }
         return result;
       } finally {
         finishPendingConfigWrite();
       }
     },
-    [applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange]
+    [previewOnly, applyConfigSchema, beginPendingConfigWrite, finalizeRuntimeConfigWrite, finishPendingConfigWrite, onRuntimeConfigChange]
   );
+
+  const writeMouseProtocol = useCallback(async (values: (current: Record<string, unknown>) => Record<string, RuntimeConfigValue>, action: "保存" | "启用" | "取消" | "删除", label: string) => {
+    try {
+      const result = await updateConfigSection("hardware", values, true);
+      if (result && (!result.applied || result.rolled_back)) throw new Error("协议已写入，但运行时没有确认应用。请查看配置状态后重试。");
+      reportSuccess(`协议已${action}`, `${label} · ${previewOnly ? "仅更新当前预览页面。" : result ? "已应用并写入文件。" : "当前配置已一致。"}`, "mouse-protocol", "feedback");
+    } catch (error) {
+      reportError(error, { source: "mouse-protocol", title: `协议${action}失败`, tone: "error", popup: "feedback", publicDetail: getErrorMessage(error) });
+      throw error;
+    }
+  }, [previewOnly, updateConfigSection]);
+  const saveMouseProtocol = useCallback(async (protocol: MouseProtocol) => {
+    await writeMouseProtocol((current): Record<string, RuntimeConfigValue> => {
+      const existing = readMouseProtocols(current);
+      const activeId = current.backend === "null" ? "empty" : readString(current.active_mouse_protocol_id, "legacy");
+      if (existing.some((item) => item.id !== protocol.id && sameMouseProtocol(item, protocol))) throw new Error("相同协议已存在，请打开已有卡片。");
+      const next = existing.some((item) => item.id === protocol.id) ? existing.map((item) => item.id === protocol.id ? protocol : item) : [...existing, protocol];
+      return { mouse_protocols: next, ...(activeId === protocol.id ? { host: protocol.host, port: protocol.port, uuid: protocol.uuid } : {}) };
+    }, "保存", `${protocol.host}:${protocol.port}`);
+  }, [writeMouseProtocol]);
+  const selectMouseProtocol = useCallback(async (protocol: MouseProtocol | null) => {
+    await writeMouseProtocol((current): Record<string, RuntimeConfigValue> => {
+      const existing = readMouseProtocols(current);
+      if (!protocol) return { backend: "null", active_mouse_protocol_id: "empty", auto_connect: true, mouse_protocols: existing };
+      const selected = existing.find((item) => item.id === protocol.id);
+      if (!selected) throw new Error("协议已被修改，请刷新列表后重试。");
+      return { backend: "native_udp", active_mouse_protocol_id: selected.id, auto_connect: true, host: selected.host, port: selected.port, uuid: selected.uuid, mouse_protocols: existing };
+    }, protocol ? "启用" : "取消", protocol ? `${protocol.host}:${protocol.port}` : "已切回空协议");
+  }, [writeMouseProtocol]);
+  const removeMouseProtocol = useCallback(async (protocol: MouseProtocol) => {
+    await writeMouseProtocol((current) => {
+      if (current.backend !== "null" && readString(current.active_mouse_protocol_id, "legacy") === protocol.id) throw new Error("协议仍在启用，请先取消启用。");
+      return { mouse_protocols: readMouseProtocols(current).filter((item) => item.id !== protocol.id) };
+    }, "删除", `${protocol.host}:${protocol.port}`);
+  }, [writeMouseProtocol]);
+  const testKmBoxConnection = useCallback(async (protocol: MouseProtocol) => {
+    try {
+      const result = await probeMouseProtocol(protocol);
+      if (!result.reachable) throw new Error("设备未确认握手，请核对连接配置。");
+      reportSuccess("kmBox 连接测试成功", `握手耗时 ${result.elapsed_ms} ms；测试会话已断开，没有发送位移。`, "kmnet-probe", "feedback");
+      return result;
+    } catch (error) {
+      reportError(error, { source: "kmnet-probe", title: "kmBox 连接测试失败", tone: "error", popup: "feedback", publicDetail: getErrorMessage(error) });
+      throw error;
+    }
+  }, []);
 
   const handleCenteredRoiSizeChange = useCallback(
     async (requestedSize: number) => {
@@ -2759,7 +2789,7 @@ export function StudioConsoleView({
     const base = configDraftRef.current ?? cloneRuntimeConfig(runtimeConfig);
     const next = base ? normalizeRuntimeConfig(base) : null;
     if (!next) return;
-    const delayMs = Math.max(0, Math.min(5000, Math.round(value)));
+    const delayMs = Math.max(0, Math.min(2000, Math.round(value)));
     next.pipeline = {
       ...asRecord(next.pipeline),
       fire_delay_enabled: delayMs > 0,
@@ -2784,9 +2814,15 @@ export function StudioConsoleView({
   const predictionCoreParameters = algorithmParameterGroups?.predictionCoreParameters ?? [];
   const calibrationParameters = algorithmParameterGroups?.calibrationParameters ?? [];
 
+  const updateCurveDraft = (key: string, value: number) => setCurveDraft((previous) => ({ ...previous, [key]: value }));
+  const finishCurveEditing = (key: string, editing: boolean) => {
+    handleParameterEditingChange(editing);
+    if (!editing) setCurveDraft(({ [key]: _value, ...remaining }) => remaining);
+  };
   const buildAlgorithmNumberParameterControl = (parameter: AlgorithmNumberParameter, compact = false) => (
     <ParameterNumberControl
       compact={compact}
+      fullSliderRange={parameter.key === "entry_ramp_ms"}
       key={parameter.key}
       label={parameter.label}
       detail={parameter.detail}
@@ -2799,13 +2835,14 @@ export function StudioConsoleView({
       step={parameter.step}
       unit={parameter.unit}
       kind={parameter.kind}
-      applyMode={activePage === "params" ? "save" : parameter.applyMode ?? "live"}
+      applyMode={activePage === "params" ? "auto" : parameter.applyMode ?? "live"}
       riskLevel={parameter.riskLevel}
+      onDraftChange={(value) => updateCurveDraft(parameter.key, value)}
       onCommit={(value) => {
         if (parameter.key === "entry_ramp_ms" && value > 0) lastEnabledEntryRampMs.current = value;
         return updateControlPipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value);
       }}
-      onEditingChange={handleParameterEditingChange}
+      onEditingChange={(editing) => finishCurveEditing(parameter.key, editing)}
     />
   );
   const renderAlgorithmNumberParameter = (parameter: AlgorithmNumberParameter) => {
@@ -2822,14 +2859,6 @@ export function StudioConsoleView({
           return updateControlPipelineField("entry_ramp_ms", next ? lastEnabledEntryRampMs.current : 0);
         }}
       />
-      <figure className="entry-ramp-preview">
-        <svg viewBox="0 0 120 64" role="img" aria-label={enabled ? `力度从零渐增，${parameter.value} ms 后达到 100%` : "力度渐增关闭，开始时即为 100%"}>
-          <path className="entry-ramp-grid" d="M10 10H110M10 50H110M10 10V50" />
-          <path className="entry-ramp-curve" d={enabled ? "M10 50C43.333 50 76.667 10 110 10" : "M10 10H110"} />
-          <circle cx="110" cy="10" r="3" />
-        </svg>
-        <figcaption><span>{enabled ? "0% → 100%" : "100% 完整力度"}</span><span>{enabled ? `${parameter.value} ms` : "不等待渐增"}</span></figcaption>
-      </figure>
       {enabled ? buildAlgorithmNumberParameterControl(parameter) : <p className="entry-ramp-disabled-note">重新开启时使用 {lastEnabledEntryRampMs.current} ms，可再调整。</p>}
     </section>;
   };
@@ -2871,7 +2900,7 @@ export function StudioConsoleView({
       step={parameter.step}
       unit={parameter.unit}
       kind={parameter.kind}
-      applyMode="save"
+      applyMode="live"
       riskLevel={parameter.riskLevel}
       onCommit={(value) => updatePipelineField(parameter.key, parameter.transform ? parameter.transform(value) : value)}
       onEditingChange={handleParameterEditingChange}
@@ -3091,9 +3120,10 @@ export function StudioConsoleView({
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "novasight-config.json";
+    link.download = `novasight-config-${new Date().toISOString().replace(/[:.]/g, "-")}-r${runtimeConfig.revision}.json`;
     link.click();
     URL.revokeObjectURL(url);
+    reportSuccess("已发起备份下载", link.download, "config-export", "feedback");
   };
 
   const requestConfigImportConfirmation = (
@@ -3102,7 +3132,9 @@ export function StudioConsoleView({
     baseline: RuntimeConfig,
     canonicalChanged = false
   ): void => {
-    const changedSections = changedRuntimeConfigSections(baseline, preserveOutputGate(imported, baseline));
+    const candidate = preserveOutputGate(imported, baseline);
+    const changedSections = changedRuntimeConfigSections(baseline, candidate);
+    const differences = configDifferences(baseline, candidate);
     setConfirmationRequest({
       eyebrow: canonicalChanged ? "配置已在后台更新" : "导入运行配置",
       title: canonicalChanged ? "请按最新配置重新确认" : `应用 ${fileName}？`,
@@ -3114,6 +3146,7 @@ export function StudioConsoleView({
         "运行参数会立即应用；监听地址或存储根目录等进程级配置会单独提示。",
         "导入不会改变首页运行总开关；运行中导入仍可能立即改变控制行为。"
       ],
+      content: <details className="config-restore-diff" open><summary>查看 {differences.length} 项具体改动</summary><div className="config-restore-diff-scroll"><table><thead><tr><th>设置项</th><th>当前值</th><th>恢复后</th></tr></thead><tbody>{differences.map((item) => <tr key={item.path}><th scope="row">{CONFIG_SECTION_LABELS[item.path.split(".")[0]!] ?? item.path.split(".")[0]}<small>{item.path}</small><span>{item.restart ? "重启后生效" : "应用到运行配置"}</span></th><td>{item.before}</td><td>{item.after}</td></tr>)}</tbody></table></div></details>,
       confirmLabel: canonicalChanged ? "按最新配置导入" : "确认导入配置",
       danger: true,
       onConfirm: async () => {
@@ -3434,20 +3467,22 @@ export function StudioConsoleView({
               </div>
             ) : null}
           </div>
+          <button className="console-emergency-stop" type="button" disabled={emergencyStopping} onClick={() => void emergencyStop()}>
+            <NovaIcon name="emergency-stop" size={17} />{emergencyStopping ? "正在紧急停止…" : "紧急停止"}
+          </button>
         </div>
       </header>
 
       <div className="console-sidebar">
-        <StudioNavigation activePage={activePage} onNavigate={navigatePage} pages={studioLayout.pages} />
+        <StudioNavigation activePage={activePage} activeUtility={utilityDialog} onNavigate={navigatePage} pages={studioLayout.pages} />
       </div>
 
       <main className="console-main" data-page={activePage} ref={mainRef}>
-        <StudioPageHeader page={activePage} />
+        <StudioPageHeader page={activePage} visuallyHidden={activePage === "control-test"} />
         <StudioRuntimeBar
           page={activePage}
           runtimeAvailable={runtime !== null && runtimeTransportConfidence === "current"}
           runtimeLifecycleActive={runtimeLifecycleActive}
-          diagnosticModeReady={diagnosticModeReady}
           captureStatus={captureStatusText}
           inferenceStatus={inferenceStatusText}
         />
@@ -3483,7 +3518,7 @@ export function StudioConsoleView({
         ) : null}
 
         {activePage === "onboarding" ? (
-          <OnboardingView state={setupState} statusKnown={setupStatusKnown} onNavigate={navigatePage} />
+          <OnboardingView outputLabel={isNullMouseProtocol ? "空协议" : `${mouseProtocols.find((item) => item.id === selectedMouseProtocolId)?.model ?? "kmBox"} · ${kmnetHost}:${kmnetPort}`} state={setupState} statusKnown={setupStatusKnown} onNavigate={navigatePage} />
         ) : null}
 
         {activePage === "device" ? (
@@ -3505,6 +3540,9 @@ export function StudioConsoleView({
         {activePage === "activity" ? (
           <ActivityView
             items={activityItems}
+            connectionState={previewOnly ? undefined : activityConnectionState}
+            connectionError={activityConnectionError}
+            onRetry={retryActivity}
             moduleOrder={activityModules}
             onClear={async () => {
               try {
@@ -3517,32 +3555,6 @@ export function StudioConsoleView({
               }
             }}
             onOpenDetails={() => setErrorCenterOpen(true)}
-          />
-        ) : null}
-
-        {activePage === "settings" ? (
-          <SettingsView
-            modules={settingsModules}
-            desiredRevision={desiredConfigRevision}
-            effectiveRevision={effectiveConfigRevision}
-            restartRequired={reportedConfigRestartRequired}
-            configAvailable={runtimeConfig !== null}
-            runtimeVerified={runtime !== null && runtimeTransportConfidence === "current"}
-            operationPending={busy !== null || pendingConfigWriteCount > 0}
-            parameterChangesPending={parameterPageDirty}
-            onExport={exportConfig}
-            onImport={importConfig}
-            onNavigate={navigatePage}
-          />
-        ) : null}
-
-        {activePage === "about" ? (
-          <AboutView
-            license={license}
-            serviceConnected={health?.ok === true && runtimeTransportConfidence === "current"}
-            layoutRevision={studioLayout.revision}
-            modules={aboutModules}
-            onNavigate={navigatePage}
           />
         ) : null}
 
@@ -3597,11 +3609,7 @@ export function StudioConsoleView({
           />
         ) : null}
 
-        {activePage === "license" ? (
-          <section className="console-page">
-            <LicenseView license={license} onLicenseChange={onLicenseChange} />
-          </section>
-        ) : null}
+
 
         {(["capture", "infer", "control", "latency"] as ConsolePage[]).includes(activePage) && runtimeLifecycleActive && runtimeMainlinePresentation.readinessCode !== "ready" ? (
           <div className="console-info console-info-recovery" role="status">
@@ -3616,6 +3624,7 @@ export function StudioConsoleView({
 
         {activePage === "capture" ? (
           <section className="console-page capture-workspace">
+          <StudioTaskIntro label="设备配置" title="接好画面，选好模型" description="先选择采集设备和画质，再调整模型看的范围。修改会自动保存，运行状态会单独核对。" />
           {captureModules.has("source") ? (
           <header className="capture-command-header" data-state={captureProfileState} aria-labelledby="capture-profile-check-title">
             <div className="capture-command-copy">
@@ -3636,13 +3645,19 @@ export function StudioConsoleView({
             </div> : null}
           </header>
           ) : null}
+          <nav className="device-workspace-links" aria-label="设备功能">
+            <div><small>当前模型</small><b>{activeModelName}</b></div>
+            <button className="console-button" type="button" onClick={() => navigatePage("models")}><NovaIcon name="models" size={17} />管理模型</button>
+            <button className="console-button" type="button" onClick={() => navigatePage("infer")}>查看识别画面</button>
+            <button className="console-button" type="button" onClick={() => navigatePage("control-test")}>鼠标协议</button>
+          </nav>
           <div className="capture-workbench">
               {captureModuleOrder.map((moduleId) => {
                 if (moduleId === "source") return (
               <section className="capture-source-setup" aria-labelledby="capture-source-title" key={moduleId}>
                 <header className="capture-workbench-heading">
                   <span aria-hidden="true"><NovaIcon name="capture-card" size={20} /></span>
-                  <div><small>画面来源</small><h3 id="capture-source-title">选择设备和画质</h3><p>选择设备，再选择分辨率与帧率。画质设置自动保存。</p></div>
+                  <div><h3 id="capture-source-title">选择设备和画质</h3><p>① 选择设备 → ② 点击帧率保存画质</p></div>
                 </header>
                 <div className="capture-device-picker">
                   <header>
@@ -3653,6 +3668,8 @@ export function StudioConsoleView({
                     </button>
                   </header>
                   <div className="capture-device-options" role="listbox" aria-label="可用采集设备">
+                    {deviceDiscoveryStatus === "loading" ? <p className="capture-device-empty" role="status">正在扫描可用输入…</p> : null}
+                    {previewOnly && deviceDiscoveryStatus === "idle" && captureDeviceChoices.length === 0 ? <p className="capture-device-empty">预览未连接采集设备；可点击重新扫描，查看模拟的配置流程。</p> : null}
                     {captureDeviceChoices.map((captureDevice) => {
                       const saved = captureDevice === configuredCaptureDevice;
                       const discovered = captureDevices.includes(captureDevice);
@@ -3684,26 +3701,6 @@ export function StudioConsoleView({
                     ) : null}
                   </div>
                 </div>
-                <details className="capture-custom-device">
-                  <summary>输入其他设备路径</summary>
-                  <div className="capture-device-row">
-                    <TextControl
-                      label="设备路径"
-                      detail="仅在设备未出现在扫描结果时使用；读取成功后仍需选择一个帧率才会保存。"
-                      value={device}
-                      applyMode="launch"
-                      onCommit={(value) => {
-                        setDevice(value);
-                        setCaps(null);
-                        setCaptureActionError(null);
-                      }}
-                    />
-                    <button className="console-button secondary" disabled={busy === "caps" || !device.trim()} onClick={refreshCapabilities} type="button">
-                      <NovaIcon name="refresh" size={15} />
-                      {busy === "caps" ? "正在读取…" : "读取设备规格"}
-                    </button>
-                  </div>
-                </details>
                 <div className="capture-quality-browser" aria-label="分辨率与帧率">
                   <header>
                     <div><b>设备支持的画面规格</b><small>{caps ? `按格式分类，共 ${detectedChoices.length} 个组合；分辨率和帧率从高到低排列。` : "先查询设备，结果会按格式、分辨率和帧率分类。"}</small></div>
@@ -3745,6 +3742,26 @@ export function StudioConsoleView({
                   {runtimeLifecycleActive ? <p className="capture-save-hint">停止首页运行总开关后可更换画面规格。</p> : <p className="capture-save-hint">点击一个 FPS 即自动验证并保存整组设备配置。</p>}
                 </div>
                 {captureActionError ? <p className="operation-inline-error" role="alert">{captureActionError}</p> : null}
+                <details className="capture-custom-device">
+                  <summary>输入其他设备路径</summary>
+                  <div className="capture-device-row">
+                    <TextControl
+                      label="设备路径"
+                      detail="仅在设备未出现在扫描结果时使用；读取成功后仍需选择一个帧率才会保存。"
+                      value={device}
+                      applyMode="launch"
+                      onCommit={(value) => {
+                        setDevice(value);
+                        setCaps(null);
+                        setCaptureActionError(null);
+                      }}
+                    />
+                    <button className="console-button secondary" disabled={busy === "caps" || !device.trim()} onClick={refreshCapabilities} type="button">
+                      <NovaIcon name="refresh" size={15} />
+                      {busy === "caps" ? "正在读取…" : "读取设备规格"}
+                    </button>
+                  </div>
+                </details>
                 <details className="capture-optional-settings">
                   <summary>远程预览画质</summary>
                   <ParameterPresetControl
@@ -3767,10 +3784,15 @@ export function StudioConsoleView({
               <section className="capture-roi-stage" aria-labelledby="capture-roi-title" key={moduleId}>
                 <header className="capture-workbench-heading">
                   <span aria-hidden="true"><NovaIcon name="roi" size={20} /></span>
-                  <div><small>模型视野</small><h3 id="capture-roi-title">模型看见画面中央</h3><p>只改变送入模型的中心区域，不改变采集卡分辨率。</p></div>
+                  <div><h3 id="capture-roi-title">模型看见画面中央</h3><p>③ 调整识别范围，不改变采集卡分辨率。</p></div>
                 </header>
-                <div className="capture-roi-visual" aria-label={`源画面中间的 ${roiSize} x ${roiSize} 识别区域`}>
-                  <span>源画面 {sourceWidth > 0 ? `${sourceWidth} × ${sourceHeight}` : "待读取"}</span>
+                <div className="capture-roi-visual" aria-label={`源画面中间的 ${roiSize} x ${roiSize} 识别区域`}
+                  style={sourceWidth > 0 && sourceHeight > 0 ? {
+                    "--source-aspect": `${sourceWidth} / ${sourceHeight}`,
+                    "--roi-width": `${Math.min(100, roiSize / sourceWidth * 100)}%`,
+                    "--roi-height": `${Math.min(100, roiSize / sourceHeight * 100)}%`,
+                  } as CSSProperties : undefined}>
+                  <span>源画面 {sourceWidth > 0 ? `${sourceWidth} × ${sourceHeight}` : "待读取 · 比例示意"}</span>
                   <div><i /><b>{roiSize} × {roiSize}</b><small>模型识别区域</small></div>
                 </div>
                 <ParameterPresetControl
@@ -4164,15 +4186,16 @@ export function StudioConsoleView({
         {activePage === "fire" ? <section className="console-page">
           {parameterPageDirty ? <div className="parameter-save-bar dirty">
             <span className="parameter-save-bar-icon" aria-hidden="true"><NovaIcon name="save" size={18} /></span>
-            <div aria-live="polite" role="status"><b>有未应用的修改</b><small>保存后才会用于当前运行。</small></div>
+            <div aria-live="polite" role="status"><b>{previewOnly ? "预览修改已保留" : parameterPageSaving ? "正在自动保存并应用" : dialogSaveError ? "自动保存失败，修改已保留" : "修改等待自动保存"}</b><small>{previewOnly ? "仅保留当前页面，不写入设备文件。" : "日常参数自动更新运行时并写入配置文件。"}</small></div>
             <div className="parameter-save-bar-actions">
-              <button className="console-button" disabled={parameterPageSaving || pendingConfigWriteCount > 0} onClick={requestDiscardParameterPageDraft} type="button">放弃修改</button>
-              <button className="console-button primary" disabled={parameterPageSaving || pendingConfigWriteCount > 0} onClick={requestSaveParameterPageDraft} type="button"><NovaIcon name="save" size={15} />{parameterPageSaving ? "正在保存并应用…" : "保存并应用"}</button>
+              <button className="console-button" disabled={parameterPageSaving || pendingConfigWriteCount > 0} onClick={discardParameterPageDraft} type="button">撤销未保存修改</button>
+              {dialogSaveError ? <button className="console-button primary" disabled={parameterPageSaving || pendingConfigWriteCount > 0} onClick={requestSaveParameterPageDraft} type="button"><NovaIcon name="save" size={15} />{parameterPageSaving ? "正在自动保存…" : "重试保存"}</button> : null}
             </div>
           </div> : null}
           {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
           <FireStabilizationPage
             enabled={fireStabilizationEnabled}
+            appliedEnabled={previewOnly ? fireStabilizationEnabled : readBoolean(asRecord(asRecord(runtimeConfigLatestRef.current?.control).fire_stabilization).enabled, false)}
             strength={fireStabilizationStrength}
             onEnabled={(enabled) => updateConfigField("control", "fire_stabilization", { ...fireStabilizationConfig, enabled })}
             onStrength={(strength) => updateConfigField("control", "fire_stabilization", { ...fireStabilizationConfig, strength })}
@@ -4188,40 +4211,38 @@ export function StudioConsoleView({
                 <NovaIcon name="save" size={18} />
               </span>
               <div aria-live="polite" role="status">
-                <b>有未应用的修改</b>
-                <small>一次保存所有修改，不会改变首页总开关。</small>
+                <b>{previewOnly ? "预览修改已保留" : parameterPageSaving ? "正在自动保存并应用" : dialogSaveError ? "自动保存失败，修改已保留" : "修改等待自动保存"}</b>
+                <small>{previewOnly ? "仅保留当前页面，不写入设备文件。" : "自动保存算法参数与开火稳定设置，不改变首页总开关。"}</small>
               </div>
               <div className="parameter-save-bar-actions">
                 <button
                   className="console-button"
                   disabled={parameterPageSaving || pendingConfigWriteCount > 0}
-                  onClick={requestDiscardParameterPageDraft}
+                  onClick={discardParameterPageDraft}
                   type="button"
                 >
-                  放弃修改
+                  撤销未保存修改
                 </button>
-                <button
+                {dialogSaveError ? <button
                   className="console-button primary"
                   disabled={parameterPageSaving || pendingConfigWriteCount > 0}
                   onClick={requestSaveParameterPageDraft}
                   type="button"
                 >
                   <NovaIcon name="save" size={15} />
-                  {parameterPageSaving ? "正在保存并应用…" : "保存并应用"}
-                </button>
+                  {parameterPageSaving ? "正在自动保存…" : "重试保存"}
+                </button> : null}
               </div>
             </div> : null}
             {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
             <div className="algorithm-workspace" data-section={algorithmSection}>
-              <div className="algorithm-flow">
-                <span><span className="algorithm-workspace-dot" aria-hidden="true" />参数工作台<span className="algorithm-draft-label">{parameterPageDirty ? "草稿未应用" : "当前配置"}</span></span>
-                <span>修改后统一保存 · 总开关在首页</span>
-              </div>
+              <StudioTaskIntro label="算法调校" title="把跟随手感调到顺手" description="调整范围、目标与跟随手感。" />
+              <nav className="algorithm-model-link" aria-label="算法使用的模型"><span><NovaIcon name="models" size={18} /><small>当前模型</small><b>{activeModelName}</b></span><button className="console-button" type="button" onClick={() => navigatePage("models")}>管理模型</button></nav>
               <AlgorithmTabs value={algorithmSection} onChange={setAlgorithmSection} />
             <div className="parameter-workspace" id="algorithm-parameter-panel" role="tabpanel" aria-labelledby={`algorithm-tab-${algorithmSection}`} tabIndex={0} key={algorithmSection}>
             {[algorithmSection].map((moduleId) => {
               if (moduleId === "response") return (
-                <div key={moduleId}>
+                <div className="algorithm-response-grid" key={moduleId}>
                   <TargetRangeControls
                     radius={targetFovRadiusPx}
                     onRadiusCommit={(value) => updatePipelineField("target_fov_radius_px", value)}
@@ -4232,17 +4253,9 @@ export function StudioConsoleView({
                       <span className="algorithm-setting-icon" aria-hidden="true"><NovaIcon name="activity-pulse" size={20} /></span>
                       <div><h3 id="startup-response-title">启动响应</h3><p>按住后先等待；等待结束并出现有效目标后，再逐渐提升力度。</p></div>
                     </header>
-                    <ol className="startup-response-timeline" aria-label="启动响应顺序">
-                      <li data-phase="delay"><b>触发等待</b><span>{fireDelayMs > 0 ? `${fireDelayMs.toFixed(0)} ms · 暂不控制` : "0 ms · 立即进入"}</span></li>
-                      <li data-phase="ramp"><b>力度渐增</b><span>{readNumber(rustPipelineConfig.entry_ramp_ms, 200) > 0 ? `${readNumber(rustPipelineConfig.entry_ramp_ms, 200).toFixed(0)} ms · 0 → 100%` : "0 ms · 立即完整力度"}</span></li>
-                      <li data-phase="hold"><b>持续跟随</b><span>渐增结束后保持完整力度</span></li>
-                    </ol>
+                    <StartupResponsePreview delayMs={curveDraft.fire_delay_ms ?? fireDelayMs} rampMs={curveDraft.entry_ramp_ms ?? readNumber(rustPipelineConfig.entry_ramp_ms, 200)} />
                     <div className="startup-response-controls">
-                      <label className="control-chain-inline-field startup-response-delay">
-                        <span>触发后等待</span>
-                        <InlineNumberControl ariaLabel="触发后等待时长" value={fireDelayMs} onCommit={updateTriggerDelay} />
-                        <i>ms</i>
-                      </label>
+                      <ParameterNumberControl label="触发后等待时长" value={fireDelayMs} min={0} max={2000} step={10} unit="ms" applyMode="auto" onDraftChange={(value) => updateCurveDraft("fire_delay_ms", value)} onCommit={updateTriggerDelay} onEditingChange={(editing) => finishCurveEditing("fire_delay_ms", editing)} />
                       <div className="startup-response-ramp">
                         {responseParameters.filter((parameter) => parameter.key === "entry_ramp_ms").map(renderAlgorithmNumberParameter)}
                       </div>
@@ -4253,7 +4266,6 @@ export function StudioConsoleView({
               if (moduleId === "motion") return (
             <section className="parameter-group" data-module="motion" id="parameter-motion-response" aria-labelledby="parameter-motion-response-title" key={moduleId}>
               <header className="parameter-group-heading">
-                <span>移动</span>
                 <div><h2 id="parameter-motion-response-title">移动响应</h2><p>先调整跟随力度与渐增时长。目标快速移动时，再开启预测。</p></div>
               </header>
             <ol className="control-chain-settings" aria-label="移动响应设置">
@@ -4263,8 +4275,9 @@ export function StudioConsoleView({
                   <b>移动手感</b>
                   <small>力度越大跟随越积极；开启渐增后，开始时的力度逐渐增大。</small>
                 </div>
-                <div className="parameter-inline-grid">
+                <div className="parameter-expanded-controls">
                   {responseParameters.filter((parameter) => parameter.key === "p_response_scale").map(renderAlgorithmNumberParameter)}
+                  <SingleOutputPreview kp={curveDraft.p_response_scale ?? pResponseScale} limitX={curveDraft.max_output_x_counts ?? maxOutputXCounts} limitY={curveDraft.max_output_y_counts ?? maxOutputYCounts} />
                 </div>
               </li>
 
@@ -4295,27 +4308,11 @@ export function StudioConsoleView({
                 <span className="control-chain-step" aria-hidden="true"><NovaIcon name="shield-check" size={16} /></span>
                 <div className="control-chain-setting-title">
                   <b>单次输出上限</b>
-                  <small>限制每次发送的设备移动计数，不是像素或每秒速度。</small>
+                  <small>每次发送前按轴限幅；设为 0 时该轴不移动。</small>
                 </div>
-                <div className="control-chain-setting-controls">
-                  <label className="control-chain-inline-field">
-                    <span>X 轴上限</span>
-                    <InlineNumberControl
-                      ariaLabel="单次 X 轴输出上限"
-                      value={maxOutputXCounts}
-                      onCommit={(value) => updateControlPipelineField("max_output_x_counts", Math.max(1, Math.min(32767, Math.round(value))))}
-                    />
-                    <i>counts</i>
-                  </label>
-                  <label className="control-chain-inline-field">
-                    <span>Y 轴上限</span>
-                    <InlineNumberControl
-                      ariaLabel="单次 Y 轴输出上限"
-                      value={maxOutputYCounts}
-                      onCommit={(value) => updateControlPipelineField("max_output_y_counts", Math.max(1, Math.min(32767, Math.round(value))))}
-                    />
-                    <i>counts</i>
-                  </label>
+                <div className="parameter-inline-grid">
+                  <ParameterNumberControl label="单次 X 轴输出上限" value={maxOutputXCounts} min={0} max={1000} step={1} unit="counts" applyMode="auto" onDraftChange={(value) => updateCurveDraft("max_output_x_counts", value)} onCommit={(value) => updateControlPipelineField("max_output_x_counts", Math.round(value))} onEditingChange={(editing) => finishCurveEditing("max_output_x_counts", editing)} />
+                  <ParameterNumberControl label="单次 Y 轴输出上限" value={maxOutputYCounts} min={0} max={1000} step={1} unit="counts" applyMode="auto" onDraftChange={(value) => updateCurveDraft("max_output_y_counts", value)} onCommit={(value) => updateControlPipelineField("max_output_y_counts", Math.round(value))} onEditingChange={(editing) => finishCurveEditing("max_output_y_counts", editing)} />
                 </div>
               </li>
             </ol>
@@ -4331,7 +4328,7 @@ export function StudioConsoleView({
               </header>
               <details className="parameter-disclosure">
                 <summary><span><b>响应试算</b><small>用当前草稿预览力度变化，不会向设备发送指令。</small></span></summary>
-                <ResponseExperiment kp={pResponseScale} rampMs={readNumber(rustPipelineConfig.entry_ramp_ms, 200)} referenceHz={readNumber(rustPipelineConfig.response_reference_hz, 0)} />
+                <ResponseExperiment delayMs={fireDelayMs} kp={pResponseScale} rampMs={readNumber(rustPipelineConfig.entry_ramp_ms, 200)} referenceHz={readNumber(rustPipelineConfig.response_reference_hz, 0)} />
               </details>
               <details className="parameter-disclosure">
                 <summary><span><b>实时预测诊断</b><small>运行后查看实际目标、预测位置与提前量。</small></span></summary>
@@ -4367,17 +4364,12 @@ export function StudioConsoleView({
             <div className="parameter-module-group" data-module="targeting" key={moduleId}>
             <section className="parameter-group" data-module="targeting" id="parameter-target-lock" aria-labelledby="parameter-target-lock-title">
               <header className="parameter-group-heading">
-                <span>目标</span>
                 <div><h2 id="parameter-target-lock-title">目标锁定</h2><p>决定哪些目标可以被选中，以及短暂遮挡或更优目标出现时如何处理。</p></div>
               </header>
               <div className="parameter-group-body">
                 <div className="class-config-summary-card">
                   <div className="class-config-summary-main">
-                    <div className="class-config-summary-icon" aria-hidden="true">
-                      <NovaIcon name="target" size={20} strokeWidth={1.8} />
-                    </div>
                     <div>
-                      <span className="class-config-eyebrow">目标类别</span>
                       <h3>当前目标规则</h3>
                       <small>设置参与类别、类别偏好和瞄点。</small>
                     </div>
@@ -4393,9 +4385,9 @@ export function StudioConsoleView({
                   </button>
                 </div>
 
-                <p className="console-section-note">优先考虑准星附近的瞄点，没有附近瞄点时参考类别偏好。选中的目标有效时保持；按键触发时，松开再按可重新选择。</p>
+
                 {displayedClassIds.length > 0 ? <>
-                <p className="class-name-source" role="note">类别名称优先使用当前配置；未命名项参考已发布模型的登记信息，仅用于显示。请按模型实际输出核对编号，不会自动改写配置。</p>
+
                 <ul className="algorithm-class-overview" aria-label="当前类别配置">
                   {displayedClassIds.map((id) => (
                     <li key={id} style={classStyle(id)} data-enabled={selectedDetectionClassIds.has(id)}>
@@ -4405,7 +4397,7 @@ export function StudioConsoleView({
                     </li>
                   ))}
                 </ul>
-                </> : <div className="class-map-empty" role="note"><strong>还没有可核对的目标类别</strong><p>先选择模型，对照其实际输出编号，再在“编辑目标类别”中填写名称。</p><button className="console-button" type="button" onClick={() => navigatePage("models")}>选择模型</button></div>}
+                </> : <div className="class-map-empty" role="note"><strong>尚未设置目标类别</strong><p>在“编辑目标类别”中填写模型的类别编号与名称。</p></div>}
               </div>
             </section>
             </div>
@@ -4417,6 +4409,12 @@ export function StudioConsoleView({
           </>
           ) : (
           <>
+          <MouseProtocolView protocols={mouseProtocols} selectedId={selectedMouseProtocolId}
+            available={runtimeConfig !== null} running={runtimeLifecycleActive} saving={pendingConfigWriteCount > 0} previewOnly={previewOnly}
+            onSave={saveMouseProtocol} onSelect={selectMouseProtocol} onProbe={testKmBoxConnection} onRemove={removeMouseProtocol} onGoHome={() => { navigatePage("overview"); }}
+            diagnostics={
+          !isNullMouseProtocol && selectedMouseProtocolId !== "unconfigured" ? (
+          <details className="kmnet-diagnostic-details"><summary>高级：受控移动与运行诊断</summary>
           <div className="console-grid2 control-test-grid">
             <div className="console-card">
               <SectionTitle title="kmNet 单步测试" />
@@ -4449,66 +4447,6 @@ export function StudioConsoleView({
                   <small>单步命令会独立执行“连接 → 发送一次 → 断开”，不会复用主链实时会话。</small>
                 </div>
               ) : null}
-              <details className="kmnet-configuration-details" open={!kmnetConfigurationReady || undefined}>
-                <summary>
-                  <span>
-                    <b>设备连接配置</b>
-                    <small>{kmnetConfigurationReady ? `${kmnetHost}:${kmnetPort}` : "完成地址、端口与 UUID 后才能测试"}</small>
-                  </span>
-                  <i>{kmnetConfigurationReady ? "已配置" : "需配置"}</i>
-                </summary>
-                <div className="kmnet-configuration-content">
-                  <TextControl
-                    label="kmNet 地址"
-                    detail="设备控制器的局域网 IP 或主机名；不要使用示例常量代替设备真实地址。"
-                    value={kmnetHost}
-                    applyMode="live"
-                    riskLevel="advanced"
-                    onCommit={(value) => updateConfigField("hardware", "host", value)}
-                  />
-                  <ParameterNumberControl
-                    label="kmNet 控制端口"
-                    detail="单步测试连接使用的主控制端口。"
-                    value={kmnetPort}
-                    min={rustControlPlane ? 1 : 0}
-                    max={65535}
-                    step={1}
-                    kind="stepper"
-                    applyMode="live"
-                    riskLevel="advanced"
-                    onCommit={(value) => updateConfigField("hardware", "port", Math.round(value))}
-                  />
-                  <TextControl
-                    label="kmNet UUID"
-                    detail="设备授权标识；必须填写实际设备值，不会自动套用通用 UUID。"
-                    value={kmnetUuid}
-                    applyMode="live"
-                    riskLevel="advanced"
-                    onCommit={(value) => updateConfigField("hardware", "uuid", value)}
-                  />
-                  <ParameterNumberControl
-                    label="kmNet 监控端口"
-                    detail="主链实时会话读取设备状态时使用的监控端口。"
-                    value={kmnetMonitorPort}
-                    min={rustControlPlane ? 1024 : 0}
-                    max={rustControlPlane ? 49151 : 65535}
-                    step={1}
-                    kind="stepper"
-                    applyMode="live"
-                    riskLevel="advanced"
-                    onCommit={(value) => updateConfigField("hardware", "monitor_port", Math.round(value))}
-                  />
-                  <div className="kmnet-live-session">
-                    <div>
-                      <b>实时设备会话</b>
-                      <small>连接由首页运行总开关统一维护；关闭运行后不会继续计算或发送新的偏移。</small>
-                    </div>
-                    <span className={kmnetRuntimeConnected ? "ui-badge success" : kmnetConnecting ? "ui-badge info" : "ui-badge neutral"}>
-                      {kmnetRuntimeConnectionLabel}
-                    </span>
-                  </div>
-                </div>
-              </details>
               <details className="kmnet-diagnostic-details">
                 <summary>
                   <span>
@@ -4554,12 +4492,9 @@ export function StudioConsoleView({
                     />
                   </label>
                 </div>
-                <div className="kmnet-pad">
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => requestDiagnosticMoveHardware(0, -10)}>↑</button>
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => requestDiagnosticMoveHardware(-10, 0)}>←</button>
-                  <button type="button" onClick={() => requestDiagnosticMoveHardware(kmnetTestDx, kmnetTestDy)} disabled={kmnetDiagnosticDisabled}>发送</button>
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => requestDiagnosticMoveHardware(10, 0)}>→</button>
-                  <button type="button" disabled={kmnetDiagnosticDisabled} onClick={() => requestDiagnosticMoveHardware(0, 10)}>↓</button>
+                <div className="kmnet-test-actions">
+                  <button className="console-button" type="button" onClick={() => requestDiagnosticMoveHardware(kmnetTestDx, kmnetTestDy)} disabled={kmnetDiagnosticDisabled}>发送一次测试移动</button>
+                  {kmnetDiagnosticDisabled ? <small>需要已核实的停止状态与物理输出许可；连通性测试不需要开启输出。</small> : null}
                 </div>
                 <div className="kmnet-test-result">
                   <span>最近测试移动</span>
@@ -4569,6 +4504,8 @@ export function StudioConsoleView({
               </div>
             </div>
           </div>
+          </details>
+          ) : null} />
           </>
           )}
           </section>
@@ -4646,6 +4583,36 @@ export function StudioConsoleView({
         ) : null}
       </main>
 
+      {utilityDialog ? <StudioUtilityDialog key={utilityDialog} kind={utilityDialog} onClose={() => setUtilityDialog(null)}>
+        {utilityDialog === "settings" ? (
+          <SettingsView
+            modules={settingsModules}
+            desiredRevision={desiredConfigRevision}
+            effectiveRevision={effectiveConfigRevision}
+            restartRequired={reportedConfigRestartRequired}
+            configAvailable={runtimeConfig !== null}
+            runtimeVerified={runtime !== null && runtimeTransportConfidence === "current"}
+            operationPending={busy !== null || pendingConfigWriteCount > 0}
+            parameterChangesPending={parameterPageDirty}
+            onExport={exportConfig}
+            onImport={importConfig}
+            onNavigate={navigatePage}
+          />
+        ) : null}
+
+        {utilityDialog === "about" ? (
+          <AboutView
+            licenseContent={<LicensePanel license={license} onLicenseChange={onLicenseChange} />}
+            license={license}
+            serviceConnected={health?.ok === true && runtimeTransportConfidence === "current"}
+            layoutRevision={studioLayout.revision}
+            modules={aboutModules}
+            onNavigate={navigatePage}
+          />
+        ) : null}
+
+      </StudioUtilityDialog> : null}
+
       {classConfigDialogOpen ? (
         <div
           className="class-config-dialog-layer"
@@ -4667,7 +4634,7 @@ export function StudioConsoleView({
               <div>
                 <span className="class-config-eyebrow">参数设置 / 目标类别</span>
                 <h2 id="class-config-dialog-title">编辑目标类别</h2>
-                <p>cls0～7 直接编辑，修改后统一保存。</p>
+                <p>cls0～7 直接编辑，修改后自动保存并应用。</p>
               </div>
               <button type="button"
                 aria-label="关闭类别配置"
@@ -4701,7 +4668,7 @@ export function StudioConsoleView({
 
             <footer className="class-config-dialog-footer">
               <span className={configDialogDirty ? "dialog-save-status dirty" : "dialog-save-status"} role="status" aria-live="polite">
-                关闭后保留修改，回到参数页统一保存；尚未写入设备。
+                {previewOnly ? "仅编辑当前预览，不写入设备文件。" : parameterPageSaving ? "正在自动保存并应用…" : dialogSaveError ? "保存失败，修改仍保留。" : parameterPageDirty ? "修改等待自动保存…" : "参数已与设备同步。"}
               </span>
               <button type="button" className="console-button primary"
                 onClick={() => void requestDismissConfigDialog("class-config")}>
@@ -4738,7 +4705,7 @@ export function StudioConsoleView({
               </button>
             </header>
             <div className="error-center-body">
-              {currentErrorDetails.length > 0 ? currentErrorDetails.map((item) => (
+              {errorCenterItems.length > 0 ? errorCenterItems.map((item) => (
                 <article className="error-center-item" key={item.key}>
                   <NovaIcon name="triangle-alert" size={17} />
                   <div>

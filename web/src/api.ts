@@ -21,7 +21,7 @@ import {
 } from "./contracts/config";
 import { decodeLicenseStatus } from "./contracts/license";
 import { decodeCaptureCapabilities, decodeCaptureDevices } from "./contracts/capture";
-import { decodeDiagnosticMoveResponse } from "./contracts/hardware";
+import { decodeDiagnosticMoveResponse, decodeDeviceConnectionProbe, type DeviceConnectionProbe } from "./contracts/hardware";
 import {
   decodeDeepStreamRecommendation,
   decodeModelProbeResponse,
@@ -222,6 +222,7 @@ export const API_PATHS = {
   runtimeEmergencyStop: "/api/studio/v1/runtime/emergency-stop",
   config: "/api/config",
   configCommands: "/api/v1/config/commands",
+  configParameters: "/api/v1/config/parameters",
   configSchema: "/api/config/schema",
   captureDevices: "/api/capture/devices",
   captureCapabilities: "/api/capture/capabilities",
@@ -230,6 +231,7 @@ export const API_PATHS = {
   captureStream: "/api/capture/stream.mjpg",
   executors: "/api/executors",
   kmnetConnect: "/api/executors/kmnet/connect",
+  kmnetProbe: "/api/executors/kmnet/probe",
   kmnetDisconnect: "/api/executors/kmnet/disconnect",
   kmnetDiagnosticMove: "/api/executors/kmnet/diagnostic-move",
   modelProjects: "/api/models/projects",
@@ -674,6 +676,26 @@ export function updateRuntimeConfigField(
     undefined,
     decodeConfigUpdate
   );
+}
+
+export function updateRuntimeParameters(
+  changes: Array<{ section: string; key: string; value: RuntimeConfigValue }>,
+  expectedRevision: number,
+): Promise<ConfigUpdateResponse> {
+  requireUnsignedSafeInteger(expectedRevision, "expected_revision");
+  return requestJson<ConfigUpdateResponse>(API_PATHS.configParameters, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-NovaSight-Physical-Output-Ack": "confirmed" },
+    body: encodeJsonBody({ changes, expected_revision: expectedRevision }),
+  }, undefined, decodeConfigUpdate);
+}
+
+export function probeMouseProtocol(protocol: { id: string; model: string; host: string; port: number; uuid: string }): Promise<DeviceConnectionProbe> {
+  return requestJson<DeviceConnectionProbe>(`${API_PATHS.kmnetProbe}-candidate`, { method: "POST", body: JSON.stringify(protocol) }, { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS }, decodeDeviceConnectionProbe);
+}
+
+export function probeKmNet(): Promise<DeviceConnectionProbe> {
+  return requestJson<DeviceConnectionProbe>(API_PATHS.kmnetProbe, { method: "POST" }, { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS }, decodeDeviceConnectionProbe);
 }
 
 export function updateRuntimeConfigCommand(

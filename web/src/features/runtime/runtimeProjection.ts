@@ -35,8 +35,8 @@ const LIFECYCLE_LABELS: Record<LifecycleProjectionState, string> = {
   faulted: "运行故障",
 };
 
-export function isDaemonConfirmedSafe(runtime: RuntimeState | null): boolean {
-  return runtime?.presentation.output.daemon_confirmed_safe === true;
+export function isDaemonConfirmedStopped(runtime: RuntimeState | null): boolean {
+  return runtime?.semantic.phase === "stopped" && runtime.presentation.output.daemon_confirmed_safe === true;
 }
 
 function perceptionProjection(
@@ -113,12 +113,13 @@ export function projectRuntimeState(
   transport: RuntimeTransportConfidence,
 ): RuntimeProjection | null {
   if (!runtime) return null;
-  const daemonConfirmedSafe = isDaemonConfirmedSafe(runtime);
+  const daemonConfirmedSafe = isDaemonConfirmedStopped(runtime);
   const perception = perceptionProjection(runtime, transport);
+  const silentOutput = runtime.presentation.output.reason_code === "null_mouse_protocol";
   const output: RuntimeProjection["output"] = transport !== "current"
     ? { state: "unknown", label: "输出状态未知", detail: "实时状态不可用，不能推断硬件输出是否安全。" }
     : runtime.presentation.output.state === "safe"
-      ? { state: "safe", label: "已确认安全", detail: "运行态已停止、设备已断开，且输出门保持关闭。" }
+      ? { state: "safe", label: silentOutput ? "空协议 · 静默输出" : "已确认安全", detail: silentOutput ? "鼠标指令由空协议静默消费，不向物理设备发送输出。" : "运行态已停止、设备已断开，且输出门保持关闭。" }
       : runtime.presentation.output.state === "armed"
         ? { state: "armed", label: "输出已具备条件", detail: runtime.vision.output_trace.detail || "当前样本满足输出门控条件。" }
         : runtime.presentation.output.state === "blocked"

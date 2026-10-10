@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
 import { NovaIcon } from "../../components/visual";
 import { acquireBodyScrollLock, releaseBodyScrollLock, trapDialogTabKey } from "./dialogFocus";
@@ -8,6 +8,7 @@ export type ActionConfirmationRequest = {
   title: string;
   description: string;
   details?: string[];
+  content?: ReactNode;
   confirmLabel: string;
   danger?: boolean;
   handoffOnConfirm?: boolean;
@@ -70,7 +71,7 @@ export function ActionConfirmationDialog({
         aria-labelledby={titleId}
         aria-describedby={`${titleId}-description`}
         aria-modal="true"
-        className="action-confirmation-dialog"
+        className={request.content ? "action-confirmation-dialog has-content" : "action-confirmation-dialog"}
         ref={dialogRef}
         role="alertdialog"
         tabIndex={-1}
@@ -90,6 +91,7 @@ export function ActionConfirmationDialog({
             {request.details.map((detail) => <li key={detail}>{detail}</li>)}
           </ul>
         ) : null}
+        {request.content}
         {error ? <p className="action-confirmation-error" role="alert">{error}</p> : null}
         <footer>
           <button className="console-button" disabled={busy} onClick={onCancel} type="button">

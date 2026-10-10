@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 
-import { validateStudioConfigSchema } from "./algorithmParameterModel";
+import { buildAlgorithmParameterGroups, validateStudioConfigSchema } from "./algorithmParameterModel";
 import type { ConfigSchemaResponse } from "../../api";
 
 it("rejects missing, mistyped and unsupported fields in a received parameter schema", () => {
@@ -27,4 +27,16 @@ it("rejects missing, mistyped and unsupported fields in a received parameter sch
     { path: "pipeline.prediction_enabled", reason: "control algorithm field must be hot-applied by the backend" },
     { path: "pipeline.new_backend_parameter", reason: "backend pipeline parameter has no Studio control contract" }
   ]));
+});
+
+it("keeps the accepted ramp range and recommendation when an older schema advertises a wider range", () => {
+  const groups = buildAlgorithmParameterGroups({ pResponseScale: 0.2, entryRampMs: 200,
+    predictionActuationDelayMs: 4, controlPredictionLeadMs: 16,
+    controlPredictionHistoryResetGapMs: 40, controlFovX: 90, controlCountsPer360: 4000,
+  }, new Map([["pipeline.entry_ramp_ms", {
+    path: "pipeline.entry_ramp_ms", label: "力度渐增", type: "float", min: 0, max: 2000,
+    apply_mode: "hot_update", restart_required: false,
+  }]]));
+  expect(groups.responseParameters.find((parameter) => parameter.key === "entry_ramp_ms"))
+    .toMatchObject({ min: 0, max: 1000, recommendedMin: 200, recommendedMax: 600 });
 });

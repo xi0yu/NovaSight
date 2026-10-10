@@ -3,6 +3,9 @@ import { useMemo, useState, type ReactNode } from "react";
 import { NovaIcon } from "../../components/visual";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { getErrorMessage } from "../shared/format";
+import type { ActivityConnectionState } from "./useActivityStream";
+import { reportSuccess } from "../../lib/toast";
+import { StudioTaskIntro } from "../studio/StudioTaskIntro";
 
 import "./activity-view.css";
 
@@ -31,36 +34,49 @@ export function ActivityView({
   onClear,
   onOpenDetails,
   moduleOrder = DEFAULT_MODULES,
+  connectionState,
+  connectionError,
+  onRetry,
 }: {
   items: ActivityItem[];
   onClear: () => Promise<void> | void;
   onOpenDetails: () => void;
   moduleOrder?: readonly string[];
+  connectionState?: ActivityConnectionState;
+  connectionError?: string;
+  onRetry?: () => void;
 }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [clearing, setClearing] = useState(false);
   const [query, setQuery] = useState("");
   const [clearError, setClearError] = useState("");
-  const attentionCount = items.filter((item) => item.tone === "warn" || item.tone === "error" || item.tone === undefined).length;
-  const completedCount = items.filter((item) => item.tone === "success").length;
-  const filteredItems = useMemo(() => items.filter((item) =>
+  const [source, setSource] = useState("all");
+  const [pausedItems, setPausedItems] = useState<ActivityItem[] | null>(null);
+  const shownItems = pausedItems ?? items;
+  const sourceOptions = useMemo(() => [...new Set([...shownItems, ...items].map((item) => item.tag || "NovaSight"))].sort(), [shownItems, items]);
+  const pausedKeys = new Set(pausedItems?.map((item) => item.key));
+  const unseenCount = pausedItems ? items.filter((item) => !pausedKeys.has(item.key)).length : 0;
+  const attentionCount = shownItems.filter((item) => item.tone === "warn" || item.tone === "error" || item.tone === undefined).length;
+  const completedCount = shownItems.filter((item) => item.tone === "success").length;
+  const filteredItems = useMemo(() => shownItems.filter((item) =>
     (filter === "all" || (item.tone ?? "error") === filter)
+    && (source === "all" || (item.tag || "NovaSight") === source)
     && [item.title, item.detail, item.tag, item.requestId, item.technicalDetail].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())
-  ), [filter, items, query]);
+  ), [filter, shownItems, query, source]);
   const clearHistory = async () => {
     setClearing(true);
     setClearError("");
-    try { await onClear(); }
+    try { await onClear(); setPausedItems(null); reportSuccess("历史记录已清理", "新事件仍会继续记录。", "activity-clear", "feedback"); }
     catch (error) { setClearError(getErrorMessage(error)); }
     finally { setClearing(false); }
   };
   const counts = useMemo(() => ({
-    all: items.length,
-    error: items.filter((item) => (item.tone ?? "error") === "error").length,
-    warn: items.filter((item) => item.tone === "warn").length,
-    success: items.filter((item) => item.tone === "success").length,
-    info: items.filter((item) => item.tone === "info").length,
-  }), [items]);
+    all: shownItems.length,
+    error: shownItems.filter((item) => (item.tone ?? "error") === "error").length,
+    warn: shownItems.filter((item) => item.tone === "warn").length,
+    success: shownItems.filter((item) => item.tone === "success").length,
+    info: shownItems.filter((item) => item.tone === "info").length,
+  }), [shownItems]);
 
   const modules: Record<string, ReactNode> = {
     summary: (
@@ -69,8 +85,8 @@ export function ActivityView({
           <NovaIcon name={attentionCount > 0 ? "triangle-alert" : "shield-check"} size={22} />
         </span>
         <div>
-          <span>活动记录 · {items.length} 条</span>
-          <h2 id="activity-view-title">{attentionCount > 0 ? `${attentionCount} 条故障与警告记录` : completedCount > 0 ? "最近操作已完成" : items.length > 0 ? "最近有新记录" : "暂无活动记录"}</h2>
+          <span>活动记录 · {shownItems.length} 条</span>
+          <h2 id="activity-view-title">{attentionCount > 0 ? `${attentionCount} 条故障与警告记录` : completedCount > 0 ? "最近操作已完成" : shownItems.length > 0 ? "最近有新记录" : "暂无活动记录"}</h2>
           <p>记录不代表故障仍在发生；当前运行状态请查看首页。</p>
         </div>
         {attentionCount > 0 ? (
@@ -84,7 +100,9 @@ export function ActivityView({
         <label className="activity-search"><NovaIcon name="search" size={16} />
           <input aria-label="搜索日志" type="search" placeholder="搜索事件、来源或排查编号" value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <span role="status">显示 {filteredItems.length} / {items.length} 条</span>
+        <label className="activity-source">来源<select aria-label="日志来源" value={source} onChange={(event) => setSource(event.target.value)}><option value="all">全部来源</option>{sourceOptions.map((tag) => <option key={tag} value={tag}>{tag}</option>)}</select></label>
+        <button className="console-button" type="button" aria-pressed={pausedItems !== null} onClick={() => setPausedItems(pausedItems ? null : [...items])}>{pausedItems ? `恢复实时${unseenCount > 0 ? ` · ${unseenCount} 条新记录` : ""}` : "暂停查看"}</button>
+        <span role="status">{pausedItems ? "已暂停查看 · " : ""}显示 {filteredItems.length} / {shownItems.length} 条</span>
       </div>
       <div className="activity-toolbar">
         <nav className="activity-filters" aria-label="日志等级筛选">
@@ -140,9 +158,9 @@ export function ActivityView({
             </li>
           )) : (
             <li className="activity-empty">
-              <EmptyState icon="logs" title={items.length > 0 ? "没有符合条件的日志" : "暂无运行记录"}
-                description={items.length > 0 ? "试试其他关键词或日志等级。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}>
-              {items.length > 0 ? <button className="console-button" onClick={() => { setQuery(""); setFilter("all"); }} type="button">重置筛选</button> : null}
+              <EmptyState icon="logs" title={shownItems.length > 0 ? "没有符合条件的日志" : "暂无运行记录"}
+                description={shownItems.length > 0 ? "试试其他关键词、来源或日志等级。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}>
+              {shownItems.length > 0 ? <button className="console-button" onClick={() => { setQuery(""); setFilter("all"); setSource("all"); }} type="button">重置筛选</button> : null}
               </EmptyState>
             </li>
           )}
@@ -152,7 +170,13 @@ export function ActivityView({
   };
 
   return (
-    <section className="console-page activity-view" aria-labelledby="activity-view-title">
+    <section className="console-page activity-view" aria-label="实时日志">
+      <StudioTaskIntro label="实时日志" title="发生了什么，一眼看清" description="按等级和来源查找事件；需要仔细读一条记录时，先暂停查看，新事件会继续接收。" />
+      {connectionState ? <div className="activity-connection" data-state={connectionState} role="status">
+        <NovaIcon name={connectionState === "connected" ? "check-circle" : "signal-lost"} size={16} />
+        <span>{connectionState === "connected" ? "实时日志已连接" : connectionState === "loading" ? "正在读取日志并连接实时通道…" : connectionState === "paused" ? "等待重新授权，日志更新已暂停" : connectionError || "日志状态未确认，已有记录会保留。"}</span>
+        {(connectionState === "error" || connectionState === "disconnected") && onRetry ? <button className="console-button" type="button" onClick={onRetry}>重新读取日志</button> : null}
+      </div> : null}
       {moduleOrder.map((moduleId) => <div data-module={moduleId} key={moduleId}>{modules[moduleId] ?? null}</div>)}
     </section>
   );

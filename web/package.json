@@ -13,8 +13,11 @@
     "icons:export": "node scripts/export-nova-icons.mjs",
     "test:unit": "vitest",
     "test:unit:ci": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:ci": "pnpm typecheck:tests && pnpm test:unit:ci && pnpm test:integration",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "visual:audit": "node scripts/visual-system-audit.mjs",
     "build": "tsc --noEmit && vite build"
   },

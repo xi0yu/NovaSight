@@ -14,7 +14,7 @@ function runControlCommit(action: () => Promise<void> | void): Promise<void> {
   }
 }
 
-export type ParameterApplyMode = "live" | "reload" | "save" | "launch" | "restart";
+export type ParameterApplyMode = "auto" | "live" | "reload" | "save" | "launch" | "restart";
 export type ParameterRiskLevel = "normal" | "advanced" | "calibration";
 export type ParameterNumberKind = "slider" | "stepper";
 export type ParameterSelectOption = {
@@ -439,6 +439,7 @@ function StepperNumberControl({
 }
 
 function applyModeLabel(applyMode: ParameterApplyMode): string {
+  if (applyMode === "auto") return "自动保存并应用";
   if (applyMode === "live") {
     return "即时";
   }
@@ -472,6 +473,7 @@ export function ParameterNumberControl({
   unit,
   kind = "slider",
   compact = false,
+  fullSliderRange = false,
   disabled = false,
   applyMode = "save",
   riskLevel = "normal",
@@ -491,6 +493,7 @@ export function ParameterNumberControl({
   unit?: string;
   kind?: ParameterNumberKind;
   compact?: boolean;
+  fullSliderRange?: boolean;
   disabled?: boolean;
   applyMode?: ParameterApplyMode;
   riskLevel?: ParameterRiskLevel;
@@ -514,7 +517,7 @@ export function ParameterNumberControl({
           <span className="parameter-control-meta" aria-label="参数属性">
             {formula ? <span title="算法符号">{formula}</span> : null}
             {kind === "stepper" && unit ? <span>{unit}</span> : null}
-            <span data-apply-mode={applyMode}>{applyModeLabel(applyMode)}</span>
+            {applyMode !== "auto" ? <span data-apply-mode={applyMode}>{applyModeLabel(applyMode)}</span> : null}
             {outsideRecommendedRange ? <span data-tone="warning">超推荐</span> : null}
             {riskLevel !== "normal" ? <span>{riskLevel === "calibration" ? "标定" : "高级"}</span> : null}
           </span>
@@ -541,8 +544,8 @@ export function ParameterNumberControl({
           value={value}
           min={min}
           max={max}
-          rangeMin={normalizedRecommendedMin}
-          rangeMax={normalizedRecommendedMax}
+          rangeMin={fullSliderRange ? min : normalizedRecommendedMin}
+          rangeMax={fullSliderRange ? max : normalizedRecommendedMax}
           rangeInputId={`${controlId}-range`}
           textInputId={`${controlId}-value`}
           unit={unit}

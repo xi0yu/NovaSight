@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
-import { afterEach } from "vitest";
+import { afterEach, vi } from "vitest";
 
 const hasWindow = typeof window !== "undefined";
 
@@ -30,8 +30,11 @@ if (hasWindow && !window.localStorage) {
 }
 
 afterEach(() => {
+  if (hasWindow) cleanup();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
   if (!hasWindow) return;
-  cleanup();
   window.localStorage.clear();
+  window.sessionStorage.clear();
   document.documentElement.removeAttribute("data-theme");
 });

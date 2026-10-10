@@ -326,3 +326,9 @@
   .device-truth-header .console-button,
   .management-boundary .console-button { width: 100%; }
 }
+.onboarding-output { display: flex; align-items: center; gap: 24px; padding: 18px 22px; border: 1px solid var(--border-default); border-radius: 16px; background: var(--bg-surface); margin-bottom: 20px; }
+.onboarding-output > div { flex: 1; }
+.onboarding-output p { margin: 6px 0 0; font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
+@media (max-width: 760px) { .onboarding-output { flex-direction: column; align-items: start; gap: 12px; } }
+.about-license { margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--border-default); }
+.about-license > h3 { margin: 0 0 16px; font-size: 19px; }

@@ -1,6 +1,8 @@
 .capture-workspace {
   display: grid;
-  gap: 12px;
+  gap: 18px;
+  max-width: 1040px;
+  margin-inline: auto;
 }
 
 .capture-command-header {
@@ -11,7 +13,7 @@
   min-height: 84px;
   padding: 12px 14px;
   border: 1px solid var(--border-default);
-  border-radius: 8px;
+  border-radius: 18px;
   background: var(--bg-surface);
   box-shadow: var(--shadow-card);
 }
@@ -95,7 +97,8 @@
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1.16fr) minmax(340px, .84fr);
-  gap: 12px;
+  gap: 18px;
+  align-items: start;
   overflow: visible;
   border: 0;
   border-radius: 0;
@@ -108,15 +111,11 @@
   display: grid;
   align-content: start;
   gap: 14px;
-  padding: 16px;
+  padding: 22px;
   border: 1px solid var(--border-default);
-  border-radius: 8px;
+  border-radius: 18px;
   background: var(--bg-surface);
   box-shadow: var(--shadow-card);
-}
-
-.capture-source-setup {
-  border-left: 3px solid var(--brand-primary);
 }
 
 .capture-roi-stage {
@@ -139,10 +138,6 @@
   border-radius: 9px;
   background: var(--brand-soft);
   color: var(--brand-primary);
-}
-
-.capture-workbench-heading small {
-  display: none;
 }
 
 .capture-workbench-heading h3 {
@@ -176,8 +171,8 @@
 .capture-device-picker {
   overflow: hidden;
   border: 1px solid var(--border-default);
-  border-radius: 9px;
-  background: var(--bg-subtle);
+  border-radius: 14px;
+  background: var(--bg-surface);
 }
 
 .capture-device-picker > header {
@@ -230,8 +225,8 @@
 .capture-quality-browser {
   overflow: hidden;
   border: 1px solid var(--border-default);
-  border-radius: 9px;
-  background: var(--bg-subtle);
+  border-radius: 14px;
+  background: var(--bg-surface);
 }
 
 .capture-quality-browser > header {
@@ -266,18 +261,18 @@
 
 .capture-roi-visual {
   position: relative;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: var(--source-aspect, 16 / 9);
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  background: var(--signal-ink);
+  background: var(--brand-soft);
 }
 
 .capture-roi-visual > span {
   position: absolute;
   top: 12px;
   left: 14px;
-  color: var(--text-tertiary);
+  color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: 11px;
 }
@@ -286,7 +281,8 @@
   position: absolute;
   top: 50%;
   left: 50%;
-  width: min(48%, 180px);
+  width: var(--roi-width, 48%);
+  height: var(--roi-height, auto);
   aspect-ratio: 1;
   display: grid;
   place-content: center;
@@ -314,7 +310,7 @@
 }
 
 .capture-roi-visual b { font-family: var(--font-mono); font-size: 13px; }
-.capture-roi-visual small { color: var(--text-secondary); font-size: 11px; }
+.capture-roi-visual small { color: var(--text-primary); font-size: 11px; }
 
 .capture-optional-settings {
   border-top: 1px solid var(--border-subtle);
@@ -1618,12 +1614,6 @@
   color: var(--parameter-module-accent);
 }
 
-.parameter-group .class-config-summary-icon {
-  border-color: color-mix(in srgb, var(--parameter-module-accent) 45%, var(--border-default));
-  background: color-mix(in srgb, var(--parameter-module-accent) 12%, var(--bg-surface));
-  color: var(--parameter-module-accent);
-}
-
 .control-chain-setting-title { min-width: 0; display: grid; gap: 4px; }
 .control-chain-setting-title b { color: var(--text-primary); font-size: 14px; font-weight: 600; }
 .control-chain-setting-title small { color: var(--text-tertiary); font-size: 12px; line-height: 1.45; text-wrap: pretty; }
@@ -1780,18 +1770,6 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
-}
-
-.class-config-summary-icon {
-  width: 42px;
-  height: 42px;
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--brand-border);
-  border-radius: var(--radius-5);
-  background: var(--brand-soft);
-  color: var(--brand-primary);
 }
 
 .class-config-eyebrow {
@@ -2903,3 +2881,17 @@
   .capture-model-bridge { align-items: stretch; flex-direction: column; }
   .capture-model-bridge > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
 }
+.config-restore-diff { margin-block: 20px; border: 1px solid var(--border-default); border-radius: 12px; overflow: hidden; }
+.config-restore-diff summary { padding: 12px 16px; font-size: 13px; font-weight: 650; cursor: pointer; }
+.config-restore-diff-scroll { max-height: 280px; overflow: auto; }
+.config-restore-diff table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.config-restore-diff th, .config-restore-diff td { padding: 10px 12px; text-align: left; border-top: 1px solid var(--border-default); vertical-align: top; overflow-wrap: anywhere; white-space: pre-wrap; }
+.config-restore-diff thead { position: sticky; top: 0; background: var(--bg-surface); }
+.config-restore-diff small, .config-restore-diff th span { display: block; margin-top: 5px; color: var(--text-secondary); font-weight: 400; }
+.action-confirmation-dialog.has-content { width: min(760px, 100%); }
+
+.device-workspace-links { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.device-workspace-links > div { flex: 1 1 200px; display: grid; gap: 4px; }
+.device-workspace-links small { color: var(--text-tertiary); font-size: 11px; }
+.device-workspace-links b { color: var(--text-primary); font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .device-workspace-links .console-button { min-height: 44px; } }

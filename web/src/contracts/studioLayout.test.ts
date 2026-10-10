@@ -10,6 +10,7 @@ describe("studio layout contract", () => {
       pages: [
         { id: "activity", label: "实时日志", modules: ["feed", "summary", "filters"] },
         { id: "overview", label: "首页", modules: ["metrics", "runtime"] },
+        { id: "control-test", label: "鼠标协议", modules: ["connection", "diagnostics"] },
         { id: "capture", label: "设备管理", modules: ["roi", "source"] },
         { id: "params", label: "算法参数", modules: ["output", "targeting", "motion", "response"] },
         { id: "fire", label: "开火稳定", modules: ["stabilization"] },
@@ -33,7 +34,7 @@ describe("studio layout contract", () => {
 
   it("keeps a built-in complete fallback", () => {
     expect(DEFAULT_STUDIO_LAYOUT.pages.map((page) => page.id)).toEqual([
-      "overview", "capture", "params", "fire", "activity", "settings", "about",
+      "overview", "capture", "params", "fire", "activity", "control-test", "settings", "about",
     ]);
     expect(DEFAULT_STUDIO_LAYOUT.pages.find((page) => page.id === "overview")?.modules).toEqual([
       "setup", "runtime", "metrics", "target",

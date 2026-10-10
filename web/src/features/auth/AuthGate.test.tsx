@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AuthGate } from "./AuthGate";
+import { AuthGate, useWorkspaceAuthorization } from "./AuthGate";
 
 const api = vi.hoisted(() => ({
   getAuthSession: vi.fn(), establishAuthSession: vi.fn(), getHealth: vi.fn(), logoutAuthSession: vi.fn(),
@@ -16,6 +17,30 @@ const activeSession = {
 };
 
 describe("single authorization entry", () => {
+  it("preserves workspace draft and pauses authorization while reauthenticating", async () => {
+    function Draft() {
+      const [value, setValue] = useState("original");
+      const authorized = useWorkspaceAuthorization();
+      return <input aria-label="草稿" data-authorized={authorized} value={value} onChange={(event) => setValue(event.target.value)} />;
+    }
+    api.getAuthSession.mockResolvedValue(activeSession);
+    api.establishAuthSession.mockResolvedValue(activeSession);
+    const view = render(<AuthGate><Draft /></AuthGate>);
+    const draft = await screen.findByLabelText("草稿");
+    fireEvent.change(draft, { target: { value: "unsaved" } });
+    fireEvent(window, new CustomEvent("novasight:auth-required"));
+    expect(await screen.findByLabelText("授权码")).toBeVisible();
+    expect(draft).toHaveValue("unsaved");
+    expect(draft).not.toBeVisible();
+    expect(draft).toHaveAttribute("data-authorized", "false");
+    await userEvent.type(screen.getByLabelText("授权码"), "renewed");
+    await userEvent.click(screen.getByRole("button", { name: "进入控制台" }));
+    await waitFor(() => expect(draft).toBeVisible());
+    expect(screen.getByLabelText("草稿")).toBe(draft);
+    expect(draft).toHaveValue("unsaved");
+    expect(draft).toHaveAttribute("data-authorized", "true");
+    view.unmount();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     api.getHealth.mockResolvedValue({ ok: true });

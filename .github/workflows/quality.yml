@@ -123,8 +123,8 @@ jobs:
       - name: Install locked dependencies
         run: pnpm --dir web install --frozen-lockfile
 
-      - name: Run Studio function and component tests
-        run: pnpm --dir web test:unit:ci
+      - name: Run Studio unit and integration tests
+        run: pnpm --dir web test:ci
 
       - name: Check icon registry and token contrast
         run: pnpm --dir web visual:audit

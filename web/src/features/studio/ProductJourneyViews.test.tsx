@@ -93,7 +93,7 @@ describe("guided product journeys", () => {
       desiredRevision={25} effectiveRevision={25} errorCount={0} onNavigate={vi.fn()} onOpenErrors={vi.fn()} />);
     expect(screen.getAllByText("状态已过期")).toHaveLength(4);
     expect(screen.queryByText("240.0 FPS")).not.toBeInTheDocument();
-    expect(screen.getByText("kmNet 连接状态待核实")).toBeVisible();
+    expect(screen.getByText("鼠标协议状态待核实")).toBeVisible();
   });
 
   it("continues onboarding from management when setup is incomplete", async () => {

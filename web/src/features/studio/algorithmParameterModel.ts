@@ -186,8 +186,9 @@ function schemaBackedNumberParameter<Field extends string>(
   if (!field || !NUMERIC_SCHEMA_TYPES.has(field.type)) {
     return null;
   }
-  const min = isFiniteNumber(field.min) ? field.min : parameter.min;
-  const max = isFiniteNumber(field.max) ? field.max : parameter.max;
+  const min = Math.max(parameter.min, isFiniteNumber(field.min) ? field.min : parameter.min);
+  const max = Math.min(parameter.max, isFiniteNumber(field.max) ? field.max : parameter.max);
+  if (min > max) return null;
   return {
     ...parameter,
     min,
@@ -260,9 +261,9 @@ export function buildAlgorithmParameterGroups(
         detail: "触发等待结束后，首次出现有效目标时，力度从 0 升到完整力度所需的时间；设为 0 则立即使用完整力度。",
         value: values.entryRampMs ?? 200,
         min: 0,
-        max: 2000,
-        recommendedMin: 100,
-        recommendedMax: 400,
+        max: 1000,
+        recommendedMin: 200,
+        recommendedMax: 600,
         step: 10,
         unit: "ms",
         applyMode: "live"

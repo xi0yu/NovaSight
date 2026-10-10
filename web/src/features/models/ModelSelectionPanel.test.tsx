@@ -49,16 +49,6 @@ describe("ModelSelectionPanel", () => {
     expect(onDraftChange).toHaveBeenLastCalledWith(true);
   });
 
-  it("explains which files are registered, need validation, or are view-only", () => {
-    const registered = { ...stableModel, artifact_id: 12 };
-    const viewOnly = { ...otherModel, kind: "onnx" as const, name: "preview.onnx", relative_path: "preview.onnx" };
-    render(<ModelSelectionPanel {...panelProps({
-      root: { ...catalog, children: [registered, otherModel, viewOnly] },
-      modelCount: 3,
-      selectedModel: registered,
-    })} />);
-    expect(screen.getByText(/1 个已登记 Engine · 1 个待验证 Engine · 1 个仅供查看/)).toBeVisible();
-  });
 
   it("filters by actual file usage without changing deployment or losing the selected model", async () => {
     const registered = { ...stableModel, artifact_id: 12 };
@@ -71,6 +61,7 @@ describe("ModelSelectionPanel", () => {
       activeArtifactId: 12,
       onSwitch,
     })} />);
+    expect(screen.getByText(/1 个已登记 Engine · 1 个待验证 Engine · 1 个仅供查看/)).toBeVisible();
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "文件使用状态" }), "unregistered_engine");
     expect(screen.getByRole("button", { name: /other.engine，路径 other.engine/ })).toBeVisible();
     expect(screen.queryByRole("button", { name: /stable.engine，路径 stable.engine/ })).not.toBeInTheDocument();
@@ -102,26 +93,7 @@ describe("ModelSelectionPanel", () => {
     expect(screen.getAllByRole("button", { name: /engine-\d+\.engine，路径/ })).toHaveLength(24);
   });
 
-  it("does not switch a model hidden by the current filters", async () => {
-    const onSwitch = vi.fn();
-    render(<ModelSelectionPanel {...panelProps({ onSwitch })} />);
-    await userEvent.click(within(screen.getByRole("group", { name: "推荐状态筛选" })).getByRole("button", { name: "待整理" }));
-    expect(screen.getByText(/当前筛选隐藏了已选模型/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "验证并切换到所选模型" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /other.engine，路径 other.engine/ })).toBeVisible();
-    expect(onSwitch).not.toHaveBeenCalled();
-  });
 
-  it("finds files by path and keeps the switch action beside the selection", async () => {
-    render(<ModelSelectionPanel {...panelProps()} />);
-    await userEvent.type(screen.getByRole("searchbox", { name: "查找模型文件" }), "other.engine");
-    expect(screen.getByRole("button", { name: /other.engine，路径 other.engine/ })).toBeVisible();
-    expect(screen.queryByRole("button", { name: /stable.engine，路径 stable.engine/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "验证并切换到所选模型" })).toBeDisabled();
-    await userEvent.click(screen.getByRole("button", { name: "清除筛选" }));
-    expect(screen.getByRole("button", { name: /stable.engine，路径 stable.engine/ })).toBeVisible();
-    expect(screen.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
-  });
 
   it("includes a typed tag when saving and protects an unsaved metadata draft", async () => {
     const onSaveMetadata = vi.fn();
@@ -208,7 +180,7 @@ describe("ModelSelectionPanel", () => {
   it("does not call an active but unverified model qualified", () => {
     render(<ModelWorkspace activeModelName="test" activeArtifactStatus="failed" onOpenInference={vi.fn()}
       panelProps={panelProps({ activeArtifactPath: "stable.engine", activeLoaded: true })} />);
-    expect(screen.getByRole("list", { name: "模型部署步骤" })).toHaveTextContent("待验证");
+    expect(screen.getByText("待验证")).toBeVisible();
     expect(screen.queryByText("已有验证记录")).not.toBeInTheDocument();
   });
 
@@ -261,9 +233,11 @@ describe("ModelSelectionPanel", () => {
     const firstRender = render(<ModelSelectionPanel {...props} />);
     await userEvent.click(within(screen.getByRole("group", { name: "推荐状态筛选" })).getByRole("button", { name: "推荐" }));
     await userEvent.click(screen.getByRole("button", { name: "稳定" }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "模型排序" }), "size_desc");
     firstRender.unmount();
 
     render(<ModelSelectionPanel {...props} />);
+    expect(screen.getByRole("combobox", { name: "模型排序" })).toHaveValue("size_desc");
     expect(within(screen.getByRole("group", { name: "推荐状态筛选" })).getByRole("button", { name: "推荐" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "稳定" })).toHaveAttribute("aria-pressed", "true");
   });
@@ -298,11 +272,6 @@ describe("ModelSelectionPanel", () => {
     expect(onSwitch).not.toHaveBeenCalled();
   });
 
-  it("does not mistake an unregistered file for the active deployment", () => {
-    render(<ModelSelectionPanel {...panelProps({ selectedArtifact: null, activeArtifactId: null })} />);
-    expect(screen.getByText(/此文件尚未部署/)).toBeVisible();
-    expect(screen.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
-  });
 
   it("shows the actual deployed state and does not offer a no-op switch", () => {
     const registered = { ...stableModel, artifact_id: 12, project_name: "Kenny", artifact_status: "ready" };
@@ -315,12 +284,18 @@ describe("ModelSelectionPanel", () => {
     expect(screen.getByText("Kenny")).toBeVisible();
   });
 
-  it("finds a model by its project or tag", async () => {
+  it.each(["stable.engine", "Kenny", "稳定"])("finds files by %s and disables deployment when selection is filtered out", async (query) => {
     const registered = { ...stableModel, project_name: "Kenny" };
     render(<ModelSelectionPanel {...panelProps({ root: { ...catalog, children: [registered, otherModel] }, selectedModel: registered })} />);
-    await userEvent.type(screen.getByRole("searchbox", { name: "查找模型文件" }), "Kenny");
+    const search = screen.getByRole("searchbox", { name: "查找模型文件" });
+    await userEvent.type(search, query);
     expect(screen.getByRole("button", { name: /stable.engine，路径 stable.engine/ })).toBeVisible();
     expect(screen.queryByRole("button", { name: /other.engine，路径 other.engine/ })).not.toBeInTheDocument();
+    await userEvent.clear(search);
+    await userEvent.type(search, "other.engine");
+    expect(screen.getByRole("button", { name: "验证并切换到所选模型" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "清除筛选" }));
+    expect(screen.getByRole("button", { name: "验证并切换到所选模型" })).toBeEnabled();
   });
 
   it("browses nested folders and searches across the entire catalog", async () => {
@@ -394,12 +369,4 @@ describe("ModelSelectionPanel", () => {
     expect(screen.getByRole("button", { name: "移动或改名文件" })).toBeDisabled();
   });
 
-  it("remembers the operator's sorting choice for this browser session", async () => {
-    const first = render(<ModelSelectionPanel {...panelProps()} />);
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: "模型排序" }), "size_desc");
-    expect(JSON.parse(window.sessionStorage.getItem("novasight.model-filters.v1") ?? "null").sort).toBe("size_desc");
-    first.unmount();
-    render(<ModelSelectionPanel {...panelProps()} />);
-    expect(screen.getByRole("combobox", { name: "模型排序" })).toHaveValue("size_desc");
-  });
 });

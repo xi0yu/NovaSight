@@ -11,7 +11,7 @@ import {
 } from "../../api";
 import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
-import { isDaemonConfirmedSafe } from "../runtime/runtimeProjection";
+import { isDaemonConfirmedStopped } from "../runtime/runtimeProjection";
 import { useSafetyOperation } from "../runtime/SafetyOperationContext";
 
 type UseMainlineLaunchInput = {
@@ -31,7 +31,7 @@ function runtimeAcceptedStart(runtime: RuntimeState): boolean {
 }
 
 function runtimeAcceptedEmergencyStop(runtime: RuntimeState): boolean {
-  return isDaemonConfirmedSafe(runtime);
+  return isDaemonConfirmedStopped(runtime);
 }
 
 function stopError(detail: string): string {

@@ -1,0 +1,13 @@
+{
+  "revision": 4,
+  "pipeline": {
+    "p_response_scale": 0.8
+  },
+  "server": {
+    "port": 7352
+  },
+  "hardware": {
+    "backend": "null",
+    "password": "hidden-after"
+  }
+}

@@ -159,3 +159,85 @@ it("clears only the error records the user agreed to remove", () => {
   expect(result.current.notices.map((notice) => notice.title)).toEqual(["新故障"]);
   act(() => result.current.clear());
 });
+
+it("shows red validation failure and green completion feedback even in quiet mode", () => {
+  const { result } = renderHook(() => ({ toasts: useToasts(), dismiss: useDismissToast(), clear: useClearErrorNotices() }));
+  localStorage.setItem("ns-quiet-errors", "1");
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  try {
+    act(() => {
+      for (const toast of result.current.toasts) result.current.dismiss(toast.id);
+      reportError(new ApiError("invalid parameters", 422, { code: "CONFIG_REJECTED" }), { source: "parameter-page", title: "参数自动保存失败", tone: "error", popup: "feedback" });
+      reportSuccess("参数已自动保存并应用", "saved", "parameter-page", "feedback");
+    });
+    expect(result.current.toasts.map((toast) => toast.tone)).toEqual(["error", "success"]);
+  } finally {
+    localStorage.removeItem("ns-quiet-errors");
+    consoleMock.mockRestore();
+    act(() => { for (const toast of result.current.toasts) result.current.dismiss(toast.id); result.current.clear(); });
+  }
+});
+
+it("delivers every explicit action feedback while deduplicating passive notices", () => {
+  const { result } = renderHook(() => ({ toasts: useToasts(), dismiss: useDismissToast() }));
+  try {
+    act(() => {
+      for (const toast of result.current.toasts) result.current.dismiss(toast.id);
+      reportSuccess("协议已启用", "same device", "protocol-feedback-test", "feedback");
+      reportSuccess("协议已启用", "same device", "protocol-feedback-test", "feedback");
+      reportSuccess("后台状态更新", "same status", "passive-feedback-test");
+      reportSuccess("后台状态更新", "same status", "passive-feedback-test");
+    });
+    expect(result.current.toasts.map((toast) => toast.title)).toEqual(["协议已启用", "协议已启用", "后台状态更新"]);
+  } finally {
+    act(() => { for (const toast of result.current.toasts) result.current.dismiss(toast.id); });
+  }
+});
+
+it("expires explicit failure feedback but retains its diagnostic record", () => {
+  vi.useFakeTimers();
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const { result } = renderHook(() => ({ toasts: useToasts(), notices: useErrorNotices(), dismiss: useDismissToast(), clear: useClearErrorNotices() }));
+  try {
+    act(() => {
+      for (const toast of result.current.toasts) result.current.dismiss(toast.id);
+      result.current.clear();
+      reportError(new Error("IP invalid"), { source: "protocol-validation-expiry", title: "协议参数无效", popup: "feedback" });
+    });
+    expect(result.current.toasts).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(2999));
+    expect(result.current.toasts).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(1));
+    expect(result.current.toasts).toHaveLength(0);
+    expect(result.current.notices).toHaveLength(1);
+    expect(result.current.notices[0].detail).toBe("IP invalid");
+  } finally {
+    act(() => { for (const toast of result.current.toasts) result.current.dismiss(toast.id); result.current.clear(); });
+    consoleMock.mockRestore();
+    vi.useRealTimers();
+  }
+});
+
+it.each(["info", "warn", "error", "success"] as const)("shows a three-second countdown then removes a %s toast", (tone) => {
+  vi.useFakeTimers();
+  const { result } = renderHook(() => ({ toasts: useToasts(), clear: useClearErrorNotices(), dismiss: useDismissToast() }));
+  const view = render(<ToastHost />);
+  try {
+    act(() => {
+      for (const toast of result.current.toasts) result.current.dismiss(toast.id);
+      pushToastRaw({ tone, title: "倒计时测试", source: `countdown-${tone}`, status: null });
+    });
+    expect(view.getByText("3 秒后关闭")).toBeVisible();
+    expect(view.container.querySelector(".toast-card-timer > span")).toHaveStyle({ animationDuration: "3000ms", animationDelay: "0ms" });
+    act(() => vi.advanceTimersByTime(1500));
+    expect(view.getByText("2 秒后关闭")).toBeVisible();
+    act(() => vi.advanceTimersByTime(1499));
+    expect(view.getByText("倒计时测试")).toBeVisible();
+    act(() => vi.advanceTimersByTime(1));
+    expect(view.queryByText("倒计时测试")).not.toBeInTheDocument();
+  } finally {
+    act(() => { for (const toast of result.current.toasts) result.current.dismiss(toast.id); result.current.clear(); });
+    view.unmount();
+    vi.useRealTimers();
+  }
+});

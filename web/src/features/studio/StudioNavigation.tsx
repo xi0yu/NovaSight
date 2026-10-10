@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { NovaIcon, type NovaIconName } from "../../components/visual";
 import { DEFAULT_STUDIO_LAYOUT, type StudioLayoutPage } from "../../contracts/studioLayout";
@@ -24,6 +24,12 @@ export type ConsolePage =
   | "settings"
   | "about";
 
+export type ConsoleUtility = "settings" | "about";
+export type ConsoleWorkspacePage = Exclude<ConsolePage, ConsoleUtility>;
+export function isConsoleUtility(page: ConsolePage): page is ConsoleUtility {
+  return page === "settings" || page === "about";
+}
+
 type NavigationItem = {
   id: ConsolePage;
   label: string;
@@ -37,7 +43,7 @@ export type ConsolePageMetadata = {
   description: string;
 };
 
-export const DEFAULT_CONSOLE_PAGE: ConsolePage = "overview";
+export const DEFAULT_CONSOLE_PAGE: ConsoleWorkspacePage = "overview";
 
 export const CONSOLE_PAGES = new Set<ConsolePage>([
   "overview", "onboarding", "activity", "device", "capture", "infer", "control",
@@ -48,6 +54,7 @@ export const CONSOLE_PAGES = new Set<ConsolePage>([
 const navigationDetails: Record<StudioLayoutPage["id"], Omit<NavigationItem, "id" | "label">> = {
   overview: { detail: "状态、实时数据与下一步", icon: "dashboard" },
   capture: { detail: "输入、模型与采集规格", icon: "devices" },
+  "control-test": { detail: "输出协议与连接管理", icon: "devices" },
   params: { detail: "识别、目标与输出参数", icon: "settings" },
   fire: { detail: "开火时的近距离稳定", icon: "target" },
   activity: { detail: "按等级查看运行与操作日志", icon: "logs" },
@@ -55,10 +62,11 @@ const navigationDetails: Record<StudioLayoutPage["id"], Omit<NavigationItem, "id
   about: { detail: "平台版本、能力与支持", icon: "help" },
 };
 
-const CAPTURE_PAGES = new Set<ConsolePage>(["device", "capture", "infer", "control", "models", "control-test", "latency"]);
+const CAPTURE_PAGES = new Set<ConsolePage>(["device", "capture", "infer", "models", "latency"]);
 
 function selectedPrimaryPage(page: ConsolePage): StudioLayoutPage["id"] {
   if (CAPTURE_PAGES.has(page)) return "capture";
+  if (page === "control") return "params";
   if (page === "management" || page === "license") return "about";
   if (page === "onboarding") return "overview";
   return page as StudioLayoutPage["id"];
@@ -77,7 +85,7 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
   license: { group: "关于 NovaSight", title: "授权", description: "查看当前授权范围，或在安全停止并确认输出后更换授权。" },
   params: { group: "NovaSight", title: "算法参数", description: "让范围、目标和跟随手感适合你。" },
   fire: { group: "NovaSight", title: "开火稳定", description: "只在左键开火且已接近目标时，减轻画面上跳。" },
-  "control-test": { group: "设备管理", title: "控制测试", description: "脱离自动目标链路验证 kmNet 连接和受控移动输出。" },
+  "control-test": { group: "NovaSight", title: "鼠标协议", description: "选择鼠标输出的消费端，新增协议并测试连接。" },
   latency: { group: "设备管理", title: "性能", description: "定位采集到设备发送之间的阶段耗时和数据新鲜度问题。" },
   settings: { group: "NovaSight", title: "设置", description: "备份当前设置，或从已有备份安全恢复。" },
   about: { group: "NovaSight", title: "关于 NovaSight", description: "查看平台版本、能力边界、授权状态和支持入口。" },
@@ -86,19 +94,33 @@ export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
 export function StudioNavigation({
   activePage,
   onNavigate,
+  activeUtility = null,
   pages = DEFAULT_STUDIO_LAYOUT.pages,
 }: {
   activePage: ConsolePage;
   onNavigate: (page: ConsolePage) => void;
+  activeUtility?: ConsoleUtility | null;
   pages?: StudioLayoutPage[];
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const utilityRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const closeOutside = (event: MouseEvent) => { if (!utilityRef.current?.contains(event.target as Node)) setMenuOpen(false); };
+    const closeEscape = (event: KeyboardEvent) => { if (event.key === "Escape") { setMenuOpen(false); utilityRef.current?.querySelector<HTMLButtonElement>(".console-mobile-more")?.focus(); } };
+    document.addEventListener("mousedown", closeOutside);
+    document.addEventListener("keydown", closeEscape);
+    return () => { document.removeEventListener("mousedown", closeOutside); document.removeEventListener("keydown", closeEscape); };
+  }, [menuOpen]);
   const activeItemRef = useRef<HTMLButtonElement>(null);
   const selectedPage = selectedPrimaryPage(activePage);
+  const primaryPages = [...pages.filter((page) => !isConsoleUtility(page.id) && page.id !== "control-test"), ...pages.filter((page) => page.id === "control-test")];
+  const utilityPages = pages.filter((page) => isConsoleUtility(page.id));
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function" || !window.matchMedia("(max-width: 1024px)").matches) return;
     const item = activeItemRef.current;
-    const scroller = item?.closest(".console-sidebar");
+    const scroller = item?.closest(".console-primary-navigation");
     if (!item || !(scroller instanceof HTMLElement)) return;
     const itemRect = item.getBoundingClientRect();
     const scrollerRect = scroller.getBoundingClientRect();
@@ -108,8 +130,8 @@ export function StudioNavigation({
   return (
     <nav className="console-navigation" aria-label="NovaSight Studio 导航">
       <div className="studio-nav-caption" aria-hidden="true"><span>MY STUDIO</span><span>✦</span></div>
-      <div className="console-primary-navigation">
-        {pages.map((configuredPage, index) => {
+      <div className="console-primary-navigation" role="group" aria-label="业务页面">
+        {primaryPages.map((configuredPage, index) => {
           const item: NavigationItem = {
             id: configuredPage.id,
             label: configuredPage.label,
@@ -134,6 +156,17 @@ export function StudioNavigation({
             </button>
           );
         })}
+      </div>
+      <div className="console-utility-navigation" role="group" aria-label="应用菜单" ref={utilityRef} data-open={menuOpen}>
+        <button type="button" className="console-mobile-more" aria-expanded={menuOpen} aria-controls="studio-utility-links" onClick={() => setMenuOpen(!menuOpen)}>更多</button>
+        <div id="studio-utility-links" className="console-utility-links">
+        {utilityPages.map((item) => <button type="button" key={item.id} data-page={item.id}
+          className="console-nav" aria-label={item.label} aria-haspopup="dialog" aria-expanded={activeUtility === item.id}
+          title={navigationDetails[item.id].detail} onClick={() => { if (typeof window.matchMedia === "function" && window.matchMedia("(max-width: 1024px)").matches) utilityRef.current?.querySelector<HTMLButtonElement>(".console-mobile-more")?.focus(); setMenuOpen(false); onNavigate(item.id); }}>
+          <span className="console-nav-icon" aria-hidden="true"><NovaIcon name={navigationDetails[item.id].icon} size={19} /></span>
+          <span className="console-nav-copy"><b>{item.label}</b></span>
+        </button>)}
+        </div>
       </div>
       <button className="studio-guide-card" type="button" onClick={() => onNavigate("onboarding")}>
         <img src={chibiArt} width="52" height="58" alt="" loading="lazy" />

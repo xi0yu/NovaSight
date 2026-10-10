@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RuntimeState } from "../../api";
-import { isDaemonConfirmedSafe, projectRuntimeState } from "./runtimeProjection";
+import { isDaemonConfirmedStopped, projectRuntimeState } from "./runtimeProjection";
 
 function runtime(overrides: {
   phase?: RuntimeState["semantic"]["phase"];
@@ -67,11 +67,11 @@ function runtime(overrides: {
 
 describe("runtime projection", () => {
   it("only calls the strict stopped tuple daemon-confirmed safe", () => {
-    expect(isDaemonConfirmedSafe(runtime())).toBe(true);
-    expect(isDaemonConfirmedSafe(runtime({ outputCode: "ready" }))).toBe(false);
-    expect(isDaemonConfirmedSafe(runtime({ runtimeConnected: true }))).toBe(false);
-    expect(isDaemonConfirmedSafe(runtime({ willEmit: true }))).toBe(false);
-    expect(isDaemonConfirmedSafe(runtime({ phase: "stopping" }))).toBe(false);
+    expect(isDaemonConfirmedStopped(runtime())).toBe(true);
+    expect(isDaemonConfirmedStopped(runtime({ outputCode: "ready" }))).toBe(false);
+    expect(isDaemonConfirmedStopped(runtime({ runtimeConnected: true }))).toBe(false);
+    expect(isDaemonConfirmedStopped(runtime({ willEmit: true }))).toBe(false);
+    expect(isDaemonConfirmedStopped(runtime({ phase: "stopping" }))).toBe(false);
   });
 
   it("never reports safe when transport evidence is stale", () => {
@@ -105,4 +105,14 @@ describe("runtime projection", () => {
     expect(projection?.nextAction).toBe("open-capture");
     expect(projection?.nextActionLabel).toBe("检查采集");
   });
+});
+
+ it.each(["running", "starting", "waiting_model", "stopping", "faulted"] as const)("does not turn silent output into a stopped receipt in %s", (phase) => {
+  const state = runtime({ phase });
+  state.presentation.output = { state: "safe", reason_code: "null_mouse_protocol", daemon_confirmed_safe: true };
+  expect(isDaemonConfirmedStopped(state)).toBe(false);
+  const projection = projectRuntimeState(state, "current");
+  expect(projection?.output.label).toBe("空协议 · 静默输出");
+  expect(projection?.output.detail).not.toContain("已停止");
+  expect(projection?.conclusion).not.toContain("系统已停止");
 });

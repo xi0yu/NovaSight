@@ -11,20 +11,12 @@ describe("getErrorMessage", () => {
   });
 });
 
-describe("formatRuntimeErrorMessage", () => {
-  it("explains the host-preview perception adapter boundary in Chinese", () => {
-    expect(formatRuntimeErrorMessage(
-      "no perception adapter is installed for this daemon mode",
-    )).toBe("当前为主机预览模式，未启用 Jetson 感知适配器；可继续查看界面，真机运行请在 Jetson 上启动 NovaSight。");
-  });
-
-  it("turns the uncommissioned pointer error into an actionable Chinese message", () => {
-    expect(formatRuntimeErrorMessage(
-      "pointer device is not commissioned; configure hardware.auto_connect with a provisioned host and UUID",
-    )).toBe("kmNet 尚未完成设备配置；请填写真实的地址、端口和 UUID 后保存。");
-  });
-
-  it("preserves unknown runtime messages for diagnostics", () => {
-    expect(formatRuntimeErrorMessage("future runtime failure")).toBe("future runtime failure");
+describe("runtime failure guidance", () => {
+  it.each([
+    ["no perception adapter is installed for this daemon mode", "当前为主机预览模式，未启用 Jetson 感知适配器；可继续查看界面，真机运行请在 Jetson 上启动 NovaSight。"],
+    ["pointer device is not commissioned; configure hardware.auto_connect with a provisioned host and UUID", "kmNet 尚未完成设备配置；请填写真实的地址、端口和 UUID 后保存。"],
+    ["future runtime failure", "future runtime failure"],
+  ])("explains %s while preserving unknown diagnostic messages", (message, expected) => {
+    expect(formatRuntimeErrorMessage(message)).toBe(expected);
   });
 });

@@ -15,6 +15,12 @@ it("lets users inspect draft gain, time normalization and zero/signed demand wit
   expect(screen.getByLabelText("试算输出").textContent).toBe("0.00");
   expect(responseIllustration(0.2, 0, 0, 0, 60, -100).demand).toBeLessThan(0);
   expect(responseIllustration(0.2, 0, 60, 0, 60, 100).demand).toBe(0);
+  rerender(<ResponseExperiment kp={0.2} rampMs={400} referenceHz={0} delayMs={200} />);
+  const elapsed = screen.getByLabelText("试算入场时间");
+  fireEvent.change(elapsed, { target: { value: "199" } });
+  expect(screen.getByLabelText("试算输出")).toHaveTextContent("0.00");
+  fireEvent.change(elapsed, { target: { value: "400" } });
+  expect(screen.getByRole("img", { name: /等待 200 ms，渐增 400 ms，当前达到设定 Kp 的 50%/ })).toBeVisible();
 });
 
 const sample = {

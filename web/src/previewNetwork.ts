@@ -8,10 +8,17 @@ window.fetch = async (input, init) => {
   const reads: Record<string, unknown> = {
     "/healthz": { ok: true },
     "/api/activity": { events: [] },
+    "/api/capture/devices": { devices: ["/dev/preview0"] },
     "/api/auth/session": { authenticated: false, principal: null, role: null, permissions: [], csrf_token: null, expires_at: null, session_lifetime_seconds: 3600 },
     "/api/models/catalog": { root: { type: "directory", name: "models", relative_path: "", children: [] }, directory_count: 1, model_count: 0, discovered_files: 0, updated_files: 0, cache_hits: 0, force: false },
   };
-  const body = method === "GET" ? reads[url.pathname] : undefined;
+  let body = method === "GET" ? reads[url.pathname] : undefined;
+  if (method === "POST" && url.pathname === "/api/capture/capabilities") {
+    try {
+      const device = JSON.parse(String(init?.body ?? "{}")).device;
+      body = { device, available: device === "/dev/preview0", reason: device === "/dev/preview0" ? "模拟设备，仅用于预览" : "预览中只有 /dev/preview0 可用", capabilities: device === "/dev/preview0" ? [{ pixel_format: "MJPG", width: 1920, height: 1080, fps_list: [120, 60] }] : [] };
+    } catch { /* Invalid preview requests remain rejected below. */ }
+  }
   return new Response(JSON.stringify(body ?? { code: "PREVIEW_ONLY", message: "这是界面预览，未连接设备；此操作不会写入配置或控制硬件。" }), {
     status: body === undefined ? 503 : 200,
     headers: { "content-type": "application/json" },

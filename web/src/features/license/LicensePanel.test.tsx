@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { LicenseStatus } from "../../api";
-import { LicenseView } from "./LicenseView";
 import { LicensePanel } from "./LicensePanel";
 
 const { clearLicenseKeyMock } = vi.hoisted(() => ({
@@ -57,11 +56,46 @@ const clearedLicense: LicenseStatus = {
 function LicenseTransitionHarness() {
   const [license, setLicense] = useState(activeLicense);
   return license.valid
-    ? <LicenseView license={license} onLicenseChange={setLicense} />
+    ? <LicensePanel license={license} onLicenseChange={setLicense} />
     : <div role="status">等待重新授权</div>;
 }
 
-describe("LicenseView", () => {
+describe("LicensePanel", () => {
+  it("shows the machine model and locks at the expiry deadline only once", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-09T00:00:00Z"));
+    const changed = vi.fn();
+    const license = { ...activeLicense, device_model: "Mac16,11", expires_at: Date.now() / 1000 + 2 };
+    const view = render(<LicensePanel license={license} onLicenseChange={changed} />);
+    try {
+      expect(screen.getByText("Mac16,11")).toBeVisible();
+      expect(screen.getByText("倒计时 00:00:02")).toBeVisible();
+      act(() => vi.advanceTimersByTime(2000));
+      expect(screen.getByText("已到期 · 操作已锁定")).toBeVisible();
+      expect(changed).toHaveBeenCalledWith(expect.objectContaining({ valid: false, expires_at: license.expires_at }));
+      act(() => vi.advanceTimersByTime(2000));
+      expect(changed).toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+  it.each([
+    { credential_format: "ephemeral_code", tier: "temporary", category: "测试" },
+    { credential_format: "jwt_rs256", tier: "pro", category: "正式" },
+    { credential_format: "legacy_ns1", tier: "premium", category: "正式" },
+    { credential_format: "legacy_document", tier: "pro", category: "待核实" },
+  ])("shows license metadata rather than a tier title for $credential_format", ({ credential_format, tier, category }) => {
+    render(<LicensePanel license={{ ...activeLicense, credential_format, tier, device_model: "Mac16,11" }} onLicenseChange={vi.fn()} />);
+    const metadata = within(screen.getByLabelText("设备授权状态"));
+    expect(metadata.getByText("设备模型 ID")).toBeVisible();
+    expect(metadata.getByText("Mac16,11")).toBeVisible();
+    expect(metadata.getByText("到期时间")).toBeVisible();
+    expect(metadata.getByText("授权类别")).toBeVisible();
+    expect(metadata.getByText(category)).toBeVisible();
+    expect(screen.queryByText("临时测试授权")).not.toBeInTheDocument();
+    expect(screen.queryByText("专业版")).not.toBeInTheDocument();
+  });
   it("removes a stale authorization error while the operator corrects the code", async () => {
     render(<LicensePanel license={activeLicense} onLicenseChange={vi.fn()} />);
     await userEvent.click(screen.getByText("更换授权码"));
@@ -75,7 +109,7 @@ describe("LicenseView", () => {
     const user = userEvent.setup();
     render(<LicenseTransitionHarness />);
 
-    expect(screen.getByLabelText("当前授权")).toBeInTheDocument();
+    expect(screen.getByLabelText("设备授权状态")).toBeInTheDocument();
     expect(screen.getByText("更换授权码")).toBeInTheDocument();
     expect(screen.getByText("查看授权范围与有效期")).toBeInTheDocument();
     expect(screen.getByText("开发者诊断与凭证追踪码")).not.toBeVisible();

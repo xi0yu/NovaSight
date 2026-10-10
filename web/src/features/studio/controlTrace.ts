@@ -78,6 +78,7 @@ export type BuildControlTraceInput = {
   triggerActive: boolean | null;
   noSendReason: string;
   kmnetRuntimeConnected: boolean;
+  nullMouseProtocol?: boolean;
   kmnetConnectionLabel: string;
   deviceLastError: string;
   outputTrace: RuntimeOutputTraceState | null;
@@ -109,6 +110,7 @@ const OUTPUT_TRACE_LABELS: Record<string, string> = {
   ENTRY_RAMP_PENDING: "入场渐升起点",
   DEAD_ZONE: "目标位于死区",
   DEMAND_OUT_OF_RANGE: "控制需求越界",
+  null_mouse_protocol: "空协议静默消费输出",
   ready: "输出链路已贯通"
 };
 
@@ -275,7 +277,7 @@ function buildLimiterStep(input: BuildControlTraceInput): ControlTraceStep {
       evidence: limitEvidence
     };
   }
-  if ((input.hardwareTriggerRequired && input.triggerActive !== true) || !input.kmnetRuntimeConnected) {
+  if ((input.hardwareTriggerRequired && input.triggerActive !== true) || (!input.nullMouseProtocol && !input.kmnetRuntimeConnected)) {
     return {
       id: "limiter",
       label: "固定 X/Y 限幅",
@@ -373,6 +375,9 @@ function buildControllerStep(input: BuildControlTraceInput): ControlTraceStep {
 }
 
 function buildOutputStep(input: BuildControlTraceInput): ControlTraceStep {
+  if (input.nullMouseProtocol) {
+    return { id: "output", label: "鼠标协议", state: input.outputEnabled ? "ready" : "idle", value: "空", detail: "空协议静默消费鼠标指令，不向物理设备发送输出。", evidence: input.outputEnabled ? "输出接口：静默消费" : "输出门已关闭" };
+  }
   if (!input.outputEnabled) {
     return {
       id: "output",

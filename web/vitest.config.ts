@@ -9,6 +9,7 @@ export default defineConfig({
       }
     },
     include: ["src/**/*.test.{ts,tsx,mjs}"],
+    exclude: ["src/**/*.integration.test.{ts,tsx,mjs}"],
     setupFiles: ["./src/test/setup.ts"],
     restoreMocks: true,
     clearMocks: true,

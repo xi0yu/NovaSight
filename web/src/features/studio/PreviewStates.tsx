@@ -88,7 +88,7 @@ function StateExample({ name }: { name: string }) {
     <header><span>组件状态预览</span><h1>{examples.find(([id]) => id === name)?.[1]}</h1><p>{examples.find(([id]) => id === name)?.[2]}</p></header>
     {notice ? <p className="preview-local-notice" role="status">{notice}</p> : null}
     {!open ? <button className="console-button" onClick={() => setOpen(true)}>重新打开组件</button> : null}
-    {content}<ToastHost />
+    {content}
   </main>;
 }
 
@@ -106,5 +106,6 @@ export function PreviewStates() {
       }}>{examples.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
     </aside>
     <StateExample key={name} name={name} />
+    <ToastHost />
   </div>;
 }

@@ -27,14 +27,14 @@ import {
   statusWebSocketUrl,
 } from "./api";
 import { ToastHost } from "./components/ToastHost";
-import { AuthGate } from "./features/auth/AuthGate";
+import { AuthGate, useWorkspaceAuthorization } from "./features/auth/AuthGate";
 import { reportError } from "./lib/toast";
 import {
   clearWebSocketFailure,
   reportWebSocketFailure,
   reportWebSocketRecovered
 } from "./lib/errorGuards";
-import { LicenseGate } from "./features/license/LicenseView";
+import { LicenseGate } from "./features/license/LicenseGate";
 import {
   describeLicenseConnectionIssue,
   type LicenseConnectionIssue
@@ -227,8 +227,10 @@ export default function App() {
 }
 
 function StudioApp() {
+  const authorized = useWorkspaceAuthorization();
   const [state, setState] = useState<LoadState>(initialState);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
+  const runtimeSessionActive = authorized && license?.valid === true;
   const [realtimeStatus, setRealtimeStatus] = useState<RuntimeDeliveryStatus>("disconnected");
   const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
   const [networkOnline, setNetworkOnline] = useState(() => navigator.onLine);
@@ -382,6 +384,16 @@ function StudioApp() {
       clearWebSocketFailure("status");
     }
   }, []);
+
+  useEffect(() => {
+    if (!license?.valid || license.expires_at === null) return;
+    const deadline = license.expires_at * 1000;
+    const timer = window.setTimeout(() => {
+      if (Date.now() >= deadline) handleLicenseChange({ ...license, valid: false, message: "授权已到期，请重新授权。" });
+      void loadLicense();
+    }, Math.min(2147483647, Math.max(0, deadline - Date.now())));
+    return () => window.clearTimeout(timer);
+  }, [license, handleLicenseChange, loadLicense]);
 
   const loadProjects = useCallback(async (force = false): Promise<ModelProject[]> => {
     if (!force && projectsLoadedRef.current) {
@@ -547,15 +559,16 @@ function StudioApp() {
   }, []);
 
   useEffect(() => {
-    void loadLicense();
-  }, [loadLicense]);
+    if (authorized) void loadLicense();
+    else { runtimeFallbackAbortRef.current?.abort(); healthRefreshAbortRef.current?.abort(); }
+  }, [authorized, loadLicense]);
 
   useEffect(() => {
-    if (license?.valid && networkOnline && pageVisible && !initialLoadStartedRef.current) {
+    if (runtimeSessionActive && networkOnline && pageVisible && !initialLoadStartedRef.current) {
       initialLoadStartedRef.current = true;
       void load();
     }
-  }, [license?.valid, load, networkOnline, pageVisible]);
+  }, [runtimeSessionActive, load, networkOnline, pageVisible]);
 
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -565,7 +578,7 @@ function StudioApp() {
         runtimeFallbackAbortRef.current?.abort();
         healthRefreshAbortRef.current?.abort();
       }
-      if (visible && license?.valid && initialLoadStartedRef.current) {
+      if (visible && runtimeSessionActive && initialLoadStartedRef.current) {
         void refreshRuntime();
         void refreshHealth();
       }
@@ -573,12 +586,12 @@ function StudioApp() {
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [license?.valid, refreshHealth, refreshRuntime]);
+  }, [runtimeSessionActive, refreshHealth, refreshRuntime]);
 
   useEffect(() => {
     const handleOnline = () => {
       setNetworkOnline(true);
-      if (pageVisible && license?.valid && initialLoadStartedRef.current) {
+      if (pageVisible && runtimeSessionActive && initialLoadStartedRef.current) {
         void refreshRuntime();
         void refreshHealth();
       }
@@ -600,10 +613,10 @@ function StudioApp() {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
-  }, [license?.valid, pageVisible, refreshHealth, refreshRuntime]);
+  }, [runtimeSessionActive, pageVisible, refreshHealth, refreshRuntime]);
 
   useEffect(() => {
-    if (!license?.valid || !pageVisible) {
+    if (!runtimeSessionActive || !pageVisible) {
       setRealtimeStatus("paused");
       clearWebSocketFailure("status");
       return undefined;
@@ -763,7 +776,7 @@ function StudioApp() {
       }
       socket?.close(1000, "client suspended");
     };
-  }, [applyRuntimeFrame, applyRuntimeHeartbeat, applyRuntimeState, license?.valid, loadLicense, networkOnline, pageVisible, refreshHealth, refreshRuntime]);
+  }, [applyRuntimeFrame, applyRuntimeHeartbeat, applyRuntimeState, runtimeSessionActive, loadLicense, networkOnline, pageVisible, refreshHealth, refreshRuntime]);
 
   const realtimeConnected = realtimeStatus === "connected";
   const stableRealtimeStatus = useStableSemanticValue(realtimeStatus, realtimeStatus, 280);
@@ -772,7 +785,7 @@ function StudioApp() {
     : stableRealtimeStatus;
 
   useEffect(() => {
-    if (!license?.valid || !networkOnline || !pageVisible || realtimeConnected) {
+    if (!runtimeSessionActive || !networkOnline || !pageVisible || realtimeConnected) {
       return undefined;
     }
 
@@ -781,10 +794,10 @@ function StudioApp() {
     }, RUNTIME_FALLBACK_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [license?.valid, networkOnline, pageVisible, realtimeConnected, refreshRuntime]);
+  }, [runtimeSessionActive, networkOnline, pageVisible, realtimeConnected, refreshRuntime]);
 
   useEffect(() => {
-    if (!license?.valid || !networkOnline || !pageVisible || realtimeConnected) {
+    if (!runtimeSessionActive || !networkOnline || !pageVisible || realtimeConnected) {
       return undefined;
     }
 
@@ -793,7 +806,7 @@ function StudioApp() {
     }, HEALTH_FALLBACK_INTERVAL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [license?.valid, networkOnline, pageVisible, realtimeConnected, refreshHealth]);
+  }, [runtimeSessionActive, networkOnline, pageVisible, realtimeConnected, refreshHealth]);
 
   if (!license?.valid) {
     return (

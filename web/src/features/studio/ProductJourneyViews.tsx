@@ -2,6 +2,7 @@ import type { LicenseStatus, RuntimeState } from "../../api";
 import { NovaIcon, type NovaIconName } from "../../components/visual";
 import { version as studioVersion } from "../../../package.json";
 import type { RuntimeProjection } from "../runtime/runtimeProjection";
+import { formatLicenseCategory } from "../license/format";
 import type { ConsolePage } from "./StudioNavigation";
 import type { ReactNode } from "react";
 import companionArt from "../../assets/themes/nova-companion.webp";
@@ -91,7 +92,7 @@ export function HomeShortcuts({ onNavigate }: { onNavigate: Navigate }) {
   </nav>;
 }
 
-export function OnboardingView({ state, statusKnown, onNavigate }: { state: SetupState; statusKnown: boolean; onNavigate: Navigate }) {
+export function OnboardingView({ state, statusKnown, onNavigate, outputLabel = "待核实" }: { state: SetupState; statusKnown: boolean; onNavigate: Navigate; outputLabel?: string }) {
   const completed = completedSetupSteps(state);
   const steps: Array<{
     label: string;
@@ -103,7 +104,7 @@ export function OnboardingView({ state, statusKnown, onNavigate }: { state: Setu
   }> = [
     { label: "连接画面", detail: "选择摄像头和实际支持的画面规格。", complete: state.captureReady, page: "capture", action: "设置画面", icon: "capture" },
     { label: "选择模型", detail: "检查模型资格并部署到当前设备。", complete: state.modelReady, page: "models", action: "选择模型", icon: "models" },
-    { label: "确认参数", detail: "检查搜索范围、目标瞄点、触发延迟和跟随力度。", complete: state.configReady, page: "params", action: "检查参数", icon: "settings" },
+    { label: "参数已同步", detail: "完成状态代表保存参数与运行配置一致；你仍可检查范围、瞄点和跟随力度。", complete: state.configReady, page: "params", action: "检查参数", icon: "settings" },
     { label: "开始运行", detail: "回到首页核对状态，再由你明确启动。", complete: state.runtimeReady, page: "overview", action: "前往首页", icon: "start" },
   ];
   const next = steps.find((step) => !step.complete) ?? steps[SETUP_STEP_COUNT - 1]!;
@@ -122,6 +123,7 @@ export function OnboardingView({ state, statusKnown, onNavigate }: { state: Setu
         </div>
       </header>
 
+      <div className="onboarding-output"><div><b>当前输出：{statusKnown ? outputLabel : "待核实"}</b><p>空协议不会发送物理鼠标指令，可用于检查画面与识别；需要硬件输出时再选择鼠标协议。</p></div><button type="button" className="console-button" onClick={() => onNavigate("control-test")}>选择鼠标协议</button></div>
       <ol className="onboarding-steps">
         {steps.map((step, index) => (
           <li className={!statusKnown ? "pending" : step.complete ? "complete" : step === next ? "current" : "pending"} key={step.label}>
@@ -226,9 +228,9 @@ export function DeviceStatusView({
         </article>
         <article>
           <span aria-hidden="true"><NovaIcon name="device-send" size={19} /></span>
-          <div><h3>设备输出</h3><p>{!verified ? "kmNet 连接状态待核实" : kmnet?.runtime_connected ? "kmNet 实时会话已连接" : "kmNet 未连接或等待主链"}</p></div>
+          <div><h3>设备输出</h3><p>{!verified ? "鼠标协议状态待核实" : runtime?.executor.selected === "null" ? "空协议已启用 · 静默消费，不连接物理设备" : kmnet?.runtime_connected ? "kmNet 实时会话已连接" : "kmNet 未连接或等待主链"}</p></div>
           <strong>{projection?.output.label ?? "等待核实"}</strong>
-          <button onClick={() => onNavigate("params")} type="button">查看</button>
+          <button onClick={() => onNavigate("control-test")} type="button">查看协议</button>
         </article>
         <article>
           <span aria-hidden="true"><NovaIcon name="settings" size={19} /></span>
@@ -270,7 +272,7 @@ export function ManagementView({
     { label: "设备", value: deviceLabel || (runtimeAvailable ? "尚未配置" : "待核实"), detail: runtimeAvailable ? "当前状态可读取" : "等待服务状态", page: "device", icon: "devices" },
     { label: "模型", value: projectCount > 0 || runtimeAvailable ? `${projectCount} 个项目` : "项目待核实", detail: !runtimeAvailable ? "等待服务状态" : setupState.modelReady ? "已有部署模型" : "尚未部署模型", page: "models", icon: "models" },
     { label: "活动", value: errorCount > 0 ? `${errorCount} 条需要注意` : "暂无故障记录", detail: "操作结果与故障历史", page: "activity", icon: "notification" },
-    { label: "授权", value: license?.valid ? license.tier || "已授权" : license ? "需要授权" : "授权待核实", detail: license?.valid ? "当前权限有效" : license ? "当前权限不可用" : "等待授权信息", page: "license", icon: "shield-check" },
+    { label: "授权", value: license?.valid ? formatLicenseCategory(license) : license ? "需要授权" : "授权待核实", detail: license?.valid ? "当前权限有效" : license ? "当前权限不可用" : "等待授权信息", page: "license", icon: "shield-check" },
   ];
   return (
     <section className="product-journey management-view" aria-labelledby="management-title">
@@ -308,12 +310,14 @@ export function ManagementView({
 
 export function AboutView({
   license,
+  licenseContent,
   serviceConnected,
   layoutRevision,
   modules,
   onNavigate,
 }: {
   license: LicenseStatus | null;
+  licenseContent?: ReactNode;
   serviceConnected: boolean;
   layoutRevision: string;
   modules: readonly string[];
@@ -335,11 +339,14 @@ export function AboutView({
       </header>
     ),
     version: (
+      <>
       <dl className="about-facts" aria-label="版本与配置信息">
         <div><dt>Studio 版本</dt><dd>{studioVersion}</dd></div>
         <div><dt>页面配置</dt><dd>{layoutRevision}</dd></div>
-        <div><dt>授权</dt><dd>{license?.valid ? license.tier || "已授权" : license ? "未激活" : "待核实"}</dd></div>
+        <div><dt>授权状态</dt><dd>{license?.valid ? "已激活" : license ? "未激活" : "待核实"}</dd></div>
       </dl>
+      {licenseContent ? <section className="about-license" aria-label="授权与设备"><h3>授权与设备</h3>{licenseContent}</section> : null}
+      </>
     ),
     capabilities: (
       <section className="about-capabilities" aria-labelledby="about-capabilities-title">
@@ -358,7 +365,6 @@ export function AboutView({
     ),
     support: (
       <footer className="about-actions">
-        <button className="console-button" onClick={() => onNavigate("license")} type="button">查看授权</button>
         <button className="console-button primary" onClick={() => onNavigate("activity")} type="button">打开实时日志</button>
         <a className="console-button" href="/third-party-ui.txt" target="_blank" rel="noreferrer">界面组件许可</a>
       </footer>
@@ -366,6 +372,7 @@ export function AboutView({
   };
   return (
     <section className="product-journey about-view" aria-labelledby="about-product-title">
+      {licenseContent && !modules.includes("version") ? <section className="about-license" aria-label="授权与设备"><h3>授权与设备</h3>{licenseContent}</section> : null}
       {modules.map((moduleId) => moduleViews[moduleId] ? <div data-module={moduleId} key={moduleId}>{moduleViews[moduleId]}</div> : null)}
     </section>
   );

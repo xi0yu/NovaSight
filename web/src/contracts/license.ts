@@ -9,6 +9,7 @@ export type LicenseFeature =
   | "config_write";
 
 export interface LicenseStatus {
+  device_model?: string;
   configured: boolean;
   valid: boolean;
   temporary_access_supported: boolean;
@@ -92,6 +93,7 @@ function decodeLicenseStatusAt(value: unknown, path: string): LicenseStatus {
     return feature as LicenseFeature;
   });
   return {
+    device_model: record.device_model === undefined ? undefined : expectString(record.device_model, `${path}.device_model`),
     configured: expectBoolean(record.configured, `${path}.configured`),
     valid: expectBoolean(record.valid, `${path}.valid`),
     temporary_access_supported: expectBoolean(

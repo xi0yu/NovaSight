@@ -21,7 +21,7 @@ export type Toast = {
 
 type Listener = () => void;
 
-const DEFAULT_DURATION_MS = 4500;
+export const TOAST_DURATION_MS = 3000;
 const MAX_TOASTS = 4;
 const MAX_ACTIVITY_NOTICES = 20;
 const DUPLICATE_WINDOW_MS = 1500;
@@ -141,7 +141,7 @@ function buildToast(input: {
   };
 }
 
-function pushToast(toast: Toast, popup = true): void {
+function pushToast(toast: Toast, popup: boolean | "feedback" = true): void {
   for (const [signature, createdAt] of lastToastAtBySignature) {
     if (toast.createdAt - createdAt > DUPLICATE_WINDOW_MS) {
       lastToastAtBySignature.delete(signature);
@@ -170,19 +170,17 @@ function pushToast(toast: Toast, popup = true): void {
     emitErrors();
   }
   // Quiet mode suppresses popups, never the diagnostic history above.
-  if (!popup || isQuietErrorsEnabled()) return;
+  if (!popup || (popup !== "feedback" && isQuietErrorsEnabled())) return;
   const previousCreatedAt = lastToastAtBySignature.get(signature);
-  if (previousCreatedAt !== undefined && toast.createdAt - previousCreatedAt <= DUPLICATE_WINDOW_MS) {
+  if (popup !== "feedback" && previousCreatedAt !== undefined && toast.createdAt - previousCreatedAt <= DUPLICATE_WINDOW_MS) {
     return;
   }
   lastToastAtBySignature.set(signature, toast.createdAt);
   const next = [...toasts, toast].slice(-MAX_TOASTS);
   setToasts(next);
-  if (toast.tone !== "info" || toast.title !== "请求已取消") {
-    window.setTimeout(() => {
-      dismiss(toast.id);
-    }, DEFAULT_DURATION_MS);
-  }
+  window.setTimeout(() => {
+    dismiss(toast.id);
+  }, TOAST_DURATION_MS);
 }
 
 export function pushToastRaw(toast: Omit<Toast, "id" | "count" | "firstSeenAt" | "createdAt">, popup = true): void {
@@ -194,10 +192,11 @@ export function reportError(
   options: {
     source: string;
     title?: string;
+    tone?: "error";
     fallback?: string;
     publicDetail?: string;
     exposeStatus?: boolean;
-    popup?: boolean;
+    popup?: boolean | "feedback";
   }
 ): void {
   const normalized = normalizeError(error, {
@@ -215,7 +214,7 @@ export function reportError(
   });
   pushToast(
     buildToast({
-      tone: normalized.severity,
+      tone: options.tone ?? normalized.severity,
       title: options.title ?? errorTitleForSource(options.source),
       detail: options.publicDetail ?? normalized.message,
       technicalDetail: error instanceof ApiError
@@ -252,8 +251,8 @@ export function reportInfo(title: string, detail?: string, source = "system"): v
   );
 }
 
-export function reportSuccess(title: string, detail?: string, source = "system"): void {
+export function reportSuccess(title: string, detail?: string, source = "system", popup: boolean | "feedback" = true): void {
   pushToast(
-    buildToast({ tone: "success", title, detail, source, status: null })
+    buildToast({ tone: "success", title, detail, source, status: null }), popup
   );
 }

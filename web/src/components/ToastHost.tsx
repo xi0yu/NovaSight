@@ -1,4 +1,6 @@
-import { useToasts, useDismissToast } from "../lib/toast";
+import { useEffect, useState } from "react";
+import { TOAST_DURATION_MS, useToasts, useDismissToast } from "../lib/toast";
+import { NovaIcon } from "./visual";
 
 const TONE_TITLE: Record<"info" | "warn" | "error" | "success", string> = {
   info: "提示",
@@ -7,9 +9,21 @@ const TONE_TITLE: Record<"info" | "warn" | "error" | "success", string> = {
   success: "已完成"
 };
 
+function ToastTimer({ createdAt }: { createdAt: number }) {
+  const [mountedAt] = useState(Date.now);
+  return <span className="toast-card-timer" aria-hidden="true"><span style={{ animationDuration: `${TOAST_DURATION_MS}ms`, animationDelay: `${Math.min(0, createdAt - mountedAt)}ms` }} /></span>;
+}
+
 export function ToastHost() {
   const toasts = useToasts();
   const dismiss = useDismissToast();
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (toasts.length === 0) return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(interval);
+  }, [toasts.length]);
 
   if (toasts.length === 0) {
     return null;
@@ -26,9 +40,11 @@ export function ToastHost() {
             data-status={toast.status ?? ""}
           >
             <div className="toast-card-head">
+              <NovaIcon name={toast.tone === "success" ? "check-circle" : toast.tone === "error" ? "triangle-alert" : "notification"} size={20} aria-hidden="true" />
               <span className="toast-card-tag" aria-hidden="true">
                 {TONE_TITLE[toast.tone]}
               </span>
+              <span className="toast-card-countdown" aria-hidden="true">{Math.max(0, Math.min(TOAST_DURATION_MS / 1000, Math.ceil((toast.createdAt + TOAST_DURATION_MS - now) / 1000)))} 秒后关闭</span>
               <button
                 type="button"
                 className="toast-card-close"
@@ -40,6 +56,7 @@ export function ToastHost() {
             </div>
             <p className="toast-card-title">{toast.title}</p>
             {toast.detail ? <p className="toast-card-detail">{toast.detail}</p> : null}
+            <ToastTimer createdAt={toast.createdAt} />
             {toast.requestId ? <details className="toast-card-request-id"><summary>排查信息</summary><span>来源：{toast.source}<br />编号：{toast.requestId}</span></details> : null}
           </article>
         ))}

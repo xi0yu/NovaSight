@@ -1,6 +1,8 @@
 import {
   type FormEvent,
   type ReactNode,
+  createContext,
+  useContext,
   useCallback,
   useEffect,
   useState
@@ -28,12 +30,16 @@ type AuthGateProps = {
 type GatewayState = "checking" | "reachable" | "unreachable";
 type DaemonState = "checking" | "reachable" | "unreachable";
 
+const WorkspaceAuthorization = createContext(true);
+export const useWorkspaceAuthorization = () => useContext(WorkspaceAuthorization);
+
 function sessionExpired(session: AuthSession): boolean {
   return session.expires_at !== null && session.expires_at * 1000 <= Date.now();
 }
 
 export function AuthGate({ children }: AuthGateProps) {
   const [session, setSession] = useState<AuthSession | null>(null);
+  const [workspaceOpened, setWorkspaceOpened] = useState(false);
   const [gatewayState, setGatewayState] = useState<GatewayState>("checking");
   const [daemonState, setDaemonState] = useState<DaemonState>("checking");
   const [accessCode, setAccessCode] = useState("");
@@ -53,6 +59,7 @@ export function AuthGate({ children }: AuthGateProps) {
 
   const applySession = useCallback((next: AuthSession, unauthenticatedIssue = "") => {
     if (next.authenticated && !sessionExpired(next)) {
+      setWorkspaceOpened(true);
       setSession(next);
       setIssue("");
       void verifyDaemon();
@@ -161,6 +168,7 @@ export function AuthGate({ children }: AuthGateProps) {
     setSubmitting(true);
     void logoutAuthSession()
       .then(() => {
+        setWorkspaceOpened(false);
         setSession(null);
         setDaemonState("checking");
         setIssue("");
@@ -172,16 +180,8 @@ export function AuthGate({ children }: AuthGateProps) {
       .finally(() => setSubmitting(false));
   };
 
-  if (session?.authenticated) {
-    return (
-      <div className="authenticated-workspace">
-        <SessionBar session={session} daemonState={daemonState} issue={issue} loggingOut={submitting} onLogout={logout} />
-        {children}
-      </div>
-    );
-  }
-
-  return (
+  const authenticated = session?.authenticated === true;
+  const login = authenticated ? null : (
     <main className="auth-shell welcome-shell">
       <section className="welcome-story" aria-labelledby="welcome-title">
         <img className="welcome-character" src={daylightArt} width="1536" height="1024" alt="" aria-hidden="true" />
@@ -260,6 +260,13 @@ export function AuthGate({ children }: AuthGateProps) {
       </section>
     </main>
   );
+  return <WorkspaceAuthorization.Provider value={authenticated}>
+    {workspaceOpened ? <div className="authenticated-workspace" hidden={!authenticated}>
+      {authenticated ? <SessionBar session={session!} daemonState={daemonState} issue={issue} loggingOut={submitting} onLogout={logout} /> : null}
+      {children}
+    </div> : null}
+    {login}
+  </WorkspaceAuthorization.Provider>;
 }
 
 function SessionBar({

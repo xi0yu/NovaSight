@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState, type
 
 import type { RuntimeState } from "../../api";
 import { NovaIcon } from "../../components/visual";
-import { isDaemonConfirmedSafe } from "./runtimeProjection";
+import { isDaemonConfirmedStopped } from "./runtimeProjection";
 
 import "./safety-operation.css";
 
@@ -55,7 +55,7 @@ export function SafetyOperationProvider({ children }: { children: ReactNode }) {
     if (current.phase === "idle" || current.phase === "confirmed") {
       return "idle";
     }
-    if (!isDaemonConfirmedSafe(runtime)) {
+    if (!isDaemonConfirmedStopped(runtime)) {
       return "not_safe";
     }
     const sameDaemon = current.requestedDaemonId !== null
@@ -67,7 +67,7 @@ export function SafetyOperationProvider({ children }: { children: ReactNode }) {
         ...current,
         phase: "confirmed",
         confirmedSequence: runtime.semantic.snapshot_sequence,
-        message: "同一 novasightd 已用更新快照确认主链停止、kmNet 断开且不存在可发送输出。",
+        message: "同一 novasightd 已用更新快照确认主链已停止且物理输出安全。",
       });
       return "confirmed";
     }

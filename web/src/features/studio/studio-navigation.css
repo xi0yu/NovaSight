@@ -140,7 +140,8 @@
 }
 
 .console-navigation { display: flex; flex-direction: column; height: 100%; gap: 16px; }
-.console-primary-navigation { flex: 1; min-height: 300px; }
+.console-primary-navigation { flex: 1 0 auto; min-height: 0; }
+.console-utility-navigation { display: flex; flex-direction: column; gap: 9px; flex-shrink: 0; }
 
 .console-primary-navigation {
   display: flex;
@@ -186,7 +187,7 @@
 .console-nav-copy b { display: block; color: inherit; font-size: 13px; font-weight: 650; white-space: nowrap; }
 .console-nav-copy small { display: none; }
 .console-nav:hover { background: var(--bg-hover); color: var(--text-primary); }
-.console-nav[data-page="settings"] { margin-top: auto; }
+
 
 .console-sidebar .console-nav.active {
   border-color: transparent;
@@ -235,9 +236,9 @@
 .console-page-heading p { max-width: 680px; margin: 0; color: var(--text-tertiary); font-size: 11px; line-height: 1.45; }
 .console-page-action { align-self: center; }
 
-.console-main[data-page="about"] .console-page-header {
-  display: none;
-}
+
+.console-emergency-stop { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--status-error-border); border-radius: 8px; background: var(--status-error-bg); color: var(--status-error-fg); font: inherit; font-size: 12px; font-weight: 700; }
+.console-emergency-stop:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 
 .console-main[data-page="overview"] .console-page-header {
   position: absolute;
@@ -251,12 +252,6 @@
   white-space: nowrap;
 }
 
-.console-main[data-page="settings"] .console-page-header {
-  min-height: 32px;
-  margin-bottom: 8px;
-}
-.console-main[data-page="settings"] .console-page-heading h1 { font-size: 18px; }
-.console-main[data-page="settings"] .console-page-heading p { display: none; }
 
 .console-button { min-height: 40px; border-radius: var(--button-radius); }
 
@@ -347,7 +342,8 @@
     scrollbar-width: none;
   }
   .console-sidebar::-webkit-scrollbar { display: none; }
-  .console-navigation { display: block; }
+  .console-navigation { display: flex; flex-direction: row; align-items: center; gap: 12px; height: auto; width: max-content; }
+  .console-utility-navigation { flex-direction: row; gap: 9px; border-left: 1px solid var(--border-default); padding-left: 12px; }
   .console-primary-navigation {
     min-height: 0;
     min-width: 690px;
@@ -390,4 +386,18 @@
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
   .console-app { background: var(--bg-surface); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+.console-mobile-more { display: none; }
+.console-utility-links { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+@media (max-width: 1024px) {
+  .console-sidebar { overflow: visible; padding: 4px 8px; }
+  .console-navigation { width: 100%; gap: 8px; }
+  .console-primary-navigation { min-width: 0; flex: 1 1 0; overflow-x: auto; scrollbar-width: none; }
+  .console-primary-navigation::-webkit-scrollbar { display: none; }
+  .console-primary-navigation .console-nav { flex-shrink: 0; }
+  .console-utility-navigation { position: relative; flex: 0 0 auto; border: 0; padding: 0; }
+  .console-mobile-more { display: block; min-width: 52px; min-height: 44px; border: 1px solid var(--border-default); border-radius: 12px; background: var(--bg-surface); color: var(--text-primary); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; }
+  .console-mobile-more:focus-visible { outline: 2px solid var(--brand-primary); outline-offset: 2px; }
+  .console-utility-links { display: none; position: absolute; z-index: 200; top: calc(100% + 8px); right: 0; width: 152px; padding: 8px; border: 1px solid var(--border-default); border-radius: 14px; background: var(--bg-surface); box-shadow: var(--shadow-dialog); }
+  .console-utility-navigation[data-open="true"] .console-utility-links { display: flex; }
 }

@@ -7,7 +7,7 @@
 .preview-root .console-app { height: calc(100dvh - 48px); min-height: calc(100dvh - 48px); }
 .preview-root :is(.action-confirmation-layer, .model-manager-dialog-layer, .model-switch-dialog-layer, .error-center-layer, .class-config-dialog-layer) { top: 48px; }
 .preview-root .model-manager-dialog { max-height: calc(100dvh - 80px); }
-.preview-state-stage { max-width: 1120px; padding: 30px 24px; margin: auto; }
+.preview-state-stage { max-width: 1120px; padding: 30px 24px; margin: auto; height: calc(100dvh - 48px); overflow: auto; }
 .preview-state-stage > header { margin-bottom: 26px; }
 .preview-state-stage > header > span { color: var(--signal-info); font-size: 11px; }
 .preview-state-stage h1 { font-size: 21px; font-weight: 600; margin: 9px 0; }
@@ -23,3 +23,5 @@
   .preview-tools select { max-width: 205px; }
   .preview-state-stage { padding: 22px 14px; }
 }
+
+.preview-root .toast-host { top: calc(env(safe-area-inset-top, 0px) + 64px); }

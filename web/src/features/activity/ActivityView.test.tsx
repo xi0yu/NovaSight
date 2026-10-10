@@ -62,3 +62,21 @@ it("searches diagnostic IDs and preserves records after a synchronous clear fail
   await userEvent.click(screen.getByRole("button", { name: "重置筛选" }));
   expect(screen.getByText("保存失败")).toBeVisible();
 });
+
+it("pauses the viewed records while new events arrive and retains source filters on resume", async () => {
+  const items = [{ key: "one", title: "参数已保存", detail: "已应用", tone: "success" as const, tag: "参数" }, { key: "two", title: "模型已部署", detail: "已确认", tone: "info" as const, tag: "模型" }];
+  const props = { onClear: vi.fn(), onOpenDetails: vi.fn() };
+  const view = render(<ActivityView {...props} items={items} />);
+  await userEvent.selectOptions(screen.getByRole("combobox", { name: "日志来源" }), "参数");
+  expect(screen.queryByText("模型已部署")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "暂停查看" }));
+  view.rerender(<ActivityView {...props} items={[{ key: "new", title: "参数写入失败", detail: "等待重试", tone: "error", tag: "参数" }, ...items]} />);
+  expect(screen.queryByText("参数写入失败")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "恢复实时 · 1 条新记录" }));
+  expect(screen.getByText("参数写入失败")).toBeVisible();
+  expect(screen.getByRole("combobox", { name: "日志来源" })).toHaveValue("参数");
+  await userEvent.type(screen.getByRole("searchbox", { name: "搜索日志" }), "missing");
+  await userEvent.click(screen.getByRole("button", { name: "重置筛选" }));
+  expect(screen.getByRole("combobox", { name: "日志来源" })).toHaveValue("all");
+  expect(screen.getByText("模型已部署")).toBeVisible();
+});

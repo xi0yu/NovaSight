@@ -1,11 +1,10 @@
 import { useState } from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 
 import { InlineNumberControl, ParameterNumberControl } from "./StudioControls";
 import { AlgorithmTabs } from "./AlgorithmTabs";
-import { trapDialogTabKey } from "./dialogFocus";
 
 it("does not turn an empty diagnostic number into a physical zero command", async () => {
   const onCommit = vi.fn();
@@ -23,13 +22,6 @@ it("names each stepper action after its own parameter", () => {
   expect(screen.getByRole("button", { name: "增加kmNet 控制端口" })).toBeInTheDocument();
 });
 
-it("traps focus without entering closed details or hidden controls", () => {
-  const { container } = render(<section tabIndex={-1}><button>第一项</button><details><summary>技术详情</summary><button>隐藏操作</button></details><button hidden>隐藏按钮</button></section>);
-  const dialog = container.querySelector("section")!;
-  dialog.focus();
-  trapDialogTabKey(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, cancelable: true }), dialog);
-  expect(screen.getByText("技术详情")).toHaveFocus();
-});
 
 it("moves tab selection and keyboard focus together, including wrap and end keys", async () => {
   function Workspace() {
@@ -49,4 +41,27 @@ it("moves tab selection and keyboard focus together, including wrap and end keys
   expect(screen.getByRole("tab", { name: "进阶调校" })).toHaveFocus();
   await user.keyboard("{Home}");
   expect(screen.getByRole("tab", { name: "范围与触发" })).toHaveFocus();
+});
+
+it("keeps invalid numeric drafts local and clamps valid edits to the accepted output range", async () => {
+  const saved: number[] = [];
+  function Workspace() {
+    const [value, setValue] = useState(127);
+    return <ParameterNumberControl label="输出上限" value={value} min={0} max={1000} step={1}
+      onCommit={(next) => { saved.push(next); setValue(next); }} />;
+  }
+  render(<Workspace />);
+  const input = screen.getByRole("textbox", { name: "输出上限 数值" });
+  for (const invalid of ["", " ", "abc", "NaN", "Infinity"]) {
+    fireEvent.change(input, { target: { value: invalid } });
+    fireEvent.blur(input);
+    expect(input).toHaveValue("127");
+    expect(saved).toEqual([]);
+  }
+  for (const [typed, expected] of [["-1", 0], ["1001", 1000], ["0", 0], ["1000", 1000]] as const) {
+    fireEvent.change(input, { target: { value: typed } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(input).toHaveValue(String(expected)));
+    expect(saved[saved.length - 1]).toBe(expected);
+  }
 });

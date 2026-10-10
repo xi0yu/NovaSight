@@ -15,21 +15,21 @@ export function responseIllustration(kp: number, rampMs: number, referenceHz: nu
   return { entry, timeScale, demand: entry * timeScale * kp * 256 * Math.atan(errorCounts / 256) };
 }
 
-export function ResponseExperiment({ kp, rampMs, referenceHz }: { kp: number; rampMs: number; referenceHz: number }) {
+export function ResponseExperiment({ kp, rampMs, referenceHz, delayMs = 0 }: { kp: number; rampMs: number; referenceHz: number; delayMs?: number }) {
   const [elapsed, setElapsed] = useState(100);
   const [fps, setFps] = useState(60);
   const [errorCounts, setErrorCounts] = useState(100);
-  const endMs = Math.max(500, rampMs);
+  const endMs = Math.max(500, delayMs + rampMs);
   const elapsedMs = Math.min(elapsed, endMs);
-  const result = responseIllustration(kp, rampMs, referenceHz, elapsedMs, fps, errorCounts);
-  const rampAt = (t: number) => responseIllustration(1, rampMs, 0, t, fps, 0).entry;
+  const result = elapsedMs < delayMs ? { entry: 0, timeScale: 0, demand: 0 } : responseIllustration(kp, rampMs, referenceHz, elapsedMs - delayMs, fps, errorCounts);
+  const rampAt = (t: number) => t < delayMs ? 0 : responseIllustration(1, rampMs, 0, t - delayMs, fps, 0).entry;
   const curve = Array.from({ length: 101 }, (_, i) => `${20 + i * 2.6},${120 - 100 * rampAt(endMs * i / 100)}`).join(" ");
   return <section className="prediction-insight" aria-label="响应试算" data-tone="active">
     <div className="prediction-measurement">
       <header><h3>响应试算</h3><span>编辑值 · 不控制设备</span></header>
-      <p className="prediction-explanation">使用当前草稿中的跟随力度、入场时长和设备基准频率。下方模拟条件仅用于试算，不写入配置。</p>
+      <p className="prediction-explanation">使用当前草稿的触发等待、力度渐增、Kp 与基准频率。模拟条件不写入配置。</p>
       <div className="parameter-inline-grid">
-        <label>入场经过 {elapsedMs} ms<input aria-label="试算入场时间" type="range" min="0" max={endMs} step="1" value={elapsedMs} onChange={(event) => setElapsed(Number(event.target.value))} /></label>
+        <label>触发经过 {elapsedMs} ms<input aria-label="试算入场时间" type="range" min="0" max={endMs} step="1" value={elapsedMs} onChange={(event) => setElapsed(Number(event.target.value))} /></label>
         <label>模拟控制频率<select aria-label="模拟控制频率" value={fps} onChange={(event) => setFps(Number(event.target.value))}>
           {[30, 60, 120, 240].map((value) => <option key={value} value={value}>{value} Hz</option>)}
         </select></label>
@@ -39,12 +39,12 @@ export function ResponseExperiment({ kp, rampMs, referenceHz }: { kp: number; ra
     <div className="prediction-measurement">
       <div className="prediction-vector-row">
         <figure>
-          <svg viewBox="0 0 300 150" role="img" aria-label={`入场曲线，当前达到设定 Kp 的 ${(result.entry * 100).toFixed(0)}%`}>
+          <svg viewBox="0 0 300 150" role="img" aria-label={`启动曲线：等待 ${delayMs} ms，渐增 ${rampMs} ms，当前达到设定 Kp 的 ${(result.entry * 100).toFixed(0)}%`}>
             <path className="prediction-grid" d="M20 20H280M20 70H280M20 120H280M20 20V120M150 20V120M280 20V120" />
             <polyline points={curve} fill="none" stroke="var(--signal-info)" strokeWidth="3" />
             <circle cx={20 + 260 * elapsedMs / endMs} cy={120 - result.entry * 100} r="5" fill="var(--ns-red-500)" />
           </svg>
-          <figcaption>0 → {endMs} ms · 纵轴为 Kp 使用比例，不是速度曲线</figcaption>
+          <figcaption>等待 {delayMs} ms ＋ 渐增 {rampMs} ms · 纵轴为力度比例</figcaption>
         </figure>
         <dl><div><dt>当前 Kp 使用比例</dt><dd>{(result.entry * 100).toFixed(0)}%</dd></div>
           <div><dt>时间换算</dt><dd>×{result.timeScale.toFixed(2)}</dd></div>

@@ -1,5 +1,6 @@
 import { NovaIcon } from "../../components/visual";
 import { ModelSelectionPanel, type ModelSelectionPanelProps } from "./ModelSelectionPanel";
+import { StudioTaskIntro } from "../studio/StudioTaskIntro";
 
 export function ModelWorkspace({
   activeModelName,
@@ -16,18 +17,16 @@ export function ModelWorkspace({
   const deploymentState = activeFile
     ? panelProps.activeLoaded ? "loaded" : "deployed"
     : "empty";
-  const hasDiscoveredModel = panelProps.modelCount > 0 || Boolean(activeFile);
-  const activeVerified = activeArtifactStatus === "ready";
   return (
     <section className="model-workspace" aria-labelledby="model-workspace-title">
+      <StudioTaskIntro label="模型管理" title="找到模型，选好就用" description="搜索或浏览设备文件，选中后验证并部署。" />
       <header className="model-workspace-header">
         <div className="model-workspace-title">
           <span className="model-manager-dialog-icon" aria-hidden="true">
             <NovaIcon name="models" size={22} strokeWidth={1.7} />
           </span>
           <div>
-            <h2 id="model-workspace-title">当前模型与设备文件</h2>
-            <p>选择模型文件，系统会先检查是否可用，再允许部署到当前设备。</p>
+            <h2 id="model-workspace-title">当前使用的模型</h2>
           </div>
         </div>
         <div className={`model-production-slot ${deploymentState}`}>
@@ -38,6 +37,7 @@ export function ModelWorkspace({
           <b title={panelProps.activeArtifactPath}>{activeFile || "尚未部署模型"}</b>
           <div className="model-production-slot-facts">
             <span title={activeModelName}>项目 <strong>{activeModelName}</strong></span>
+            <span>验证 <strong>{activeArtifactStatus === "ready" ? "已有验证记录" : "待验证"}</strong></span>
             <span>输入 <strong>{panelProps.runtimeInputShape || "未上报"}</strong></span>
             <span>后端 <strong>{panelProps.runtimeBackend || "未上报"}</strong></span>
           </div>
@@ -45,12 +45,6 @@ export function ModelWorkspace({
             {activeFile ? "查看实时推理" : "查看推理状态"}
           </button>
         </div>
-        <ol className="model-promotion-overview" aria-label="模型部署步骤">
-          <li className={hasDiscoveredModel ? "complete" : panelProps.root ? "current" : "pending"}><span>1</span><b>发现文件</b><small>{panelProps.root ? "设备资产" : "待读取"}</small></li>
-          <li className={activeVerified ? "complete" : activeFile ? "current" : "pending"}><span>2</span><b>资格检查</b><small>{activeVerified ? "已有验证记录" : "待验证"}</small></li>
-          <li className={activeFile ? "complete" : "pending"}><span>3</span><b>部署模型</b><small>写入运行配置</small></li>
-          <li className={panelProps.activeLoaded ? "complete" : activeFile ? "current" : "pending"}><span>4</span><b>运行装载</b><small>真实状态读回</small></li>
-        </ol>
       </header>
       <div className="model-workspace-body">
         <ModelSelectionPanel {...panelProps} />

@@ -1,6 +1,6 @@
 import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { RuntimeState } from "../../api";
 import { useClearErrorNotices } from "../../lib/toast";
 import { SafetyOperationProvider } from "../runtime/SafetyOperationContext";
@@ -8,7 +8,6 @@ import { StudioConsoleView } from "./StudioConsoleView";
 
 const message = "Strict GPU frame failed [epoch=RuntimeEpoch(3), generation=Generation(2784), captured_at_ns=730148790084]: TensorRT inspected input is unsupported: GPU result batch: detection 3 box (166.2967071533203, 90.04590606689453)..(255.5125274658203, 256.00000762939453) is outside coordinate space 256x256";
 const fault = { code: "PERCEPTION_FAILED", subsystem: "inference", message };
-afterEach(() => vi.unstubAllGlobals());
 const runtime = {
   semantic: { daemon_instance_id: "daemon-test", phase: "faulted", perception_phase: "faulted", epoch: 3, snapshot_sequence: 10, snapshot_updated_at_ms: 1234 },
   presentation: { lifecycle: { can_start: false, can_stop: true }, readiness: { code: "failed", recommended_action: "inspect_runtime" }, perception: { state: "faulted" }, output: { state: "unknown", reason_code: "runtime_faulted", daemon_confirmed_safe: false } },
