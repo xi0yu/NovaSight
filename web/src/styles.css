@@ -1943,12 +1943,6 @@ tbody tr:hover {
   font-size: 0.72rem;
 }
 
-.license-features {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 .license-activation-form {
   display: grid;
   gap: var(--space-3);
@@ -1959,7 +1953,6 @@ tbody tr:hover {
 }
 
 .license-change-disclosure {
-  border-top: 1px solid var(--border-default);
   border-bottom: 1px solid var(--border-default);
 }
 
@@ -1968,10 +1961,13 @@ tbody tr:hover {
   display: flex;
   align-items: center;
   color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 500;
+  justify-content: space-between;
   cursor: pointer;
 }
+
+.license-change-disclosure[open] > summary svg { transform: rotate(90deg); }
 
 .license-change-disclosure[open] > summary {
   color: var(--brand-primary);
@@ -2019,152 +2015,40 @@ tbody tr:hover {
   min-height: 44px;
 }
 
-.license-hero {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 22px 0;
-  border-top: 1px solid var(--border-default);
-  border-bottom: 1px solid var(--border-default);
-  background: transparent;
-  box-shadow: none;
-}
-
-.license-hero.valid {
-  border-bottom-color: var(--status-success-border);
-  background: transparent;
-  box-shadow: none;
-}
-
-.license-hero span {
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 750;
-}
-
-.license-hero strong {
-  display: block;
-  margin-top: 6px;
-  color: var(--text-primary);
-  font-size: 1.22rem;
-}
-
-.license-hero p {
-  max-width: 520px;
-  margin: 7px 0 0;
-  color: var(--muted);
-  font-size: 0.82rem;
-  line-height: 1.5;
-}
-
-.license-help-copy {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.license-detail-disclosure {
-  padding: 12px 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-inner);
-  background: var(--bg-surface);
-}
-
-.license-detail-disclosure > summary {
-  color: var(--text-primary);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.license-detail-disclosure > p {
-  margin: 12px 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.license-detail-disclosure .field-grid,
-.license-detail-disclosure .compact-settings-details { margin-top: 14px; }
-
-.license-status-trace {
-  position: relative;
-  z-index: 1;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  margin: 0;
-}
-
-.license-status-trace > div {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-  padding: 10px;
-  border: 1px solid color-mix(in srgb, var(--brand-primary) 18%, var(--border-subtle));
-  border-radius: max(6px, calc(var(--radius-inner) - 5px));
-  background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
-}
-
-.license-status-trace dt {
-  color: var(--text-tertiary);
-  font-size: 0.72rem;
-  font-weight: 730;
-}
-
-.license-status-trace dd {
-  min-width: 0;
-  margin: 0;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  font-weight: 760;
-  overflow-wrap: anywhere;
-}
-
-.license-provenance-note {
-  display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--brand-primary) 18%, var(--border-subtle));
-  border-radius: var(--radius-inner);
-  background: color-mix(in srgb, var(--bg-elevated) 82%, transparent);
-}
-
-.license-provenance-note strong {
-  color: var(--text-primary);
-  font-size: 0.82rem;
-}
-
-.license-provenance-note span {
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  line-height: 1.45;
-}
-
-.license-features span {
-  border-radius: var(--radius-3);
-  background: var(--bg-subtle);
-  color: var(--text-primary);
-  padding: 5px 9px;
-  font-size: 0.78rem;
-  font-weight: 700;
-  box-shadow: inset 0 0 0 1px var(--border-subtle);
-}
-
-.license-features.empty span {
-  background: color-mix(in srgb, var(--surface-2) 78%, transparent);
-  color: var(--muted);
+/* Authorization information shares the same hierarchy in About and preview states. */
+.license-panel { gap: 24px; background: transparent; box-shadow: none; font-size: 14px; line-height: 22px; }
+.license-summary { padding: 24px; border: 1px solid var(--status-running-border); border-radius: 16px; background: var(--status-running-bg); }
+.license-summary > header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.license-summary-title { display: flex; align-items: center; gap: 8px; color: var(--text-primary); font-size: 18px; }
+.license-summary-title h3 { margin: 0; font-size: inherit; line-height: 26px; font-weight: 600; }
+.license-summary-title svg { color: var(--status-running-fg); }
+.license-device-expiry { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) auto; gap: 24px; margin: 24px 0 0; }
+.license-device-expiry dt { margin-bottom: 8px; color: var(--text-secondary); font-size: 14px; }
+.license-device-expiry dd { margin: 0; color: var(--text-primary); font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.license-deadline dd { font-size: 20px; line-height: 28px; font-weight: 600; }
+.license-expiry-countdown { display: block; margin-top: 8px; color: var(--text-secondary); font-size: 14px; line-height: 22px; font-weight: 400; }
+.license-category { display: inline-flex; align-items: center; padding: 2px 12px; border: 1px solid var(--status-running-border); border-radius: 8px; background: var(--bg-surface); color: var(--status-running-fg); }
+.license-scope h3, .license-management h3 { margin: 0 0 16px; font-size: 18px; line-height: 26px; font-weight: 600; }
+.license-scope-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.license-scope-grid article { padding: 16px; border: 1px solid var(--border-default); border-radius: 12px; background: var(--bg-surface); }
+.license-scope-grid h4 { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+.license-scope-grid h4 svg { color: var(--status-running-fg); }
+.license-scope-grid ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.license-scope-grid li { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); }
+.license-scope-grid li svg { flex-shrink: 0; color: var(--status-success-fg); }
+.license-scope-empty { margin: 0; color: var(--text-secondary); }
+.license-management { padding-top: 24px; border-top: 1px solid var(--border-default); }
+.license-exit { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.license-exit p { margin: 0; color: var(--text-secondary); }
+.license-panel .license-activation-copy span { font-size: 14px; line-height: 22px; }
+@media (max-width: 760px) {
+  .license-summary { padding: 16px; }
+  .license-summary > header { flex-wrap: wrap; }
+  .license-device-expiry, .license-scope-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .license-exit { align-items: stretch; flex-direction: column; }
 }
 
 @media (max-width: 640px) {
-  .license-status-trace {
-    grid-template-columns: 1fr;
-  }
-
   .license-activation-controls {
     grid-template-columns: 1fr;
   }
@@ -3546,7 +3430,6 @@ button:focus-visible {
   color: var(--brand-primary);
 }
 
-.license-panel,
 .license-gate,
 .console-process {
   border-color: var(--border-default);
@@ -4603,9 +4486,3 @@ body {
 .toast-card-timer { display: block; height: 3px; border-radius: 3px; overflow: hidden; background: color-mix(in srgb, currentColor 12%, transparent); }
 .toast-card-timer > span { display: block; height: 100%; background: currentColor; transform-origin: left; animation: toast-countdown linear both; }
 @keyframes toast-countdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
-.license-device-expiry { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 18px 0; padding: 18px; border: 1px solid var(--status-success-border); border-radius: 16px; background: var(--status-success-bg); }
-.license-device-expiry dt { color: var(--text-secondary); font-size: 12px; margin-bottom: 8px; }
-.license-device-expiry dd { margin: 0; color: var(--text-primary); font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.license-expiry-countdown { display: block; margin-top: 8px; font-size: 12px; font-weight: 600; }
-.license-device-expiry .expired dd { color: var(--status-error-fg); }
-@media (max-width: 760px) { .license-device-expiry { grid-template-columns: 1fr; } }

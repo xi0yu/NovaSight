@@ -310,17 +310,13 @@ export function ManagementView({
 }
 
 export function AboutView({
-  license,
   licenseContent,
   serviceConnected,
-  layoutRevision,
   modules,
   onNavigate,
 }: {
-  license: LicenseStatus | null;
   licenseContent?: ReactNode;
   serviceConnected: boolean;
-  layoutRevision: string;
   modules: readonly string[];
   onNavigate: Navigate;
 }) {
@@ -329,9 +325,9 @@ export function AboutView({
       <header className="about-identity">
         <div className="about-mark" aria-hidden="true"><NovaIcon name="prediction-line" size={36} /></div>
         <div>
-          <span>应用信息</span>
+          <span>产品信息 · 版本 {studioVersion}</span>
           <h2 id="about-product-title">NovaSight Studio</h2>
-          <p>把采集、推理、目标选择与设备输出组织成一条可核实的实时链路。</p>
+          <p>采集、推理与设备控制工作台。</p>
         </div>
         <span className={serviceConnected ? "truth-badge verified" : "truth-badge"}>
           <NovaIcon name={serviceConnected ? "connected" : "disconnected"} size={15} />
@@ -339,31 +335,7 @@ export function AboutView({
         </span>
       </header>
     ),
-    version: (
-      <>
-      <dl className="about-facts" aria-label="版本与配置信息">
-        <div><dt>Studio 版本</dt><dd>{studioVersion}</dd></div>
-        <div><dt>页面配置</dt><dd>{layoutRevision}</dd></div>
-        <div><dt>授权状态</dt><dd>{license?.valid ? "已激活" : license ? "未激活" : "待核实"}</dd></div>
-      </dl>
-      {licenseContent ? <section className="about-license" aria-label="授权与设备"><h3>授权与设备</h3>{licenseContent}</section> : null}
-      </>
-    ),
-    capabilities: (
-      <section className="about-capabilities" aria-labelledby="about-capabilities-title">
-        <div>
-          <span>功能范围</span>
-          <h3 id="about-capabilities-title">当前包含的功能</h3>
-          <p>日常页面保持简单；需要排查时，可以继续查看 CUDA、TensorRT、NVMM 与原始运行证据。</p>
-        </div>
-        <ul>
-          <li><NovaIcon name="capture" size={17} /><span>采集与 ROI</span></li>
-          <li><NovaIcon name="tensorrt" size={17} /><span>模型与推理</span></li>
-          <li><NovaIcon name="tracking" size={17} /><span>目标与跟踪</span></li>
-          <li><NovaIcon name="device-send" size={17} /><span>控制与输出</span></li>
-        </ul>
-      </section>
-    ),
+    version: licenseContent ? <section className="about-license" aria-label="授权与设备">{licenseContent}</section> : null,
     support: (
       <footer className="about-actions">
         <button className="console-button primary" onClick={() => onNavigate("activity")} type="button">打开实时日志</button>
@@ -373,7 +345,7 @@ export function AboutView({
   };
   return (
     <section className="product-journey about-view" aria-labelledby="about-product-title">
-      {licenseContent && !modules.includes("version") ? <section className="about-license" aria-label="授权与设备"><h3>授权与设备</h3>{licenseContent}</section> : null}
+      {licenseContent && !modules.includes("version") ? <section className="about-license" aria-label="授权与设备">{licenseContent}</section> : null}
       {modules.map((moduleId) => moduleViews[moduleId] ? <div data-module={moduleId} key={moduleId}>{moduleViews[moduleId]}</div> : null)}
     </section>
   );

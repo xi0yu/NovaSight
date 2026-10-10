@@ -4572,9 +4572,7 @@ export function StudioConsoleView({
         {utilityDialog === "about" ? (
           <AboutView
             licenseContent={<LicensePanel license={license} onLicenseChange={onLicenseChange} />}
-            license={license}
             serviceConnected={health?.ok === true && runtimeTransportConfidence === "current"}
-            layoutRevision={studioLayout.revision}
             modules={aboutModules}
             onNavigate={navigatePage}
           />

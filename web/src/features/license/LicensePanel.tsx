@@ -8,13 +8,20 @@ import {
 } from "../../api";
 import { Button, InlineError, StatusIndicator } from "../../components/ui";
 import { reportError } from "../../lib/toast";
-import { Field } from "../shared/Field";
+import { NovaIcon, type NovaIconName } from "../../components/visual";
+import type { LicenseFeature } from "../../contracts/license";
 import { formatEpoch } from "../shared/format";
 import { formatLicenseCategory } from "./format";
 import {
   describeLicenseActionFailure,
   type LicenseActionFailure
 } from "./connectionIssue";
+
+const FEATURE_GROUPS: { title: string; icon: NovaIconName; features: LicenseFeature[] }[] = [
+  { title: "采集与运行", icon: "capture", features: ["capture", "runtime"] },
+  { title: "模型与推理", icon: "ai-model", features: ["models", "tensorrt", "plugins"] },
+  { title: "控制与配置", icon: "device-send", features: ["hardware_control", "config_read", "config_write"] },
+];
 
 const LICENSE_CLEAR_CONFIRMATION_MESSAGE = "再次点击将先紧急停止当前设备并验证输出安全，再退出授权；5 秒后自动取消确认。";
 
@@ -46,25 +53,8 @@ export function LicensePanel({
     }
   }, [now, expiresAt, license, onLicenseChange]);
   const licenseValid = license?.valid === true;
-  const currentTime = new Date(now).toLocaleString("zh-CN", { hour12: false });
   const temporarySupported = license?.temporary_access_supported === true;
-  const traceSource = license?.token_id || license?.license_id || license?.fingerprint || "";
-  const statusTraceCode = formatTraceFragment(traceSource);
-  const fingerprintTraceCode = formatTraceFragment(license?.fingerprint);
-  const licenseTraceCode = formatTraceFragment(license?.license_id);
-  const tokenTraceCode = formatTraceFragment(license?.token_id);
-  const keyTraceCode = formatTraceFragment(license?.key_id);
-  const validFrom = licenseValid
-    ? formatEpoch(license.not_before ?? license.created_at)
-    : "等待签发";
-  const activatedAt = licenseValid
-    ? formatEpoch(license.activated_at ?? license.created_at)
-    : "等待激活";
-  const licenseStatusTitle = licenseValid
-    ? "授权已激活"
-    : "等待授权激活";
-  const backendMessage = license?.message?.trim();
-  const features = license?.features ?? [];
+  const features = licenseValid ? license.features : [];
 
   useEffect(() => {
     if (!clearArmed) return undefined;
@@ -112,98 +102,48 @@ export function LicensePanel({
     <div className="license-panel">
       <InlineError message={failure?.message} title={failure?.title} />
       {message ? <div className="inline-note" role="status">{message}</div> : null}
-      <div className={licenseValid ? "license-hero valid" : "license-hero"}>
-        <div>
-          <span>使用权限</span>
-          <strong>{licenseValid ? "当前授权" : remaining === 0 ? "授权已到期" : license ? "等待授权" : "授权待核实"}</strong>
-          <p>{licenseValid
-            ? license.credential_format === "ephemeral_code"
-              ? "内测授权限 24 小时，有效期内重复申请和重启均不延长期限。"
-              : `授权已生效${license.expires_at ? `，到期时间 ${formatEpoch(license.expires_at)}` : ""}。`
-            : "内测版留空即可申请 1 天授权；正式版须填写授权码。"}</p>
-        </div>
-        <StatusIndicator tone={licenseValid ? "good" : "idle"}>
-          {licenseValid ? "授权有效" : "尚未授权"}
-        </StatusIndicator>
-      </div>
-      <dl className="license-device-expiry" aria-label="设备授权状态">
-        <div><dt>设备模型 ID</dt><dd>{license?.device_model || "设备型号待核实"}</dd></div>
-        <div className={remaining === 0 ? "expired" : ""}><dt>到期时间</dt><dd>{formatEpoch(license?.expires_at)}<small className="license-expiry-countdown">{remaining === null ? "到期时间待核实" : remaining === 0 ? (licenseValid ? "正在核验到期状态" : "已到期 · 操作已锁定") : `倒计时 ${String(Math.floor(remaining / 3600)).padStart(2, "0")}:${String(Math.floor(remaining / 60) % 60).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`}</small></dd></div>
-        <div><dt>授权类别</dt><dd>{formatLicenseCategory(license)}</dd></div>
-      </dl>
-      <p className="license-help-copy">{licenseValid
-        ? "你可以查看当前可用能力，或在需要时更换授权。退出授权前，系统会先停止设备输出并再次确认。"
-        : "授权码由本机服务验证；页面不会保存或回显完整凭证。"}</p>
-      <details className="license-change-disclosure" open={!licenseValid || undefined}>
-        <summary>{licenseValid ? "更换授权码" : "输入授权码"}</summary>
-        <LicenseActivationForm
-          active={licenseValid}
-          temporarySupported={temporarySupported}
-          onLicenseChange={onLicenseChange}
-        />
-      </details>
-      {backendMessage ? (
-        <div className="license-provenance-note">
-          <strong>授权说明</strong>
-          <span>{backendMessage}</span>
-        </div>
-      ) : null}
-      <details className="license-detail-disclosure">
-        <summary>查看授权范围与有效期</summary>
-        <p>{licenseStatusTitle}。以下信息用于核对当前授权；技术追踪码仅在排查问题时需要。</p>
-        <div className={features.length > 0 ? "license-features" : "license-features empty"}>
-          {features.length > 0
-            ? features.map((feature) => <span key={feature}>{formatFeature(feature)}</span>)
-            : <span>等待授权功能范围</span>}
-        </div>
-        <div className="field-grid">
-          <Field label="授权类别" value={formatLicenseCategory(license)} />
-          <Field label="凭证格式" value={formatCredentialFormat(license?.credential_format)} />
-          <Field label="当前状态" value={licenseValid ? "可用" : "等待申请"} />
-          <Field label="当前时间" value={currentTime} />
-          <Field label="激活时间" value={formatEpoch(license?.activated_at)} />
-          <Field label="到期时间" value={formatEpoch(license?.expires_at)} />
-          <Field label="期限" value={formatDuration(license?.duration_value, license?.duration_unit)} />
-        </div>
-        <details className="compact-settings-details">
-          <summary>开发者诊断与凭证追踪码</summary>
-          <dl className="license-status-trace">
-            <div>
-              <dt>状态追踪码</dt>
-              <dd>{statusTraceCode}</dd>
-            </div>
-            <div>
-              <dt>授权凭据指纹</dt>
-              <dd>{fingerprintTraceCode}</dd>
-            </div>
-            <div>
-              <dt>授权编号</dt>
-              <dd>{licenseTraceCode}</dd>
-            </div>
-            <div>
-              <dt>签发密钥</dt>
-              <dd>{keyTraceCode}</dd>
-            </div>
-            <div>
-              <dt>凭证片段</dt>
-              <dd>{tokenTraceCode}</dd>
-            </div>
-            <div>
-              <dt>生效时间</dt>
-              <dd>{validFrom}</dd>
-            </div>
-            <div>
-              <dt>激活时间</dt>
-              <dd>{activatedAt}</dd>
-            </div>
-          </dl>
+      <section className="license-summary" aria-label="设备授权摘要">
+        <header>
+          <div className="license-summary-title"><NovaIcon name="shield-check" size={24} /><h3>设备授权</h3></div>
+          <StatusIndicator tone={licenseValid ? "good" : "idle"}>
+            {licenseValid ? "授权有效" : license ? "尚未授权" : "授权待核实"}
+          </StatusIndicator>
+        </header>
+        <dl className="license-device-expiry" aria-label="设备授权状态">
+          <div className="license-deadline"><dt>到期时间</dt><dd>{license?.expires_at ? formatEpoch(license.expires_at) : "尚未确认"}<small className="license-expiry-countdown">{remaining === null ? "到期时间待核实" : remaining === 0 ? (licenseValid ? "正在核验到期状态" : "授权不可用") : `倒计时 ${String(Math.floor(remaining / 3600)).padStart(2, "0")}:${String(Math.floor(remaining / 60) % 60).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`}</small></dd></div>
+          <div><dt>设备模型 ID</dt><dd>{license?.device_model || "设备型号待核实"}</dd></div>
+          <div><dt>授权类别</dt><dd><span className="license-category">{formatLicenseCategory(license)}</span></dd></div>
+        </dl>
+      </section>
+      <section className="license-scope" aria-labelledby="license-scope-title">
+        <h3 id="license-scope-title">授权范围</h3>
+        {features.length > 0 ? <div className="license-scope-grid">
+          {FEATURE_GROUPS.map((group) => {
+            const enabled = group.features.filter((feature) => features.includes(feature));
+            return enabled.length > 0 ? <article key={group.title}>
+              <h4><NovaIcon name={group.icon} size={20} />{group.title}</h4>
+              <ul>{enabled.map((feature) => <li key={feature}><NovaIcon name="check-circle" size={16} />{formatFeature(feature)}</li>)}</ul>
+            </article> : null;
+          })}
+        </div> : <p className="license-scope-empty">{licenseValid ? "此授权未包含可用功能。" : license ? "授权生效后，可在这里查看可用功能。" : "正在核实授权范围。"}</p>}
+      </section>
+      <section className="license-management" aria-labelledby="license-management-title">
+        <h3 id="license-management-title">授权管理</h3>
+        <details className="license-change-disclosure" open={!licenseValid || undefined}>
+          <summary>{licenseValid ? "更换授权码" : "输入授权码"}<NovaIcon name="expand" size={18} /></summary>
+          <LicenseActivationForm
+            active={licenseValid}
+            temporarySupported={temporarySupported}
+            onLicenseChange={onLicenseChange}
+          />
         </details>
-      </details>
-      {license?.configured ? (
-        <button className="button compact-button" disabled={clearing} type="button" onClick={clearLicense}>
-          {clearing ? "正在停止设备并退出…" : clearArmed ? "确认：先紧急停止设备，再退出授权" : "退出当前授权"}
-        </button>
-      ) : null}
+        {license?.configured ? <div className="license-exit">
+          <p>退出授权将先停止设备输出。</p>
+          <Button loading={clearing} onClick={clearLicense}>
+            {clearing ? "正在停止设备并退出…" : clearArmed ? "确认：先紧急停止设备，再退出授权" : "退出当前授权"}
+          </Button>
+        </div> : null}
+      </section>
     </div>
   );
 }
@@ -299,51 +239,13 @@ export function LicenseActivationForm({
   );
 }
 
-function formatTraceFragment(value: string | null | undefined): string {
-  const normalized = value?.trim();
-  if (!normalized) {
-    return "未生成";
-  }
-  if (normalized.length <= 16) {
-    return normalized.toUpperCase();
-  }
-  return `${normalized.slice(0, 8).toUpperCase()}-${normalized.slice(-6).toUpperCase()}`;
-}
-
-function formatDuration(value: number | null | undefined, unit: string | undefined): string {
-  if (!value || !unit) {
-    return "无";
-  }
-  const labels: Record<string, string> = {
-    second: "秒",
-    seconds: "秒",
-    day: "天",
-    days: "天",
-    month: "个月",
-    months: "个月",
-    year: "年",
-    years: "年"
-  };
-  return `${value} ${labels[unit] ?? unit}`;
-}
-
-function formatCredentialFormat(format: string | null | undefined): string {
-  const labels: Record<string, string> = {
-    jwt_rs256: "JWT（RS256）",
-    legacy_ns1: "旧版 NS1",
-    ephemeral_code: "内测授权",
-    legacy_document: "旧版授权文件"
-  };
-  return format ? labels[format] ?? format : "未授权";
-}
-
 function formatFeature(feature: string): string {
   const labels: Record<string, string> = {
-    capture: "真机采集",
+    capture: "画面采集",
     runtime: "运行控制",
     models: "模型仓库",
-    plugins: "旧版插件能力",
-    tensorrt: "TensorRT",
+    plugins: "插件扩展",
+    tensorrt: "TensorRT 加速",
     hardware_control: "硬件控制",
     config_read: "读取配置",
     config_write: "写入配置"

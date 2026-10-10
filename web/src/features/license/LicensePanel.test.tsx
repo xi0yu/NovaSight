@@ -108,6 +108,17 @@ describe("LicensePanel", () => {
     await userEvent.type(screen.getByLabelText("授权码"), "replacement");
     expect(screen.queryByText("授权码不能为空。")).not.toBeInTheDocument();
   });
+  it.each([
+    { title: "unconfirmed", license: null, message: "正在核实授权范围。" },
+    { title: "invalid with stale features", license: { ...activeLicense, valid: false }, message: "授权生效后，可在这里查看可用功能。" },
+    { title: "valid without features", license: { ...activeLicense, features: [] }, message: "此授权未包含可用功能。" },
+  ])("does not advertise unavailable capabilities for $title", ({ license, message }) => {
+    render(<LicensePanel license={license} onLicenseChange={vi.fn()} />);
+    const scope = within(screen.getByRole("region", { name: "授权范围" }));
+    expect(scope.getByText(message)).toBeVisible();
+    expect(scope.queryByRole("list")).not.toBeInTheDocument();
+    expect(scope.queryByText("画面采集")).not.toBeInTheDocument();
+  });
   it("requires confirmation before clearing and returns to the license gate", async () => {
     clearLicenseKeyMock.mockResolvedValueOnce(clearedLicense);
     const user = userEvent.setup();
@@ -115,10 +126,16 @@ describe("LicensePanel", () => {
 
     expect(screen.getByLabelText("设备授权状态")).toBeInTheDocument();
     expect(screen.getByText("更换授权码")).toBeInTheDocument();
-    expect(screen.getByText("查看授权范围与有效期")).toBeInTheDocument();
-    expect(screen.getByText("开发者诊断与凭证追踪码")).not.toBeVisible();
-    await user.click(screen.getByText("查看授权范围与有效期"));
-    expect(screen.getByText("开发者诊断与凭证追踪码")).toBeVisible();
+    const scope = within(screen.getByRole("region", { name: "授权范围" }));
+    expect(scope.getByText("采集与运行")).toBeVisible();
+    expect(scope.getByText("模型与推理")).toBeVisible();
+    expect(scope.getByText("控制与配置")).toBeVisible();
+    expect(scope.getByText("画面采集")).toBeVisible();
+    expect(scope.getByText("写入配置")).toBeVisible();
+    expect(scope.queryByText("硬件控制")).not.toBeInTheDocument();
+    for (const technical of ["开发者诊断与凭证追踪码", "credential-fingerprint", "license-a", "token-a", "key-a", "凭证格式"]) {
+      expect(screen.queryByText(technical)).not.toBeInTheDocument();
+    }
     await user.click(screen.getByRole("button", { name: "退出当前授权" }));
     expect(clearLicenseKeyMock).not.toHaveBeenCalled();
     expect(screen.getByText(/再次点击将先紧急停止当前设备/)).toHaveAttribute("role", "status");

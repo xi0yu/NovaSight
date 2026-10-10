@@ -230,7 +230,7 @@ describe("Runtime control and physical-output consent", () => {
     await userEvent.click(control);
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "关于 NovaSight" })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "授权与设备" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "设备授权" })).toBeVisible();
     expect(location.search).toBe("?page=overview");
   });
 
