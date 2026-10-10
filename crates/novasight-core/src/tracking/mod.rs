@@ -255,7 +255,7 @@ impl TargetingConfig {
         if ![point.0, point.1, aim.0, aim.1, self.target_fov_radius_px]
             .into_iter()
             .all(f64::is_finite)
-            || self.target_fov_radius_px <= 0.0
+            || !(0.0..=1000.0).contains(&self.target_fov_radius_px)
         {
             return false;
         }

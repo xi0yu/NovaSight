@@ -17,8 +17,9 @@ use hyper::{Method, Request, StatusCode, client::conn::http1};
 use hyper_util::rt::TokioIo;
 use novasight_core::{CaptureCapabilities, CaptureSelectionPreference, DeviceReceipt};
 use novasight_runtime::{
-    AppConfig, ConfigFieldUpdate, ConfigUpdate, ModelIngressResult, ModelProbeInputMode,
-    ModelProfileConfigureRequest, PreviewSnapshot, RuntimeSnapshot,
+    AppConfig, ConfigFieldUpdate, ConfigParameterUpdate, ConfigUpdate, DeviceConnectionProbe,
+    ModelIngressResult, ModelProbeInputMode, ModelProfileConfigureRequest, PreviewSnapshot,
+    RuntimeSnapshot,
 };
 pub use novasight_store::license::LicenseStatus;
 pub use novasight_store::model_catalog::{
@@ -249,6 +250,25 @@ impl ControlClient {
             physical_output_acknowledged,
         )
         .await
+    }
+
+    pub async fn update_parameters(
+        &self,
+        update: &ConfigParameterUpdate,
+        physical_output_acknowledged: bool,
+    ) -> Result<ConfigUpdate, ClientError> {
+        self.request_with_output_ack(
+            Method::POST,
+            "/api/v1/config/parameters",
+            Some(update),
+            physical_output_acknowledged,
+        )
+        .await
+    }
+
+    pub async fn probe_device(&self) -> Result<DeviceConnectionProbe, ClientError> {
+        self.request(Method::POST, "/api/executors/kmnet/probe", None::<&()>)
+            .await
     }
 
     pub async fn license_status(&self) -> Result<LicenseStatus, ClientError> {

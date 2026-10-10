@@ -42,7 +42,7 @@ use novasight_store::model_runtime_contract::validate_model_runtime_contract;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::pointer_adapter::select_uncommissioned_pointer_adapter;
+use crate::pointer_adapter::select_builtin_pointer_adapter;
 
 pub(super) fn build_live_production_dependencies(
     config: &AppConfig,
@@ -70,13 +70,14 @@ fn build_pointer_installation(
             None,
         ));
     };
-    if let Some(selected) = select_uncommissioned_pointer_adapter(device_config) {
+    if let Some(selected) = select_builtin_pointer_adapter(device_config) {
         return Ok(PointerDeviceInstallation::new(
             selected.device,
             selected.trigger_poll_interval_ms,
         ));
     }
     let device: Arc<dyn PointerDevice> = match device_config.backend {
+        DeviceBackend::Null => Arc::new(novasight_core::NullPointerDevice::default()),
         DeviceBackend::NativeUdp => Arc::new(build_native_kmnet(device_config)?),
     };
     Ok(PointerDeviceInstallation::new(
@@ -108,10 +109,11 @@ fn preflight_pointer_adapter(config: &AppConfig) -> Result<(), LivePerceptionErr
     let adapters = config
         .require_production_adapters()
         .map_err(LivePerceptionError::Config)?;
-    if select_uncommissioned_pointer_adapter(adapters.device).is_some() {
+    if select_builtin_pointer_adapter(adapters.device).is_some() {
         return Ok(());
     }
     match adapters.device.backend {
+        DeviceBackend::Null => Ok(()),
         DeviceBackend::NativeUdp => build_native_kmnet(adapters.device).map(drop),
     }
 }

@@ -949,3 +949,96 @@ fn predicted_tracking_reaches_device_without_added_y_movement() {
     assert_eq!(final_command.delta_y_counts, control.dy);
     runtime.shutdown().unwrap();
 }
+
+#[test]
+fn live_axis_limits_reach_the_device_for_signed_and_zero_output() {
+    for sign in [-1.0_f32, 1.0] {
+        let epoch = RuntimeEpoch(90);
+        let clock = Arc::new(ManualClock::new(1_008_000_000));
+        let device = Arc::new(RecordingPointerDevice::default());
+        let mut config = PipelineConfig {
+            epoch,
+            ..delivery_config()
+        };
+        config.control.response_scale = 20.0;
+        let (mut runtime, ingress) =
+            PipelineRuntime::start(config.clone(), clock.clone(), device.clone()).unwrap();
+        ingress.set_trigger_active(true);
+        runtime.open_output_gate();
+        for (index, (limit_x, limit_y)) in [
+            (7.0, 11.0),
+            (0.0, 11.0),
+            (7.0, 0.0),
+            (1000.0, 1000.0),
+            (0.0, 0.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            config.output_limits.x_counts = limit_x;
+            config.output_limits.y_counts = limit_y;
+            ingress
+                .set_live_config(PipelineLiveConfig::from(&config))
+                .unwrap();
+            let generation = index as u64 + 1;
+            let captured_at = 1_000_000_000 + index as u64 * 20_000_000;
+            clock.0.store(captured_at + 8_000_000, Ordering::Release);
+            ingress
+                .submit(
+                    DetectionBatch::new(
+                        FrameStamp::new(epoch, generation, captured_at),
+                        640,
+                        640,
+                        vec![
+                            Detection::new(
+                                generation,
+                                0,
+                                300.0 + sign * 80.0,
+                                300.0 + sign * 60.0,
+                                40.0,
+                                40.0,
+                                0.95,
+                            )
+                            .unwrap(),
+                        ],
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while runtime.metrics().control.generation < generation && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(1));
+            }
+            if limit_x == 0.0 && limit_y == 0.0 {
+                while runtime.metrics().output_delivery_state
+                    != novasight_pipeline::OutputDeliveryState::NoMovement
+                    && Instant::now() < deadline
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                assert_eq!(
+                    runtime.metrics().output_delivery_state,
+                    novasight_pipeline::OutputDeliveryState::NoMovement
+                );
+                assert!(
+                    device
+                        .receipts()
+                        .iter()
+                        .all(|receipt| receipt.generation.0 != generation)
+                );
+            } else {
+                while device.receipts().last().map(|receipt| receipt.generation.0)
+                    != Some(generation)
+                    && Instant::now() < deadline
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                let receipt = *device.receipts().last().expect("limited command delivered");
+                assert_eq!(receipt.generation.0, generation);
+                assert_eq!(receipt.delta_x_counts, sign as i32 * limit_x as i32);
+                assert_eq!(receipt.delta_y_counts, sign as i32 * limit_y as i32);
+            }
+        }
+        runtime.shutdown().unwrap();
+    }
+}

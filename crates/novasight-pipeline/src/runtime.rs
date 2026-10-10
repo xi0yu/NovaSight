@@ -2127,7 +2127,7 @@ fn spawn_device_worker(
 }
 
 fn fixed_output_limit(configured: f64) -> i32 {
-    configured.floor().clamp(1.0, f64::from(i16::MAX)) as i32
+    configured.floor().clamp(0.0, 1000.0) as i32
 }
 
 fn is_recoverable_pointer_error(error: &novasight_core::AppError) -> bool {

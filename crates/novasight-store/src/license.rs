@@ -4,8 +4,8 @@ use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
@@ -23,6 +23,7 @@ pub mod jwt;
 
 use jwt::verify_license_jwt;
 
+pub const TEMPORARY_LICENSE_SECONDS: u64 = 24 * 60 * 60;
 const TEMPORARY_LICENSE_TIER: &str = "temporary";
 const LEGACY_CREDENTIAL_FORMAT: &str = "legacy_ns1";
 const JWT_CREDENTIAL_FORMAT: &str = "jwt_rs256";
@@ -47,6 +48,8 @@ static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone)]
 pub struct LicensePolicy {
     temporary_access_digest: Option<[u8; 32]>,
+    temporary_issued_at: Option<f64>,
+    temporary_started_at: Option<Instant>,
     public_key_pem: Option<String>,
 }
 
@@ -54,6 +57,8 @@ impl LicensePolicy {
     pub fn new(public_key_pem: Option<String>) -> Self {
         Self {
             temporary_access_digest: None,
+            temporary_issued_at: None,
+            temporary_started_at: None,
             public_key_pem,
         }
     }
@@ -75,6 +80,8 @@ impl LicensePolicy {
             )));
         }
         self.temporary_access_digest = Some(Sha256::digest(code.as_bytes()).into());
+        self.temporary_issued_at = Some(now_seconds()?);
+        self.temporary_started_at = Some(Instant::now());
         Ok(self)
     }
 
@@ -120,6 +127,8 @@ impl fmt::Debug for LicensePolicy {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LicenseStatus {
+    #[serde(default)]
+    pub device_model: String,
     pub configured: bool,
     pub valid: bool,
     #[serde(default)]
@@ -148,6 +157,7 @@ pub struct LicenseStatus {
 impl LicenseStatus {
     pub fn unconfigured() -> Self {
         Self {
+            device_model: device_model(),
             configured: false,
             valid: false,
             temporary_access_supported: false,
@@ -240,7 +250,7 @@ impl FileLicenseRepository {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
         {
-            return Ok(development_session_status(granted_at));
+            return self.temporary_status(granted_at);
         }
         let _operation = self
             .operation_lock
@@ -251,7 +261,7 @@ impl FileLicenseRepository {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
         {
-            return Ok(development_session_status(granted_at));
+            return self.temporary_status(granted_at);
         }
         self.storage_status()
     }
@@ -338,7 +348,19 @@ impl FileLicenseRepository {
         Ok(status)
     }
 
-    /// Enable full access for the lifetime of the current debug daemon.
+    fn temporary_status(&self, granted_at: f64) -> Result<LicenseStatus, LicenseError> {
+        let issued_at = self.policy.temporary_issued_at.unwrap_or(granted_at);
+        let mut status = development_session_status(granted_at, issued_at, now_seconds()?);
+        if self.policy.temporary_started_at.is_some_and(|started| {
+            started.elapsed() >= Duration::from_secs(TEMPORARY_LICENSE_SECONDS)
+        }) {
+            status.valid = false;
+            status.message = "本次启动的临时授权已到期，请更换正式授权或重新启动。".into();
+        }
+        Ok(status)
+    }
+
+    /// Enable process-local access within the original startup deadline.
     /// This state is deliberately process-local and never written to disk.
     fn grant_temporary(&self) -> Result<LicenseStatus, LicenseError> {
         if !self.temporary_access_supported() {
@@ -349,12 +371,17 @@ impl FileLicenseRepository {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = now_seconds()?;
+        if !self.temporary_status(now)?.valid {
+            return Err(LicenseError::InvalidKey(
+                "本次启动的临时授权码已到期。".into(),
+            ));
+        }
         if let Some(granted_at) = *self
             .development_session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
         {
-            return Ok(development_session_status(granted_at));
+            return self.temporary_status(granted_at);
         }
         // Development access does not create or lock authorization storage.
         // An already readable signed license remains authoritative.
@@ -368,7 +395,7 @@ impl FileLicenseRepository {
             .development_session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
-        Ok(development_session_status(now))
+        self.temporary_status(now)
     }
 
     pub fn clear(&self) -> Result<LicenseStatus, LicenseError> {
@@ -551,6 +578,7 @@ impl FileLicenseRepository {
             || not_before.is_some_and(|value| value > now + LICENSE_CLOCK_SKEW_SECONDS);
         let valid = !not_active_yet && expires_at > now;
         Ok(LicenseStatus {
+            device_model: device_model(),
             configured: true,
             valid,
             temporary_access_supported: self.temporary_access_supported(),
@@ -693,6 +721,7 @@ impl LegacyLicense {
     fn into_status(self) -> LicenseStatus {
         let configured = !self.key_hash.trim().is_empty();
         LicenseStatus {
+            device_model: device_model(),
             configured,
             valid: false,
             temporary_access_supported: false,
@@ -734,10 +763,13 @@ enum Verification {
     },
 }
 
-fn development_session_status(granted_at: f64) -> LicenseStatus {
+fn development_session_status(granted_at: f64, issued_at: f64, now: f64) -> LicenseStatus {
+    let expires_at = issued_at + TEMPORARY_LICENSE_SECONDS as f64;
+    let valid = now >= issued_at && now < expires_at;
     LicenseStatus {
+        device_model: device_model(),
         configured: true,
-        valid: true,
+        valid,
         temporary_access_supported: true,
         fingerprint: String::new(),
         tier: TEMPORARY_LICENSE_TIER.to_owned(),
@@ -746,15 +778,19 @@ fn development_session_status(granted_at: f64) -> LicenseStatus {
         credential_format: EPHEMERAL_CREDENTIAL_FORMAT.to_owned(),
         token_id: String::new(),
         key_id: String::new(),
-        created_at: Some(granted_at),
+        created_at: Some(issued_at),
         not_before: None,
         activated_at: Some(granted_at),
-        expires_at: None,
-        duration_value: None,
-        duration_unit: "process".to_owned(),
+        expires_at: Some(expires_at),
+        duration_value: Some(1),
+        duration_unit: "day".to_owned(),
         updated_at: Some(granted_at),
-        message: "临时授权包含硬件控制，仅在本次服务进程内有效；物理输出仍需手动确认开启。"
-            .to_owned(),
+        message: if valid {
+            "本次启动临时授权限 24 小时，重复登录不会续期；到期停止资源服务，保留前台。"
+        } else {
+            "本次启动临时授权已到期；请更换正式授权或重新启动。"
+        }
+        .to_owned(),
     }
 }
 
@@ -1127,6 +1163,43 @@ fn constant_time_equal(left: &[u8; 32], right: &[u8; 32]) -> bool {
         == 0
 }
 
+fn device_model() -> String {
+    static MODEL: OnceLock<String> = OnceLock::new();
+    MODEL
+        .get_or_init(|| {
+            for path in [
+                "/sys/firmware/devicetree/base/model",
+                "/sys/devices/virtual/dmi/id/product_name",
+            ] {
+                if let Ok(model) = fs::read_to_string(path) {
+                    let model = model.trim_matches(|character: char| {
+                        character == '\0' || character.is_whitespace()
+                    });
+                    if !model.is_empty() {
+                        return model.to_owned();
+                    }
+                }
+            }
+            #[cfg(target_os = "macos")]
+            if let Ok(output) = std::process::Command::new("/usr/sbin/sysctl")
+                .args(["-n", "hw.model"])
+                .output()
+                && output.status.success()
+            {
+                let model = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                if !model.is_empty() {
+                    return model;
+                }
+            }
+            format!(
+                "型号未提供（{} / {}）",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )
+        })
+        .clone()
+}
+
 #[cfg(test)]
 mod authorization_tests {
     use super::{FileLicenseRepository, LicenseDenial, LicensePolicy, LicenseStatus};
@@ -1137,6 +1210,7 @@ mod authorization_tests {
 
     fn valid_status(features: &[&str]) -> LicenseStatus {
         LicenseStatus {
+            device_model: super::device_model(),
             configured: true,
             valid: true,
             features: features
@@ -1172,9 +1246,43 @@ mod authorization_tests {
 
     #[test]
     fn temporary_development_session_authorizes_hardware_control() {
-        let status = super::development_session_status(1.0);
+        let status = super::development_session_status(1.0, 1.0, 1.0);
         assert_eq!(status.authorize_runtime(false), Ok(()));
         assert_eq!(status.authorize_runtime(true), Ok(()));
+    }
+
+    #[test]
+    fn temporary_license_expires_at_startup_deadline_and_relogin_cannot_extend_it() {
+        let status = super::development_session_status(100.0, 1.0, 86400.999);
+        assert!(status.valid);
+        assert_eq!(status.expires_at, Some(86401.0));
+        assert!(!super::development_session_status(100.0, 1.0, 86401.0).valid);
+        let mut policy = LicensePolicy::new(None)
+            .with_temporary_access_code(TEMPORARY_CODE)
+            .unwrap();
+        policy.temporary_issued_at = Some(super::now_seconds().unwrap() - 10.0);
+        let repository = FileLicenseRepository::new(
+            std::env::temp_dir().join(format!(
+                "ns-license-expiry-{}.json",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            )),
+            policy,
+        );
+        let first = repository.activate(TEMPORARY_CODE).unwrap();
+        repository.clear().unwrap();
+        let second = repository.activate(TEMPORARY_CODE).unwrap();
+        assert_eq!(first.expires_at, second.expires_at);
+        let mut repository = repository;
+        repository.policy.temporary_started_at = Some(
+            std::time::Instant::now()
+                - std::time::Duration::from_secs(super::TEMPORARY_LICENSE_SECONDS),
+        );
+        assert!(!repository.status().unwrap().valid);
+        assert!(repository.activate(TEMPORARY_CODE).is_err());
+        assert!(!repository.path().exists());
     }
 
     #[test]

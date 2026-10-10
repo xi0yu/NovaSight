@@ -102,6 +102,12 @@ pub fn compose_pipeline_config(
         },
         trigger_poll_interval_ms,
         trigger_mode: match config.control.trigger_mode {
+            _ if config.device.as_ref().is_some_and(|device| {
+                device.backend == novasight_store::config::DeviceBackend::Null
+            }) =>
+            {
+                TriggerMode::Always
+            }
             novasight_store::config::TriggerMode::Always => TriggerMode::Always,
             novasight_store::config::TriggerMode::Hardware => TriggerMode::Hardware,
         },
@@ -146,4 +152,52 @@ fn parse_target_class_roles(config: &AppConfig) -> Result<BTreeMap<u32, TargetPa
             Ok((class_id, *role))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use novasight_store::config::{
+        CaptureConfig, ConfigRepository, DeviceBackend, YamlConfigRepository,
+    };
+
+    #[test]
+    fn empty_protocol_consumes_without_hardware_trigger_and_preserves_the_physical_preference() {
+        let root = std::env::temp_dir().join(format!(
+            "ns-null-pipeline-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = root.join("config.yaml");
+        let mut config = YamlConfigRepository::initialize_default(&path).unwrap();
+        config.capture = Some(CaptureConfig::manual(
+            "/dev/test".into(),
+            "MJPG".into(),
+            (1920, 1080, 60),
+            (640, 220, 640, 640),
+        ));
+        config = YamlConfigRepository::new(&path)
+            .save_config(&config, 0)
+            .unwrap();
+        assert_eq!(
+            config.control.trigger_mode,
+            novasight_store::config::TriggerMode::Hardware
+        );
+        assert_eq!(
+            compose_pipeline_config(&config, None).unwrap().trigger_mode,
+            TriggerMode::Always
+        );
+        config.device.as_mut().unwrap().backend = DeviceBackend::NativeUdp;
+        config.device.as_mut().unwrap().active_mouse_protocol_id = None;
+        assert_eq!(
+            compose_pipeline_config(&config, Some(4))
+                .unwrap()
+                .trigger_mode,
+            TriggerMode::Hardware
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

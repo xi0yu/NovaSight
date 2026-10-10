@@ -24,7 +24,8 @@ pub mod supervisor;
 
 pub use application::{Application, ApplicationError, LoadedApplication};
 pub use config_service::{
-    ConfigApplyMode, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate,
+    ConfigApplyMode, ConfigFieldUpdate, ConfigParameterChange, ConfigParameterUpdate,
+    ConfigService, ConfigServiceError, ConfigUpdate,
 };
 pub use error::{RuntimeError, RuntimeErrorKind};
 pub use model_activation::{ModelActivationError, ModelActivationRequest, ModelActivationResult};
@@ -40,7 +41,7 @@ pub use novasight_pipeline::{
     PreviewSubscription,
 };
 pub use novasight_store::config::AppConfig;
-pub use protocol::{RuntimeErrorSummary, SubsystemState};
+pub use protocol::{DeviceConnectionProbe, RuntimeErrorSummary, SubsystemState};
 pub use runtime_config::compose_pipeline_config;
 pub use snapshot::{
     DaemonSnapshot, DeviceMetrics, ModelSnapshot, PipelineSnapshot, RuntimeSnapshot,

@@ -124,6 +124,16 @@ impl YamlConfigRepository {
         save_document_field(&self.path, section, key, value, expected_revision)
     }
 
+    /// Apply a field batch in one revision-checked, atomic file replacement.
+    /// `None` removes a field; `Some` replaces the complete field value.
+    pub fn save_fields(
+        &self,
+        fields: &[(String, String, Option<Value>)],
+        expected_revision: u64,
+    ) -> Result<AppConfig, ConfigError> {
+        save_document_fields(&self.path, fields, expected_revision)
+    }
+
     pub fn replace_document(
         &self,
         replacement: Value,
@@ -978,6 +988,7 @@ fn mark_production_fields(document: &Value, config: &mut AppConfig) {
     }
     if let Some(device) = &mut config.device {
         let fields: &[&str] = match device.backend {
+            super::DeviceBackend::Null => &["backend"],
             super::DeviceBackend::NativeUdp => &[
                 "auto_connect",
                 "backend",
@@ -1157,7 +1168,21 @@ fn save_document_field(
     value: Value,
     expected_revision: u64,
 ) -> Result<AppConfig, ConfigError> {
-    validate_field_target(path, section, key)?;
+    save_document_fields(
+        path,
+        &[(section.to_owned(), key.to_owned(), Some(value))],
+        expected_revision,
+    )
+}
+
+fn save_document_fields(
+    path: &Path,
+    fields: &[(String, String, Option<Value>)],
+    expected_revision: u64,
+) -> Result<AppConfig, ConfigError> {
+    for (section, key, _) in fields {
+        validate_field_target(path, section, key)?;
+    }
     ensure_save_supported(path)?;
     let parent = parent_directory(path);
     let directory = File::open(parent).map_err(|source| read_error(path, source))?;
@@ -1183,24 +1208,33 @@ fn save_document_field(
         .as_mapping_mut()
         .ok_or_else(|| ConfigError::InvalidFieldTarget {
             path: path.to_owned(),
-            section: section.to_owned(),
-            key: key.to_owned(),
+            section: "batch".to_owned(),
+            key: "batch".to_owned(),
             reason: "configuration root must be a mapping",
         })?;
-    let section_key = Value::String(section.to_owned());
-    let section_value = root
-        .entry(section_key)
-        .or_insert_with(|| Value::Mapping(Default::default()));
-    let section_mapping =
-        section_value
-            .as_mapping_mut()
-            .ok_or_else(|| ConfigError::InvalidFieldTarget {
-                path: path.to_owned(),
-                section: section.to_owned(),
-                key: key.to_owned(),
-                reason: "target section must be a mapping",
-            })?;
-    section_mapping.insert(Value::String(key.to_owned()), value);
+    for (section, key, value) in fields {
+        let section_key = Value::String(section.to_owned());
+        let section_value = root
+            .entry(section_key)
+            .or_insert_with(|| Value::Mapping(Default::default()));
+        let section_mapping =
+            section_value
+                .as_mapping_mut()
+                .ok_or_else(|| ConfigError::InvalidFieldTarget {
+                    path: path.to_owned(),
+                    section: section.to_owned(),
+                    key: key.to_owned(),
+                    reason: "target section must be a mapping",
+                })?;
+        match value {
+            Some(value) => {
+                section_mapping.insert(Value::String(key.to_owned()), value.clone());
+            }
+            None => {
+                section_mapping.remove(Value::String(key.to_owned()));
+            }
+        }
+    }
     root.insert(
         Value::String("revision".to_owned()),
         Value::Number(next_revision.into()),
@@ -1807,6 +1841,94 @@ impl Drop for TemporaryCleanup {
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bootstrap_uses_empty_protocol_and_legacy_device_replacement_clears_its_selection() {
+        let root = std::env::temp_dir().join(format!(
+            "ns-protocol-config-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = root.join("config.yaml");
+        let mut config = YamlConfigRepository::initialize_default(&path).unwrap();
+        assert_eq!(
+            config.device.as_ref().unwrap().backend,
+            super::super::DeviceBackend::Null
+        );
+        let device = config.device.as_mut().unwrap();
+        device.backend = super::super::DeviceBackend::NativeUdp;
+        device.active_mouse_protocol_id = None;
+        let repository = YamlConfigRepository::new(&path);
+        let saved = repository.save_config(&config, 0).unwrap();
+        assert!(
+            saved
+                .device
+                .as_ref()
+                .unwrap()
+                .active_mouse_protocol_id
+                .is_none()
+        );
+        assert!(
+            repository
+                .load_config()
+                .unwrap()
+                .device
+                .unwrap()
+                .active_mouse_protocol_id
+                .is_none()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mouse_protocol_configuration_and_selection_round_trip_to_file() {
+        use super::super::{DeviceBackend, MouseProtocol, MouseProtocolModel};
+        let root = std::env::temp_dir().join(format!(
+            "ns-protocol-file-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = root.join("config.yaml");
+        let mut config = YamlConfigRepository::initialize_default(&path).unwrap();
+        let device = config.device.as_mut().unwrap();
+        device.host = "10.0.0.42".into();
+        device.port = 8899;
+        device.uuid = "1234ABCD".into();
+        device.backend = DeviceBackend::NativeUdp;
+        device.active_mouse_protocol_id = Some("saved-protocol".into());
+        device.mouse_protocols.push(MouseProtocol {
+            id: "saved-protocol".into(),
+            model: MouseProtocolModel::Net,
+            host: device.host.clone(),
+            port: device.port,
+            uuid: device.uuid.clone(),
+        });
+        let repository = YamlConfigRepository::new(&path);
+        let saved = repository.save_config(&config, 0).unwrap();
+        let loaded = repository.load_config().unwrap();
+        let hardware = loaded.device.as_ref().unwrap();
+        assert_eq!(loaded.revision, saved.revision);
+        assert_eq!(
+            hardware.active_mouse_protocol_id.as_deref(),
+            Some("saved-protocol")
+        );
+        assert_eq!(hardware.mouse_protocols[0].host, "10.0.0.42");
+        assert_eq!(hardware.mouse_protocols[0].port, 8899);
+        assert_eq!(hardware.mouse_protocols[0].uuid, "1234ABCD");
+        config = loaded;
+        let device = config.device.as_mut().unwrap();
+        device.backend = DeviceBackend::Null;
+        device.active_mouse_protocol_id = Some("empty".into());
+        repository.save_config(&config, saved.revision).unwrap();
+        let loaded = repository.load_config().unwrap();
+        assert_eq!(loaded.device.as_ref().unwrap().backend, DeviceBackend::Null);
+        assert_eq!(loaded.device.unwrap().mouse_protocols.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn legacy_confidence_and_age_gates_migrate_without_loosening() {

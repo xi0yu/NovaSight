@@ -6,6 +6,51 @@ use crate::error::AppError;
 use crate::perception::types::{Generation, MonotonicNanos, RuntimeEpoch};
 use crate::ports::{PointerDevice, PointerDeviceMode};
 
+/// Explicit output consumer that accepts commands without storing or sending them.
+#[derive(Debug, Default)]
+pub struct NullPointerDevice {
+    attempts: std::sync::atomic::AtomicU64,
+}
+
+impl PointerDevice for NullPointerDevice {
+    fn mode(&self) -> PointerDeviceMode {
+        PointerDeviceMode::Commissioned
+    }
+    fn send(&self, command: DeviceCommand) -> Result<DeviceReceipt, AppError> {
+        let attempt = self
+            .attempts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(DeviceReceipt::accepted(attempt, command))
+    }
+}
+
+#[cfg(test)]
+mod null_tests {
+    use super::*;
+    #[test]
+    fn empty_consumer_accepts_commands_without_retaining_them_or_reading_buttons() {
+        let device = NullPointerDevice::default();
+        let command = DeviceCommand {
+            epoch: RuntimeEpoch(1),
+            generation: Generation(1),
+            source_captured_at: MonotonicNanos(1),
+            issued_at: MonotonicNanos(2),
+            target_object_id: 3,
+            delta_x_counts: 10,
+            delta_y_counts: -4,
+        };
+        device.connect().unwrap();
+        for attempt in 0..1000 {
+            assert_eq!(
+                device.send(command).unwrap(),
+                DeviceReceipt::accepted(attempt, command)
+            );
+        }
+        assert_eq!(device.buttons().unwrap(), None);
+        device.disconnect().unwrap();
+    }
+}
+
 /// Fully typed pointer movement derived from one runtime observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeviceCommand {

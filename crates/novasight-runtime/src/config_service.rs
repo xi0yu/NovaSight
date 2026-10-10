@@ -26,6 +26,22 @@ pub struct ConfigFieldUpdate {
     pub expected_revision: Option<u64>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigParameterChange {
+    pub section: String,
+    pub key: String,
+    /// Null removes an optional value and restores its configured default.
+    pub value: Value,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigParameterUpdate {
+    pub expected_revision: u64,
+    pub changes: Vec<ConfigParameterChange>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigApplyMode {
@@ -135,28 +151,73 @@ impl PersistedTriggerMode<'_> {
 }
 
 pub(crate) struct PersistedPipeline<'a> {
+    repository: &'a YamlConfigRepository,
+    rollback_fields: Vec<(String, String, Option<serde_yaml::Value>)>,
     _update_guard: MutexGuard<'a, ()>,
     current_guard: RwLockWriteGuard<'a, AppConfig>,
     effective_revision: &'a AtomicU64,
     effective_config: &'a std::sync::RwLock<AppConfig>,
     config: AppConfig,
+    live_config: AppConfig,
     pending_sections: Vec<&'static str>,
 }
 
 impl PersistedPipeline<'_> {
-    pub(crate) fn config(&self) -> &AppConfig {
-        &self.config
+    pub(crate) fn live_config(&self) -> &AppConfig {
+        &self.live_config
+    }
+
+    pub(crate) async fn rollback(
+        mut self,
+        apply: RuntimeError,
+        recovery: Option<RuntimeError>,
+    ) -> ConfigServiceError {
+        let repository = self.repository.clone();
+        let fields = self.rollback_fields;
+        let failed_revision = self.config.revision;
+        let was_effective =
+            self.effective_revision.load(Ordering::Acquire) == self.current_guard.revision;
+        let result =
+            tokio::task::spawn_blocking(move || repository.save_fields(&fields, failed_revision))
+                .await
+                .map_err(ConfigServiceError::SaveTask)
+                .and_then(|result| result.map_err(ConfigServiceError::Config));
+        let (rollback_revision, rollback_error) = match result {
+            Ok(config) => {
+                *self.current_guard = config.clone();
+                if was_effective && recovery.is_none() {
+                    *self
+                        .effective_config
+                        .write()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) = config.clone();
+                    self.effective_revision
+                        .store(config.revision, Ordering::Release);
+                }
+                (Some(config.revision), None)
+            }
+            Err(error) => {
+                // Keep the desired snapshot truthful even when compensating persistence fails.
+                *self.current_guard = self.config;
+                (None, Some(error.to_string()))
+            }
+        };
+        ConfigServiceError::RuntimeApplyFailed {
+            apply,
+            previous_runtime_restored: recovery.is_none(),
+            recovery,
+            rollback_revision,
+            rollback_error,
+        }
     }
 
     pub(crate) fn commit(mut self, live_pipeline: bool) -> ConfigUpdate {
         *self.current_guard = self.config.clone();
         let restart_required = !self.pending_sections.is_empty();
         if restart_required {
-            self.effective_config
+            *self
+                .effective_config
                 .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .pipeline
-                .clone_from(&self.config.pipeline);
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.live_config;
         } else {
             *self
                 .effective_config
@@ -677,6 +738,15 @@ impl ConfigService {
         runtime.update_pipeline_config(self.clone(), update).await
     }
 
+    /// Persist and install control parameters in the runtime actor without an epoch reload.
+    pub async fn update_parameters(
+        &self,
+        runtime: &RuntimeHandle,
+        update: ConfigParameterUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        runtime.update_parameter_config(self.clone(), update).await
+    }
+
     pub(crate) fn output_gate_value(
         update: &ConfigFieldUpdate,
     ) -> Result<bool, ConfigServiceError> {
@@ -851,6 +921,8 @@ impl ConfigService {
 
         let yaml_value =
             serde_yaml::to_value(update.value).map_err(ConfigServiceError::SerializeFieldValue)?;
+        let rollback_fields =
+            parameter_rollback_fields(&current, &[(update.section.clone(), update.key.clone())])?;
         let repository = self.inner.repository.clone();
         let section = update.section;
         let key = update.key;
@@ -866,13 +938,87 @@ impl ConfigService {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         let pending_sections = non_pipeline_pending_sections(&effective, &config)?;
+        let mut live_config = effective;
+        live_config.pipeline.clone_from(&config.pipeline);
 
         Ok(PersistedPipeline {
+            repository: &self.inner.repository,
+            rollback_fields,
             _update_guard,
             current_guard,
             effective_revision: &self.inner.effective_revision,
             effective_config: &self.inner.effective_config,
             config,
+            live_config,
+            pending_sections,
+        })
+    }
+
+    pub(crate) async fn persist_parameters(
+        &self,
+        update: ConfigParameterUpdate,
+    ) -> Result<PersistedPipeline<'_>, ConfigServiceError> {
+        let _update_guard = self.inner.update_lock.lock().await;
+        let current_guard = self.inner.current.write().await;
+        let current = current_guard.clone();
+        if update.expected_revision != current.revision {
+            return Err(ConfigError::RevisionConflict {
+                path: self.inner.repository.path().to_owned(),
+                expected: update.expected_revision,
+                actual: current.revision,
+            }
+            .into());
+        }
+        let candidate = apply_parameter_changes(&current, &update.changes)?;
+        candidate
+            .validate_configured_adapters()
+            .map_err(|error| ConfigServiceError::ParameterUpdateInvalid(error.to_string()))?;
+        let effective = self.blocking_effective_snapshot();
+        let live_config = apply_parameter_changes(&effective, &update.changes)?;
+        crate::compose_pipeline_config(&live_config, None)
+            .map_err(ConfigServiceError::ParameterUpdateInvalid)?;
+        let mut pending_sections = non_pipeline_pending_sections(&live_config, &candidate)?;
+        if config_value_differs(&live_config.pipeline, &candidate.pipeline)? {
+            pending_sections.push("pipeline");
+        }
+        let repository = self.inner.repository.clone();
+        let rollback_fields = parameter_rollback_fields(
+            &current,
+            &update
+                .changes
+                .iter()
+                .map(|change| (change.section.clone(), change.key.clone()))
+                .collect::<Vec<_>>(),
+        )?;
+        let fields = update
+            .changes
+            .into_iter()
+            .map(|change| {
+                let value = if change.value.is_null() {
+                    None
+                } else {
+                    Some(
+                        serde_yaml::to_value(change.value)
+                            .map_err(ConfigServiceError::SerializeFieldValue)?,
+                    )
+                };
+                Ok((change.section, change.key, value))
+            })
+            .collect::<Result<Vec<_>, ConfigServiceError>>()?;
+        let config = tokio::task::spawn_blocking(move || {
+            repository.save_fields(&fields, update.expected_revision)
+        })
+        .await
+        .map_err(ConfigServiceError::SaveTask)??;
+        Ok(PersistedPipeline {
+            repository: &self.inner.repository,
+            rollback_fields,
+            _update_guard,
+            current_guard,
+            effective_revision: &self.inner.effective_revision,
+            effective_config: &self.inner.effective_config,
+            config,
+            live_config,
             pending_sections,
         })
     }
@@ -991,6 +1137,8 @@ pub enum ConfigServiceError {
     TriggerModeValidation(novasight_store::config::ConfigValidationError),
     #[error("pipeline update must target the pipeline section")]
     PipelineUpdateInvalid,
+    #[error("control parameter update is invalid: {0}")]
+    ParameterUpdateInvalid(String),
     #[error(
         "control.output_enabled and control.trigger_mode require the coordinated runtime configuration transaction"
     )]
@@ -1049,6 +1197,7 @@ impl ConfigServiceError {
             Self::TriggerModeUpdateInvalid => "CONFIG_FIELD_VALUE_INVALID",
             Self::TriggerModeValidation(_) => "CONFIG_VALIDATION_ERROR",
             Self::PipelineUpdateInvalid => "CONFIG_FIELD_VALUE_INVALID",
+            Self::ParameterUpdateInvalid(_) => "CONFIG_FIELD_VALUE_INVALID",
             Self::HotUpdateTransactionRequired => "CONFIG_HOT_UPDATE_TRANSACTION_REQUIRED",
             Self::OutputGateDisabledButNotPersisted { .. } => {
                 "CONFIG_OUTPUT_GATE_DISABLED_NOT_PERSISTED"
@@ -1062,6 +1211,76 @@ impl ConfigServiceError {
             Self::SaveTask(_) => "CONFIG_SAVE_TASK_FAILED",
         }
     }
+}
+
+fn parameter_rollback_fields(
+    config: &AppConfig,
+    keys: &[(String, String)],
+) -> Result<Vec<(String, String, Option<serde_yaml::Value>)>, ConfigServiceError> {
+    let document = serde_yaml::to_value(config).map_err(ConfigServiceError::SerializeFieldValue)?;
+    Ok(keys
+        .iter()
+        .map(|(section, key)| {
+            (
+                section.clone(),
+                key.clone(),
+                document
+                    .get(section.as_str())
+                    .and_then(|value| value.get(key.as_str()))
+                    .cloned(),
+            )
+        })
+        .collect())
+}
+
+fn apply_parameter_changes(
+    config: &AppConfig,
+    changes: &[ConfigParameterChange],
+) -> Result<AppConfig, ConfigServiceError> {
+    let invalid = ConfigServiceError::ParameterUpdateInvalid;
+    if changes.is_empty() || changes.len() > 64 {
+        return Err(invalid("expected 1 to 64 parameter changes".to_owned()));
+    }
+    let mut document = serde_json::to_value(config).map_err(|error| invalid(error.to_string()))?;
+    let pipeline_fields =
+        serde_json::to_value(novasight_store::config::PipelineRuntimeConfig::default())
+            .map_err(|error| invalid(error.to_string()))?;
+    let mut seen = std::collections::BTreeSet::new();
+    for change in changes {
+        let allowed = match change.section.as_str() {
+            "pipeline" => pipeline_fields.get(&change.key).is_some(),
+            "control" => matches!(change.key.as_str(), "aim" | "fire_stabilization"),
+            "inference" => matches!(
+                change.key.as_str(),
+                "detection_class_profile"
+                    | "detection_class_profiles"
+                    | "detection_class_priority"
+                    | "detection_class_priorities"
+                    | "detection_class_filter"
+                    | "detection_class_filters"
+                    | "detection_custom_presets"
+            ),
+            _ => false,
+        };
+        if !allowed || !seen.insert((&change.section, &change.key)) {
+            return Err(invalid(format!(
+                "unsupported or duplicate parameter {}.{}",
+                change.section, change.key
+            )));
+        }
+        let section = document
+            .get_mut(&change.section)
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| invalid(format!("{} is not configured", change.section)))?;
+        if change.value.is_null() {
+            section.remove(&change.key);
+        } else {
+            section.insert(change.key.clone(), change.value.clone());
+        }
+    }
+    config
+        .with_control_parameters(document)
+        .map_err(|error| invalid(error.to_string()))
 }
 
 fn process_restart_sections(
@@ -1171,6 +1390,198 @@ mod tests {
 
     use super::*;
     use crate::{RuntimeDependencies, RuntimeSupervisor};
+
+    fn parameter_service() -> (TestConfigDirectory, PathBuf, ConfigService) {
+        let directory = TestConfigDirectory::new();
+        let path = directory.0.join("novasight.yaml");
+        let mut config = YamlConfigRepository::initialize_default(&path).unwrap();
+        config.capture = Some(novasight_store::config::CaptureConfig::manual(
+            "/dev/video-test".into(),
+            "MJPG".into(),
+            (1920, 1080, 120),
+            (640, 220, 640, 640),
+        ));
+        let config = YamlConfigRepository::new(&path)
+            .save_config(&config, config.revision)
+            .unwrap();
+        let service = ConfigService::new(&path, config);
+        (directory, path, service)
+    }
+
+    fn parameter_update(
+        revision: u64,
+        section: &str,
+        key: &str,
+        value: Value,
+    ) -> ConfigParameterUpdate {
+        ConfigParameterUpdate {
+            expected_revision: revision,
+            changes: vec![ConfigParameterChange {
+                section: section.into(),
+                key: key.into(),
+                value,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn parameter_batch_updates_live_without_restarting_or_opening_output() {
+        let (_directory, path, service) = parameter_service();
+        let (supervisor, runtime) =
+            RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_output_enabled(false));
+        runtime.start().await.unwrap();
+        let epoch = runtime.snapshot().pipeline.epoch;
+        let mut update =
+            parameter_update(1, "pipeline", "p_response_scale", serde_json::json!(0.7));
+        update.changes.push(ConfigParameterChange {
+            section: "control".into(),
+            key: "aim".into(),
+            value: serde_json::json!({"class_roles":{"default":{}}}),
+        });
+        let result = service.update_parameters(&runtime, update).await.unwrap();
+        assert!(result.applied && !result.restart_required);
+        assert_eq!(result.apply_mode, ConfigApplyMode::HotUpdate);
+        assert_eq!(runtime.snapshot().pipeline.epoch, epoch);
+        assert!(!runtime.snapshot().pipeline_metrics.output_gate_open);
+        assert_eq!(
+            service
+                .blocking_effective_snapshot()
+                .pipeline
+                .p_response_scale,
+            0.7
+        );
+        assert_eq!(
+            YamlConfigRepository::load(&path)
+                .unwrap()
+                .pipeline
+                .p_response_scale,
+            0.7
+        );
+        assert_eq!(service.effective_revision(), 2);
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn parameter_batch_replaces_class_maps_and_removes_optional_metadata() {
+        let (_directory, path, _service) = parameter_service();
+        let repository = YamlConfigRepository::new(&path);
+        let config = repository
+            .save_fields(
+                &[
+                    (
+                        "inference".into(),
+                        "detection_class_profiles".into(),
+                        Some(serde_yaml::from_str("{legacy: [enemy]}").unwrap()),
+                    ),
+                    (
+                        "inference".into(),
+                        "detection_class_priority".into(),
+                        Some(serde_yaml::Value::String("0".into())),
+                    ),
+                ],
+                1,
+            )
+            .unwrap();
+        let service = ConfigService::new(&path, config);
+        let (supervisor, runtime) = RuntimeSupervisor::spawn(RuntimeDependencies::recording());
+        let mut update = parameter_update(
+            2,
+            "inference",
+            "detection_class_profiles",
+            serde_json::json!({"default":["target"]}),
+        );
+        update.changes.push(ConfigParameterChange {
+            section: "inference".into(),
+            key: "detection_class_priority".into(),
+            value: Value::Null,
+        });
+        let result = service.update_parameters(&runtime, update).await.unwrap();
+        assert!(result.applied && !result.restart_required);
+        let persisted = YamlConfigRepository::load(&path).unwrap();
+        let inference = persisted.inference.unwrap();
+        assert_eq!(
+            inference.extra["detection_class_profiles"],
+            serde_yaml::from_str::<serde_yaml::Value>("{default: [target]}").unwrap()
+        );
+        assert!(!inference.extra.contains_key("detection_class_priority"));
+        assert!(
+            service
+                .blocking_effective_snapshot()
+                .require_vision_adapters()
+                .is_ok()
+        );
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_forbidden_duplicate_and_stale_parameter_batches_do_not_write() {
+        let (_directory, path, service) = parameter_service();
+        let before = fs::read(&path).unwrap();
+        let (supervisor, runtime) = RuntimeSupervisor::spawn(RuntimeDependencies::recording());
+        for update in [
+            parameter_update(1, "control", "output_enabled", Value::Bool(true)),
+            parameter_update(1, "hardware", "host", serde_json::json!("example.com")),
+            parameter_update(
+                1,
+                "pipeline",
+                "p_response_scale",
+                serde_json::json!("invalid"),
+            ),
+            parameter_update(0, "pipeline", "p_response_scale", serde_json::json!(0.7)),
+            ConfigParameterUpdate {
+                expected_revision: 1,
+                changes: vec![],
+            },
+            ConfigParameterUpdate {
+                expected_revision: 1,
+                changes: vec![
+                    ConfigParameterChange {
+                        section: "pipeline".into(),
+                        key: "p_response_scale".into(),
+                        value: serde_json::json!(0.7)
+                    };
+                    2
+                ],
+            },
+        ] {
+            assert!(service.update_parameters(&runtime, update).await.is_err());
+            assert_eq!(fs::read(&path).unwrap(), before);
+            assert_eq!(service.snapshot().await.revision, 1);
+        }
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_live_parameter_install_compensates_persistence() {
+        let (_directory, path, service) = parameter_service();
+        let transaction = service
+            .persist_parameters(parameter_update(
+                1,
+                "pipeline",
+                "p_response_scale",
+                serde_json::json!(0.7),
+            ))
+            .await
+            .unwrap();
+        let error = transaction
+            .rollback(RuntimeError::pipeline_rejected("test failure"), None)
+            .await;
+        assert!(matches!(
+            error,
+            ConfigServiceError::RuntimeApplyFailed {
+                previous_runtime_restored: true,
+                rollback_revision: Some(3),
+                ..
+            }
+        ));
+        let persisted = YamlConfigRepository::load(&path).unwrap();
+        assert_ne!(persisted.pipeline.p_response_scale, 0.7);
+        assert_eq!(service.snapshot().await.revision, persisted.revision);
+        assert_eq!(service.effective_revision(), persisted.revision);
+    }
 
     struct TestConfigDirectory(PathBuf);
 

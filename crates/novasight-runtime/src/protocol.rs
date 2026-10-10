@@ -7,6 +7,13 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DeviceConnectionProbe {
+    pub reachable: bool,
+    pub elapsed_ms: u64,
+    pub checked_at_ms: u64,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubsystemState {

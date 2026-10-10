@@ -781,6 +781,7 @@ fn print_temporary_license_access(access: Option<&TemporaryLicenseAccess>) {
         return;
     };
     eprintln!("NovaSight 临时授权码 {}", access.code);
+    eprintln!("临时授权从本次启动起仅限 24 小时，到期停止资源服务，保留前台；重复登录不会续期。");
 }
 
 fn ready_address(ready: &ReadyDocument) -> Option<SocketAddr> {

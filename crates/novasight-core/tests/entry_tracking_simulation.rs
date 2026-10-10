@@ -127,7 +127,7 @@ fn entry_is_smoothstep_and_restarts_after_each_gate() {
             assert_eq!(result.block_reason, BlockReason::EntryRampPending);
         }
     }
-    for invalid in [f64::NAN, -1.0, 2001.0] {
+    for invalid in [f64::NAN, -1.0, 1001.0] {
         let result = AimAlgorithm::new(AimAlgorithmConfig {
             entry_ramp_ms: invalid,
             ..config

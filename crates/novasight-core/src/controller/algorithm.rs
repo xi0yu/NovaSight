@@ -383,7 +383,7 @@ impl AimAlgorithm {
         }
         if !self.prediction.config_valid()
             || !self.config.entry_ramp_ms.is_finite()
-            || !(0.0..=2000.0).contains(&self.config.entry_ramp_ms)
+            || !(0.0..=1000.0).contains(&self.config.entry_ramp_ms)
             || !self.config.response_reference_hz.is_finite()
             || !(0.0..=240.0).contains(&self.config.response_reference_hz)
         {

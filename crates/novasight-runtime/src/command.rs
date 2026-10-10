@@ -13,7 +13,9 @@ use tokio::sync::oneshot;
 use novasight_core::DeviceReceipt;
 use novasight_store::config::AppConfig;
 
-use crate::config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate};
+use crate::config_service::{
+    ConfigFieldUpdate, ConfigParameterUpdate, ConfigService, ConfigServiceError, ConfigUpdate,
+};
 use crate::error::RuntimeError;
 use crate::model_activation::{
     ModelActivationError, ModelActivationRequest, ModelActivationResult,
@@ -84,6 +86,15 @@ pub(crate) enum RuntimeCommand {
         service: ConfigService,
         update: ConfigFieldUpdate,
         reply: oneshot::Sender<Result<ConfigUpdate, ConfigServiceError>>,
+    },
+    UpdateParameterConfig {
+        service: ConfigService,
+        update: ConfigParameterUpdate,
+        reply: oneshot::Sender<Result<ConfigUpdate, ConfigServiceError>>,
+    },
+    ProbeDevice {
+        candidate: Option<Box<AppConfig>>,
+        reply: oneshot::Sender<Result<crate::protocol::DeviceConnectionProbe, RuntimeError>>,
     },
     SetPreviewActive {
         active: bool,

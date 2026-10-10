@@ -139,7 +139,9 @@ fn search_circle_uses_observed_aim_inclusive_boundary_and_not_box_size() {
         (240.0, 240.0, 100.0, (430.0, 320.0), false),
         (40.0, 80.0, f64::NAN, (320.0, 320.0), false),
         (40.0, 80.0, f64::INFINITY, (320.0, 320.0), false),
-        (40.0, 80.0, 0.0, (320.0, 320.0), false),
+        (40.0, 80.0, 0.0, (320.0, 320.0), true),
+        (40.0, 80.0, 0.0, (320.1, 320.0), false),
+        (40.0, 80.0, 1001.0, (320.0, 320.0), false),
         (40.0, 80.0, -1.0, (320.0, 320.0), false),
     ];
     for (width, height, radius, point, expected) in cases {
@@ -193,16 +195,16 @@ fn search_circle_exit_suppresses_output_without_discarding_observed_identity() {
     let mut core = TargetingCore::new(config.clone());
     let target = Detection::new(1, 0, 300.0, 280.0, 40.0, 80.0, 0.95).unwrap();
     let id = core
-        .select_at(&[target.clone()], (320.0, 320.0), 1_000_000_000)
+        .select_at(std::slice::from_ref(&target), (320.0, 320.0), 1_000_000_000)
         .target_track_id
         .unwrap();
-    let outside = core.select_at(&[target.clone()], (345.0, 320.0), 1_010_000_000);
+    let outside = core.select_at(std::slice::from_ref(&target), (345.0, 320.0), 1_010_000_000);
     assert!(outside.target_object_id.is_none());
     assert_eq!(core.locked().unwrap().id, id);
     // A live radius change affects the next observation, retaining identity.
     config.target_fov_radius_px = 30.0;
     core.set_config(config.clone());
-    let inside = core.select_at(&[target.clone()], (345.0, 320.0), 1_020_000_000);
+    let inside = core.select_at(std::slice::from_ref(&target), (345.0, 320.0), 1_020_000_000);
     assert_eq!(inside.target_track_id, Some(id));
     assert!(!inside.target_rebuilt);
     config.target_fov_radius_px = 10.0;
@@ -254,8 +256,12 @@ fn search_radius_does_not_change_ranking_or_switching_for_admitted_targets() {
         };
         let mut core = TargetingCore::new(config.clone());
         let mut trace = vec![
-            core.select_at(&[near.clone()], OBSERVATION_CENTER, 1_000_000_000)
-                .target_object_id,
+            core.select_at(
+                std::slice::from_ref(&near),
+                OBSERVATION_CENTER,
+                1_000_000_000,
+            )
+            .target_object_id,
         ];
         for frame in 1..=6 {
             let result = core.select_at(
@@ -1164,10 +1170,18 @@ fn a_nested_other_class_cannot_inherit_the_selected_part_identity() {
         .unwrap();
     // Size and center gates alone permit this pair, but box overlap is low.
     let head = Detection::new(2, 1, 290.0, 280.0, 60.0, 80.0, 0.95).unwrap();
-    let missing = core.select_at(&[head.clone()], OBSERVATION_CENTER, 1_020_000_000);
+    let missing = core.select_at(
+        std::slice::from_ref(&head),
+        OBSERVATION_CENTER,
+        1_020_000_000,
+    );
     assert_eq!(missing.target_track_id, None);
     assert_eq!(core.locked().unwrap().id, locked);
-    core.select_at(&[head.clone()], OBSERVATION_CENTER, 1_040_000_000);
+    core.select_at(
+        std::slice::from_ref(&head),
+        OBSERVATION_CENTER,
+        1_040_000_000,
+    );
     let fallback = core.select_at(&[head], OBSERVATION_CENTER, 1_100_000_000);
     assert_eq!(fallback.target_class_id, Some(1));
     assert_ne!(fallback.target_track_id, Some(locked));
@@ -1193,7 +1207,11 @@ fn proven_head_body_handoff_keeps_subject_identity_and_marks_part_change() {
     let subject = body_lock.target_subject_id.expect("physical subject");
     assert_eq!(body_lock.target_class_id, Some(1));
 
-    let head_handoff = core.select_at(&[head.clone()], OBSERVATION_CENTER, 1_020_000_000);
+    let head_handoff = core.select_at(
+        std::slice::from_ref(&head),
+        OBSERVATION_CENTER,
+        1_020_000_000,
+    );
     assert_ne!(head_handoff.target_track_id, Some(body_track));
     assert_eq!(head_handoff.target_subject_id, Some(subject));
     assert_eq!(head_handoff.target_class_id, Some(0));

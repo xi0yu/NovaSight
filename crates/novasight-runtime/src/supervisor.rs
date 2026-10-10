@@ -26,7 +26,9 @@ use novasight_store::model_catalog::{DeploymentChange, ModelCatalogError, Sqlite
 use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 
 use crate::command::RuntimeCommand;
-use crate::config_service::{ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate};
+use crate::config_service::{
+    ConfigFieldUpdate, ConfigParameterUpdate, ConfigService, ConfigServiceError, ConfigUpdate,
+};
 use crate::error::{RuntimeError, RuntimeErrorKind};
 use crate::model_activation::{
     ModelActivationError, ModelActivationRequest, ModelActivationResult,
@@ -35,7 +37,7 @@ use crate::model_ingress::{
     ModelIngressError, ModelIngressRequest, ModelIngressResult, ModelIngressStage, ModelJobRunner,
     ModelManifestTransaction, load_profile, validate_worker_output,
 };
-use crate::protocol::{RuntimeErrorSummary, SubsystemState};
+use crate::protocol::{DeviceConnectionProbe, RuntimeErrorSummary, SubsystemState};
 use crate::runtime_config::compose_pipeline_config;
 use crate::snapshot::{
     DaemonSnapshot, DeviceMetrics, ModelSnapshot, PipelineSnapshot, RuntimeSnapshot,
@@ -320,6 +322,7 @@ impl RuntimeDependencies {
         pipeline.targeting.clone_from(&live.targeting);
         pipeline.control = live.control;
         pipeline.output_limits = live.output_limits;
+        pipeline.fire_stabilization = live.fire_stabilization;
         pipeline.trigger_hold_delay_ms = live.trigger_hold_delay_ms;
         Ok(live)
     }
@@ -1079,6 +1082,47 @@ impl RuntimeHandle {
         self.preview.as_ref().map(PreviewHub::snapshot)
     }
 
+    pub(crate) async fn update_parameter_config(
+        &self,
+        service: ConfigService,
+        update: ConfigParameterUpdate,
+    ) -> Result<ConfigUpdate, ConfigServiceError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::UpdateParameterConfig {
+                service,
+                update,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_closed()))?;
+        reply_rx
+            .await
+            .map_err(|_| ConfigServiceError::Runtime(RuntimeError::supervisor_reply_lost()))?
+    }
+
+    pub async fn probe_device(&self) -> Result<DeviceConnectionProbe, RuntimeError> {
+        self.probe_device_candidate(None).await
+    }
+
+    /// Candidate sessions are serialized with lifecycle commands and never installed.
+    pub async fn probe_device_candidate(
+        &self,
+        candidate: Option<AppConfig>,
+    ) -> Result<DeviceConnectionProbe, RuntimeError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.command_tx
+            .send(RuntimeCommand::ProbeDevice {
+                candidate: candidate.map(Box::new),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| RuntimeError::supervisor_closed())?;
+        reply_rx
+            .await
+            .map_err(|_| RuntimeError::supervisor_reply_lost())?
+    }
+
     pub fn subscribe_preview(&self) -> Result<PreviewSubscription, RuntimeError> {
         self.preview
             .as_ref()
@@ -1231,6 +1275,15 @@ impl RuntimeHandle {
     pub async fn emergency_stop(&self) -> Result<RuntimeSnapshot, RuntimeError> {
         self.send_urgent_command(|urgent, reply| RuntimeCommand::EmergencyStop { urgent, reply })
             .await
+    }
+
+    /// Keep queued resource work cancelled until the owner drops this guard.
+    pub fn hold_resource_stop(&self) -> impl Send + 'static {
+        let guard = self.urgent_stop.register();
+        if let Some(ingress) = self.ingress_rx.borrow().clone() {
+            ingress.request_output_stop();
+        }
+        guard
     }
 
     pub async fn shutdown_daemon(&self) -> Result<(), RuntimeError> {
@@ -1561,11 +1614,23 @@ async fn handle_command(
             reply,
         } => {
             let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
-            let result = update_pipeline_config_state(service, update, ingress, dependencies).await;
-            if result.is_ok() {
-                refresh_pipeline_metrics(state, active);
-                publish(snapshot_tx, state, now_ms());
+            let result =
+                update_pipeline_config_state(service.clone(), update, ingress, dependencies).await;
+            finish_parameter_update(&result, &service, snapshot_tx, state, active);
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::UpdateParameterConfig {
+            service,
+            update,
+            reply,
+        } => {
+            let ingress = active.as_ref().map(|pipeline| pipeline.ingress.clone());
+            let result = async {
+                let transaction = service.persist_parameters(update).await?;
+                apply_persisted_pipeline(&service, transaction, ingress, dependencies).await
             }
+            .await;
+            finish_parameter_update(&result, &service, snapshot_tx, state, active);
             let _ = reply.send(result);
         }
         RuntimeCommand::UpdateOutputConfig {
@@ -1671,6 +1736,12 @@ async fn handle_command(
                 delta_y_counts,
             )
             .await;
+            let _ = reply.send(result);
+        }
+        RuntimeCommand::ProbeDevice { candidate, reply } => {
+            let result =
+                probe_device_connection(snapshot_tx, state, dependencies, candidate.as_deref())
+                    .await;
             let _ = reply.send(result);
         }
         RuntimeCommand::ConnectDevice { reply } => {
@@ -2366,6 +2437,59 @@ async fn compensate_model_activation(
     }
 }
 
+async fn probe_device_connection(
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    state: &mut SupervisorState,
+    dependencies: &RuntimeDependencies,
+    candidate: Option<&AppConfig>,
+) -> Result<DeviceConnectionProbe, RuntimeError> {
+    if state.pipeline != PipelineState::Stopped {
+        return Err(RuntimeError::invalid_pipeline_state(
+            "connection tests require a stopped pipeline",
+        ));
+    }
+    let device = if let Some(config) = candidate {
+        config
+            .validate_configured_adapters()
+            .map_err(|error| RuntimeError::invalid_device_command(error.to_string()))?;
+        let factory = dependencies.device_factory.as_ref().ok_or_else(|| {
+            RuntimeError::device_unavailable(
+                "candidate connection tests are unavailable on this platform",
+            )
+        })?;
+        factory(config)?.device
+    } else {
+        if state.device_mode == PointerDeviceMode::Uncommissioned {
+            return Err(RuntimeError::device_uncommissioned());
+        }
+        dependencies.device()
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let connection = device.connect();
+        let cleanup = device.disconnect();
+        connection
+            .and(cleanup)
+            .map(|()| started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+    })
+    .await
+    .map_err(|error| RuntimeError::device_unavailable(error.to_string()))?;
+    if candidate.is_none() {
+        if let Err(error) = &result {
+            state.subsystems.device.last_error =
+                Some(RuntimeError::device_unavailable(error.to_string()).summary());
+        } else if state.subsystems.device.state != SubsystemState::Unavailable {
+            state.subsystems.device.last_error = None;
+        }
+        publish(snapshot_tx, state, now_ms());
+    }
+    Ok(DeviceConnectionProbe {
+        reachable: true,
+        elapsed_ms: result.map_err(|error| RuntimeError::device_unavailable(error.to_string()))?,
+        checked_at_ms: now_ms(),
+    })
+}
+
 async fn diagnose_device_move(
     snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
     state: &mut SupervisorState,
@@ -2891,13 +3015,60 @@ async fn update_pipeline_config_state(
     dependencies: &RuntimeDependencies,
 ) -> Result<ConfigUpdate, ConfigServiceError> {
     let transaction = service.persist_pipeline(update).await?;
-    let config = dependencies
-        .install_live_pipeline_config(transaction.config())
-        .map_err(ConfigServiceError::Runtime)?;
-    let live_pipeline = install_pipeline_live_config(ingress, config)
-        .await
-        .map_err(ConfigServiceError::Runtime)?;
-    Ok(transaction.commit(live_pipeline))
+    apply_persisted_pipeline(&service, transaction, ingress, dependencies).await
+}
+
+async fn apply_persisted_pipeline(
+    service: &ConfigService,
+    transaction: crate::config_service::PersistedPipeline<'_>,
+    ingress: Option<PipelineIngress>,
+    dependencies: &RuntimeDependencies,
+) -> Result<ConfigUpdate, ConfigServiceError> {
+    let previous = service.blocking_effective_snapshot();
+    let result = async {
+        let config = dependencies.live_pipeline_config(transaction.live_config())?;
+        let live = install_pipeline_live_config(ingress.clone(), config).await?;
+        dependencies.install_live_pipeline_config(transaction.live_config())?;
+        Ok(live)
+    }
+    .await;
+    match result {
+        Ok(live) => Ok(transaction.commit(live)),
+        Err(apply) => {
+            let recovery = match dependencies.install_live_pipeline_config(&previous) {
+                Ok(config) => install_pipeline_live_config(ingress, config).await.err(),
+                Err(error) => Some(error),
+            };
+            Err(transaction.rollback(apply, recovery).await)
+        }
+    }
+}
+
+fn finish_parameter_update(
+    result: &Result<ConfigUpdate, ConfigServiceError>,
+    service: &ConfigService,
+    snapshot_tx: &watch::Sender<Arc<RuntimeSnapshot>>,
+    state: &mut SupervisorState,
+    active: &Option<ActivePipeline>,
+) {
+    let recovery_failed = matches!(
+        result,
+        Err(ConfigServiceError::RuntimeApplyFailed {
+            previous_runtime_restored: false,
+            ..
+        })
+    );
+    if recovery_failed {
+        state.output_enabled = false;
+        if let Some(pipeline) = active {
+            pipeline.runtime.close_output_gate();
+        }
+        service.mark_output_gate_diverged();
+    }
+    if result.is_ok() || recovery_failed {
+        refresh_pipeline_metrics(state, active);
+        publish(snapshot_tx, state, now_ms());
+    }
 }
 
 async fn update_trigger_mode_config_state(
@@ -2908,6 +3079,16 @@ async fn update_trigger_mode_config_state(
 ) -> Result<ConfigUpdate, ConfigServiceError> {
     let config_mode = ConfigService::trigger_mode_value(&update)?;
     let mode = match config_mode {
+        _ if service
+            .blocking_effective_snapshot()
+            .device
+            .as_ref()
+            .is_some_and(|device| {
+                device.backend == novasight_store::config::DeviceBackend::Null
+            }) =>
+        {
+            TriggerMode::Always
+        }
         ConfigTriggerMode::Always => TriggerMode::Always,
         ConfigTriggerMode::Hardware => TriggerMode::Hardware,
     };
@@ -3052,6 +3233,190 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protocol_activation_and_cancellation_replace_the_installed_device() {
+        use novasight_core::NullPointerDevice;
+        use novasight_store::config::{CaptureConfig, DeviceBackend, YamlConfigRepository};
+
+        let empty: Arc<dyn PointerDevice> = Arc::new(NullPointerDevice::default());
+        let native: Arc<dyn PointerDevice> = Arc::new(ProbeDevice::default());
+        let factory_empty = empty.clone();
+        let factory_native = native.clone();
+        let dependencies = RuntimeDependencies::new(
+            Arc::new(ProcessMonotonicClock::default()),
+            empty.clone(),
+            PipelineConfig::default(),
+        )
+        .with_device_factory(move |config| {
+            let device = if config.device.as_ref().unwrap().backend == DeviceBackend::Null {
+                factory_empty.clone()
+            } else {
+                factory_native.clone()
+            };
+            Ok(PointerDeviceInstallation::new(device, None))
+        });
+        let root = std::env::temp_dir().join(format!(
+            "ns-protocol-install-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let mut config =
+            YamlConfigRepository::initialize_default(root.join("config.yaml")).unwrap();
+        config.capture = Some(CaptureConfig::manual(
+            "/dev/video-test".into(),
+            "MJPG".into(),
+            (1920, 1080, 120),
+            (640, 220, 640, 640),
+        ));
+        config.device.as_mut().unwrap().backend = DeviceBackend::NativeUdp;
+        config.device.as_mut().unwrap().active_mouse_protocol_id = None;
+        assert!(Arc::ptr_eq(&dependencies.device(), &empty));
+        dependencies.install_app_config(&config, true).unwrap();
+        assert!(Arc::ptr_eq(&dependencies.device(), &native));
+        config.device.as_mut().unwrap().backend = DeviceBackend::Null;
+        dependencies.install_app_config(&config, true).unwrap();
+        assert!(Arc::ptr_eq(&dependencies.device(), &empty));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_parameter_recovery_latches_output_closed() {
+        let service = ConfigService::new("unused-test-config.yaml", AppConfig::default());
+        let mut state = SupervisorState {
+            output_enabled: true,
+            ..SupervisorState::default()
+        };
+        let (snapshots, _) = watch::channel(Arc::new(state.snapshot(now_ms())));
+        let result = Err(ConfigServiceError::RuntimeApplyFailed {
+            apply: RuntimeError::pipeline_rejected("apply failed"),
+            previous_runtime_restored: false,
+            recovery: Some(RuntimeError::pipeline_rejected("recovery failed")),
+            rollback_revision: Some(2),
+            rollback_error: None,
+        });
+        finish_parameter_update(&result, &service, &snapshots, &mut state, &None);
+        assert!(!state.output_enabled);
+        assert!(!service.output_gate_is_consistent());
+        assert!(!snapshots.borrow().pipeline_metrics.output_gate_open);
+    }
+
+    #[derive(Default)]
+    struct ProbeDevice {
+        fail: bool,
+        connects: AtomicUsize,
+        disconnects: AtomicUsize,
+        sends: AtomicUsize,
+    }
+
+    impl PointerDevice for ProbeDevice {
+        fn mode(&self) -> PointerDeviceMode {
+            PointerDeviceMode::Commissioned
+        }
+        fn connect(&self) -> Result<(), novasight_core::AppError> {
+            self.connects.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                Err(novasight_core::AppError::PointerDevice {
+                    code: "TEST",
+                    message: "handshake failed".into(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        fn disconnect(&self) -> Result<(), novasight_core::AppError> {
+            self.disconnects.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn send(&self, _command: DeviceCommand) -> Result<DeviceReceipt, novasight_core::AppError> {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+            panic!("connectivity probe must never send movement")
+        }
+    }
+
+    #[tokio::test]
+    async fn candidate_probe_preserves_installed_device_and_snapshot_on_success_and_failure() {
+        use novasight_store::config::DeviceConfig;
+        for fail in [false, true] {
+            let active = Arc::new(ProbeDevice::default());
+            let candidate = Arc::new(ProbeDevice {
+                fail,
+                ..ProbeDevice::default()
+            });
+            let temporary = candidate.clone();
+            let dependencies = RuntimeDependencies::new(
+                Arc::new(ProcessMonotonicClock::default()),
+                active.clone(),
+                PipelineConfig::default(),
+            )
+            .with_device_factory(move |_| {
+                Ok(PointerDeviceInstallation::new(temporary.clone(), None))
+            });
+            let mut state = SupervisorState::default();
+            let (snapshots, _) = watch::channel(Arc::new(state.snapshot(now_ms())));
+            let original = snapshots.borrow().clone();
+            let config = AppConfig {
+                device: Some(DeviceConfig::default()),
+                ..AppConfig::default()
+            };
+            let result =
+                probe_device_connection(&snapshots, &mut state, &dependencies, Some(&config)).await;
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(candidate.connects.load(Ordering::SeqCst), 1);
+            assert_eq!(candidate.disconnects.load(Ordering::SeqCst), 1);
+            assert_eq!(candidate.sends.load(Ordering::SeqCst), 0);
+            let installed: Arc<dyn PointerDevice> = active.clone();
+            assert!(Arc::ptr_eq(&dependencies.device(), &installed));
+            assert!(Arc::ptr_eq(&snapshots.borrow(), &original));
+            assert_eq!(active.connects.load(Ordering::SeqCst), 0);
+            assert_eq!(active.disconnects.load(Ordering::SeqCst), 0);
+            state.pipeline = PipelineState::Running;
+            assert!(
+                probe_device_connection(&snapshots, &mut state, &dependencies, Some(&config))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(candidate.connects.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_probe_never_moves_and_always_closes_its_session() {
+        for fail in [false, true] {
+            let device = Arc::new(ProbeDevice {
+                fail,
+                ..ProbeDevice::default()
+            });
+            let dependencies = RuntimeDependencies::new(
+                Arc::new(ProcessMonotonicClock::default()),
+                device.clone(),
+                PipelineConfig::default(),
+            );
+            let mut state = SupervisorState {
+                device_mode: PointerDeviceMode::Commissioned,
+                ..SupervisorState::default()
+            };
+            state.emergency_stop(now_ms());
+            let (snapshots, _) = watch::channel(Arc::new(state.snapshot(now_ms())));
+            let result = probe_device_connection(&snapshots, &mut state, &dependencies, None).await;
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(device.connects.load(Ordering::SeqCst), 1);
+            assert_eq!(device.disconnects.load(Ordering::SeqCst), 1);
+            assert_eq!(device.sends.load(Ordering::SeqCst), 0);
+            assert!(!state.output_enabled);
+            assert_eq!(state.subsystems.device.state, SubsystemState::Unavailable);
+            state.pipeline = PipelineState::Running;
+            assert!(
+                probe_device_connection(&snapshots, &mut state, &dependencies, None)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(device.connects.load(Ordering::SeqCst), 1);
+        }
+    }
 
     #[test]
     fn stopped_state_clears_safety_critical_output_metrics() {

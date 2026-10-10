@@ -79,8 +79,10 @@ inference:
   deepstream_startup_timeout_ms: 10000
   deepstream_shutdown_timeout_ms: 5000
 hardware:
-  auto_connect: false
-  backend: native_udp
+  auto_connect: true
+  backend: "null"
+  active_mouse_protocol_id: empty
+  mouse_protocols: []
   host: "192.168.2.188"
   port: 8888
   uuid: "12345678"

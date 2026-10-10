@@ -64,6 +64,24 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// Replace control parameters and class metadata while preserving adapter-owned
+    /// fields and YAML commissioning evidence omitted from API serialization.
+    pub fn with_control_parameters(
+        &self,
+        document: serde_json::Value,
+    ) -> Result<Self, serde_json::Error> {
+        let parameters: Self = serde_json::from_value(document)?;
+        let mut next = self.clone();
+        next.pipeline = parameters.pipeline;
+        next.pipeline.production_fields_explicit = self.pipeline.production_fields_explicit;
+        next.control = parameters.control;
+        if let (Some(current), Some(parameters)) = (&mut next.inference, parameters.inference) {
+            current.extra = parameters.extra;
+            current.detection_custom_presets = parameters.detection_custom_presets;
+        }
+        Ok(next)
+    }
+
     /// Validate only the model-inference seam used by candidate publication.
     /// Capture, control, server, and pointer-device policy belong to runtime
     /// composition and must not make an otherwise valid Engine unpublishable.
@@ -459,26 +477,26 @@ impl PipelineRuntimeConfig {
         validate_finite_range(
             "pipeline.max_output_x_counts",
             self.max_output_x_counts,
-            1.0,
-            f64::from(i16::MAX),
+            0.0,
+            1000.0,
         )?;
         validate_finite_range(
             "pipeline.max_output_y_counts",
             self.max_output_y_counts,
-            1.0,
-            f64::from(i16::MAX),
+            0.0,
+            1000.0,
         )?;
-        validate_finite_range("pipeline.entry_ramp_ms", self.entry_ramp_ms, 0.0, 2000.0)?;
+        validate_finite_range("pipeline.entry_ramp_ms", self.entry_ramp_ms, 0.0, 1000.0)?;
         validate_finite_range(
             "pipeline.response_reference_hz",
             self.response_reference_hz,
             0.0,
             240.0,
         )?;
-        if self.fire_delay_ms > 5_000 {
+        if self.fire_delay_ms > 2_000 {
             return Err(ConfigValidationError::new(
                 "pipeline.fire_delay_ms",
-                "must be within 0..=5000 ms",
+                "must be within 0..=2000 ms",
             ));
         }
         validate_finite_range(
@@ -496,8 +514,8 @@ impl PipelineRuntimeConfig {
         validate_finite_range(
             "pipeline.target_fov_radius_px",
             self.target_fov_radius_px,
-            0.000_001,
-            100_000.0,
+            0.0,
+            1000.0,
         )?;
         validate_finite_range(
             "pipeline.target_track_max_lost_age_ms",
@@ -1311,6 +1329,10 @@ pub enum InferenceInputSource {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeviceConfig {
     #[serde(default)]
+    pub mouse_protocols: Vec<MouseProtocol>,
+    #[serde(default)]
+    pub active_mouse_protocol_id: Option<String>,
+    #[serde(default)]
     pub auto_connect: bool,
     #[serde(default)]
     pub backend: DeviceBackend,
@@ -1340,6 +1362,8 @@ impl Default for DeviceConfig {
     fn default() -> Self {
         Self {
             auto_connect: false,
+            mouse_protocols: Vec::new(),
+            active_mouse_protocol_id: None,
             backend: DeviceBackend::default(),
             host: default_kmnet_host(),
             port: default_kmnet_port(),
@@ -1357,6 +1381,54 @@ impl Default for DeviceConfig {
 
 impl DeviceConfig {
     fn validate(&self) -> Result<(), ConfigValidationError> {
+        let invalid = |message| ConfigValidationError::new("hardware.mouse_protocols", message);
+        if self.mouse_protocols.len() > 64 {
+            return Err(invalid("at most 64 mouse protocols are supported"));
+        }
+        let mut ids = BTreeSet::new();
+        for protocol in &self.mouse_protocols {
+            if protocol.id.is_empty()
+                || protocol.id.len() > 64
+                || protocol.id == "empty"
+                || !ids.insert(&protocol.id)
+            {
+                return Err(invalid(
+                    "protocol ids must be unique, non-empty, and at most 64 characters",
+                ));
+            }
+            if protocol.host.parse::<std::net::Ipv4Addr>().is_err()
+                || protocol.port == 0
+                || protocol.uuid.len() != 8
+                || !protocol.uuid.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(invalid(
+                    "kmBox requires an IPv4 address, non-zero port, and eight hexadecimal UUID digits",
+                ));
+            }
+        }
+        if let Some(id) = &self.active_mouse_protocol_id {
+            if id == "empty" {
+                if self.backend != DeviceBackend::Null {
+                    return Err(invalid("empty protocol requires null output"));
+                }
+            } else {
+                let protocol = self
+                    .mouse_protocols
+                    .iter()
+                    .find(|protocol| &protocol.id == id)
+                    .ok_or_else(|| invalid("active protocol must exist"))?;
+                if self.backend != DeviceBackend::NativeUdp
+                    || self.host != protocol.host
+                    || self.port != protocol.port
+                    || self.uuid != protocol.uuid
+                {
+                    return Err(invalid("active kmBox connection must match its protocol"));
+                }
+            }
+        }
+        if self.backend == DeviceBackend::Null {
+            return Ok(());
+        }
         if self.auto_connect && self.host.trim().is_empty() {
             return Err(ConfigValidationError::new(
                 "hardware.host",
@@ -1425,9 +1497,29 @@ impl DeviceConfig {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceBackend {
+    Null,
     #[default]
     #[serde(alias = "python_host")]
     NativeUdp,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseProtocolModel {
+    Net,
+    NetPro8k,
+    Nb,
+    Ai,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MouseProtocol {
+    pub id: String,
+    pub model: MouseProtocolModel,
+    pub host: String,
+    pub port: u16,
+    pub uuid: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1629,6 +1721,45 @@ const fn default_kmnet_trigger_poll_interval_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mouse_protocol_registry_requires_valid_connections_and_matching_selection() {
+        let protocol = MouseProtocol {
+            id: "box".into(),
+            model: MouseProtocolModel::Nb,
+            host: "10.0.0.2".into(),
+            port: 8888,
+            uuid: "A1B2C3D4".into(),
+        };
+        let mut config = DeviceConfig {
+            backend: DeviceBackend::Null,
+            active_mouse_protocol_id: Some("empty".into()),
+            mouse_protocols: vec![protocol.clone()],
+            host: String::new(),
+            uuid: String::new(),
+            ..Default::default()
+        };
+        config.validate().unwrap();
+        config.active_mouse_protocol_id = Some("box".into());
+        assert!(config.validate().is_err());
+        config.backend = DeviceBackend::NativeUdp;
+        config.host = protocol.host;
+        config.uuid = protocol.uuid;
+        config.validate().unwrap();
+        config
+            .mouse_protocols
+            .push(config.mouse_protocols[0].clone());
+        assert!(config.validate().is_err());
+        config.mouse_protocols.pop();
+        config.mouse_protocols[0].port = 0;
+        assert!(config.validate().is_err());
+        config.mouse_protocols[0].port = 8888;
+        config.mouse_protocols[0].host = "999.0.0.1".into();
+        assert!(config.validate().is_err());
+        config.mouse_protocols[0].host = "10.0.0.2".into();
+        config.mouse_protocols[0].uuid = "not-uuid".into();
+        assert!(config.validate().is_err());
+    }
 
     #[test]
     fn tracker_association_requires_at_least_one_real_cost_signal() {

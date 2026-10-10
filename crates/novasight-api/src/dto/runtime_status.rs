@@ -787,6 +787,21 @@ impl RuntimeStatusState {
                 last_device_error: snapshot.pipeline_metrics.last_device_error.clone(),
             },
         );
+        if selected_device == "null" {
+            let kmnet = executors.get_mut("kmnet").expect("kmNet projection exists");
+            kmnet.available = false;
+            kmnet.configuration_ready = false;
+            kmnet.configuration_state = "not_selected";
+            kmnet.can_connect = false;
+            kmnet.can_disconnect = false;
+            kmnet.connected = false;
+            kmnet.runtime_connected = false;
+            kmnet.connecting = false;
+            kmnet.buttons_available = false;
+            kmnet.connection_state = "not_selected";
+            kmnet.blocked_reason = Some("null_mouse_protocol");
+            kmnet.retryable = false;
+        }
         let metrics = snapshot.perception_metrics;
         let inference_running =
             running && snapshot.subsystems.inference.state == SubsystemState::Running;
@@ -1227,6 +1242,7 @@ fn studio_presentation(
                 "frame_latency_high"
             }
             _ if selected_device != "replay"
+                && selected_device != "null"
                 && snapshot.pipeline_metrics.output_gate_open
                 && !snapshot.pipeline_metrics.device_connected =>
             {
@@ -1257,7 +1273,9 @@ fn studio_presentation(
         && !snapshot.pipeline_metrics.control.emit_allowed;
     let lifecycle_uncertain = matches!(semantic_phase, "starting" | "stopping" | "faulted")
         || (semantic_phase == "stopped" && !daemon_confirmed_safe);
-    let output_state = if lifecycle_uncertain {
+    let output_state = if selected_device == "null" {
+        "safe"
+    } else if lifecycle_uncertain {
         "unknown"
     } else if daemon_confirmed_safe {
         "safe"
@@ -1283,8 +1301,12 @@ fn studio_presentation(
         },
         output: StudioOutputPresentation {
             state: output_state,
-            reason_code: output_trace.code,
-            daemon_confirmed_safe,
+            reason_code: if selected_device == "null" {
+                "null_mouse_protocol"
+            } else {
+                output_trace.code
+            },
+            daemon_confirmed_safe: daemon_confirmed_safe || selected_device == "null",
         },
     }
 }
@@ -1529,6 +1551,18 @@ impl OutputTraceProjection<'_> {
                 next_action: "inspect_control",
             };
         }
+        if self
+            .runtime_config
+            .and_then(|config| config.device.as_ref())
+            .is_some_and(|device| device.backend == novasight_store::config::DeviceBackend::Null)
+        {
+            return OutputTraceState {
+                code: "null_mouse_protocol",
+                state: "ready",
+                detail: "空协议静默消费鼠标指令，不向物理设备发送输出。",
+                next_action: "none",
+            };
+        }
         if !self.hardware_output_enabled {
             return OutputTraceState {
                 code: "hardware_output_disabled",
@@ -1694,6 +1728,35 @@ mod tests {
     };
 
     use super::RuntimeStatusState;
+
+    #[test]
+    fn empty_protocol_never_reports_kmbox_connected_or_physical_output_armed() {
+        let mut config = AppConfig::default();
+        let mut device = novasight_store::config::DeviceConfig::default();
+        device.backend = novasight_store::config::DeviceBackend::Null;
+        config.device = Some(device);
+        let mut snapshot = RuntimeSnapshot::default();
+        snapshot.pipeline.state = PipelineState::Running;
+        snapshot.pipeline_metrics.device_connected = true;
+        snapshot.pipeline_metrics.control.emit_allowed = true;
+        let value = serde_json::to_value(RuntimeStatusState::new(
+            &snapshot,
+            Some(&config),
+            None,
+            true,
+            None,
+        ))
+        .unwrap();
+        assert_eq!(value["executor"]["selected"], "null");
+        assert_eq!(value["executor"]["executors"]["kmnet"]["connected"], false);
+        assert_eq!(value["executor"]["executors"]["kmnet"]["available"], false);
+        assert_eq!(value["presentation"]["output"]["state"], "safe");
+        assert_eq!(
+            value["presentation"]["output"]["reason_code"],
+            "null_mouse_protocol"
+        );
+        assert_eq!(value["presentation"]["lifecycle"]["can_stop"], true);
+    }
 
     #[test]
     fn daemon_presents_studio_readiness_and_safe_output() {

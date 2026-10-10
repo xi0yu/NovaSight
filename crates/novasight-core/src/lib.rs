@@ -34,7 +34,8 @@ pub use capture::{
 pub use controller::replay::{ControlDecision, ProportionalReplayControl};
 pub use error::AppError;
 pub use output::{
-    DeviceCommand, DeviceReceipt, RecordingPointerDevice, UncommissionedPointerDevice,
+    DeviceCommand, DeviceReceipt, NullPointerDevice, RecordingPointerDevice,
+    UncommissionedPointerDevice,
 };
 #[cfg(feature = "replay-tools")]
 pub use perception::ReplayPerceptionSource;

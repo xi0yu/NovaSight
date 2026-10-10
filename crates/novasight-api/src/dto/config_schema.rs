@@ -172,28 +172,28 @@ impl ConfigSchemaResponse {
                             "pipeline.fire_delay_ms",
                             "触发后等待时长",
                             0.0,
-                            5_000.0,
+                            2_000.0,
                             Some("ms"),
                         ),
                         float(
                             "pipeline.entry_ramp_ms",
                             "力度渐增时长",
                             0.0,
-                            2000.0,
+                            1000.0,
                             Some("ms"),
                         ),
                         float(
                             "pipeline.max_output_x_counts",
                             "单次 X 轴输出上限",
-                            1.0,
-                            i16::MAX as f64,
+                            0.0,
+                            1000.0,
                             Some("count"),
                         ),
                         float(
                             "pipeline.max_output_y_counts",
                             "单次 Y 轴输出上限",
-                            1.0,
-                            i16::MAX as f64,
+                            0.0,
+                            1000.0,
                             Some("count"),
                         ),
                         boolean("pipeline.prediction_enabled", "启用目标速度预测"),
@@ -214,8 +214,8 @@ impl ConfigSchemaResponse {
                         float(
                             "pipeline.target_fov_radius_px",
                             "搜索半径",
-                            0.000_001,
-                            100_000.0,
+                            0.0,
+                            1000.0,
                             Some("px"),
                         ),
                         float(
@@ -717,10 +717,26 @@ mod tests {
                 && section["fields"].as_array().unwrap().iter().any(|field| {
                     field["path"] == "pipeline.fire_delay_ms"
                         && field["min"] == 0.0
-                        && field["max"] == 5_000.0
+                        && field["max"] == 2_000.0
                         && field["restart_required"] == false
                 })
         }));
+        for path in [
+            "pipeline.target_fov_radius_px",
+            "pipeline.entry_ramp_ms",
+            "pipeline.max_output_x_counts",
+            "pipeline.max_output_y_counts",
+        ] {
+            let field = value["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|section| section["fields"].as_array().unwrap())
+                .find(|field| field["path"] == path)
+                .unwrap();
+            assert_eq!(field["min"], 0.0, "{path}");
+            assert_eq!(field["max"], 1000.0, "{path}");
+        }
         let output_gate = value["sections"]
             .as_array()
             .unwrap()

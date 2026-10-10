@@ -23,9 +23,9 @@ use novasight_core::{
     CaptureSelectionPreference, DeviceReceipt, select_capture_profile_for_formats,
 };
 use novasight_runtime::{
-    AppConfig, ConfigFieldUpdate, ConfigService, ConfigServiceError, ConfigUpdate, DaemonState,
-    ModelActivationError, ModelIngressError, PipelineState, RuntimeError, RuntimeErrorKind,
-    RuntimeHandle, RuntimeSnapshot,
+    AppConfig, ConfigFieldUpdate, ConfigParameterUpdate, ConfigService, ConfigServiceError,
+    ConfigUpdate, DaemonState, DeviceConnectionProbe, ModelActivationError, ModelIngressError,
+    PipelineState, RuntimeError, RuntimeErrorKind, RuntimeHandle, RuntimeSnapshot,
 };
 use novasight_store::license::{FileLicenseRepository, LicenseDenial, LicenseError, LicenseStatus};
 use novasight_store::model_catalog::{ModelCatalogError, SqliteModelCatalog};
@@ -169,6 +169,7 @@ pub fn build_control_router_with_platform_queries(
         .route("/api/v1/status", get(status))
         .route("/api/v1/config", get(config).patch(update_config))
         .route("/api/v1/config/commands", post(apply_config_command))
+        .route("/api/v1/config/parameters", post(update_parameters))
         .route("/api/v1/runtime/start", post(start))
         .route("/api/v1/runtime/stop", post(stop))
         .route("/api/v1/runtime/restart", post(restart))
@@ -194,6 +195,11 @@ pub fn build_control_router_with_platform_queries(
         .route("/api/executors/kmnet/buttons", get(device_buttons))
         .merge(models::routes())
         .route("/api/executors/kmnet/connect", post(connect_device))
+        .route("/api/executors/kmnet/probe", post(probe_device))
+        .route(
+            "/api/executors/kmnet/probe-candidate",
+            post(probe_candidate_device),
+        )
         .route("/api/executors/kmnet/disconnect", post(disconnect_device))
         .route(
             "/api/executors/kmnet/diagnostic-move",
@@ -818,7 +824,10 @@ fn is_license_open_path(method: &Method, path: &str) -> bool {
 }
 
 fn required_license_feature(method: &Method, path: &str) -> Option<&'static str> {
-    if path == "/api/v1/config/commands" {
+    if matches!(
+        path,
+        "/api/v1/config/commands" | "/api/v1/config/parameters"
+    ) {
         return Some("config_write");
     }
     if path == "/api/config" || path == "/api/v1/config" {
@@ -1080,6 +1089,52 @@ async fn connect_device(
     Ok(Json(state.runtime.connect_device().await?))
 }
 
+async fn probe_device(
+    State(state): State<ControlState>,
+) -> Result<Json<DeviceConnectionProbe>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    if !state.hardware_output_enabled {
+        return Err(ControlApiError::HardwareOutputDisabled);
+    }
+    ensure_config_effective(&state).await?;
+    if uses_null_mouse_protocol(&state) {
+        return Err(ControlApiError::UnsupportedDiagnostic(
+            "空协议不连接硬件；请选择 kmBox 协议后测试连通性。".to_owned(),
+        ));
+    }
+    Ok(Json(state.runtime.probe_device().await?))
+}
+
+async fn probe_candidate_device(
+    State(state): State<ControlState>,
+    Json(protocol): Json<novasight_store::config::MouseProtocol>,
+) -> Result<Json<DeviceConnectionProbe>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    if !state.hardware_output_enabled {
+        return Err(ControlApiError::HardwareOutputDisabled);
+    }
+    ensure_config_effective(&state).await?;
+    let service = state
+        .config
+        .as_ref()
+        .ok_or(ControlApiError::ConfigUnavailable)?;
+    let mut config = service.blocking_effective_snapshot();
+    let device = config.device.get_or_insert_with(Default::default);
+    device.backend = novasight_store::config::DeviceBackend::NativeUdp;
+    device.auto_connect = true;
+    device.host = protocol.host.clone();
+    device.port = protocol.port;
+    device.uuid = protocol.uuid.clone();
+    device.active_mouse_protocol_id = Some(protocol.id.clone());
+    device.mouse_protocols = vec![protocol];
+    config
+        .validate_configured_adapters()
+        .map_err(|error| ControlApiError::UnsupportedDiagnostic(error.to_string()))?;
+    Ok(Json(
+        state.runtime.probe_device_candidate(Some(config)).await?,
+    ))
+}
+
 async fn disconnect_device(
     State(state): State<ControlState>,
 ) -> Result<Json<RuntimeSnapshot>, ControlApiError> {
@@ -1168,7 +1223,7 @@ async fn diagnostic_device_move(
         .ok_or(ControlApiError::ConfigUnavailable)?
         .snapshot()
         .await;
-    if config.device.is_none() {
+    if config.device.is_none() || uses_null_mouse_protocol(&state) {
         return Err(ControlApiError::DeviceNotConfigured);
     }
     let move_kind = request.move_kind.as_deref().unwrap_or("raw");
@@ -1249,8 +1304,8 @@ async fn apply_config_field_update(
     let hot_trigger_mode = update.section == "control" && update.key == "trigger_mode";
     let hot_pipeline = hot_pipeline_config_update(&update);
     if hot_output_gate && update.value.as_bool() == Some(true) {
-        ensure_hardware_control_license(state).await?;
-        if state.hardware_output_enabled {
+        ensure_hardware_control_license(state, false).await?;
+        if state.hardware_output_enabled && !uses_only_null_mouse_protocol(state).await {
             require_physical_output_ack_header(headers)?;
         }
     }
@@ -1264,6 +1319,12 @@ async fn apply_config_field_update(
     } else if hot_pipeline {
         apply_pipeline_config_update(state, service, update).await?
     } else if runtime_reconfigurable_config_update(&update) {
+        if update.section == "hardware"
+            && update.key == "backend"
+            && update.value.as_str() != Some("null")
+        {
+            require_physical_adapter_selection(state, headers).await?;
+        }
         require_epoch_reload_ack(state, headers).await?;
         service.update_runtime_field(&state.runtime, update).await?
     } else {
@@ -1314,8 +1375,9 @@ impl ConfigCommandRequest {
                 expected_revision,
             } => {
                 if enabled {
-                    ensure_hardware_control_license(state).await?;
-                    if state.hardware_output_enabled {
+                    ensure_hardware_control_license(state, false).await?;
+                    if state.hardware_output_enabled && !uses_only_null_mouse_protocol(state).await
+                    {
                         require_physical_output_ack_header(headers)?;
                     }
                 }
@@ -1394,8 +1456,13 @@ async fn ensure_runtime_license(state: &ControlState) -> Result<(), ControlApiEr
         .map_err(control_error_from_license_denial)
 }
 
-async fn ensure_hardware_control_license(state: &ControlState) -> Result<(), ControlApiError> {
-    if !state.hardware_output_enabled {
+async fn ensure_hardware_control_license(
+    state: &ControlState,
+    physical_requested: bool,
+) -> Result<(), ControlApiError> {
+    if !state.hardware_output_enabled
+        || (!physical_requested && uses_only_null_mouse_protocol(state).await)
+    {
         return Ok(());
     }
     let Some(repository) = state.license.as_ref() else {
@@ -1408,6 +1475,23 @@ async fn ensure_hardware_control_license(state: &ControlState) -> Result<(), Con
         .map_err(control_error_from_license_denial)
 }
 
+async fn require_physical_adapter_selection(
+    state: &ControlState,
+    headers: &HeaderMap,
+) -> Result<(), ControlApiError> {
+    if state.hardware_output_enabled
+        && uses_null_mouse_protocol(state)
+        && (state.runtime.snapshot().pipeline_metrics.output_gate_open
+            || state.config.as_ref().is_some_and(|service| {
+                service.blocking_effective_snapshot().control.output_enabled
+            }))
+    {
+        ensure_hardware_control_license(state, true).await?;
+        require_physical_output_ack_header(headers)?;
+    }
+    Ok(())
+}
+
 fn control_error_from_license_denial(denial: LicenseDenial) -> ControlApiError {
     match denial {
         LicenseDenial::Required => ControlApiError::LicenseRequired,
@@ -1415,8 +1499,33 @@ fn control_error_from_license_denial(denial: LicenseDenial) -> ControlApiError {
     }
 }
 
+fn uses_null_mouse_protocol(state: &ControlState) -> bool {
+    state.config.as_ref().is_some_and(|service| {
+        service
+            .blocking_effective_snapshot()
+            .device
+            .as_ref()
+            .is_some_and(|device| device.backend == novasight_store::config::DeviceBackend::Null)
+    })
+}
+
+async fn uses_only_null_mouse_protocol(state: &ControlState) -> bool {
+    if !uses_null_mouse_protocol(state) {
+        return false;
+    }
+    match &state.config {
+        Some(service) => service
+            .snapshot()
+            .await
+            .device
+            .as_ref()
+            .is_some_and(|device| device.backend == novasight_store::config::DeviceBackend::Null),
+        None => false,
+    }
+}
+
 async fn hardware_output_requested(state: &ControlState) -> bool {
-    if !state.hardware_output_enabled {
+    if !state.hardware_output_enabled || uses_only_null_mouse_protocol(state).await {
         return false;
     }
     if state.runtime.snapshot().pipeline_metrics.output_gate_open {
@@ -1645,6 +1754,22 @@ async fn update_config(
     Ok(Json(result))
 }
 
+async fn update_parameters(
+    State(state): State<ControlState>,
+    headers: HeaderMap,
+    Json(update): Json<ConfigParameterUpdate>,
+) -> Result<Json<ConfigUpdate>, ControlApiError> {
+    let _lifecycle_guard = state.lifecycle_lock.lock().await;
+    let service = state
+        .config
+        .as_ref()
+        .ok_or(ControlApiError::ConfigUnavailable)?;
+    require_physical_output_ack(&state, &headers).await?;
+    Ok(Json(
+        service.update_parameters(&state.runtime, update).await?,
+    ))
+}
+
 async fn apply_config_command(
     State(state): State<ControlState>,
     headers: HeaderMap,
@@ -1677,6 +1802,16 @@ async fn update_config_document(
             serde_json::from_value(payload).map_err(ControlApiError::InvalidFieldUpdate)?;
         apply_config_field_update(&state, service, &headers, field_update).await?
     } else {
+        if payload
+            .get("hardware")
+            .or_else(|| payload.get("device"))
+            .is_some_and(|device| {
+                device.is_object()
+                    && device.get("backend").and_then(serde_json::Value::as_str) != Some("null")
+            })
+        {
+            require_physical_adapter_selection(&state, &headers).await?;
+        }
         require_epoch_reload_ack(&state, &headers).await?;
         service.replace_runtime(&state.runtime, payload).await?
     };
@@ -2595,6 +2730,205 @@ mod tests {
     use novasight_runtime::{PipelineState, RuntimeSnapshot};
 
     #[tokio::test]
+    async fn null_protocol_allows_silent_gate_without_physical_ack_but_rejects_kmbox_probe() {
+        use super::*;
+        use novasight_runtime::{RuntimeDependencies, RuntimeSupervisor};
+        use novasight_store::config::{DeviceBackend, YamlConfigRepository};
+        use tower::ServiceExt;
+        let root =
+            std::env::temp_dir().join(format!("ns-null-api-{}", generate_daemon_instance_id()));
+        let path = root.join("config.yaml");
+        let config = YamlConfigRepository::initialize_default(&path).unwrap();
+        let service = ConfigService::new(&path, config);
+        let (supervisor, runtime) = RuntimeSupervisor::spawn(
+            RuntimeDependencies::recording().with_device_factory(|config| {
+                assert_eq!(
+                    config.device.as_ref().unwrap().backend,
+                    DeviceBackend::NativeUdp
+                );
+                Ok(novasight_runtime::PointerDeviceInstallation::new(
+                    Arc::new(novasight_core::NullPointerDevice::default()),
+                    None,
+                ))
+            }),
+        );
+        let app =
+            build_control_router_with_capabilities(runtime.clone(), service.clone(), true, None);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/commands")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"command":"set_control_enabled","enabled":true,"expected_revision":0}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut physical = service.snapshot().await;
+        physical.device.as_mut().unwrap().backend = DeviceBackend::NativeUdp;
+        physical.device.as_mut().unwrap().active_mouse_protocol_id = None;
+        let switch = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_string(&physical).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(switch.status(), StatusCode::PRECONDITION_REQUIRED);
+        assert_eq!(service.snapshot().await.revision, 1);
+        let before = service.snapshot().await;
+        let disk_before = std::fs::read(&path).unwrap();
+        for (host, expected) in [
+            ("192.168.2.188", StatusCode::OK),
+            ("invalid", StatusCode::BAD_REQUEST),
+        ] {
+            let candidate = app.clone().oneshot(Request::builder().method("POST")
+                .uri("/api/executors/kmnet/probe-candidate").header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"id":"candidate","model":"net","host":"{host}","port":8888,"uuid":"A1B2C3D4"}}"#))).unwrap()).await.unwrap();
+            assert_eq!(candidate.status(), expected);
+        }
+        assert_eq!(service.snapshot().await.revision, before.revision);
+        assert_eq!(
+            service.snapshot().await.device.unwrap().backend,
+            DeviceBackend::Null
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), disk_before);
+        let probe = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/executors/kmnet/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(probe.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(runtime.snapshot().device_metrics.diagnostic_move_count, 0);
+        // A pending physical protocol must not inherit the empty consumer's acknowledgement exemption.
+        let mut desired = service.snapshot().await;
+        desired.device.as_mut().unwrap().backend = DeviceBackend::NativeUdp;
+        desired.device.as_mut().unwrap().active_mouse_protocol_id = None;
+        let daemon_instance_id = generate_daemon_instance_id();
+        let state = ControlState {
+            daemon_instance_id: daemon_instance_id.clone(),
+            runtime: runtime.clone(),
+            config: Some(service.clone()),
+            license: None,
+            model_catalog: None,
+            capture_probe: None,
+            hardware_output_enabled: true,
+            shutdown: None,
+            lifecycle_lock: Arc::new(Mutex::new(())),
+            license_session: LicenseSession::new(),
+            activity: ActivityLog::new(daemon_instance_id),
+        };
+        assert!(uses_only_null_mouse_protocol(&state).await);
+        service
+            .replace(serde_json::to_value(desired).unwrap())
+            .await
+            .unwrap();
+        assert!(uses_null_mouse_protocol(&state));
+        assert!(!uses_only_null_mouse_protocol(&state).await);
+        assert!(hardware_output_requested(&state).await);
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parameter_batch_route_requires_ack_and_probe_does_not_start_or_move() {
+        use super::*;
+        use novasight_runtime::{RuntimeDependencies, RuntimeSupervisor};
+        use novasight_store::config::{CaptureConfig, ConfigRepository, YamlConfigRepository};
+        use tower::ServiceExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "ns-parameter-api-{}",
+            generate_daemon_instance_id()
+        ));
+        let path = root.join("config.yaml");
+        let mut config = YamlConfigRepository::initialize_default(&path).unwrap();
+        config.capture = Some(CaptureConfig::manual(
+            "/dev/video-test".into(),
+            "MJPG".into(),
+            (1920, 1080, 120),
+            (640, 220, 640, 640),
+        ));
+        config.device.as_mut().unwrap().auto_connect = true;
+        config.device.as_mut().unwrap().backend = novasight_store::config::DeviceBackend::NativeUdp;
+        config.device.as_mut().unwrap().active_mouse_protocol_id = None;
+        config.control.output_enabled = true;
+        let config = YamlConfigRepository::new(&path)
+            .save_config(&config, 0)
+            .unwrap();
+        let service = ConfigService::new(&path, config);
+        let (supervisor, runtime) =
+            RuntimeSupervisor::spawn(RuntimeDependencies::recording().with_output_enabled(true));
+        let app =
+            build_control_router_with_capabilities(runtime.clone(), service.clone(), true, None);
+        let payload = r#"{"expected_revision":1,"changes":[{"section":"pipeline","key":"p_response_scale","value":0.7}]}"#;
+        let request = |ack: bool| {
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/parameters")
+                .header("content-type", "application/json");
+            if ack {
+                builder = builder.header(PHYSICAL_OUTPUT_ACK_HEADER, "confirmed");
+            }
+            builder.body(Body::from(payload)).unwrap()
+        };
+        assert_eq!(
+            app.clone().oneshot(request(false)).await.unwrap().status(),
+            StatusCode::PRECONDITION_REQUIRED
+        );
+        assert_eq!(service.snapshot().await.revision, 1);
+        let response = app.clone().oneshot(request(true)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let result: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["apply_mode"], "hot_update");
+        assert_eq!(result["applied"], true);
+        let probe = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/executors/kmnet/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(probe.status(), StatusCode::OK);
+        let result: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(probe.into_body(), 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["reachable"], true);
+        assert_eq!(runtime.snapshot().pipeline.state, PipelineState::Stopped);
+        assert_eq!(runtime.snapshot().device_metrics.diagnostic_move_count, 0);
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn catalog_folder_http_create_readback_and_conflict() {
         use super::*;
         use novasight_runtime::RuntimeSupervisor;
@@ -3207,6 +3541,38 @@ mod tests {
             true,
             None,
         );
+        let read_only_credential = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
+            &serde_json::json!({"iss":"novasight-license", "aud":"novasightd",
+                "sub":"config-read-only-test", "jti":"config-read-only-test", "tier":"test",
+                "features":["runtime", "config_read"], "iat":now, "exp":now + 3600}),
+            &jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap(),
+        )
+        .unwrap();
+        license.activate(&read_only_credential).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let revision = service.snapshot().await.revision;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/parameters")
+                    .extension(TrustedLocalControl)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"expected_revision":revision,
+                    "changes":[{"section":"pipeline","key":"p_response_scale","value":0.7}]})
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(service.snapshot().await.revision, revision);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        license.activate(key).unwrap();
         for endpoint in [
             "/api/runtime/start",
             "/api/v1/runtime/start",

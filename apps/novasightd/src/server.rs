@@ -9,13 +9,12 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use novasight_api::{build_control_router_with_platform_queries, with_trusted_local_control};
 use novasight_core::CaptureCapabilityProbe;
 use novasight_runtime::{
-    ApplicationError, ConfigService, LoadedApplication, PipelineState, RuntimeDependencies,
-    RuntimeError, RuntimeHandle,
+    ApplicationError, ConfigService, LoadedApplication, RuntimeDependencies, RuntimeHandle,
 };
 use novasight_store::license::{FileLicenseRepository, LicenseError, LicensePolicy};
 use novasight_store::model_catalog::SqliteModelCatalog;
@@ -334,8 +333,9 @@ async fn monitor_runtime_license(
     mut shutdown: watch::Receiver<bool>,
     interval: Duration,
 ) -> Result<(), DaemonRunError> {
-    let mut tick = tokio::time::interval(interval);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut check_after = Duration::ZERO;
+    let mut invalid_enforced = false;
+    let mut authorization_stop = None;
     loop {
         tokio::select! {
             biased;
@@ -344,41 +344,143 @@ async fn monitor_runtime_license(
                     return Ok(());
                 }
             }
-            _ = tick.tick() => {
+            _ = tokio::time::sleep(check_after) => {
                 let status_repository = repository.clone();
+                let config = config_service.snapshot().await;
                 let hardware_output_requested = hardware_output_enabled
-                    && config_service.snapshot().await.control.output_enabled;
+                    && config.control.output_enabled
+                    && config.device.as_ref().is_some_and(|device| device.backend != novasight_store::config::DeviceBackend::Null);
                 let authorization = tokio::task::spawn_blocking(move || {
                     status_repository.status().map(|status| {
                         let authorized = status
                             .authorize_runtime(hardware_output_requested)
                             .is_ok();
-                        (authorized, status.message)
+                        (authorized, status.message, status.expires_at)
                     })
                 })
                 .await;
-                let (authorized, reason) = match authorization {
+                let (mut authorized, reason, expires_at) = match authorization {
                     Ok(Ok(result)) => result,
-                    Ok(Err(error)) => (false, error.to_string()),
-                    Err(error) => (false, format!("license verification task failed: {error}")),
+                    Ok(Err(error)) => (false, error.to_string(), None),
+                    Err(error) => (false, format!("license verification task failed: {error}"), None),
                 };
-                let pipeline = runtime.snapshot().pipeline.state;
-                if !authorized
-                    && matches!(
-                        pipeline,
-                        PipelineState::Starting | PipelineState::Running | PipelineState::Standby
-                    )
-                {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+                authorized &= expires_at.is_none_or(|deadline| deadline > now);
+                check_after = if authorized { license_check_delay(expires_at, now, interval) } else { interval };
+                if authorized {
+                    authorization_stop = None;
+                    invalid_enforced = false;
+                } else {
+                    authorization_stop.get_or_insert_with(|| runtime.hold_resource_stop());
+                }
+                if !authorized && !invalid_enforced {
                     tracing::error!(
                         reason = %if reason.is_empty() { "license is missing or lacks required runtime features" } else { &reason },
-                        "runtime license became invalid; closing hardware output"
+                        "license became invalid; stopping resource services and retaining the control UI"
                     );
-                    runtime
-                        .emergency_stop()
-                        .await
-                        .map_err(DaemonRunError::LicenseEnforcement)?;
+                    if let Err(error) = runtime.emergency_stop().await {
+                        tracing::error!(%error, "license expiry cleanup is unconfirmed; retrying with access blocked");
+                        continue;
+                    }
+                    if runtime.preview_snapshot().is_some_and(|preview| preview.active || preview.encoder_active)
+                        && let Err(error) = runtime.set_preview_active(false).await {
+                        tracing::error!(%error, "failed to disable preview after license invalidation");
+                        continue;
+                    }
+                    invalid_enforced = true;
                 }
             }
+        }
+    }
+}
+
+fn license_check_delay(expires_at: Option<f64>, now: f64, interval: Duration) -> Duration {
+    expires_at
+        .filter(|deadline| deadline.is_finite() && *deadline > now)
+        .map(|deadline| Duration::from_secs_f64((deadline - now).min(interval.as_secs_f64())))
+        .unwrap_or(interval)
+}
+
+#[cfg(test)]
+mod license_expiry_tests {
+    use super::*;
+    use novasight_pipeline::PreviewHub;
+    use novasight_runtime::{AppConfig, PipelineState, RuntimeSupervisor};
+
+    #[test]
+    fn checks_at_the_expiry_deadline_without_waiting_for_the_next_poll() {
+        assert_eq!(
+            license_check_delay(Some(100.25), 100.0, Duration::from_secs(1)),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            license_check_delay(Some(99.0), 100.0, Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn invalidation_stops_resources_even_when_idle_and_keeps_control_runtime_alive() {
+        for running in [false, true] {
+            let policy = LicensePolicy::new(None)
+                .with_temporary_access_code("test-license-expiry-code-32-bytes-long")
+                .unwrap();
+            let repository = FileLicenseRepository::new(
+                std::env::temp_dir().join(format!("ns-watchdog-{}.json", uuid::Uuid::new_v4())),
+                policy,
+            );
+            repository
+                .activate("test-license-expiry-code-32-bytes-long")
+                .unwrap();
+            let preview = PreviewHub::new(true);
+            preview.begin_epoch(novasight_core::RuntimeEpoch(1));
+            preview.set_active(true).unwrap();
+            let (supervisor, runtime) = RuntimeSupervisor::spawn(
+                RuntimeDependencies::recording().with_preview(preview.clone()),
+            );
+            if running {
+                runtime.start().await.unwrap();
+            }
+            let service =
+                ConfigService::new("unused-license-test-config.yaml", AppConfig::default());
+            let (shutdown, receiver) = watch::channel(false);
+            let watchdog = tokio::spawn(monitor_runtime_license(
+                repository.clone(),
+                runtime.clone(),
+                service,
+                false,
+                receiver,
+                Duration::from_millis(10),
+            ));
+            repository.clear().unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while preview.snapshot().active
+                    || runtime.snapshot().pipeline.state != PipelineState::Stopped
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(!watchdog.is_finished());
+            assert!(!runtime.snapshot().pipeline_metrics.control.emit_allowed);
+            assert!(runtime.start().await.is_err());
+            repository
+                .activate("test-license-expiry-code-32-bytes-long")
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while runtime.pending_urgent_stop_count() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            runtime.start().await.unwrap();
+            runtime.stop().await.unwrap();
+            shutdown.send_replace(true);
+            watchdog.await.unwrap().unwrap();
+            runtime.shutdown_daemon().await.unwrap();
+            supervisor.join().await.unwrap();
         }
     }
 }
@@ -641,8 +743,6 @@ pub(super) enum DaemonRunError {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[error("failed to acquire the automatic NovaSight instance guard: {0}")]
     InstanceLockAcquire(io::Error),
-    #[error("failed to stop runtime after license invalidation: {0}")]
-    LicenseEnforcement(RuntimeError),
     #[error("failed to create ready-file directory {}: {source}", path.display())]
     ReadyFileDirectory {
         path: PathBuf,
@@ -762,7 +862,6 @@ impl DaemonRunError {
             Self::InstanceLockInUse => "INSTANCE_ALREADY_RUNNING",
             #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::InstanceLockAcquire(_) => "INSTANCE_GUARD_FAILED",
-            Self::LicenseEnforcement(_) => "LICENSE_ENFORCEMENT_FAILED",
             Self::ReadyFileDirectory { .. } => "READY_FILE_DIRECTORY_FAILED",
             Self::ReadyFileSerialize(_) => "READY_FILE_SERIALIZE_FAILED",
             Self::ReadyFileWrite { .. } => "READY_FILE_WRITE_FAILED",

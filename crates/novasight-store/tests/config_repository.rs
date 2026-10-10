@@ -148,21 +148,30 @@ fn search_radius_migration_preserves_value_and_retires_capsule_settings() {
         "loading must not rewrite user configuration"
     );
     let repository = YamlConfigRepository::new(&path);
-    let revision = YamlConfigRepository::load(&path).unwrap().revision;
-    repository
-        .save_field(
-            "pipeline",
-            "target_fov_radius_px",
-            Value::from(240.0),
-            revision,
-        )
-        .unwrap();
+    for radius in [0.0, 1000.0, 240.0] {
+        let revision = YamlConfigRepository::load(&path).unwrap().revision;
+        repository
+            .save_field(
+                "pipeline",
+                "target_fov_radius_px",
+                Value::from(radius),
+                revision,
+            )
+            .unwrap();
+        assert_eq!(
+            YamlConfigRepository::load(&path)
+                .unwrap()
+                .pipeline
+                .target_fov_radius_px,
+            radius
+        );
+    }
     let saved = YamlConfigRepository::load(&path).unwrap();
     assert_eq!(saved.pipeline.target_fov_radius_px, 240.0);
     let document = fs::read_to_string(&path).unwrap();
     assert!(!document.contains("target_range_scale"));
     assert!(!document.contains("target_range_shape"));
-    for invalid in [0.0, -1.0, 100_000.1, f64::NAN] {
+    for invalid in [-1.0, 1000.1, 100_000.1, f64::NAN] {
         assert!(
             repository
                 .save_field(
