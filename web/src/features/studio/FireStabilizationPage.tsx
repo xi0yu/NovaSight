@@ -1,4 +1,5 @@
 import { ModuleSwitch } from "./ControlSwitches";
+import { LoadedImage } from "../../components/ui";
 import { ParameterNumberControl } from "./StudioControls";
 import chibiArt from "../../assets/themes/nova-chibi.webp";
 
@@ -17,7 +18,7 @@ export function FireStabilizationPage({ enabled, appliedEnabled = enabled, stren
         <span className="fire-stability-kicker">开火辅助</span>
         <h2 id="fire-stability-title">抑制开火时的上抬</h2>
       </div>
-      <img src={chibiArt} alt="" width="112" height="124" loading="lazy" />
+      <LoadedImage src={chibiArt} alt="" width="112" height="124" loading="lazy" />
     </section>
 
     <section className="fire-stability-settings" aria-label="开火稳定设置">

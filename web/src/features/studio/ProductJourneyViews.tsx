@@ -1,4 +1,5 @@
 import type { LicenseStatus, RuntimeState } from "../../api";
+import { LoadedImage } from "../../components/ui";
 import { NovaIcon, type NovaIconName } from "../../components/visual";
 import { version as studioVersion } from "../../../package.json";
 import type { RuntimeProjection } from "../runtime/runtimeProjection";
@@ -45,7 +46,7 @@ export function HomeWelcome({ onNavigate, mode, children }: { onNavigate: Naviga
       <aside className="home-companion" aria-label="工作室引导">
         <div className="companion-orbit" aria-hidden="true" />
         <span className="companion-sticker" aria-hidden="true">HELLO, NOVA! <i>✧</i></span>
-        <img className="companion-portrait" src={companionArt} width="1024" height="1536" alt="" aria-hidden="true" />
+        <LoadedImage className="companion-portrait" src={companionArt} width="1024" height="1536" alt="" aria-hidden="true" />
         <div className="companion-dialogue">
           <span className="companion-name">NOVA <small>工作室向导</small></span>
           <p>{guidance.lines[0]}<br />{guidance.lines[1]}</p>

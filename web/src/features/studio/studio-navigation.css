@@ -308,7 +308,7 @@
 .console-page-status { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
 .studio-guide-card { display: grid; grid-template-columns: 36px minmax(0, 1fr) 12px; gap: 8px; align-items: center; flex-shrink: 0; width: 100%; padding: 12px 8px; border: 1px solid var(--brand-border); border-radius: 14px; background: var(--bg-surface); text-align: left; color: var(--brand-primary); }
-.studio-guide-card img { width: 36px; height: 42px; object-fit: cover; object-position: 79% 20%; border-radius: 10px; }
+.studio-guide-card .loaded-image { width: 36px; height: 42px; object-fit: cover; object-position: 79% 20%; border-radius: 10px; }
 .studio-guide-card b { display: block; font-size: 11px; font-weight: 650; color: var(--text-primary); }
 .studio-guide-card small { display: block; font-size: 9px; color: var(--text-secondary); margin-top: 4px; }
 .studio-guide-card i { font-style: normal; }

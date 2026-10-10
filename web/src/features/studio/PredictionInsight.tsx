@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { LoadedImage } from "../../components/ui";
 import type { RuntimeControlPipelineState } from "../../contracts/runtime";
 import daylightArt from "../../assets/themes/nova-daylight.webp";
 import "./prediction-insight.css";
@@ -102,7 +103,7 @@ export function PredictionInsight({ sample, live, configuredEnabled }: {
   return (
     <section className="prediction-insight" aria-label="预测效果观察" data-tone={view.tone}>
       <div className="prediction-story">
-        <img src={daylightArt} alt="" aria-hidden="true" width="1536" height="1024" loading="lazy" />
+        <LoadedImage src={daylightArt} alt="" aria-hidden="true" width="1536" height="1024" loading="lazy" />
         <div><span className="prediction-edit-state">编辑值 · 预测{configuredEnabled ? "开启" : "关闭"}</span>
           <h3>提前多少，看得见</h3><p>观测位置与预测位置之间，才是预测真正增加的量。</p></div>
       </div>

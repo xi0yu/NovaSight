@@ -17,7 +17,7 @@ import {
   getHealth,
   logoutAuthSession
 } from "../../api";
-import { Button } from "../../components/ui";
+import { Button, LoadedImage } from "../../components/ui";
 import { NovaIcon } from "../../components/visual";
 import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
@@ -184,7 +184,7 @@ export function AuthGate({ children }: AuthGateProps) {
   const login = authenticated ? null : (
     <main className="auth-shell welcome-shell">
       <section className="welcome-story" aria-labelledby="welcome-title">
-        <img className="welcome-character" src={daylightArt} width="1536" height="1024" alt="" aria-hidden="true" />
+        <LoadedImage className="welcome-character" src={daylightArt} width="1536" height="1024" alt="" aria-hidden="true" />
         <header className="welcome-brand">
           <span className="auth-brand-mark" aria-hidden="true">
             <NovaIcon name="prediction-line" size={22} strokeWidth={1.8} />

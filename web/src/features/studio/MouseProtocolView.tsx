@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { LoadedImage } from "../../components/ui";
 import { reportError, reportInfo, reportSuccess } from "../../lib/toast";
 import { NovaIcon } from "../../components/visual";
 import { getErrorMessage } from "../shared/format";
@@ -78,7 +79,7 @@ export function MouseProtocolView({ protocols, selectedId, available, running, s
           <button type="button" className="mouse-protocol-select" aria-label={label} aria-pressed={active}
             title={unavailableReason || (active ? "当前协议已启用" : protocol ? `选中并启用 ${label}` : "选中空协议，停止向物理鼠标输出")}
             disabled={locked} onClick={() => void select(protocol)}>
-            <span className="mouse-protocol-picture"><img src={model?.image ?? emptyImage} alt={model ? `${model.label} 官方实物图` : "空协议鼠标光标"} /></span>
+            <span className="mouse-protocol-picture"><LoadedImage src={model?.image ?? emptyImage} alt={model ? `${model.label} 官方实物图` : "空协议鼠标光标"} /></span>
             <span className="mouse-protocol-caption" title={label}>{model ? `${model.label.replace("kmBox ", "")} · ${protocol!.host}` : "空"}</span>
           </button>
           {active ? <span className="mouse-protocol-active-badge"><NovaIcon name="check-circle" size={16} aria-hidden="true" />已启用</span> : null}
@@ -163,7 +164,7 @@ function ProtocolEditor({ protocols, onPick, protocol, disabled, disabledReason,
     setResult(response.elapsed_ms);
   });
   return <div className="action-confirmation-layer mouse-protocol-editor-layer" onMouseDown={(event) => { if (event.target === event.currentTarget && !busyRef.current) onClose(); }}><section className="mouse-protocol-editor" role="dialog" aria-modal="true" aria-labelledby="protocol-editor-title" ref={dialogRef} tabIndex={-1} aria-busy={busy}>
-    <header><div className="mouse-protocol-editor-portrait" aria-hidden="true"><img src={models[draft.model].image} alt="" /></div><div><h2 id="protocol-editor-title">{running ? "查看协议" : protocol ? "配置协议" : "新增协议"}</h2><p>{previewOnly ? "预览只更新本页。" : "保存后应用配置并写入设备文件。"}留空使用默认值。</p></div></header>
+    <header><div className="mouse-protocol-editor-portrait" aria-hidden="true"><LoadedImage src={models[draft.model].image} alt="" /></div><div><h2 id="protocol-editor-title">{running ? "查看协议" : protocol ? "配置协议" : "新增协议"}</h2><p>{previewOnly ? "预览只更新本页。" : "保存后应用配置并写入设备文件。"}留空使用默认值。</p></div></header>
     {disabledReason ? <div className="mouse-protocol-notice" role="status"><p>{running ? "主链运行中，可以查看配置；停止后可修改、测试或切换协议。" : disabledReason}</p>{running && onGoHome ? <button type="button" className="console-button" onClick={onGoHome}>前往首页</button> : null}</div> : null}
     <form noValidate onSubmit={(event) => { event.preventDefault(); void submit(); }}>
       {protocol ? <label>协议<select aria-label="配置的协议" value={protocol.id} disabled={busy || draftChanged} onChange={(event) => onPick(event.target.value)}>

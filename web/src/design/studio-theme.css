@@ -84,10 +84,10 @@
 [data-theme="nova-daylight"] .parameter-save-bar { border-radius: 8px 16px 8px 16px; box-shadow: 3px 4px 0 #ddccdd70; }
 
 .ui-empty-illustration { position: relative; width: 118px; height: 120px; margin: 0 auto 10px; }
-.ui-empty-illustration img { width: 100px; height: 112px; object-fit: contain; }
+.ui-empty-illustration .loaded-image { width: 100px; height: 112px; object-fit: contain; }
 .ui-empty .ui-empty-illustration [data-slot="empty-icon"] { position: absolute; right: 0; bottom: 0; width: 36px; height: 36px; border-radius: 12px; background: white; transform: rotate(7deg); }
 [data-theme="nova-daylight"] .studio-guide-card { grid-template-columns: 48px minmax(0, 1fr) 12px; padding: 6px 8px; }
-[data-theme="nova-daylight"] .studio-guide-card img { width: 48px; height: 58px; object-fit: contain; border-radius: 0; }
+[data-theme="nova-daylight"] .studio-guide-card .loaded-image { width: 48px; height: 58px; object-fit: contain; border-radius: 0; }
 @media (max-width: 1024px) {
   .studio-nav-caption, .console-nav-index { display: none; }
   [data-theme="nova-daylight"] .console-nav { min-height: 40px; }

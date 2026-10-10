@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { LoadedImage } from "../../components/ui";
 
 import { NovaIcon, type NovaIconName } from "../../components/visual";
 import { DEFAULT_STUDIO_LAYOUT, type StudioLayoutPage } from "../../contracts/studioLayout";
@@ -169,7 +170,7 @@ export function StudioNavigation({
         </div>
       </div>
       <button className="studio-guide-card" type="button" onClick={() => onNavigate("onboarding")}>
-        <img src={chibiArt} width="52" height="58" alt="" loading="lazy" />
+        <LoadedImage src={chibiArt} width="52" height="58" alt="" loading="lazy" />
         <span><b>新手引导手册</b><small>从这里开启你的工作室</small></span>
         <i aria-hidden="true">↗</i>
       </button>
