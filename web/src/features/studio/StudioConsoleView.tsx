@@ -81,6 +81,7 @@ import { downloadJson } from "../../lib/downloadJson";
 import { decodeRuntimeConfig } from "../../contracts/config";
 import { configDifferences } from "./configDiff";
 import { MouseProtocolView, readMouseProtocols, sameMouseProtocol, type MouseProtocol } from "./MouseProtocolView";
+import "./diagnostics.css";
 import { FireStabilizationPage } from "./FireStabilizationPage";
 import { TargetRangeControls } from "./TargetRangeControls";
 import { StartupResponsePreview, SingleOutputPreview } from "./AlgorithmResponsePreview";
@@ -1549,6 +1550,10 @@ export function StudioConsoleView({
   const mouseObservation = control?.mouse_observation;
   const controlHasSample = control?.global_state === "CALCULATED";
   const controlHasTarget = target !== null && target !== undefined;
+  const controlDiagnosticStatus = runtime === null || runtimeTransportConfidence !== "current" ? "未核实"
+    : !runtimeMainlineRunning ? "待启动"
+    : control === undefined ? "目标状态未上报"
+    : controlHasTarget ? "已选定目标" : "等待目标";
   const controlCandidateCount = control?.candidates ?? null;
   const controlTrackId = target?.track_id ?? null;
   const controlWidthPx = mouseObservation?.control_width_px ?? null;
@@ -3835,15 +3840,26 @@ export function StudioConsoleView({
               })}
           </div>
 
-          {captureModules.has("diagnostics") ? (
-          <details className="studio-diagnostic-details">
-            <summary>
-              <span>
-                <b>采集排查信息</b>
-                <small>采集原因、运行 ROI 与推理输入健康只在排障时查看。</small>
-              </span>
-              <i>2 组</i>
-            </summary>
+          </section>
+        ) : null}
+
+        {activePage === "diagnostics" ? <section className="console-page diagnostics-workspace">
+          <header className="diagnostics-heading"><div><span className="studio-kicker">SIGNAL / 07</span><h2>每一段链路，都看得见</h2><p>数据来自设备运行快照。未上报的阶段保持空缺，不用配置值代替实测。</p></div><button className="console-button" disabled={busy !== null} type="button" onClick={() => void onRefresh().catch((error) => reportError(error, { source: "diagnostics-refresh", title: "链路状态未更新" }))}><NovaIcon name="refresh" size={16} />刷新状态</button></header>
+          <p className="diagnostics-freshness" role="status">{runtime === null ? "设备数据尚未读取" : runtimeTransportConfidence !== "current" ? "当前连接未确认，以下保留上次读数" : `设备状态已核实 · ${formatDate(lastUpdated)}`}</p>
+          <div className="diagnostics-chain" aria-label="链路状态">
+            <div><NovaIcon name="capture" size={20} /><span>采集</span><b>{runtime === null ? "未读取" : captureStatusText}</b></div>
+            <div><NovaIcon name="ai-model" size={20} /><span>推理</span><b>{runtime === null ? "未读取" : inferenceStatusText}</b></div>
+            <div><NovaIcon name="target" size={20} /><span>控制</span><b>{controlDiagnosticStatus}</b></div>
+            <div><NovaIcon name="device-send" size={20} /><span>输出</span><b>{runtimeProjection?.output.label ?? "未读取"}</b></div>
+          </div>
+          <nav className="diagnostics-tools" aria-label="深入检查">
+            <button className="console-button" type="button" onClick={() => navigatePage("device")}>设备状态</button>
+            <button className="console-button" type="button" onClick={() => navigatePage("infer")}>识别画面</button>
+            <button className="console-button" type="button" onClick={() => navigatePage("control")}>控制轨迹</button>
+            <button className="console-button" type="button" onClick={() => navigatePage("latency")}>性能测量</button>
+            <button className="console-button" type="button" onClick={() => navigatePage("activity")}>问题记录</button>
+          </nav>
+          <section aria-labelledby="diagnostics-capture-title"><header className="diagnostics-section-heading"><NovaIcon name="capture" size={20} /><h3 id="diagnostics-capture-title">采集排查信息</h3><span>输入与画面区域</span></header>
             <div className="console-grid2 diagnostic-grid" data-layer="capture">
               <div className="console-card">
                 <SectionTitle title="采集基础状态" />
@@ -3869,10 +3885,66 @@ export function StudioConsoleView({
                 </div>
               </div>
             </div>
-          </details>
-          ) : null}
           </section>
-        ) : null}
+          <section aria-labelledby="diagnostics-inference-title"><header className="diagnostics-section-heading"><NovaIcon name="ai-model" size={20} /><h3 id="diagnostics-inference-title">推理排查信息</h3><span>吞吐、延迟与识别结果</span></header>
+            <div className="console-grid2 diagnostic-grid" data-layer="inference">
+              <div className="console-card">
+                <SectionTitle title="推理调度" />
+                <div className="console-kv">
+                  <span>推理状态</span><b>{inferenceStatusText}</b>
+                  <span>推理原因</span><b>{inferenceReason || NO_SAMPLE}</b>
+                  <span>推理输入帧</span><b>{formatOptionalInteger(deepstreamInputFrames)}</b>
+                  <span>推理输出缓冲</span><b>{formatOptionalInteger(deepstreamOutputBuffers)}</b>
+                  <span>元数据提取成功</span><b>{formatOptionalInteger(deepstreamMetadataExtractions)}</b>
+                  <span>识别结果已发布</span><b>{formatOptionalInteger(deepstreamPublishedBatches)}</b>
+                  <span>识别结果已读取</span><b>{formatOptionalInteger(runtimeMainlineStatus.consumedBatches)}</b>
+                  <span>目标选择输入</span><b>{formatOptionalInteger(runtimeMainlineStatus.targetingBatches)}</b>
+                  <span>缓冲时间戳匹配</span><b>{formatOptionalInteger(runtimeInference?.timestamp_buffer_pts_matches)}</b>
+                  <span>帧元数据时间戳匹配</span><b>{formatOptionalInteger(runtimeInference?.timestamp_frame_meta_pts_matches)}</b>
+                  <span>时间戳关联失败</span><b>{formatOptionalInteger(runtimeInference?.timestamp_correlation_misses)}</b>
+                  <span>采样结果版本</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
+                  <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="模型输入" />
+                <p className="console-section-note">这里只展示当前运行状态能够确认的尺寸；类型、精度和布局未确认时不作推断。</p>
+                <div className="console-kv">
+                  <span>模型名称</span><b>{activeModelName || NO_SAMPLE}</b>
+                  <span>推理方式</span><b>{selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream 推理" : selectedRuntimeBackend || NO_SAMPLE}</b>
+                  <span>ROI 输入尺寸</span><b>{roiInputWidth > 0 && roiInputHeight > 0 ? `${roiInputWidth}x${roiInputHeight}` : NO_SAMPLE}</b>
+                  <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
+                  <span>运行 ROI</span><b>{runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
+                  <span>运行结果版本</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="推理引擎阶段" />
+                <p className="console-section-note">从数据进入推理链到输出离开：包含输入预处理、模型推理和结果解析；不包含目标跟踪与鼠标控制。</p>
+                <div className="console-kv">
+                  <span>sink → src 总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 2, "ms")}</b>
+                  <span>有效计时样本</span><b>{formatOptionalInteger(statistics?.inference_latency_samples)}</b>
+                  <span>计时范围</span><b>预处理 + 推理 + 解析</b>
+                  <span>说明</span><b>不包含目标选择、跟踪与控制计算</b>
+                </div>
+              </div>
+              <div className="console-card">
+                <SectionTitle title="输出与后处理" />
+                <div className="console-kv">
+                  <span>置信度阈值</span><b>{formatOptionalNumber(runtimePostprocessConfidence, 2)}</b>
+                  <span>NMS IoU 阈值</span><b>{formatOptionalNumber(runtimePostprocessNms, 2)}</b>
+                  <span>最近检测数</span><b>{formatOptionalInteger(detectionCount)}</b>
+                  <span>遥测列表截断</span><b>{formatOptionalInteger(vision?.detection_items_truncated)}</b>
+                  <span>最高检测置信度</span><b>{formatOptionalNumber(inferenceHighestConfidence, 3)}</b>
+                  <span>识别结果状态</span><b>{inferenceBatchState}</b>
+                  <span>识别结果已发布</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchPublished ? "是" : "否"}</b>
+                  <span>识别结果帧龄</span><b>{formatOptionalNumber(detectionDataAgeMs, 2, "ms")}</b>
+                  <span>控制新鲜度阈值</span><b>{formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")}</b>
+                </div>
+              </div>
+            </div>
+          </section>
+        </section> : null}
 
         {activePage === "infer" ? (
           <section className="console-page">
@@ -3968,71 +4040,7 @@ export function StudioConsoleView({
               ) : null}
             </div>
           </div>
-          <details className="studio-diagnostic-details">
-            <summary>
-              <span>
-                <b>推理排查信息</b>
-                <small>累计缓冲、时间戳匹配、结果版本和后处理细节只在排查时查看。</small>
-              </span>
-              <i>4 组</i>
-            </summary>
-            <div className="console-grid2 diagnostic-grid" data-layer="inference">
-              <div className="console-card">
-                <SectionTitle title="推理调度" />
-                <div className="console-kv">
-                  <span>推理状态</span><b>{inferenceStatusText}</b>
-                  <span>推理原因</span><b>{inferenceReason || NO_SAMPLE}</b>
-                  <span>推理输入帧</span><b>{formatOptionalInteger(deepstreamInputFrames)}</b>
-                  <span>推理输出缓冲</span><b>{formatOptionalInteger(deepstreamOutputBuffers)}</b>
-                  <span>元数据提取成功</span><b>{formatOptionalInteger(deepstreamMetadataExtractions)}</b>
-                  <span>识别结果已发布</span><b>{formatOptionalInteger(deepstreamPublishedBatches)}</b>
-                  <span>识别结果已读取</span><b>{formatOptionalInteger(runtimeMainlineStatus.consumedBatches)}</b>
-                  <span>目标选择输入</span><b>{formatOptionalInteger(runtimeMainlineStatus.targetingBatches)}</b>
-                  <span>缓冲时间戳匹配</span><b>{formatOptionalInteger(runtimeInference?.timestamp_buffer_pts_matches)}</b>
-                  <span>帧元数据时间戳匹配</span><b>{formatOptionalInteger(runtimeInference?.timestamp_frame_meta_pts_matches)}</b>
-                  <span>时间戳关联失败</span><b>{formatOptionalInteger(runtimeInference?.timestamp_correlation_misses)}</b>
-                  <span>采样结果版本</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
-                  <span>统计窗口</span><b>{formatOptionalNumber(telemetryWindowMs, 0, "ms")}</b>
-                </div>
-              </div>
-              <div className="console-card">
-                <SectionTitle title="模型输入" />
-                <p className="console-section-note">这里只展示当前运行状态能够确认的尺寸；类型、精度和布局未确认时不作推断。</p>
-                <div className="console-kv">
-                  <span>模型名称</span><b>{activeModelName || NO_SAMPLE}</b>
-                  <span>推理方式</span><b>{selectedRuntimeBackend === "deepstream_nvinfer" ? "DeepStream 推理" : selectedRuntimeBackend || NO_SAMPLE}</b>
-                  <span>ROI 输入尺寸</span><b>{roiInputWidth > 0 && roiInputHeight > 0 ? `${roiInputWidth}x${roiInputHeight}` : NO_SAMPLE}</b>
-                  <span>模型输入尺寸</span><b>{modelInputWidth > 0 && modelInputHeight > 0 ? `${modelInputWidth}x${modelInputHeight}` : displayedInputShape || NO_SAMPLE}</b>
-                  <span>运行 ROI</span><b>{runtimeRoiAvailable ? `${runtimeRoiWidth}x${runtimeRoiHeight}` : NO_SAMPLE}</b>
-                  <span>运行结果版本</span><b>{formatOptionalInteger(sampledDetectionGeneration)}</b>
-                </div>
-              </div>
-              <div className="console-card">
-                <SectionTitle title="推理引擎阶段" />
-                <p className="console-section-note">从数据进入推理链到输出离开：包含输入预处理、模型推理和结果解析；不包含目标跟踪与鼠标控制。</p>
-                <div className="console-kv">
-                  <span>sink → src 总耗时</span><b>{formatOptionalNumber(inferenceTotalMs, 2, "ms")}</b>
-                  <span>有效计时样本</span><b>{formatOptionalInteger(statistics?.inference_latency_samples)}</b>
-                  <span>计时范围</span><b>预处理 + 推理 + 解析</b>
-                  <span>说明</span><b>不包含目标选择、跟踪与控制计算</b>
-                </div>
-              </div>
-              <div className="console-card">
-                <SectionTitle title="输出与后处理" />
-                <div className="console-kv">
-                  <span>置信度阈值</span><b>{formatOptionalNumber(runtimePostprocessConfidence, 2)}</b>
-                  <span>NMS IoU 阈值</span><b>{formatOptionalNumber(runtimePostprocessNms, 2)}</b>
-                  <span>最近检测数</span><b>{formatOptionalInteger(detectionCount)}</b>
-                  <span>遥测列表截断</span><b>{formatOptionalInteger(vision?.detection_items_truncated)}</b>
-                  <span>最高检测置信度</span><b>{formatOptionalNumber(inferenceHighestConfidence, 3)}</b>
-                  <span>识别结果状态</span><b>{inferenceBatchState}</b>
-                  <span>识别结果已发布</span><b>{!inferenceRan ? NO_SAMPLE : inferenceBatchPublished ? "是" : "否"}</b>
-                  <span>识别结果帧龄</span><b>{formatOptionalNumber(detectionDataAgeMs, 2, "ms")}</b>
-                  <span>控制新鲜度阈值</span><b>{formatOptionalNumber(detectionFreshnessThresholdMs, 2, "ms")}</b>
-                </div>
-              </div>
-            </div>
-          </details>
+
           </section>
         ) : null}
 
@@ -4201,6 +4209,7 @@ export function StudioConsoleView({
             enabled={fireStabilizationEnabled}
             appliedEnabled={previewOnly ? fireStabilizationEnabled : readBoolean(asRecord(asRecord(runtimeConfigLatestRef.current?.control).fire_stabilization).enabled, false)}
             strength={fireStabilizationStrength}
+            runtimeStatus={previewOnly ? "预览环境" : runtime === null || runtimeTransportConfidence !== "current" ? "运行状态待核实" : runtime.running ? "主链运行中" : "设备已停止"}
             onEnabled={(enabled) => updateConfigField("control", "fire_stabilization", { ...fireStabilizationConfig, enabled })}
             onStrength={(strength) => updateConfigField("control", "fire_stabilization", { ...fireStabilizationConfig, strength })}
           />

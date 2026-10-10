@@ -1,4 +1,4 @@
-export const STUDIO_LAYOUT_PAGE_IDS = ["overview", "capture", "params", "fire", "activity", "control-test", "settings", "about"] as const;
+export const STUDIO_LAYOUT_PAGE_IDS = ["overview", "capture", "params", "fire", "activity", "control-test", "diagnostics", "settings", "about"] as const;
 
 export type StudioLayoutPageId = typeof STUDIO_LAYOUT_PAGE_IDS[number];
 
@@ -8,6 +8,7 @@ export const STUDIO_LAYOUT_MODULE_IDS = {
   "control-test": ["connection", "diagnostics"],
   params: ["response", "targeting", "motion", "output"],
   fire: ["stabilization"],
+  diagnostics: ["capture", "inference", "pipeline"],
   activity: ["summary", "filters", "feed"],
   settings: ["backup", "restore", "details"],
   about: ["identity", "version", "capabilities", "support"],
@@ -19,6 +20,7 @@ const REQUIRED_MODULES: Record<StudioLayoutPageId, readonly string[]> = {
   "control-test": ["connection"],
   params: ["response", "motion", "output", "targeting"],
   fire: ["stabilization"],
+  diagnostics: ["capture", "inference", "pipeline"],
   activity: ["summary", "feed"],
   settings: ["backup", "restore"],
   about: ["identity"],
@@ -38,14 +40,15 @@ export type StudioLayout = {
 
 export const DEFAULT_STUDIO_LAYOUT: StudioLayout = {
   schemaVersion: 1,
-  revision: "builtin-2026-09",
+  revision: "builtin-2026-10",
   pages: [
     { id: "overview", label: "首页", modules: ["setup", "runtime", "metrics", "target"] },
-    { id: "capture", label: "设备管理", modules: [...STUDIO_LAYOUT_MODULE_IDS.capture] },
+    { id: "capture", label: "设备管理", modules: ["source", "roi"] },
     { id: "params", label: "算法参数", modules: [...STUDIO_LAYOUT_MODULE_IDS.params] },
     { id: "fire", label: "开火稳定", modules: [...STUDIO_LAYOUT_MODULE_IDS.fire] },
     { id: "activity", label: "实时日志", modules: [...STUDIO_LAYOUT_MODULE_IDS.activity] },
     { id: "control-test", label: "鼠标协议", modules: [...STUDIO_LAYOUT_MODULE_IDS["control-test"]] },
+    { id: "diagnostics", label: "链路诊断", modules: [...STUDIO_LAYOUT_MODULE_IDS.diagnostics] },
     { id: "settings", label: "设置", modules: [...STUDIO_LAYOUT_MODULE_IDS.settings] },
     { id: "about", label: "关于", modules: [...STUDIO_LAYOUT_MODULE_IDS.about] },
   ],
@@ -110,6 +113,11 @@ export function decodeStudioLayout(value: unknown): StudioLayout {
     }
     return { id: pageId, label: text(page.label, `pages[${pageIndex}].label`, 12), modules };
   });
+
+  if (!seenPages.has("diagnostics")) {
+    pages.push({ id: "diagnostics", label: "链路诊断", modules: [...STUDIO_LAYOUT_MODULE_IDS.diagnostics] });
+    seenPages.add("diagnostics");
+  }
 
   const missingPages = STUDIO_LAYOUT_PAGE_IDS.filter((pageId) => !seenPages.has(pageId));
   if (missingPages.length > 0) {

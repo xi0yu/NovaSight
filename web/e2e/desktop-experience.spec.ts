@@ -301,13 +301,13 @@ test("audit visual regressions keep ROI readable, mobile controls visible and Ch
   await page.screenshot({ path: testInfo.outputPath("activity-filters.png"), animations: "disabled" });
 });
 
-test("utility dialogs preserve the workspace and keep output last in the business menu", { tag: "@mobile" }, async ({ page }) => {
+test("utility dialogs preserve the workspace and keep output sixth and diagnostics seventh in the business menu", { tag: "@mobile" }, async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, control: { output_enabled: false }, pipeline: { p_response_scale: 0.2 } });
   await page.goto("/?page=params");
   const navigation = page.getByRole("navigation", { name: "NovaSight Studio 导航" });
   await expect(navigation).toBeVisible();
-  await expect(page.locator(".console-primary-navigation .console-nav")).toHaveCount(6);
-  expect(await page.locator(".console-primary-navigation .console-nav").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("data-page")))).toEqual(["overview", "capture", "params", "fire", "activity", "control-test"]);
+  await expect(page.locator(".console-primary-navigation .console-nav")).toHaveCount(7);
+  expect(await page.locator(".console-primary-navigation .console-nav").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("data-page")))).toEqual(["overview", "capture", "params", "fire", "activity", "control-test", "diagnostics"]);
   expect(await page.locator(".console-utility-navigation .console-nav").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("data-page")))).toEqual(["settings", "about"]);
   const main = page.locator(".console-main"), beforeUrl = page.url();
   const settingsButton = navigation.getByRole("button", { name: "设置", exact: true });

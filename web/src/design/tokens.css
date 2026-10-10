@@ -108,6 +108,13 @@
   --shadow-card: 3px 4px 0 #dedce947;
   --shadow-dialog: 0 4px 12px rgba(69, 42, 68, .04), 0 24px 72px rgba(69, 42, 68, .16);
 
+  /* Entitlement foil belongs to the read-only membership display. */
+  --membership-ink: #45354c;
+  --membership-gold: #91641d;
+  --membership-foil: #f4e3b4;
+  --membership-border: #dfc68c;
+  --membership-paper: #fffaf0;
+
   /* Typography */
   --font-ui:
     "Nunito",

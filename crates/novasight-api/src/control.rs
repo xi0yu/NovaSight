@@ -375,7 +375,7 @@ impl ActivityLog {
             *method,
             Method::POST | Method::PUT | Method::PATCH | Method::DELETE
         );
-        if status.is_success() && !mutation {
+        if status == StatusCode::SWITCHING_PROTOCOLS || (status.is_success() && !mutation) {
             return;
         }
         let tag = activity_tag(path);
@@ -3054,6 +3054,65 @@ mod tests {
             StatusCode::NOT_FOUND
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn successful_activity_subscription_is_not_a_rejected_operation() {
+        use super::*;
+        use futures_util::SinkExt;
+        use novasight_runtime::RuntimeSupervisor;
+        use tower::ServiceExt;
+        let (_supervisor, runtime) = RuntimeSupervisor::spawn_recording();
+        let app = build_control_router(runtime);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_app = app.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, server_app).await.unwrap();
+        });
+        let (mut socket, response) =
+            tokio_tungstenite::connect_async(format!("ws://{address}/ws/activity"))
+                .await
+                .unwrap();
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        let history = || {
+            Request::builder()
+                .uri("/api/activity")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let result = app.clone().oneshot(history()).await.unwrap();
+        let body = axum::body::to_bytes(result.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["events"], serde_json::json!([]));
+        socket.close(None).await.unwrap();
+        let invalid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/ws/activity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(invalid.status().is_client_error());
+        let result = app.oneshot(history()).await.unwrap();
+        let body = axum::body::to_bytes(result.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["events"].as_array().unwrap().len(), 1);
+        assert_eq!(value["events"][0]["level"], "warn");
+        assert!(
+            value["events"][0]["technical_detail"]
+                .as_str()
+                .unwrap()
+                .contains("/ws/activity")
+        );
+        server.abort();
     }
 
     #[tokio::test]

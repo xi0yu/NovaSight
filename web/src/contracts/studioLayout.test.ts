@@ -34,11 +34,18 @@ describe("studio layout contract", () => {
 
   it("keeps a built-in complete fallback", () => {
     expect(DEFAULT_STUDIO_LAYOUT.pages.map((page) => page.id)).toEqual([
-      "overview", "capture", "params", "fire", "activity", "control-test", "settings", "about",
+      "overview", "capture", "params", "fire", "activity", "control-test", "diagnostics", "settings", "about",
     ]);
     expect(DEFAULT_STUDIO_LAYOUT.pages.find((page) => page.id === "overview")?.modules).toEqual([
       "setup", "runtime", "metrics", "target",
     ]);
+  });
+
+  it("adds the diagnostic task to a complete legacy layout without losing custom ordering", () => {
+    const legacy = { ...DEFAULT_STUDIO_LAYOUT, pages: DEFAULT_STUDIO_LAYOUT.pages.filter((page) => page.id !== "diagnostics") };
+    const migrated = decodeStudioLayout(legacy);
+    expect(migrated.pages.filter((page) => page.id !== "diagnostics")).toEqual(legacy.pages);
+    expect(migrated.pages.find((page) => page.id === "diagnostics")?.modules).toEqual(["capture", "inference", "pipeline"]);
   });
 
   it("rejects a layout that hides required tasks or the output control", () => {

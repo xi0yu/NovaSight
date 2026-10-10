@@ -5,6 +5,7 @@ import { NovaIcon, type NovaIconName } from "../../components/visual";
 import type { LicenseFeature } from "../../contracts/license";
 import { formatEpoch } from "../shared/format";
 import { formatLicenseCategory } from "./format";
+import "./license-benefits.css";
 import companionArt from "../../assets/themes/nova-chibi.webp";
 
 const FEATURE_GROUPS: { title: string; icon: NovaIconName; features: LicenseFeature[] }[] = [
@@ -51,15 +52,14 @@ export function LicenseOverview({ license }: {
           <div><dt>授权类别</dt><dd><span className="license-category">{formatLicenseCategory(license)}</span></dd></div>
         </dl>
       </section>
-      <section className="license-scope" aria-labelledby="license-scope-title">
-        <h3 id="license-scope-title">你的专属能力</h3>
+      <section className="license-scope license-benefits" aria-labelledby="license-scope-title">
+        <header className="license-benefits-heading"><div><span>EXCLUSIVE ACCESS</span><h3 id="license-scope-title">你的专属能力</h3></div>{features.length > 0 ? <span className="license-benefits-seal"><NovaIcon name="shield-check" size={16} />专属权益 · 已解锁</span> : null}</header>
         {features.length > 0 ? <div className="license-scope-grid">
           {FEATURE_GROUPS.map((group) => {
             const enabled = group.features.filter((feature) => features.includes(feature));
-            return enabled.length > 0 ? <article key={group.title}>
-              <h4><NovaIcon name={group.icon} size={20} />{group.title}</h4>
-              <p>{enabled.map((feature) => FEATURE_BENEFITS[feature]).join(" · ")}</p>
-              <ul>{enabled.map((feature) => <li key={feature}><NovaIcon name="check-circle" size={16} />{formatFeature(feature)}</li>)}</ul>
+            return enabled.length > 0 ? <article className="license-benefit-card" key={group.title}>
+              <header><span className="license-benefit-icon" aria-hidden="true"><NovaIcon name={group.icon} size={24} /></span><div><small>专属能力</small><h4>{group.title}</h4></div><span className="license-benefit-count">{enabled.length} 项</span></header>
+              <ul>{enabled.map((feature) => <li key={feature}><NovaIcon name="check-circle" size={16} /><div><strong>{formatFeature(feature)}</strong><small>{FEATURE_BENEFITS[feature]}</small></div></li>)}</ul>
             </article> : null;
           })}
         </div> : <p className="license-scope-empty">{licenseValid ? "此授权未包含可用功能。" : license ? "授权生效后，可在这里查看可用功能。" : "正在核实授权范围。"}</p>}

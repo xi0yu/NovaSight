@@ -11,7 +11,7 @@ The visible experience is light, fast, natural, alive, reliable, and easy to und
 ## Product split
 
 - **NovaSight Cloud** is object-first and remote: Home, Devices, Models, Activity, Me.
-- **NovaSight Studio** is a professional workstation with six task spaces: 首页, 设备管理, 算法参数, 实时日志, 设置, 关于. Models, inference, performance, hardware tests, and license remain explicit contextual pages reached from the object that owns them.
+- **NovaSight Studio** is a professional workstation with seven task spaces: 首页, 设备管理, 算法参数, 开火稳定, 实时日志, 鼠标协议, 链路诊断. 设置 and 关于 are utility dialogs. Models, inference, performance, hardware tests, and license remain explicit contextual pages reached from the object that owns them.
 - Cloud must not mirror every Studio setting. Both products share typography, status language, motion, and progressive disclosure.
 
 ## Human and task
@@ -30,7 +30,7 @@ The first screen answers those questions. It does not begin with analytics, regi
 
 - Organize around real objects: my device, my model, what happened, my account or license.
 - Prefer `首页 / 设备 / 模型 / 活动 / 我的` in Cloud.
-- In Studio, keep the six task spaces visible. Device depth is entered through named controls such as `当前模型 / 管理模型 / 性能详情 / 控制测试`, never through a second hidden navigation strip.
+- In Studio, keep the seven task spaces visible. Device depth is entered through named controls such as `当前模型 / 管理模型 / 性能详情 / 控制测试`, never through a second hidden navigation strip.
 - A core object or task must be visible as text on the first relevant layer. Do not require users to guess a tab, hover target, right-click menu, or collapsed section.
 - Low-frequency actions may move behind `···`; the current state and primary action may not.
 
@@ -120,3 +120,9 @@ Follow `docs/designs/studio-product-contract-1.10.535.md` and the auth session c
 About presents product identity, version, machine authorization and benefits filtered by actual rights. It has only the standard close control. Authorization management belongs in Settings. Ordinary parameter saves retain the established save/apply behavior. Settings separates backup, restore, authorization management and recent issue records. Local history is limited to 200 notices and is not a permanent server audit.
 
 Startup uses one visual through identity, license and application loading. Model lists keep old content during refresh and describe actual readiness. Device inputs remain disabled until a current capability check proves availability. Commercial expression may celebrate confirmed rights; actions and faults use direct language.
+
+## Entitlement and signal depth
+
+Entitlements use a gold foil seal, membership-paper surface, distinct feature icon badges and individual granted benefits; About stays read-only. Do not label test access as paid VIP. Fire stabilization has a 260px scene hero, 22px heading, controls beside a parameter-aware illustrative response plot and visible intervention/reset conditions. The plot is explicitly conceptual, never a claimed measurement.
+
+Primary workspace 06 is mouse protocol; 07 is signal diagnostics. Capture and inference evidence is visible there, with explicit freshness and saved-versus-runtime labels. Device, inference, control trace and latency routes group under 07; legacy complete layouts migrate without hiding tasks.

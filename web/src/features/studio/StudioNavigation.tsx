@@ -8,6 +8,7 @@ import chibiArt from "../../assets/themes/nova-chibi.webp";
 import "./studio-navigation.css";
 
 export type ConsolePage =
+  | "diagnostics"
   | "overview"
   | "onboarding"
   | "activity"
@@ -49,10 +50,11 @@ export const DEFAULT_CONSOLE_PAGE: ConsoleWorkspacePage = "overview";
 export const CONSOLE_PAGES = new Set<ConsolePage>([
   "overview", "onboarding", "activity", "device", "capture", "infer", "control",
   "models", "management", "license", "params", "fire", "control-test", "latency", "about",
-  "settings",
+  "settings", "diagnostics",
 ]);
 
 const navigationDetails: Record<StudioLayoutPage["id"], Omit<NavigationItem, "id" | "label">> = {
+  diagnostics: { detail: "采集、推理、控制与性能排查", icon: "activity-pulse" },
   overview: { detail: "状态、实时数据与下一步", icon: "dashboard" },
   capture: { detail: "输入、模型与采集规格", icon: "devices" },
   "control-test": { detail: "输出协议与连接管理", icon: "devices" },
@@ -63,17 +65,19 @@ const navigationDetails: Record<StudioLayoutPage["id"], Omit<NavigationItem, "id
   about: { detail: "平台版本、能力与支持", icon: "help" },
 };
 
-const CAPTURE_PAGES = new Set<ConsolePage>(["device", "capture", "infer", "models", "latency"]);
+const CAPTURE_PAGES = new Set<ConsolePage>(["capture", "models"]);
+const DIAGNOSTIC_PAGES = new Set<ConsolePage>(["diagnostics", "device", "infer", "control", "latency"]);
 
 function selectedPrimaryPage(page: ConsolePage): StudioLayoutPage["id"] {
   if (CAPTURE_PAGES.has(page)) return "capture";
-  if (page === "control") return "params";
+  if (DIAGNOSTIC_PAGES.has(page)) return "diagnostics";
   if (page === "management" || page === "license") return "about";
   if (page === "onboarding") return "overview";
   return page as StudioLayoutPage["id"];
 }
 
 export const CONSOLE_PAGE_METADATA: Record<ConsolePage, ConsolePageMetadata> = {
+  diagnostics: { group: "NovaSight", title: "链路诊断", description: "从采集到输出，查看当前数据与问题所在。" },
   overview: { group: "NovaSight", title: "首页", description: "开始使用，或继续调整你的设备。" },
   onboarding: { group: "开始使用", title: "新手引导", description: "按任务顺序连接画面、选择模型、确认参数，再安全开始运行。" },
   activity: { group: "NovaSight", title: "实时日志", description: "按严重程度查看运行与操作记录；需要排查时再展开开发者详情。" },
@@ -115,7 +119,7 @@ export function StudioNavigation({
   }, [menuOpen]);
   const activeItemRef = useRef<HTMLButtonElement>(null);
   const selectedPage = selectedPrimaryPage(activePage);
-  const primaryPages = [...pages.filter((page) => !isConsoleUtility(page.id) && page.id !== "control-test"), ...pages.filter((page) => page.id === "control-test")];
+  const primaryPages = [...pages.filter((page) => !isConsoleUtility(page.id) && page.id !== "control-test" && page.id !== "diagnostics"), ...pages.filter((page) => page.id === "control-test"), ...pages.filter((page) => page.id === "diagnostics")];
   const utilityPages = pages.filter((page) => isConsoleUtility(page.id));
 
   useEffect(() => {
