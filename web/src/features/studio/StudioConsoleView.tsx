@@ -1082,7 +1082,7 @@ export function StudioConsoleView({
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       const classDraftDirty = activeConfigDialogRef.current !== null
         && !runtimeConfigsEqual(configDialogBaselineRef.current, configDraftRef.current);
-      if (!parameterPageDirtyRef.current && !modelDraftDirtyRef.current && !classDraftDirty) {
+      if (!parameterPageDirtyRef.current && !modelDraftDirtyRef.current && !classDraftDirty && pendingConfigWritesRef.current === 0 && !parameterSaveInFlightRef.current) {
         return;
       }
       event.preventDefault();

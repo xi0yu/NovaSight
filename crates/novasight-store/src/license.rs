@@ -218,12 +218,20 @@ pub enum LicenseDenial {
     FeatureRequired(&'static str),
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+struct TemporaryGrant {
+    granted_at: f64,
+    issued_at: f64,
+    #[serde(default)]
+    code_digest: Option<[u8; 32]>,
+}
+
 #[derive(Clone, Debug)]
 pub struct FileLicenseRepository {
     path: PathBuf,
     policy: LicensePolicy,
     operation_lock: Arc<Mutex<()>>,
-    development_session: Arc<Mutex<Option<f64>>>,
+    development_session: Arc<Mutex<Option<TemporaryGrant>>>,
 }
 
 impl FileLicenseRepository {
@@ -263,6 +271,43 @@ impl FileLicenseRepository {
         {
             return self.temporary_status(granted_at);
         }
+        if self.temporary_access_supported() {
+            let formal = self.storage_status()?;
+            if formal.valid {
+                return Ok(formal);
+            }
+            let path = self.temporary_grant_path();
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) => {
+                    validate_regular_file(&path, &metadata)?;
+                    if metadata.mode() & 0o077 != 0 {
+                        return Err(LicenseError::UnsafePath(path));
+                    }
+                    let bytes = fs::read(&path)
+                        .map_err(|source| LicenseError::io("read", &path, source))?;
+                    let grant: TemporaryGrant =
+                        serde_json::from_slice(&bytes).map_err(|source| {
+                            LicenseError::InvalidDocument {
+                                path: path.clone(),
+                                source,
+                            }
+                        })?;
+                    if !grant.issued_at.is_finite()
+                        || !grant.granted_at.is_finite()
+                        || grant.issued_at <= 0.0
+                        || grant.granted_at < grant.issued_at
+                    {
+                        return Err(LicenseError::InvalidKey(
+                            "invalid persisted test grant".into(),
+                        ));
+                    }
+                    *self.development_session.lock().unwrap() = Some(grant);
+                    return self.temporary_status(grant);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => return Err(LicenseError::io("inspect", &path, source)),
+            }
+        }
         self.storage_status()
     }
 
@@ -272,13 +317,6 @@ impl FileLicenseRepository {
             Err(error) if error.is_invalid_license_state() => {
                 LicenseStatus::invalid_configured(error.to_string())
             }
-            Err(error) if self.temporary_access_supported() => {
-                let mut status = LicenseStatus::unconfigured();
-                status.message = format!(
-                    "formal license storage is unavailable; Debug temporary access remains available: {error}"
-                );
-                status
-            }
             Err(error) => return Err(error),
         };
         status.temporary_access_supported = self.temporary_access_supported();
@@ -286,6 +324,9 @@ impl FileLicenseRepository {
     }
 
     pub fn activate(&self, key: &str) -> Result<LicenseStatus, LicenseError> {
+        if self.temporary_access_supported() {
+            self.status()?;
+        }
         let key = key.trim();
         if key.len() < 8 {
             return Err(LicenseError::InvalidKey(
@@ -297,7 +338,18 @@ impl FileLicenseRepository {
                 "license credential is too large".to_owned(),
             ));
         }
-        if self.policy.matches_temporary_access_code(key) {
+        let persisted_code_matches = self
+            .development_session
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|grant| {
+                grant.code_digest.as_ref().is_some_and(|digest| {
+                    constant_time_equal(digest, &Sha256::digest(key.as_bytes()).into())
+                }) && now_seconds()
+                    .is_ok_and(|now| now < grant.issued_at + TEMPORARY_LICENSE_SECONDS as f64)
+            });
+        if self.policy.matches_temporary_access_code(key) || persisted_code_matches {
             return self.grant_temporary();
         }
         let _operation = self
@@ -340,6 +392,7 @@ impl FileLicenseRepository {
             return Err(LicenseError::InvalidKey(status.message));
         }
         self.write_document(&document)?;
+        self.clear_temporary_grant()?;
         *self
             .development_session
             .lock()
@@ -348,9 +401,9 @@ impl FileLicenseRepository {
         Ok(status)
     }
 
-    fn temporary_status(&self, granted_at: f64) -> Result<LicenseStatus, LicenseError> {
-        let issued_at = self.policy.temporary_issued_at.unwrap_or(granted_at);
-        let mut status = development_session_status(granted_at, issued_at, now_seconds()?);
+    fn temporary_status(&self, grant: TemporaryGrant) -> Result<LicenseStatus, LicenseError> {
+        let mut status =
+            development_session_status(grant.granted_at, grant.issued_at, now_seconds()?);
         if self.policy.temporary_started_at.is_some_and(|started| {
             started.elapsed() >= Duration::from_secs(TEMPORARY_LICENSE_SECONDS)
         }) {
@@ -360,8 +413,7 @@ impl FileLicenseRepository {
         Ok(status)
     }
 
-    /// Enable process-local access within the original startup deadline.
-    /// This state is deliberately process-local and never written to disk.
+    /// Persist the original grant deadline so ordinary restarts cannot extend it.
     fn grant_temporary(&self) -> Result<LicenseStatus, LicenseError> {
         if !self.temporary_access_supported() {
             return Err(LicenseError::TemporaryGrantDisabled);
@@ -371,7 +423,12 @@ impl FileLicenseRepository {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let now = now_seconds()?;
-        if !self.temporary_status(now)?.valid {
+        let grant = TemporaryGrant {
+            granted_at: now,
+            issued_at: self.policy.temporary_issued_at.unwrap_or(now),
+            code_digest: self.policy.temporary_access_digest,
+        };
+        if !self.temporary_status(grant)?.valid {
             return Err(LicenseError::InvalidKey(
                 "本次启动的临时授权码已到期。".into(),
             ));
@@ -381,9 +438,14 @@ impl FileLicenseRepository {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
         {
-            return self.temporary_status(granted_at);
+            let previous = self.temporary_status(granted_at)?;
+            if previous.valid
+                || grant.issued_at <= granted_at.issued_at
+                || grant.code_digest == granted_at.code_digest
+            {
+                return Ok(previous);
+            }
         }
-        // Development access does not create or lock authorization storage.
         // An already readable signed license remains authoritative.
         match self.read_status(now) {
             Ok(current) if current.valid => {
@@ -391,11 +453,9 @@ impl FileLicenseRepository {
             }
             Ok(_) | Err(_) => {}
         }
-        *self
-            .development_session
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(now);
-        self.temporary_status(now)
+        self.write_value(&self.temporary_grant_path(), &grant)?;
+        *self.development_session.lock().unwrap() = Some(grant);
+        self.temporary_status(grant)
     }
 
     pub fn clear(&self) -> Result<LicenseStatus, LicenseError> {
@@ -403,6 +463,7 @@ impl FileLicenseRepository {
             .operation_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.clear_temporary_grant()?;
         let had_development_session = self
             .development_session
             .lock()
@@ -606,18 +667,31 @@ impl FileLicenseRepository {
         })
     }
 
-    fn write_document(&self, document: &PersistedLicense) -> Result<(), LicenseError> {
-        if let Ok(metadata) = fs::symlink_metadata(&self.path) {
-            validate_regular_file(&self.path, &metadata)?;
+    fn temporary_grant_path(&self) -> PathBuf {
+        self.path.with_extension("test-grant.json")
+    }
+
+    fn clear_temporary_grant(&self) -> Result<(), LicenseError> {
+        let path = self.temporary_grant_path();
+        match fs::remove_file(&path) {
+            Ok(()) => sync_parent(&path),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(LicenseError::io("remove", &path, source)),
         }
-        let parent = parent_directory(&self.path);
+    }
+
+    fn write_document(&self, document: &PersistedLicense) -> Result<(), LicenseError> {
+        self.write_value(&self.path, document)
+    }
+
+    fn write_value(&self, path: &Path, document: &impl Serialize) -> Result<(), LicenseError> {
+        let parent = parent_directory(path);
         fs::create_dir_all(parent)
             .map_err(|source| LicenseError::io("create directory", parent, source))?;
         let bytes = serde_json::to_vec_pretty(document).map_err(LicenseError::Serialize)?;
         let temporary = parent.join(format!(
             ".{}.tmp-{}-{}",
-            self.path
-                .file_name()
+            path.file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("license"),
             std::process::id(),
@@ -636,9 +710,9 @@ impl FileLicenseRepository {
                 .map_err(|source| LicenseError::io("write temporary", &temporary, source))?;
             file.sync_all()
                 .map_err(|source| LicenseError::io("sync temporary", &temporary, source))?;
-            fs::rename(&temporary, &self.path)
-                .map_err(|source| LicenseError::io("replace", &self.path, source))?;
-            sync_parent(&self.path)
+            fs::rename(&temporary, path)
+                .map_err(|source| LicenseError::io("replace", path, source))?;
+            sync_parent(path)
         })();
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
@@ -1149,7 +1223,6 @@ impl LicenseError {
                 | Self::VerificationFailed(_)
                 | Self::UnsupportedDuration(_)
                 | Self::UnsupportedSchema(_)
-                | Self::InvalidDocument { .. }
         )
     }
 }
@@ -1283,6 +1356,7 @@ mod authorization_tests {
         assert!(!repository.status().unwrap().valid);
         assert!(repository.activate(TEMPORARY_CODE).is_err());
         assert!(!repository.path().exists());
+        repository.clear().unwrap();
     }
 
     #[test]
@@ -1296,7 +1370,7 @@ mod authorization_tests {
     }
 
     #[test]
-    fn temporary_code_uses_the_same_activation_entry_without_persistence() {
+    fn temporary_code_uses_the_same_activation_entry_without_storing_the_code() {
         let policy = LicensePolicy::new(None)
             .with_temporary_access_code(TEMPORARY_CODE)
             .unwrap();
@@ -1319,6 +1393,23 @@ mod authorization_tests {
                 .any(|feature| feature == "hardware_control")
         );
         assert!(!repository.path().exists());
+        let persisted = std::fs::read_to_string(repository.temporary_grant_path()).unwrap();
+        assert!(!persisted.contains(TEMPORARY_CODE));
+        let restarted = FileLicenseRepository::new(
+            repository.path(),
+            LicensePolicy::new(None)
+                .with_temporary_access_code(OTHER_TEMPORARY_CODE)
+                .unwrap(),
+        );
+        assert_eq!(restarted.status().unwrap().expires_at, status.expires_at);
+        assert_eq!(restarted.status().unwrap().created_at, status.created_at);
+        assert_eq!(
+            restarted.activate(TEMPORARY_CODE).unwrap().expires_at,
+            status.expires_at
+        );
+        restarted.clear().unwrap();
+        let again = FileLicenseRepository::new(repository.path(), repository.policy.clone());
+        assert!(!again.status().unwrap().valid);
     }
 
     #[test]

@@ -257,6 +257,7 @@ test("Studio action feedback respects reduced motion, transparency and higher co
 test("760px Studio recovery actions keep touch-safe targets", async ({ page }) => {
   await page.setViewportSize({ width: 760, height: 812 });
   await mockStudioApi(page);
+  await page.route("**/api/studio/v1/status", (route) => route.fulfill({ status: 503, json: { code: "RUNTIME_UNAVAILABLE", message: "运行状态不可达" } }));
   await page.goto("/?page=control");
 
   for (const control of [

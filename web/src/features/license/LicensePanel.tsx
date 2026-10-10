@@ -3,6 +3,7 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
 import {
   type LicenseStatus,
   clearLicenseKey,
+  getLicenseStatus,
   saveLicenseKey
 } from "../../api";
 import { Button, InlineError, StatusIndicator } from "../../components/ui";
@@ -41,10 +42,10 @@ export function LicensePanel({
   useEffect(() => {
     if (license?.valid && expiresAt !== null && now >= expiresAt && expiredNotified.current !== expiresAt) {
       expiredNotified.current = expiresAt;
-      onLicenseChange({ ...license, valid: false, message: "授权已到期，运行操作已锁定；前台保留以便重新授权。" });
+      void getLicenseStatus().then(onLicenseChange).catch(() => { expiredNotified.current = null; });
     }
   }, [now, expiresAt, license, onLicenseChange]);
-  const licenseValid = license?.valid === true && (remaining === null || remaining > 0);
+  const licenseValid = license?.valid === true;
   const currentTime = new Date(now).toLocaleString("zh-CN", { hour12: false });
   const temporarySupported = license?.temporary_access_supported === true;
   const traceSource = license?.token_id || license?.license_id || license?.fingerprint || "";
@@ -127,7 +128,7 @@ export function LicensePanel({
       </div>
       <dl className="license-device-expiry" aria-label="设备授权状态">
         <div><dt>设备模型 ID</dt><dd>{license?.device_model || "设备型号待核实"}</dd></div>
-        <div className={remaining === 0 ? "expired" : ""}><dt>到期时间</dt><dd>{formatEpoch(license?.expires_at)}<small className="license-expiry-countdown">{remaining === null ? "到期时间待核实" : remaining === 0 ? "已到期 · 操作已锁定" : `倒计时 ${String(Math.floor(remaining / 3600)).padStart(2, "0")}:${String(Math.floor(remaining / 60) % 60).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`}</small></dd></div>
+        <div className={remaining === 0 ? "expired" : ""}><dt>到期时间</dt><dd>{formatEpoch(license?.expires_at)}<small className="license-expiry-countdown">{remaining === null ? "到期时间待核实" : remaining === 0 ? (licenseValid ? "正在核验到期状态" : "已到期 · 操作已锁定") : `倒计时 ${String(Math.floor(remaining / 3600)).padStart(2, "0")}:${String(Math.floor(remaining / 60) % 60).padStart(2, "0")}:${String(remaining % 60).padStart(2, "0")}`}</small></dd></div>
         <div><dt>授权类别</dt><dd>{formatLicenseCategory(license)}</dd></div>
       </dl>
       <p className="license-help-copy">{licenseValid

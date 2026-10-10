@@ -1,3 +1,4 @@
+import stoppedRuntime from "./stopped-runtime.json" with { type: "json" };
 import type { Page } from "@playwright/test";
 
 export async function openUtility(page: Page, name: "设置" | "关于") {
@@ -92,8 +93,11 @@ export async function mockStudioApi(
       await route.fulfill({ json: clearedLicense });
       return;
     }
-    if (path === "/api/config" && route.request().method() === "GET" && runtimeConfig) {
-      await route.fulfill({ json: runtimeConfig });
+    if (path === "/api/studio/v1/status" && route.request().method() === "GET") {
+      await route.fulfill({ json: stoppedRuntime }); return;
+    }
+    if (path === "/api/config" && route.request().method() === "GET") {
+      await route.fulfill({ json: runtimeConfig ?? { revision: 1, control: { output_enabled: false }, hardware: { backend: "null" } } });
       return;
     }
     await route.fulfill({

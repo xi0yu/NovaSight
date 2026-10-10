@@ -3,6 +3,7 @@ import { mockStudioApi, openUtility, authenticatedSession } from "./fixtures/stu
 
 test("service failure is not shown as first-time setup or an empty model library", async ({ page }) => {
   await mockStudioApi(page);
+  await page.route("**/api/studio/v1/status", (route) => route.fulfill({ status: 503, json: { code: "RUNTIME_UNAVAILABLE", message: "运行状态不可达" } }));
   await page.goto("/?page=overview");
   await expect(page.getByRole("status").filter({ hasText: "当前运行结论" })).toContainText("无法确认运行状态");
   await expect(page.locator(".console-safety-deck")).toBeHidden();
@@ -419,17 +420,15 @@ test("saving parameters while runtime is stopped does not show an output warning
   expect(savedConfigs[0].changes).not.toEqual(expect.arrayContaining([expect.objectContaining({ section: "control", key: "output_enabled" })]));
 });
 
-test("reauthentication retains the real parameter input and resumes the same workspace", async ({ page }) => {
+test("silent checking retains the real parameter input without showing authorization", async ({ page }) => {
   await mockStudioApi(page, authenticatedSession, { revision: 1, control: { output_enabled: false }, pipeline: { p_response_scale: 0.2 } });
   await page.goto("/?page=params");
   await page.getByRole("tab", { name: "移动与输出" }).click();
   const gain = page.getByRole("textbox", { name: "比例增益 Kp 数值" });
   await gain.fill("0.7");
   await page.evaluate(() => window.dispatchEvent(new CustomEvent("novasight:auth-required")));
-  await expect(page.getByRole("heading", { name: "输入授权码" })).toBeVisible();
-  await expect(gain).not.toBeVisible();
-  await page.getByLabel("授权码", { exact: true }).fill("renew-test-session");
-  await page.getByRole("button", { name: "进入控制台" }).click();
+  await expect(page.getByRole("heading", { name: "输入授权码" })).toHaveCount(0);
+  await expect(gain).toBeVisible();
   await expect(page.getByRole("heading", { level: 1, name: "算法参数" })).toBeVisible();
   await expect(gain).toHaveValue(/^0\.7(?:00)?$/);
 });

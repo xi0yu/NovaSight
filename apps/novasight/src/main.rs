@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, UdpSocket};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -513,7 +513,13 @@ fn spawn_web(layout: &PortableLayout, frontend_dev: bool) -> Result<Child> {
     if frontend_dev {
         args.push(OsString::from("--frontend-dev"));
     }
-    spawn_logged_process(&layout.web, &layout.root, &layout.web_log, &args, &[])
+    let web_root = layout.root.join("out/web").to_string_lossy().into_owned();
+    let env = if layout.mode == LayoutMode::Developer && !frontend_dev {
+        vec![("NOVASIGHT_WEB_ROOT", web_root.as_str())]
+    } else {
+        vec![]
+    };
+    spawn_logged_process(&layout.web, &layout.root, &layout.web_log, &args, &env)
 }
 
 async fn wait_for_daemon_ready(
@@ -780,8 +786,14 @@ fn print_temporary_license_access(access: Option<&TemporaryLicenseAccess>) {
     let Some(access) = access else {
         return;
     };
-    eprintln!("NovaSight 临时授权码 {}", access.code);
-    eprintln!("临时授权从本次启动起仅限 24 小时，到期停止资源服务，保留前台；重复登录不会续期。");
+    if std::io::stderr().is_terminal() {
+        eprintln!("NovaSight 测试授权码 {}", access.code);
+    } else {
+        eprintln!("测试授权码已准备；仅在交互终端显示，不写入服务日志。");
+    }
+    eprintln!(
+        "测试授权最多 24 小时；已有授权重启保留原期限，到期停止资源服务，保留前台；重复登录不会续期。"
+    );
 }
 
 fn ready_address(ready: &ReadyDocument) -> Option<SocketAddr> {

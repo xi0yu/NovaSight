@@ -6,13 +6,15 @@ import { describe, expect, it, vi } from "vitest";
 import type { LicenseStatus } from "../../api";
 import { LicensePanel } from "./LicensePanel";
 
-const { clearLicenseKeyMock } = vi.hoisted(() => ({
+const { clearLicenseKeyMock, getLicenseStatusMock } = vi.hoisted(() => ({
   clearLicenseKeyMock: vi.fn(),
+  getLicenseStatusMock: vi.fn(),
 }));
 
 vi.mock("../../api", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../api")>(),
   clearLicenseKey: clearLicenseKeyMock,
+  getLicenseStatus: getLicenseStatusMock,
 }));
 
 const activeLicense: LicenseStatus = {
@@ -61,18 +63,20 @@ function LicenseTransitionHarness() {
 }
 
 describe("LicensePanel", () => {
-  it("shows the machine model and locks at the expiry deadline only once", () => {
+  it("uses a local deadline only to request server confirmation", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-09T00:00:00Z"));
     const changed = vi.fn();
+    getLicenseStatusMock.mockResolvedValue(activeLicense);
     const license = { ...activeLicense, device_model: "Mac16,11", expires_at: Date.now() / 1000 + 2 };
     const view = render(<LicensePanel license={license} onLicenseChange={changed} />);
     try {
       expect(screen.getByText("Mac16,11")).toBeVisible();
       expect(screen.getByText("倒计时 00:00:02")).toBeVisible();
       act(() => vi.advanceTimersByTime(2000));
-      expect(screen.getByText("已到期 · 操作已锁定")).toBeVisible();
-      expect(changed).toHaveBeenCalledWith(expect.objectContaining({ valid: false, expires_at: license.expires_at }));
+      expect(screen.getByText("正在核验到期状态")).toBeVisible();
+      await act(async () => {});
+      expect(changed).toHaveBeenCalledWith(activeLicense);
       act(() => vi.advanceTimersByTime(2000));
       expect(changed).toHaveBeenCalledTimes(1);
     } finally {

@@ -5,7 +5,8 @@ import {
   useContext,
   useCallback,
   useEffect,
-  useState
+  useState,
+  useRef
 } from "react";
 
 import {
@@ -13,7 +14,8 @@ import {
   AuthSession,
   establishAuthSession,
   getApiErrorCode,
-  getAuthSession,
+  recoverAuthSession,
+  setBusinessConfirmed,
   getHealth,
   logoutAuthSession
 } from "../../api";
@@ -21,6 +23,8 @@ import { Button, LoadedImage } from "../../components/ui";
 import { NovaIcon } from "../../components/visual";
 import { reportError } from "../../lib/toast";
 import { getErrorMessage } from "../shared/format";
+import { transitionAuth, type AuthAuthority } from "./authStateMachine";
+import type { AuthState } from "../../contracts/auth";
 import daylightArt from "../../assets/themes/nova-daylight.webp";
 
 type AuthGateProps = {
@@ -30,15 +34,36 @@ type AuthGateProps = {
 type GatewayState = "checking" | "reachable" | "unreachable";
 type DaemonState = "checking" | "reachable" | "unreachable";
 
+const WorkspaceRecovery = createContext({ revision: 0, confirm: (_ready: boolean, _revision: number) => {} });
+export const useWorkspaceRecovery = () => useContext(WorkspaceRecovery);
 const WorkspaceAuthorization = createContext(true);
 export const useWorkspaceAuthorization = () => useContext(WorkspaceAuthorization);
 
-function sessionExpired(session: AuthSession): boolean {
-  return session.expires_at !== null && session.expires_at * 1000 <= Date.now();
-}
-
 export function AuthGate({ children }: AuthGateProps) {
   const [session, setSession] = useState<AuthSession | null>(null);
+  const [authState, setAuthState] = useState<AuthState>("checking");
+  const [businessReady, setBusinessReady] = useState(false);
+  const [revision, setRevision] = useState(0);
+  const revisionRef = useRef(0);
+  const stateRef = useRef<AuthState>("checking");
+  const sessionRef = useRef<AuthSession | null>(null);
+  const requestRef = useRef(0);
+  const beginBusinessRecovery = useCallback(() => {
+    revisionRef.current += 1;
+    setRevision(revisionRef.current);
+    setBusinessReady(false);
+    setBusinessConfirmed(false);
+  }, []);
+  const transition = useCallback((next: AuthState, authority: AuthAuthority = "client") => {
+    const allowed = transitionAuth(stateRef.current, next, authority);
+    stateRef.current = allowed;
+    setAuthState(allowed);
+  }, []);
+  const confirm = useCallback((ready: boolean, evidenceRevision: number) => {
+    if (evidenceRevision !== revisionRef.current || !sessionRef.current?.authenticated || stateRef.current === "reconnecting") return;
+    setBusinessReady(ready);
+    setBusinessConfirmed(ready);
+  }, []);
   const [workspaceOpened, setWorkspaceOpened] = useState(false);
   const [gatewayState, setGatewayState] = useState<GatewayState>("checking");
   const [daemonState, setDaemonState] = useState<DaemonState>("checking");
@@ -48,94 +73,125 @@ export function AuthGate({ children }: AuthGateProps) {
   const [issue, setIssue] = useState("");
 
   const verifyDaemon = useCallback(async () => {
-    setDaemonState("checking");
     try {
       const health = await getHealth();
       setDaemonState(health.ok ? "reachable" : "unreachable");
+      if (!health.ok) throw new Error("服务不可达");
     } catch {
       setDaemonState("unreachable");
+      if (stateRef.current !== "reconnecting") beginBusinessRecovery();
+      transition("reconnecting");
     }
-  }, []);
+  }, [beginBusinessRecovery, transition]);
 
-  const applySession = useCallback((next: AuthSession, unauthenticatedIssue = "") => {
-    if (next.authenticated && !sessionExpired(next)) {
+  const applySession = useCallback((next: AuthSession, userConfirmed = false) => {
+    const nextState = next.auth_state ?? (next.authenticated ? "authorized" : "required");
+    if (nextState === "checking") { transition("checking"); return; }
+    if (next.authenticated) {
+      if (transitionAuth(stateRef.current, "authorized", userConfirmed ? "user-confirmed" : "server") !== "authorized") return;
+      if (!sessionRef.current?.authenticated || stateRef.current === "reconnecting") beginBusinessRecovery();
+      sessionRef.current = next;
       setWorkspaceOpened(true);
       setSession(next);
+      transition("authorized", userConfirmed ? "user-confirmed" : "server");
       setIssue("");
       void verifyDaemon();
       return;
     }
+    requestRef.current += 1;
+    sessionRef.current = null;
     setSession(null);
-    setDaemonState("checking");
-    setIssue(unauthenticatedIssue);
-  }, [verifyDaemon]);
+    setBusinessReady(false);
+    setBusinessConfirmed(false);
+    transition(nextState, nextState === "signed_out" ? "user" : "server");
+    setIssue(nextState === "expired" ? "授权已到期，请提供有效授权码。" : nextState === "revoked" ? "授权已撤销，请提供有效授权码。" : "");
+  }, [beginBusinessRecovery, transition, verifyDaemon]);
 
-  const refreshSession = useCallback(async (failureMessage: string) => {
+  const refreshSession = useCallback(async (force = false) => {
+    if (["required", "expired", "revoked", "signed_out"].includes(stateRef.current)) return;
+    const request = ++requestRef.current;
     try {
-      const next = await getAuthSession();
+      const next = await recoverAuthSession(force);
+      if (request !== requestRef.current) return;
       setGatewayState("reachable");
-      applySession(next, failureMessage);
+      applySession(next);
     } catch (error) {
+      if (request !== requestRef.current || (error instanceof DOMException && error.name === "AbortError")) return;
       setGatewayState("unreachable");
-      setSession(null);
-      setIssue(`Web/API 安全层不可用：${getErrorMessage(error)}`);
+      if (stateRef.current !== "reconnecting") beginBusinessRecovery();
+      transition("reconnecting");
     }
-  }, [applySession]);
+  }, [applySession, beginBusinessRecovery, transition]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    // Drop obsolete launcher credentials from old bookmarks, without using or storing them.
     if (new URLSearchParams(window.location.hash.slice(1)).has("access")) {
-      window.history.replaceState(window.history.state, document.title,
-        `${window.location.pathname}${window.location.search}`);
+      window.history.replaceState(window.history.state, document.title, `${window.location.pathname}${window.location.search}`);
     }
-    void getAuthSession(controller.signal)
-      .then((next) => {
-        setGatewayState("reachable");
-        applySession(next);
-      })
-      .catch((error: unknown) => {
-        if (typeof error === "object" && error !== null && "name" in error && error.name === "AbortError") {
-          return;
-        }
-        setGatewayState(error instanceof ApiError ? "reachable" : "unreachable");
-        setIssue(`无法连接授权服务：${getErrorMessage(error)}`);
-      });
-    return () => controller.abort();
-  }, [applySession]);
-
-  useEffect(() => {
-    const requireAuthentication = () => {
-      setSession(null);
-      setDaemonState("checking");
-      setIssue("会话已失效，请重新输入授权码。运行状态未改变。");
-    };
-    const refreshCsrf = () => {
-      void refreshSession("会话安全令牌已轮换，请重试刚才的操作。");
-    };
-    window.addEventListener("novasight:auth-required", requireAuthentication);
-    window.addEventListener("novasight:csrf-rejected", refreshCsrf);
-    return () => {
-      window.removeEventListener("novasight:auth-required", requireAuthentication);
-      window.removeEventListener("novasight:csrf-rejected", refreshCsrf);
-    };
+    void refreshSession();
+    return () => { requestRef.current += 1; };
   }, [refreshSession]);
 
   useEffect(() => {
-    if (!session?.expires_at) return;
-    const remaining = Math.max(0, session.expires_at * 1000 - Date.now());
-    const timer = window.setTimeout(() => {
-      setSession(null);
-      setIssue("会话已到期，请重新输入授权码。运行状态未改变。");
-    }, remaining);
-    return () => window.clearTimeout(timer);
-  }, [session]);
+    const received = (event: Event) => {
+      const next = (event as CustomEvent<AuthSession & { user_initiated?: boolean }>).detail;
+      applySession(next, next.user_initiated === true);
+    };
+    const checking = () => {
+      if (!["required", "expired", "revoked", "signed_out"].includes(stateRef.current)) transition("checking");
+    };
+    const refreshing = () => transition("refreshing");
+    const userAuthorization = () => transition("checking", "user");
+    const reconnecting = () => {
+      if (["required", "expired", "revoked", "signed_out"].includes(stateRef.current)) return;
+      if (stateRef.current !== "reconnecting") beginBusinessRecovery();
+      transition("reconnecting");
+    };
+    const recheck = () => { void refreshSession(true); };
+    const wake = () => {
+      if (document.visibilityState === "hidden" || ["required", "expired", "revoked", "signed_out"].includes(stateRef.current)) return;
+      beginBusinessRecovery();
+      transition("checking");
+      void refreshSession();
+    };
+    window.addEventListener("novasight:auth-refreshing", refreshing);
+    window.addEventListener("novasight:auth-user-authorization", userAuthorization);
+    window.addEventListener("novasight:auth-session", received);
+    window.addEventListener("novasight:auth-checking", checking);
+    window.addEventListener("novasight:auth-reconnecting", reconnecting);
+    window.addEventListener("novasight:auth-required", recheck);
+    window.addEventListener("online", wake);
+    window.addEventListener("focus", wake);
+    window.addEventListener("offline", reconnecting);
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      window.removeEventListener("novasight:auth-refreshing", refreshing);
+      window.removeEventListener("novasight:auth-user-authorization", userAuthorization);
+      window.removeEventListener("novasight:auth-session", received);
+      window.removeEventListener("novasight:auth-checking", checking);
+      window.removeEventListener("novasight:auth-reconnecting", reconnecting);
+      window.removeEventListener("novasight:auth-required", recheck);
+      window.removeEventListener("online", wake);
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("offline", reconnecting);
+      document.removeEventListener("visibilitychange", wake);
+    };
+  }, [applySession, beginBusinessRecovery, refreshSession, transition]);
 
   useEffect(() => {
-    if (!session?.authenticated) return;
-    const interval = window.setInterval(() => void verifyDaemon(), 30_000);
+    if (!session?.expires_at) return;
+    // Server-relative time is a wake-up hint, never terminal authorization evidence.
+    const remaining = session.expires_at - (session.server_time ?? Math.floor(Date.now() / 1000));
+    const timer = window.setTimeout(() => void refreshSession(true), Math.max(1000, Math.min(2147483647, (remaining - 60) * 1000)));
+    return () => window.clearTimeout(timer);
+  }, [session, refreshSession]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (stateRef.current === "reconnecting" || stateRef.current === "checking") void refreshSession();
+      else if (stateRef.current === "authorized") void verifyDaemon();
+    }, 5000);
     return () => window.clearInterval(interval);
-  }, [session?.authenticated, verifyDaemon]);
+  }, [refreshSession, verifyDaemon]);
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -144,15 +200,17 @@ export function AuthGate({ children }: AuthGateProps) {
       setIssue("请输入授权码。");
       return;
     }
+    requestRef.current += 1;
     setSubmitting(true);
     setIssue("");
     void establishAuthSession(code)
       .then((next) => {
         setGatewayState("reachable");
         setAccessCode("");
-        applySession(next, "Web/API 未建立 operator 会话。");
+        applySession(next, true);
       })
       .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
         setGatewayState(error instanceof ApiError ? "reachable" : "unreachable");
         const code = getApiErrorCode(error);
         setIssue(
@@ -165,23 +223,22 @@ export function AuthGate({ children }: AuthGateProps) {
   };
 
   const logout = () => {
+    requestRef.current += 1;
+    transition("signed_out", "user");
+    setSession(null);
+    sessionRef.current = null;
+    setBusinessConfirmed(false);
+    setBusinessReady(false);
     setSubmitting(true);
-    void logoutAuthSession()
-      .then(() => {
-        setWorkspaceOpened(false);
-        setSession(null);
-        setDaemonState("checking");
-        setIssue("");
-      })
-      .catch((error: unknown) => {
-        setIssue(`退出会话失败：${getErrorMessage(error)}`);
-        reportError(error, { source: "auth-logout", title: "退出会话失败" });
-      })
-      .finally(() => setSubmitting(false));
+    void logoutAuthSession().catch((error: unknown) => {
+      setIssue("已退出此页面，服务端撤销尚未确认；连接恢复后可重试退出。");
+      reportError(error, { source: "auth-logout", title: "服务端退出尚未确认", popup: false });
+    }).finally(() => setSubmitting(false));
   };
 
-  const authenticated = session?.authenticated === true;
-  const login = authenticated ? null : (
+  const authenticated = session?.authenticated === true && !["required", "expired", "revoked", "signed_out"].includes(authState);
+  const needsAuthorization = ["required", "expired", "revoked", "signed_out"].includes(authState);
+  const login = !needsAuthorization ? null : (
     <main className="auth-shell welcome-shell">
       <section className="welcome-story" aria-labelledby="welcome-title">
         <LoadedImage className="welcome-character" src={daylightArt} width="1536" height="1024" alt="" aria-hidden="true" />
@@ -246,7 +303,7 @@ export function AuthGate({ children }: AuthGateProps) {
         </form>
         {issue ? <div className="auth-issue" role="alert"><NovaIcon name="triangle-alert" size={16} /><span>{issue}</span></div> : null}
         {gatewayState === "unreachable" ? (
-          <Button variant="secondary" onClick={() => void refreshSession("")}>
+          <Button variant="secondary" onClick={() => { transition("checking"); void refreshSession(); }}>
             重新检查连接
           </Button>
         ) : null}
@@ -260,34 +317,41 @@ export function AuthGate({ children }: AuthGateProps) {
       </section>
     </main>
   );
-  return <WorkspaceAuthorization.Provider value={authenticated}>
-    {workspaceOpened ? <div className="authenticated-workspace" hidden={!authenticated}>
-      {authenticated ? <SessionBar session={session!} daemonState={daemonState} issue={issue} loggingOut={submitting} onLogout={logout} /> : null}
-      {children}
-    </div> : null}
-    {login}
+  return <WorkspaceAuthorization.Provider value={authenticated && authState !== "reconnecting"}>
+    <WorkspaceRecovery.Provider value={{ revision, confirm }}>
+      {workspaceOpened ? <div className="authenticated-workspace" hidden={needsAuthorization} data-auth-state={authState}>
+        {session ? <SessionBar daemonState={daemonState} issue={issue} loggingOut={submitting} onLogout={logout} /> : null}
+        {!businessReady ? <aside className="auth-recovery-notice" role="status">
+          <NovaIcon name="activity-pulse" size={18} />
+          <span>{authState === "reconnecting" ? "正在恢复连接，页面内容已保留" : "正在核对设备状态"}</span>
+          <Button variant="ghost" size="compact" onClick={() => { beginBusinessRecovery(); void refreshSession(true); }}>重新连接</Button>
+        </aside> : null}
+        {children}
+      </div> : null}
+      {!workspaceOpened && !needsAuthorization ? <main className="auth-shell"><section className="auth-card" role="status">
+        <h2>{authState === "reconnecting" ? "正在恢复连接" : "正在连接 NovaSight"}</h2>
+        <p>连接后自动恢复，无需重新输入授权码。</p>
+        <Button variant="secondary" onClick={() => void refreshSession()}>重新连接</Button>
+      </section></main> : null}
+      {login}
+    </WorkspaceRecovery.Provider>
   </WorkspaceAuthorization.Provider>;
 }
 
 function SessionBar({
-  session,
   daemonState,
   issue,
   loggingOut,
   onLogout
 }: {
-  session: AuthSession;
   daemonState: DaemonState;
   issue: string;
   loggingOut: boolean;
   onLogout: () => void;
 }) {
-  const expiresAt = session.expires_at
-    ? new Date(session.expires_at * 1000).toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit" })
-    : "—";
   return (
     <div className="auth-session-bar" role="status">
-      <div className="auth-session-identity" title={`授权有效至 ${expiresAt}`}>
+      <div className="auth-session-identity" title="设备授权详情见关于">
         <NovaIcon name="shield-check" size={15} />
         <strong>operator</strong>
         <span>已授权</span>
@@ -300,7 +364,7 @@ function SessionBar({
         </div>
       )}
       <Button variant="ghost" size="compact" onClick={onLogout} loading={loggingOut} leadingIcon="lock">
-        退出会话
+        退出登录
       </Button>
       {issue ? <span className="auth-session-issue" role="alert">{issue}</span> : null}
     </div>

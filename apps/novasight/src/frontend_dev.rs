@@ -25,6 +25,17 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
     eprintln!("NovaSight 开发：检查配置与依赖…");
     ensure_portable_config(layout)?;
     validate_artifacts(layout)?;
+    let hmr = std::env::var("NOVASIGHT_FRONTEND_DEV").is_ok_and(|value| value == "1");
+    if !hmr {
+        let status = StdCommand::new("pnpm")
+            .arg("build")
+            .current_dir(layout.root.join("web"))
+            .status()
+            .context("build static Studio")?;
+        if !status.success() {
+            bail!("前端构建失败，原实例未重启");
+        }
+    }
     stop_preexisting_stack(layout).await?;
     stop_preexisting_daemon(layout).await?;
     let _ = fs::remove_file(&layout.web_ready_file);
@@ -33,13 +44,30 @@ pub(super) async fn run(layout: &PortableLayout) -> Result<()> {
 
     eprintln!("NovaSight 开发：启动后台与界面服务…");
     let mut daemon = spawn_daemon(layout, temporary_license.as_ref())?;
-    let mut web = match spawn_web(layout, true) {
+    let mut web = match spawn_web(layout, hmr) {
         Ok(web) => web,
         Err(error) => {
             let _ = stop_owned_daemon(layout, &mut daemon).await;
             return Err(error);
         }
     };
+    if !hmr {
+        let ready =
+            match super::wait_for_web_ready(layout, &mut web, &mut daemon, FRONTEND_READY_TIMEOUT)
+                .await
+            {
+                Ok(ready) => ready,
+                Err(error) => {
+                    let _ = stop_child("novasight-web", &mut web).await;
+                    let _ = stop_owned_daemon(layout, &mut daemon).await;
+                    return Err(error);
+                }
+            };
+        eprintln!("NovaSight：静态界面已就绪，采集与控制需在首页开启");
+        open_studio(&ready);
+        print_temporary_license_access(temporary_license.as_ref());
+        return lifecycle::supervise(layout, daemon, web, None).await;
+    }
     let mut vite = match spawn_vite(layout) {
         Ok(vite) => vite,
         Err(error) => {
@@ -197,7 +225,7 @@ fn spawn_vite(layout: &PortableLayout) -> Result<Child> {
         &executable,
         &layout.root.join("web"),
         &layout.log_dir.join("vite.log"),
-        &[],
+        &["--host".into(), "127.0.0.1".into()],
         &[],
     )
     .with_context(|| format!("start Vite from {}", executable.display()))

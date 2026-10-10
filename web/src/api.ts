@@ -217,6 +217,7 @@ export function getApiErrorCode(error: unknown): string {
 export const API_PATHS = {
   health: "/healthz",
   authSession: "/api/auth/session",
+  authRefresh: "/api/auth/refresh",
   runtimeState: "/api/studio/v1/status",
   runtime: "/api/studio/v1/runtime",
   runtimeEmergencyStop: "/api/studio/v1/runtime/emergency-stop",
@@ -249,10 +250,88 @@ export const API_PATHS = {
 
 const apiBase = (import.meta.env.VITE_NOVASIGHT_API_BASE ?? "").replace(/\/$/, "");
 let csrfToken = "";
+let authGeneration = 0;
+let authEpoch = 0;
+const signedOutKey = "novasight.signed-out";
+function rememberSignedOut(value: boolean) {
+  try { if (value) window.localStorage.setItem(signedOutKey, "1"); else window.localStorage.removeItem(signedOutKey); } catch { /* Cookie revocation remains authoritative. */ }
+}
+let authPaused = (() => { try { return window.localStorage.getItem(signedOutKey) === "1"; } catch { return false; } })();
+let businessAwaitingConfirmation = false;
+export function setBusinessConfirmed(ready: boolean) { businessAwaitingConfirmation = !ready; }
+let currentAuthSession: AuthSession | null = null;
+let refreshPromise: Promise<AuthSession> | null = null;
+let authorizationPromise: Promise<AuthSession> | null = null;
+let authChannel: BroadcastChannel | null = null;
 
-function synchronizeAuthSession(session: AuthSession): AuthSession {
-  csrfToken = session.authenticated ? session.csrf_token ?? "" : "";
+function authEvent(type: string, detail?: unknown) {
+  window.dispatchEvent(new CustomEvent(type, { detail }));
+}
+
+function synchronizeAuthSession(session: AuthSession, userInitiated = false): AuthSession {
+  if (session.auth_state === "checking") return session;
+  csrfToken = session.csrf_token ?? "";
+  currentAuthSession = session;
+  if (!session.authenticated) authEpoch += 1;
+  authGeneration += 1;
+  authEvent("novasight:auth-session", { ...session, user_initiated: userInitiated });
   return session;
+}
+
+function broadcastAuth(kind: "renewed" | "signed_in" | "signed_out") {
+  authChannel?.postMessage({ kind });
+}
+
+function connectAuthTabs() {
+  if (authChannel || typeof window.BroadcastChannel === "undefined") return;
+  authChannel = new window.BroadcastChannel("novasight-auth");
+  authChannel.onmessage = (event: MessageEvent) => {
+    if (event.data?.kind === "signed_out") {
+      authPaused = true;
+      rememberSignedOut(true);
+      authEpoch += 1;
+      synchronizeAuthSession({ authenticated: false, auth_state: "signed_out", principal: null, role: null, permissions: [], csrf_token: null, expires_at: null, session_lifetime_seconds: 3600 });
+    } else if (event.data?.kind === "signed_in" || event.data?.kind === "renewed") {
+      if (event.data.kind === "signed_in") { authPaused = false; rememberSignedOut(false); currentAuthSession = null; authEvent("novasight:auth-user-authorization"); }
+      else if (authPaused || currentAuthSession?.authenticated === false) return;
+      void recoverAuthSession().catch(() => undefined);
+    }
+  };
+}
+
+export function recoverAuthSession(force = false, failedGeneration?: number): Promise<AuthSession> {
+  connectAuthTabs();
+  if (authPaused) return Promise.resolve(synchronizeAuthSession({ authenticated: false, auth_state: "signed_out", principal: null, role: null, permissions: [], csrf_token: null, expires_at: null, session_lifetime_seconds: 3600 }));
+  if (authorizationPromise) return authorizationPromise;
+  if (currentAuthSession?.authenticated === false && currentAuthSession.auth_state !== "checking") return Promise.resolve(currentAuthSession);
+  if (failedGeneration !== undefined && authGeneration > failedGeneration && currentAuthSession?.authenticated) {
+    return Promise.resolve(currentAuthSession);
+  }
+  if (refreshPromise) return refreshPromise;
+  const epoch = authEpoch;
+  const previousDeadline = currentAuthSession?.expires_at ?? 0;
+  authEvent("novasight:auth-checking");
+  const run = async () => {
+    let session = await requestJsonOnce(API_PATHS.authSession, undefined, { timeoutMs: STATUS_REQUEST_TIMEOUT_MS }, decodeAuthSession);
+    // A preceding tab may have refreshed while we waited for its lock.
+    const alreadyRenewed = session.authenticated && (session.expires_at ?? 0) > previousDeadline;
+    if (session.auth_state === "checking" || (force && !alreadyRenewed)) {
+      authEvent("novasight:auth-refreshing");
+      session = await requestJsonOnce(API_PATHS.authRefresh, { method: "POST" }, { timeoutMs: STANDARD_READ_TIMEOUT_MS }, decodeAuthSession);
+      if (session.authenticated && epoch === authEpoch) broadcastAuth("renewed");
+    }
+    if (epoch !== authEpoch || authPaused) throw new DOMException("Authentication recovery superseded", "AbortError");
+    return synchronizeAuthSession(session);
+  };
+  const operation = navigator.locks
+    ? navigator.locks.request("novasight-auth-refresh", run)
+    : run();
+  const promise = Promise.resolve(operation).then((session) => session).catch((error: unknown) => {
+    if (epoch === authEpoch && !(error instanceof DOMException && error.name === "AbortError")) authEvent("novasight:auth-reconnecting");
+    throw error;
+  }).finally(() => { refreshPromise = null; });
+  refreshPromise = promise;
+  return promise;
 }
 
 export function apiUrl(path: string): string {
@@ -296,7 +375,36 @@ const MODEL_OPERATION_TIMEOUT_MS = 180000;
 
 type JsonDecoder<T> = (value: unknown) => T;
 
-async function requestJson<T>(
+async function requestJson<T>(path: string, init: RequestInit | undefined, options: RequestOptions | undefined, decode: JsonDecoder<T>): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const safeRead = ["GET", "HEAD", "OPTIONS"].includes(method);
+  const safetyAction = path.endsWith("/emergency-stop") || path.endsWith("/stop");
+  if (businessAwaitingConfirmation && !safeRead && !safetyAction && !path.startsWith("/api/auth/") && !path.startsWith("/api/license")) {
+    throw new ApiError("正在核对设备状态，请确认连接后重试", 409, { code: "BUSINESS_UNCONFIRMED" });
+  }
+  const generation = authGeneration;
+  try {
+    return await requestJsonOnce(path, init, options, decode);
+  } catch (error) {
+    const code = getApiErrorCode(error);
+    if (!path.startsWith("/api/auth/") && (error instanceof ApiTransportError || (error instanceof ApiError && (error.status === 408 || ["DAEMON_UNAVAILABLE", "AUTH_SERVICE_UNAVAILABLE"].includes(code))))) {
+      businessAwaitingConfirmation = true;
+      authEvent("novasight:auth-reconnecting");
+    }
+    if (!path.startsWith("/api/auth/") && error instanceof ApiError && ((error.status === 401 && code === "AUTHENTICATION_REQUIRED") || (error.status === 403 && code === "CSRF_REJECTED"))) {
+      const session = await recoverAuthSession(true, generation);
+      if (session.authenticated && path !== API_PATHS.kmnetDiagnosticMove) {
+        if (!safeRead && !safetyAction && businessAwaitingConfirmation) throw new ApiError("正在核对设备状态，请确认后重试", 409, { code: "BUSINESS_UNCONFIRMED" });
+        if (init?.signal?.aborted) throw new DOMException("Request aborted", "AbortError");
+        // The gateway rejects these codes before forwarding a mutation.
+        return requestJsonOnce(path, init, options, decode);
+      }
+    }
+    throw error;
+  }
+}
+
+async function requestJsonOnce<T>(
   path: string,
   init: RequestInit | undefined,
   options: RequestOptions | undefined,
@@ -417,13 +525,6 @@ async function requestJson<T>(
                   typeof (objectBody.detail as Record<string, unknown>).message === "string"
                 ? (objectBody.detail as Record<string, string>).message
               : response.statusText;
-      if (response.status === 401 && objectBody?.code === "AUTHENTICATION_REQUIRED") {
-        csrfToken = "";
-        window.dispatchEvent(new CustomEvent("novasight:auth-required"));
-      }
-      if (response.status === 403 && objectBody?.code === "CSRF_REJECTED") {
-        window.dispatchEvent(new CustomEvent("novasight:csrf-rejected"));
-      }
       throw new ApiError(detail || "请求失败", response.status, body, responseRequestId);
     }
 
@@ -449,20 +550,36 @@ export function establishAuthSession(
   licenseKey: string,
   signal?: AbortSignal
 ): Promise<AuthSession> {
-  return requestJson<AuthSession>(
+  const checkedKey = requireNonBlank(licenseKey, "key");
+  const epoch = ++authEpoch;
+  authPaused = false;
+  rememberSignedOut(false);
+  currentAuthSession = null;
+  connectAuthTabs();
+  const operation = requestJson<AuthSession>(
     API_PATHS.authSession,
     {
       method: "POST",
       signal,
       headers: { "Content-Type": "application/json" },
-      body: encodeJsonBody({ key: requireNonBlank(licenseKey, "key") })
+      body: encodeJsonBody({ key: checkedKey })
     },
     { timeoutMs: DEFAULT_REQUEST_TIMEOUT_MS },
     decodeAuthSession
-  ).then(synchronizeAuthSession);
+  ).then((session) => {
+    if (epoch !== authEpoch || authPaused) throw new DOMException("Authorization superseded", "AbortError");
+    broadcastAuth("signed_in");
+    return synchronizeAuthSession(session, true);
+  }).finally(() => { if (authorizationPromise === operation) authorizationPromise = null; });
+  authorizationPromise = operation;
+  return operation;
 }
 
 export function logoutAuthSession(signal?: AbortSignal): Promise<AuthSession> {
+  authEpoch += 1;
+  authPaused = true;
+  rememberSignedOut(true);
+  broadcastAuth("signed_out");
   return requestJson<AuthSession>(
     API_PATHS.authSession,
     { method: "DELETE", signal },
@@ -1067,19 +1184,7 @@ export function getLicenseStatus(): Promise<LicenseStatus> {
 }
 
 export function saveLicenseKey(key: string): Promise<LicenseStatus> {
-  const checkedKey = requireNonBlank(key, "key");
-  return requestJson<LicenseStatus>(
-    API_PATHS.licenseActivate,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: encodeJsonBody({ key: checkedKey })
-    },
-    undefined,
-    decodeLicenseStatus
-  );
+  return establishAuthSession(key).then(() => getLicenseStatus());
 }
 
 export function clearLicenseKey(): Promise<LicenseStatus> {

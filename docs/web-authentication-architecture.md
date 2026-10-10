@@ -1,5 +1,7 @@
 # Web Authentication Architecture
 
+> 本文的旧单会话描述已由 [冻结授权契约](designs/auth-session-contract.md) 取代。实现与验收以该契约为准；以下保留网关/daemon 的边界背景。
+
 ## Ownership
 
 NovaSight separates the LAN trust boundary from runtime authority:

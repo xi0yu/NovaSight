@@ -483,6 +483,62 @@ mod license_expiry_tests {
             supervisor.join().await.unwrap();
         }
     }
+    #[tokio::test]
+    async fn actual_authorization_deadline_stops_resources_without_ending_the_control_service() {
+        let path = std::env::temp_dir().join(format!("ns-expiry-{}.json", uuid::Uuid::new_v4()));
+        let code = "expiry-contract-code-at-least-32-bytes";
+        let policy = LicensePolicy::new(None)
+            .with_temporary_access_code(code)
+            .unwrap();
+        let original = FileLicenseRepository::new(&path, policy.clone());
+        original.activate(code).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        // A persisted grant fixture puts the real expiry 250 ms ahead; no client timer decides validity.
+        let grant_path = path.with_extension("test-grant.json");
+        std::fs::write(
+            &grant_path,
+            serde_json::json!({ "granted_at": now, "issued_at": now - 86400.0 + 0.25 }).to_string(),
+        )
+        .unwrap();
+        let repository = FileLicenseRepository::new(&path, policy);
+        assert!(repository.status().unwrap().valid);
+        let preview = PreviewHub::new(true);
+        preview.begin_epoch(novasight_core::RuntimeEpoch(1));
+        preview.set_active(true).unwrap();
+        let (supervisor, runtime) = RuntimeSupervisor::spawn(
+            RuntimeDependencies::recording().with_preview(preview.clone()),
+        );
+        runtime.start().await.unwrap();
+        let (shutdown, receiver) = watch::channel(false);
+        let watchdog = tokio::spawn(monitor_runtime_license(
+            repository.clone(),
+            runtime.clone(),
+            ConfigService::new("unused.yaml", AppConfig::default()),
+            false,
+            receiver,
+            Duration::from_secs(1),
+        ));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while preview.snapshot().active
+                || runtime.snapshot().pipeline.state != PipelineState::Stopped
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!repository.status().unwrap().valid);
+        assert!(!watchdog.is_finished());
+        assert!(runtime.start().await.is_err());
+        shutdown.send_replace(true);
+        watchdog.await.unwrap().unwrap();
+        runtime.shutdown_daemon().await.unwrap();
+        supervisor.join().await.unwrap();
+        repository.clear().unwrap();
+    }
 }
 
 enum FirstExit {

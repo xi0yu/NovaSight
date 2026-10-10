@@ -27,7 +27,8 @@ import {
   statusWebSocketUrl,
 } from "./api";
 import { ToastHost } from "./components/ToastHost";
-import { AuthGate, useWorkspaceAuthorization } from "./features/auth/AuthGate";
+import { BuildUpdateNotice } from "./features/auth/BuildUpdateNotice";
+import { AuthGate, useWorkspaceAuthorization, useWorkspaceRecovery } from "./features/auth/AuthGate";
 import { reportError } from "./lib/toast";
 import {
   clearWebSocketFailure,
@@ -219,7 +220,7 @@ function RouteLoadingShell() {
 export default function App() {
   return (
     <SafetyOperationProvider>
-      <AuthGate>
+      <AuthGate><BuildUpdateNotice />
         <StudioApp />
       </AuthGate>
     </SafetyOperationProvider>
@@ -228,6 +229,7 @@ export default function App() {
 
 function StudioApp() {
   const authorized = useWorkspaceAuthorization();
+  const recovery = useWorkspaceRecovery();
   const [state, setState] = useState<LoadState>(initialState);
   const [license, setLicense] = useState<LicenseStatus | null>(null);
   const runtimeSessionActive = authorized && license?.valid === true;
@@ -344,7 +346,6 @@ function StudioApp() {
       if (requestSeq !== licenseRequestSeqRef.current) {
         return null;
       }
-      setLicense(null);
       const issue = describeLicenseConnectionIssue(err);
       setLicenseIssue(issue);
       reportError(err, {
@@ -389,9 +390,8 @@ function StudioApp() {
     if (!license?.valid || license.expires_at === null) return;
     const deadline = license.expires_at * 1000;
     const timer = window.setTimeout(() => {
-      if (Date.now() >= deadline) handleLicenseChange({ ...license, valid: false, message: "授权已到期，请重新授权。" });
       void loadLicense();
-    }, Math.min(2147483647, Math.max(0, deadline - Date.now())));
+    }, Math.min(2147483647, Math.max(1000, deadline - Date.now())));
     return () => window.clearTimeout(timer);
   }, [license, handleLicenseChange, loadLicense]);
 
@@ -444,6 +444,7 @@ function StudioApp() {
             errors: withoutError(current.errors, "health"),
             health
           }));
+          return health.ok;
         })
         .catch((error) => {
           if (requestSeq !== loadRequestSeqRef.current) return;
@@ -453,11 +454,13 @@ function StudioApp() {
             health: null
           }));
           reportError(error, { source: "health", title: "后端健康检查失败", popup: false });
+          return false;
         });
       const runtimeRequest = getRuntimeState()
         .then((runtime) => {
           if (requestSeq !== loadRequestSeqRef.current) return;
           applyRuntimeState(runtime, { requestGeneration: runtimeRequestGeneration });
+          return true;
         })
         .catch((error) => {
           if (requestSeq !== loadRequestSeqRef.current) return;
@@ -466,11 +469,13 @@ function StudioApp() {
             errors: { ...current.errors, runtime: getErrorMessage(error) }
           }));
           reportError(error, { source: "runtime", title: "运行态失败", popup: false });
+          return false;
         });
       const configRequest = getRuntimeConfig()
         .then((config) => {
           if (requestSeq !== loadRequestSeqRef.current) return;
           applyRuntimeConfig(config);
+          return true;
         })
         .catch((error) => {
           if (requestSeq !== loadRequestSeqRef.current) return;
@@ -479,23 +484,25 @@ function StudioApp() {
             errors: { ...current.errors, config: getErrorMessage(error) }
           }));
           reportError(error, { source: "config", title: "配置读取失败", popup: false });
+          return false;
         });
       const projectsRequest = projectsLoadedRef.current
-        ? loadProjects(true).catch(() => undefined)
+        ? loadProjects(true).catch(() => false)
         : Promise.resolve();
-      await Promise.allSettled([
+      const evidence = await Promise.allSettled([
         healthRequest,
         runtimeRequest,
         configRequest,
         projectsRequest
       ]);
+      if (requestSeq === loadRequestSeqRef.current) recovery.confirm(evidence.every((result) => result.status === "fulfilled" && result.value !== false), recovery.revision);
     } finally {
       if (requestSeq === loadRequestSeqRef.current) {
         setState((current) => ({ ...current, loading: false }));
       }
       foregroundLoadInFlightRef.current = false;
     }
-  }, [applyRuntimeConfig, applyRuntimeState, loadProjects]);
+  }, [applyRuntimeConfig, applyRuntimeState, loadProjects, recovery.confirm, recovery.revision]);
 
   const refreshRuntime = useCallback(async () => {
     if (backgroundLoadInFlightRef.current || foregroundLoadInFlightRef.current) {
@@ -559,9 +566,9 @@ function StudioApp() {
   }, []);
 
   useEffect(() => {
-    if (authorized) void loadLicense();
+    if (authorized) { initialLoadStartedRef.current = false; setRealtimeStatus("stale"); void loadLicense(); }
     else { runtimeFallbackAbortRef.current?.abort(); healthRefreshAbortRef.current?.abort(); }
-  }, [authorized, loadLicense]);
+  }, [authorized, loadLicense, recovery.revision]);
 
   useEffect(() => {
     if (runtimeSessionActive && networkOnline && pageVisible && !initialLoadStartedRef.current) {
@@ -692,6 +699,8 @@ function StudioApp() {
         setRealtimeStatus((current) =>
           current === "fallback" ? current : closedForStaleData ? "stale" : "disconnected"
         );
+        window.dispatchEvent(new CustomEvent("novasight:auth-reconnecting"));
+        window.dispatchEvent(new CustomEvent("novasight:auth-required"));
         if (event.code === 4401) {
           failureReported = true;
           void loadLicense().finally(scheduleReconnect);
@@ -700,6 +709,7 @@ function StudioApp() {
         if (event.code === 4403) {
           failureReported = true;
           window.dispatchEvent(new CustomEvent("novasight:auth-required"));
+          scheduleReconnect();
           return;
         }
         if (!closedForStaleData && !failureReported && event.code !== 1000 && event.code !== 1001) {

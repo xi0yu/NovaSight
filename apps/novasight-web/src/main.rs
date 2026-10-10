@@ -10,7 +10,7 @@ use std::process::{self, ExitCode};
 use std::sync::Arc;
 use std::time::Instant;
 
-use auth::{AuthError, AuthService, SESSION_SECONDS, SessionStatus};
+use auth::{AuthError, AuthService, LicenseBinding};
 use axum::body::Body;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri, header};
@@ -117,9 +117,13 @@ async fn run(args: Args) -> Result<(), WebServerError> {
         .filter(|host| !host.trim().is_empty())
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let auth = AuthService::new(secure_cookie)
-        .with_allowed_hosts(&allowed_hosts)
-        .map_err(WebServerError::AllowedHostsInvalid)?;
+    let auth = AuthService::open(
+        &config.paths.license.with_file_name("web-sessions.json"),
+        secure_cookie,
+    )
+    .map_err(|error| WebServerError::AuthStore(error.to_string()))?
+    .with_allowed_hosts(&allowed_hosts)
+    .map_err(WebServerError::AllowedHostsInvalid)?;
     let web_root = if args.frontend_dev {
         None
     } else {
@@ -192,6 +196,7 @@ fn router(state: AppState) -> Router {
             "/api/auth/session",
             get(get_session).post(login).delete(logout),
         )
+        .route("/api/auth/refresh", axum::routing::post(refresh))
         .fallback(dispatch)
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state)
@@ -221,7 +226,17 @@ async fn get_session(State(state): State<AppState>, headers: HeaderMap) -> Respo
     if let Err(error) = state.auth.validate_request_site(&headers) {
         return auth_error_response(error);
     }
-    no_store(Json(state.auth.status(&headers)).into_response())
+    let status = state.auth.status(&headers);
+    if status.authenticated {
+        let expected = match state.auth.access_binding(&headers) {
+            Ok(binding) => binding,
+            Err(error) => return refresh_error_response(error),
+        };
+        if let Err(response) = check_machine_license(&state, &headers, &expected).await {
+            return response;
+        }
+    }
+    no_store(Json(status).into_response())
 }
 
 async fn login(
@@ -296,12 +311,7 @@ async fn login(
             (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response(),
         );
     }
-    #[derive(Deserialize)]
-    struct Validation {
-        configured: bool,
-        valid: bool,
-    }
-    let validation = match serde_json::from_slice::<Validation>(&bytes) {
+    let validation = match serde_json::from_slice::<LicenseValidation>(&bytes) {
         Ok(validation) => validation,
         Err(error) => {
             tracing::warn!(%error, stage = "license_login_decode", "invalid license response");
@@ -319,16 +329,154 @@ async fn login(
             "授权码已过期或无效，请使用有效授权码",
         );
     }
-    match state.auth.issue_session() {
-        Ok(issued) => {
-            let mut response = Json(issued.status).into_response();
-            response
-                .headers_mut()
-                .insert(header::SET_COOKIE, issued.cookie);
-            no_store(response)
-        }
+    let Some(binding) = validation.binding() else {
+        return api_error(
+            StatusCode::BAD_GATEWAY,
+            "LICENSE_RESPONSE_INVALID",
+            "授权服务响应异常",
+        );
+    };
+    match state
+        .auth
+        .issue_session(binding, auth::unix_seconds().unwrap_or_default())
+    {
+        Ok(issued) => issued_response(issued),
         Err(error) => auth_error_response(error),
     }
+}
+
+#[derive(Deserialize)]
+struct LicenseValidation {
+    configured: bool,
+    valid: bool,
+    license_id: String,
+    fingerprint: String,
+    created_at: Option<f64>,
+    expires_at: Option<f64>,
+}
+
+impl LicenseValidation {
+    fn binding(&self) -> Option<LicenseBinding> {
+        let expires = self.expires_at?;
+        if !expires.is_finite() || expires <= 0.0 || expires >= u64::MAX as f64 {
+            return None;
+        }
+        Some(LicenseBinding {
+            license_id: self.license_id.clone(),
+            fingerprint: self.fingerprint.clone(),
+            created_at: self.created_at,
+            expires_at: expires,
+        })
+    }
+}
+
+fn issued_response(issued: auth::IssuedSession) -> Response {
+    let mut response = Json(issued.status).into_response();
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, issued.cookie);
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, issued.refresh_cookie);
+    no_store(response)
+}
+
+async fn refresh(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(error) = state.auth.validate_request_site(&headers) {
+        return auth_error_response(error);
+    }
+    let expected = match state.auth.refresh_binding(&headers) {
+        Ok(binding) => binding,
+        Err(error) => return refresh_error_response(error),
+    };
+    let binding = match check_machine_license(&state, &headers, &expected).await {
+        Ok(binding) => binding,
+        Err(response) => return response,
+    };
+    match state.auth.refresh(&headers, &binding) {
+        Ok(issued) => issued_response(issued),
+        Err(error) => refresh_error_response(error),
+    }
+}
+
+async fn check_machine_license(
+    state: &AppState,
+    headers: &HeaderMap,
+    expected: &LicenseBinding,
+) -> Result<LicenseBinding, Response> {
+    let validation = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let response = state
+            .daemon
+            .forward(
+                Request::builder()
+                    .uri("/api/license")
+                    .body(Body::empty())
+                    .unwrap(),
+                None,
+            )
+            .await
+            .map_err(|_| ())?;
+        if !response.status().is_success() {
+            return Err(());
+        }
+        let bytes = axum::body::to_bytes(response.into_body(), 128 * 1024)
+            .await
+            .map_err(|_| ())?;
+        serde_json::from_slice::<LicenseValidation>(&bytes).map_err(|_| ())
+    })
+    .await;
+    let validation = match validation {
+        Ok(Ok(validation)) => validation,
+        _ => {
+            return Err(api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "AUTH_SERVICE_UNAVAILABLE",
+                "正在恢复连接",
+            ));
+        }
+    };
+    let now = auth::unix_timestamp().unwrap_or_default();
+    if !validation.valid || !validation.configured {
+        let error = if validation.expires_at.is_some_and(|expires| expires <= now)
+            || expected.expires_at <= now
+        {
+            AuthError::Expired
+        } else {
+            AuthError::Revoked
+        };
+        if matches!(error, AuthError::Revoked) {
+            state.auth.revoke(headers).map_err(auth_error_response)?;
+        }
+        return Err(refresh_error_response(error));
+    }
+    let Some(binding) = validation.binding() else {
+        return Err(api_error(
+            StatusCode::BAD_GATEWAY,
+            "LICENSE_RESPONSE_INVALID",
+            "授权服务响应异常",
+        ));
+    };
+    if &binding != expected {
+        state.auth.revoke(headers).map_err(auth_error_response)?;
+        return Err(refresh_error_response(AuthError::Revoked));
+    }
+    Ok(binding)
+}
+
+fn refresh_error_response(error: AuthError) -> Response {
+    let auth_state = match error {
+        AuthError::Required => "required",
+        AuthError::Expired => "expired",
+        AuthError::Revoked => "revoked",
+        other => return auth_error_response(other),
+    };
+    no_store(
+        Json(auth::anonymous_status(
+            auth_state,
+            auth::unix_seconds().unwrap_or_default(),
+        ))
+        .into_response(),
+    )
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -336,18 +484,15 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
         return auth_error_response(error);
     }
     match state.auth.logout(&headers) {
-        Ok(cookie) => {
-            let mut response = Json(SessionStatus {
-                authenticated: false,
-                principal: None,
-                role: None,
-                permissions: Vec::new(),
-                csrf_token: None,
-                expires_at: None,
-                session_lifetime_seconds: SESSION_SECONDS,
-            })
+        Ok(cookies) => {
+            let mut response = Json(auth::anonymous_status(
+                "signed_out",
+                auth::unix_seconds().unwrap_or_default(),
+            ))
             .into_response();
-            response.headers_mut().insert(header::SET_COOKIE, cookie);
+            for cookie in cookies {
+                response.headers_mut().append(header::SET_COOKIE, cookie);
+            }
             no_store(response)
         }
         Err(error) => auth_error_response(error),
@@ -379,6 +524,8 @@ async fn dispatch(
         {
             return auth_error_response(error);
         }
+        let activation_headers =
+            is_license_activation(request.method(), path).then(|| request.headers().clone());
         let request_id = request
             .headers()
             .get("x-request-id")
@@ -407,6 +554,38 @@ async fn dispatch(
                 )
             }
         };
+        if let Some(headers) = activation_headers.filter(|_| response.status().is_success()) {
+            let status = response.status();
+            let response_headers = response.headers().clone();
+            let bytes = match axum::body::to_bytes(response.into_body(), 128 * 1024).await {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    return api_error(
+                        StatusCode::BAD_GATEWAY,
+                        "LICENSE_RESPONSE_INVALID",
+                        "授权服务响应异常",
+                    );
+                }
+            };
+            response = (status, bytes.clone()).into_response();
+            *response.headers_mut() = response_headers;
+            if let Ok(validation) = serde_json::from_slice::<LicenseValidation>(&bytes)
+                && validation.valid
+                && let Some(binding) = validation.binding()
+            {
+                match state.auth.rebind(&headers, binding) {
+                    Ok(issued) => {
+                        response
+                            .headers_mut()
+                            .append(header::SET_COOKIE, issued.cookie);
+                        response
+                            .headers_mut()
+                            .append(header::SET_COOKIE, issued.refresh_cookie);
+                    }
+                    Err(error) => return auth_error_response(error),
+                }
+            }
+        }
         if !response.headers().contains_key("x-request-id")
             && let Some(request_id) = request_id.as_ref()
         {
@@ -473,6 +652,9 @@ fn web_asset_path(root: &Path, request_path: &str) -> Option<PathBuf> {
         }
     }
     let candidate = root.join(sanitized);
+    if !candidate.is_file() && Path::new(trimmed).extension().is_some() {
+        return None;
+    }
     Some(if candidate.is_file() {
         candidate
     } else {
@@ -492,6 +674,7 @@ fn content_type_for_path(path: &Path) -> &'static str {
         Some("svg") => "image/svg+xml",
         Some("wasm") => "application/wasm",
         Some("webp") => "image/webp",
+        Some("woff2") => "font/woff2",
         _ => "application/octet-stream",
     }
 }
@@ -521,7 +704,7 @@ fn web_asset_response(content_type: &'static str, bytes: Vec<u8>) -> Response {
         HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
     );
-    if content_type.starts_with("text/html") {
+    if content_type.starts_with("text/html") || content_type == "application/json" {
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
     response
@@ -540,7 +723,7 @@ fn auth_error_response(error: AuthError) -> Response {
                 .insert(header::RETRY_AFTER, HeaderValue::from_static("60"));
             response
         }
-        AuthError::Required => api_error(
+        AuthError::Required | AuthError::Expired | AuthError::Revoked => api_error(
             StatusCode::UNAUTHORIZED,
             "AUTHENTICATION_REQUIRED",
             "需要有效的 Web 会话",
@@ -565,7 +748,7 @@ fn auth_error_response(error: AuthError) -> Response {
             "ORIGIN_REJECTED",
             "请求 Origin 与 Host 不一致",
         ),
-        AuthError::Clock | AuthError::Cookie(_) => api_error(
+        AuthError::Clock | AuthError::Cookie(_) | AuthError::Store(_) => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "AUTH_INTERNAL_ERROR",
             "Web 会话服务暂时不可用",
@@ -667,6 +850,8 @@ impl Drop for ReadyFileGuard {
 
 #[derive(Debug, Error)]
 enum WebServerError {
+    #[error("Web authentication storage unavailable: {0}")]
+    AuthStore(String),
     #[error("failed to load config {}: {detail}", path.display())]
     ConfigLoad { path: PathBuf, detail: String },
     #[error("configured Web allowed hosts are invalid: {0}")]
@@ -699,6 +884,7 @@ enum WebServerError {
 impl WebServerError {
     const fn code(&self) -> &'static str {
         match self {
+            Self::AuthStore(_) => "WEB_AUTH_STORE_UNAVAILABLE",
             Self::ConfigLoad { .. } => "WEB_CONFIG_LOAD_FAILED",
             Self::AllowedHostsInvalid(_) => "WEB_ALLOWED_HOSTS_INVALID",
             Self::BooleanEnvironmentInvalid { .. } => "WEB_BOOLEAN_ENV_INVALID",
@@ -744,6 +930,8 @@ mod tests {
                     axum::Json(serde_json::json!({
                         "configured": true,
                         "valid": body["key"] == "valid-license",
+                        "license_id": "test", "fingerprint": "machine", "created_at": 1.0,
+                        "expires_at": super::auth::unix_seconds().unwrap() + 86400,
                     }))
                 },
             ),
@@ -817,7 +1005,17 @@ mod tests {
     #[tokio::test]
     async fn authenticated_mutation_crosses_the_csrf_gate() {
         let auth = AuthService::new(false);
-        let issued = auth.issue_session().unwrap();
+        let issued = auth
+            .issue_session(
+                super::auth::LicenseBinding {
+                    license_id: "test".into(),
+                    fingerprint: "machine".into(),
+                    created_at: Some(1.0),
+                    expires_at: (super::auth::unix_seconds().unwrap() + 86400) as f64,
+                },
+                super::auth::unix_seconds().unwrap(),
+            )
+            .unwrap();
         let cookie = issued.cookie.to_str().unwrap().split(';').next().unwrap();
         let csrf = issued.status.csrf_token.as_deref().unwrap();
         let app = router(AppState {
@@ -872,7 +1070,17 @@ mod tests {
         });
 
         let auth = AuthService::new(false);
-        let issued = auth.issue_session().unwrap();
+        let issued = auth
+            .issue_session(
+                super::auth::LicenseBinding {
+                    license_id: "test".into(),
+                    fingerprint: "machine".into(),
+                    created_at: Some(1.0),
+                    expires_at: (super::auth::unix_seconds().unwrap() + 86400) as f64,
+                },
+                super::auth::unix_seconds().unwrap(),
+            )
+            .unwrap();
         let cookie = issued
             .cookie
             .to_str()
@@ -934,6 +1142,88 @@ mod tests {
 
         web_task.abort();
         upstream_task.abort();
+        let _ = std::fs::remove_file(socket);
+    }
+    #[tokio::test]
+    async fn refresh_http_flow_distinguishes_a_service_restart_from_a_terminal() {
+        let socket = std::env::temp_dir().join(format!("ns-refresh-{}.sock", std::process::id()));
+        let now = super::auth::unix_seconds().unwrap();
+        let binding = super::auth::LicenseBinding {
+            license_id: "http-contract".into(),
+            fingerprint: "same-machine".into(),
+            created_at: Some(1.0),
+            expires_at: (now + 86400) as f64,
+        };
+        let validation = serde_json::json!({ "configured": true, "valid": true, "license_id": binding.license_id, "fingerprint": binding.fingerprint, "created_at": binding.created_at, "expires_at": binding.expires_at });
+        let auth = AuthService::new(false);
+        let issued = auth.issue_session(binding.clone(), now - 7200).unwrap();
+        let cookie = issued
+            .refresh_cookie
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let app = router(AppState {
+            auth,
+            daemon: DaemonProxy::new(&socket),
+            web_root: None,
+        });
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/refresh")
+                .header(header::HOST, "127.0.0.1:7351")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let missing = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(missing.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!missing.headers().contains_key(header::SET_COOKIE));
+        let listener = UnixListener::bind(&socket).unwrap();
+        let upstream = Router::new().route(
+            "/api/license",
+            get(move || {
+                let body = validation.clone();
+                async move { axum::Json(body) }
+            }),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, upstream).await.unwrap();
+        });
+        let restored = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(restored.status(), StatusCode::OK);
+        assert_eq!(
+            restored
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .count(),
+            2
+        );
+        let body = restored.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["authenticated"], true);
+        assert_eq!(body["license_expires_at"], binding.expires_at);
+        let anonymous = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/refresh")
+                    .header(header::HOST, "127.0.0.1:7351")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(!anonymous.headers().contains_key(header::SET_COOKIE));
+        let body: serde_json::Value =
+            serde_json::from_slice(&anonymous.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["auth_state"], "required");
+        task.abort();
         let _ = std::fs::remove_file(socket);
     }
 }

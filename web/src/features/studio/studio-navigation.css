@@ -401,3 +401,14 @@
   .console-utility-links { display: none; position: absolute; z-index: 200; top: calc(100% + 8px); right: 0; width: 152px; padding: 8px; border: 1px solid var(--border-default); border-radius: 14px; background: var(--bg-surface); box-shadow: var(--shadow-dialog); }
   .console-utility-navigation[data-open="true"] .console-utility-links { display: flex; }
 }
+
+.auth-recovery-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  background: var(--surface, #fff);
+  border-bottom: 1px solid var(--line, #ddd);
+  color: var(--text-muted, #596575);
+}
+.auth-recovery-notice .button { margin-left: auto; }

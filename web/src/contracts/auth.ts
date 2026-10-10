@@ -1,4 +1,9 @@
+export type AuthState = "checking" | "authorized" | "refreshing" | "reconnecting" | "required" | "expired" | "revoked" | "signed_out";
+
 export type AuthSession = {
+  auth_state?: AuthState;
+  server_time?: number;
+  license_expires_at?: number | null;
   authenticated: boolean;
   principal: string | null;
   role: "operator" | null;
@@ -55,7 +60,21 @@ export function decodeAuthSession(value: unknown): AuthSession {
   } else if (principal !== null || role !== null || csrfToken !== null || expiresAt !== null || record.permissions.length > 0) {
     throw new AuthContractError("未认证会话不得携带身份或权限");
   }
+  const state = record.auth_state ?? (record.authenticated ? "authorized" : "required");
+  if (!["checking", "authorized", "required", "expired", "revoked", "signed_out"].includes(String(state))
+      || (record.authenticated && state !== "authorized") || (!record.authenticated && state === "authorized")) {
+    throw new AuthContractError("认证状态字段无效");
+  }
+  for (const field of ["server_time", "license_expires_at"]) {
+    const value = record[field];
+    if (value !== undefined && value !== null && (typeof value !== "number" || (!Number.isFinite(value) || (field === "server_time" && !Number.isSafeInteger(value))) || value < 0)) {
+      throw new AuthContractError(`认证会话 ${field} 字段无效`);
+    }
+  }
   return {
+    auth_state: state as AuthState,
+    server_time: record.server_time as number | undefined,
+    license_expires_at: record.license_expires_at as number | null | undefined,
     authenticated: record.authenticated,
     principal,
     role: role as "operator" | null,

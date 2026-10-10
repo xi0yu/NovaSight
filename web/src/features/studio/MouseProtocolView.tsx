@@ -119,6 +119,13 @@ function ProtocolEditor({ protocols, onPick, protocol, disabled, disabledReason,
   const errorId = useId();
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
+  useEffect(() => {
+    const changed = busy || draftChanged || (!protocol && (draft.host !== "" || !Number.isNaN(draft.port) || draft.uuid !== "" || draft.model !== "net_pro8k"));
+    if (!changed) return;
+    const protect = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", protect);
+    return () => window.removeEventListener("beforeunload", protect);
+  }, [busy, draft, draftChanged, protocol]);
   const [operation, setOperation] = useState<"save" | "probe" | "remove" | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [result, setResult] = useState<number | null>(null);

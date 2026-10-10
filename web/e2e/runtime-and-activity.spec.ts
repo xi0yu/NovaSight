@@ -133,6 +133,7 @@ test("obsolete access links are cleared and cannot bypass license login", async 
 
 test("unavailable runtime leads to the error details", async ({ page }) => {
   await mockStudioApi(page);
+  await page.route("**/api/studio/v1/status", (route) => route.fulfill({ status: 503, json: { code: "RUNTIME_UNAVAILABLE", message: "运行状态不可达" } }));
   await page.goto("/?page=overview");
 
   await page.getByRole("button", { name: "查看异常信息", exact: true }).click();
@@ -187,6 +188,7 @@ test("capture page keeps saved and running specifications visible without horizo
 
 test("one backend outage does not repeat friendly and channel errors", async ({ page }) => {
   await mockStudioApi(page);
+  await page.route("**/api/studio/v1/status", (route) => route.fulfill({ status: 503, json: { code: "RUNTIME_UNAVAILABLE", message: "运行状态不可达" } }));
   await page.goto("/?page=models");
   await page.getByRole("heading", { level: 1, name: "模型" }).waitFor();
   await page.locator(".error-center-trigger").click();
@@ -200,6 +202,7 @@ test("one backend outage does not repeat friendly and channel errors", async ({ 
 
 test("unavailable runtime offers concise recovery without a new popup flow", async ({ page }) => {
   await mockStudioApi(page);
+  await page.route("**/api/studio/v1/status", (route) => route.fulfill({ status: 503, json: { code: "RUNTIME_UNAVAILABLE", message: "运行状态不可达" } }));
   await page.goto("/?page=control");
 
   await expect(page.getByRole("heading", { level: 1, name: "目标与控制" })).toBeVisible();
