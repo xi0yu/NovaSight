@@ -2,10 +2,10 @@ import { useMemo, useRef, useState, type ReactNode } from "react";
 
 import { NovaIcon } from "../../components/visual";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListSkeleton } from "../../components/ui";
 import { getErrorMessage } from "../shared/format";
 import type { ActivityConnectionState } from "./useActivityStream";
 import { reportSuccess } from "../../lib/toast";
-import { StudioTaskIntro } from "../studio/StudioTaskIntro";
 
 import "./activity-view.css";
 
@@ -68,6 +68,7 @@ export function ActivityView({
   connectionState,
   connectionError,
   onRetry,
+  loading = false,
 }: {
   items: ActivityItem[];
   onClear: () => Promise<void> | void;
@@ -76,6 +77,7 @@ export function ActivityView({
   connectionState?: ActivityConnectionState;
   connectionError?: string;
   onRetry?: () => void;
+  loading?: boolean;
 }) {
   const [filter, setFilter] = useState<ActivityFilter>("all");
   const [clearing, setClearing] = useState(false);
@@ -115,14 +117,13 @@ export function ActivityView({
 
   const modules: Record<string, ReactNode> = {
     summary: (
-      <header className={attentionCount > 0 ? "activity-summary needs-attention" : "activity-summary is-clear"} aria-live="polite">
+      <header className={attentionCount > 0 ? "activity-summary needs-attention" : loading && shownItems.length === 0 ? "activity-summary is-pending" : "activity-summary is-clear"} aria-live="polite">
         <span className="activity-summary-icon" aria-hidden="true">
-          <NovaIcon name={attentionCount > 0 ? "triangle-alert" : "shield-check"} size={22} />
+          <NovaIcon name={attentionCount > 0 ? "triangle-alert" : loading && shownItems.length === 0 ? "clock" : "shield-check"} size={22} />
         </span>
         <div>
-          <span>活动记录 · {shownItems.length} 条</span>
-          <h2 id="activity-view-title">{attentionCount > 0 ? `${attentionCount} 条故障与警告记录` : completedCount > 0 ? "最近操作已完成" : shownItems.length > 0 ? "最近有新记录" : "暂无活动记录"}</h2>
-          <p>记录不代表故障仍在发生；当前运行状态请查看首页。</p>
+          <span>活动记录 · {loading && shownItems.length === 0 ? "待读取" : `${shownItems.length} 条`}</span>
+          <h2 id="activity-view-title">{attentionCount > 0 ? `${attentionCount} 条故障与警告记录` : completedCount > 0 ? "最近操作已完成" : shownItems.length > 0 ? "最近有新记录" : loading ? "正在读取日志" : connectionError ? "日志尚未读取" : "暂无活动记录"}</h2>
         </div>
         {attentionCount > 0 ? (
           <button className="console-button secondary" onClick={onOpenDetails} type="button">查看完整详情</button>
@@ -140,7 +141,7 @@ export function ActivityView({
           if (pausedItems) { listRef.current?.scrollTo({ top: 0 }); setPausedItems(null); }
           else setPausedItems([...items]);
         }}>{pausedItems ? `恢复实时${unseenCount > 0 ? ` · ${unseenCount} 条新记录` : ""}` : "暂停查看"}</button>
-        <span role="status">{pausedItems ? "已暂停查看 · " : ""}显示 {filteredItems.length} / {shownItems.length} 条</span>
+        <span role="status">{loading && shownItems.length === 0 ? "正在读取" : `${pausedItems ? "已暂停查看 · " : ""}显示 ${filteredItems.length} / ${shownItems.length} 条`}</span>
       </div>
       <div className="activity-toolbar">
         <nav className="activity-filters" aria-label="日志等级筛选">
@@ -154,13 +155,13 @@ export function ActivityView({
               onClick={() => setFilter(value)}
               type="button"
             >
-              <span>{label}</span><b>{counts[value]}</b>
+              <span>{label}</span><b>{loading && shownItems.length === 0 ? "—" : counts[value]}</b>
             </button>
           ))}
         </nav>
         <button
           className="console-button secondary activity-clear"
-          disabled={clearing || items.length === 0}
+          disabled={clearing || loading || items.length === 0}
           onClick={() => void clearHistory()}
           type="button"
         >
@@ -176,15 +177,14 @@ export function ActivityView({
         if (pausedItems === null && event.currentTarget.scrollTop > 24) setPausedItems([...items]);
       }}>
         <div className="activity-list-header" aria-hidden="true"><span /><span>等级</span><span>事件</span><span>来源</span><span>时间</span></div>
-        <ul className="activity-feed" aria-label="最近活动">
+        {loading && shownItems.length === 0 ? <ListSkeleton label="正在读取日志记录" /> : <ul className="activity-feed" aria-label="最近活动">
           {filteredItems.length > 0 ? filteredItems.map((item) => (
             <li className="activity-feed-item" data-tone={item.tone ?? "error"} key={item.key}>
               <span className="activity-feed-marker" aria-hidden="true" />
               <span className="activity-level-tag" data-tone={item.tone ?? "error"}>{item.tone === "success" ? "完成" : item.tone === "info" ? "信息" : item.tone === "warn" ? "警告" : "故障"}</span>
               <div className="activity-item-copy">
-                <strong>{item.title}</strong>
+                <div className="activity-event-header"><strong>{item.title}</strong><ActivityCopy item={item} onInspect={() => { if (pausedItems === null) setPausedItems([...items]); }} /></div>
                 <p>{item.detail}</p>
-                <ActivityCopy item={item} onInspect={() => { if (pausedItems === null) setPausedItems([...items]); }} />
                 {(item.count ?? 1) > 1 ? <small>本次会话重复 {item.count} 次</small> : null}
                 {item.technicalDetail || item.requestId ? (
                   <details>
@@ -199,20 +199,19 @@ export function ActivityView({
             </li>
           )) : (
             <li className="activity-empty">
-              <EmptyState icon="logs" title={shownItems.length > 0 ? "没有符合条件的日志" : "暂无运行记录"}
-                description={shownItems.length > 0 ? "试试其他关键词、来源或日志等级。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}>
+              <EmptyState icon="logs" title={shownItems.length > 0 ? "没有符合条件的日志" : connectionError ? "日志尚未读取" : "暂无运行记录"}
+                description={shownItems.length > 0 ? "试试其他关键词、来源或日志等级。" : connectionError ? "连接恢复后重新读取，当前没有可展示的记录。" : "运行、模型、采集或配置发生变化时，会按时间出现在这里。"}>
               {shownItems.length > 0 ? <button className="console-button" onClick={() => { setQuery(""); setFilter("all"); setSource("all"); }} type="button">重置筛选</button> : null}
               </EmptyState>
             </li>
           )}
-        </ul>
+        </ul>}
       </section>
     ),
   };
 
   return (
     <section className="console-page activity-view" aria-label="实时日志">
-      <StudioTaskIntro label="实时日志" title="发生了什么，一眼看清" description="按等级和来源查找事件；需要仔细读一条记录时，先暂停查看，新事件会继续接收。" />
       {connectionState ? <div className="activity-connection" data-state={connectionState} role="status">
         <NovaIcon name={connectionState === "connected" ? "check-circle" : "signal-lost"} size={16} />
         <span>{connectionState === "connected" ? "实时日志已连接" : connectionState === "loading" ? "正在读取日志并连接实时通道…" : connectionState === "paused" ? "等待重新授权，日志更新已暂停" : connectionError || "日志状态未确认，已有记录会保留。"}</span>

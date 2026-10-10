@@ -1455,12 +1455,6 @@ tbody tr:hover {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-.model-manager-dialog:has(.model-selection-workspace.empty) {
-  width: min(860px, 100%);
-  height: auto;
-  max-height: calc(100dvh - 80px);
-}
-
 .model-manager-dialog-title {
   min-width: 0;
   display: flex;
@@ -1552,36 +1546,6 @@ tbody tr:hover {
   padding: 14px;
 }
 
-.model-workspace {
-  min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  border: 1px solid var(--border-default);
-  border-radius: var(--card-radius);
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-card);
-}
-
-.model-workspace-header {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) minmax(180px, auto);
-  align-items: center;
-  gap: 16px;
-  padding: 20px 22px;
-  border-bottom: 1px solid var(--divider);
-  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 7%, var(--bg-surface)), var(--bg-surface) 64%);
-}
-
-.model-workspace-header h2 { margin: 3px 0 2px; color: var(--text-primary); font-size: clamp(1.15rem, 2vw, 1.55rem); letter-spacing: -0.03em; line-height: 1.16; }
-.model-workspace-header p { margin: 0; color: var(--text-secondary); font-size: 0.78rem; line-height: 1.5; }
-.model-workspace-body { min-height: 0; padding: 18px; }
-
-@media (max-width: 760px) {
-  .model-workspace-header { grid-template-columns: auto minmax(0, 1fr); }
-  .model-workspace-header .model-manager-active-pill { grid-column: 1 / -1; }
-  .model-workspace-body { min-height: 0; padding: 10px; }
-}
-
 .model-manager-loading-body {
   display: grid;
   place-content: center;
@@ -1627,20 +1591,12 @@ tbody tr:hover {
   background: var(--surface-2);
 }
 
-.model-selection-workspace.empty {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.model-manager-dialog .model-selection-workspace.empty { height: auto; }
-
 .model-selection-browser {
   min-width: 0;
   min-height: 210px;
   max-height: min(75vh, 760px);
   overflow: auto;
 }
-
-.model-selection-workspace.empty .model-selection-browser { min-height: 72px; }
 
 .model-selection-preview {
   min-width: 0;

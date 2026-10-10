@@ -220,8 +220,8 @@ test("model library separates registered, unverified, and view-only files", asyn
     directory_count: 0, model_count: 3, discovered_files: 0, updated_files: 0, cache_hits: 3, force: false,
   } }));
   await page.goto("/?page=models");
-  await expect(page.getByText(/1 个已登记 Engine · 1 个待验证 Engine · 1 个仅供查看/)).toBeVisible();
   const usage = page.getByRole("combobox", { name: "文件使用状态" });
+  await expect(usage).toHaveText("全部文件（3）已登记 Engine（1）待验证 Engine（1）仅供查看（1）");
   await usage.selectOption("unregistered_engine");
   await expect(page.locator(".model-catalog-row.model")).toHaveCount(1);
   await expect(page.getByRole("button", { name: /candidate.engine，路径 candidate.engine/ })).toBeVisible();

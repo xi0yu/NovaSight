@@ -35,7 +35,13 @@ describe("ModelSelectionPanel", () => {
   it("keeps saved tag filters while the catalog is still loading", () => {
     window.sessionStorage.setItem("novasight.model-filters.v1", JSON.stringify({ recommendation: "all", tags: ["稳定"] }));
     const view = render(<ModelSelectionPanel {...panelProps({ root: null, loading: true })} />);
+    const search = screen.getByRole("searchbox", { name: "查找模型文件" });
+    expect(search).toBeDisabled();
+    expect(screen.getByRole("status", { name: "正在读取模型文件" })).toBeVisible();
+    expect(screen.queryByText("暂无可选模型")).not.toBeInTheDocument();
     view.rerender(<ModelSelectionPanel {...panelProps()} />);
+    expect(screen.getByRole("searchbox", { name: "查找模型文件" })).toBe(search);
+    expect(search).toBeEnabled();
     expect(screen.getByRole("button", { name: "稳定" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText(/1 个模型 · 清除筛选后返回当前文件夹/)).toBeInTheDocument();
   });
@@ -61,7 +67,7 @@ describe("ModelSelectionPanel", () => {
       activeArtifactId: 12,
       onSwitch,
     })} />);
-    expect(screen.getByText(/1 个已登记 Engine · 1 个待验证 Engine · 1 个仅供查看/)).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "文件使用状态" })).toHaveTextContent("已登记 Engine（1）待验证 Engine（1）仅供查看（1）");
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "文件使用状态" }), "unregistered_engine");
     expect(screen.getByRole("button", { name: /other.engine，路径 other.engine/ })).toBeVisible();
     expect(screen.queryByRole("button", { name: /stable.engine，路径 stable.engine/ })).not.toBeInTheDocument();
@@ -166,7 +172,8 @@ describe("ModelSelectionPanel", () => {
       />
     );
 
-    expect(screen.queryByRole("region", { name: "模型筛选" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "模型筛选" })).toBeVisible();
+    expect(screen.getByRole("searchbox", { name: "查找模型文件" })).toBeDisabled();
     expect(screen.getByText(/无法读取设备模型目录。服务暂时不可用/)).toBeVisible();
     expect(screen.queryByText(/暂无可选模型/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新建文件夹" })).toBeDisabled();

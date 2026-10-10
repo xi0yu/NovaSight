@@ -8,7 +8,7 @@ import type {
   ParserPresetId,
   ModelVersion
 } from "../../api";
-import { StatusIndicator } from "../../components/ui";
+import { ListSkeleton, StatusIndicator } from "../../components/ui";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { NovaIcon } from "../../components/visual";
 import { findCatalogDirectory, flattenCatalogModels, ModelCatalogTree, type ModelSortOrder } from "./ModelCatalogTree";
@@ -191,6 +191,8 @@ export function ModelSelectionPanel({
   const displayedFolders = filterActive ? [] : currentFolders;
   const catalogViewKey = JSON.stringify([folderPath, normalizedSearch, usageFilter, recommendationFilter, activeTagFilters, sortOrder]);
   const folderParts = folderPath ? folderPath.split("/") : [];
+  const reading = loading || busy === "model.refresh";
+  const initialLoading = root === null && !catalogError;
 
   useEffect(() => {
     if (!root || !selectedPath || (folderChosenRef.current && previousSelectedPathRef.current === selectedPath)) return;
@@ -349,7 +351,7 @@ export function ModelSelectionPanel({
       <header className="model-selection-toolbar">
         <div>
           <strong>设备模型文件</strong>
-          <span>{root ? `共 ${modelCount} 个文件 · ${directoryCount} 个文件夹；${registeredCount} 个已登记 Engine · ${unregisteredEngineCount} 个待验证 Engine · ${viewOnlyCount} 个仅供查看` : loading ? "正在读取设备模型目录" : "设备模型目录尚未读取成功"}</span>
+          <span>{root ? `共 ${modelCount} 个文件 · ${directoryCount} 个文件夹` : initialLoading ? "正在读取设备模型目录" : "设备模型目录尚未读取成功"}</span>
         </div>
         <div className="model-selection-toolbar-actions">
           <button className="console-button secondary"
@@ -359,12 +361,13 @@ export function ModelSelectionPanel({
           >新建文件夹</button>
           <button
             className="console-button secondary"
-            disabled={busy !== null || metadataDirty || pendingTagIsNew || folderCreating}
+            disabled={reading || busy !== null || metadataDirty || pendingTagIsNew || folderCreating}
+            aria-busy={reading}
             onClick={onRefresh}
             type="button"
           >
             <NovaIcon name="refresh" size={15} />
-            {busy === "model.refresh" ? "刷新中..." : "刷新模型"}
+            {reading ? "读取中…" : "刷新模型"}
           </button>
         </div>
       </header>
@@ -381,13 +384,15 @@ export function ModelSelectionPanel({
 
       {catalogMessage ? <div className="model-switch-note good">{catalogMessage}</div> : null}
 
-      <div className={models.length > 0 ? "model-selection-workspace" : "model-selection-workspace empty"}>
+      <div className="model-selection-workspace">
         <div className="model-selection-browser">
-          {models.length > 0 ? <section className="model-vault-filters" aria-label="模型筛选">
+          <section className="model-vault-filters" aria-label="模型筛选">
+            <div className="model-vault-search-row">
             <label className="model-vault-search">
               <NovaIcon name="search" size={17} />
               <input
                 aria-label="查找模型文件"
+                disabled={root === null}
                 onChange={(event) => setSearchTerm(event.target.value)}
                 placeholder="搜索文件、路径、项目或标签"
                 type="search"
@@ -396,13 +401,14 @@ export function ModelSelectionPanel({
             </label>
             <label className="model-sort-control">
               <span>使用状态</span>
-              <select aria-label="文件使用状态" onChange={(event) => setUsageFilter(event.target.value as ModelUsageFilter)} value={usageFilter}>
+              <select aria-label="文件使用状态" disabled={root === null} onChange={(event) => setUsageFilter(event.target.value as ModelUsageFilter)} value={usageFilter}>
                 <option value="all">全部文件（{models.length}）</option>
                 <option value="registered">已登记 Engine（{registeredCount}）</option>
                 <option value="unregistered_engine">待验证 Engine（{unregisteredEngineCount}）</option>
                 <option value="view_only">仅供查看（{viewOnlyCount}）</option>
               </select>
             </label>
+            </div>
             <div className="model-vault-recommendation-filter" role="group" aria-label="推荐状态筛选">
               {([
                 ["all", "全部"],
@@ -413,6 +419,7 @@ export function ModelSelectionPanel({
                 <button type="button"
                   aria-pressed={recommendationFilter === value}
                   className={recommendationFilter === value ? "active" : ""}
+                  disabled={root === null}
                   key={value}
                   onClick={() => setRecommendationFilter(value)}
                 >
@@ -435,21 +442,21 @@ export function ModelSelectionPanel({
                 >
                   {tag}
                 </button>
-              )) : <small>保存标签后可在这里筛选</small>}
+              )) : <small>{root === null ? "待读取" : "暂无标签"}</small>}
               {tagFilters.size > 0 || usageFilter !== "all" || recommendationFilter !== "all" || searchTerm ? (
                 <button type="button" className="clear" onClick={clearFilters}>清除筛选</button>
               ) : null}
             </div>
-          </section> : null}
+          </section>
           {metadataDirty || pendingTagIsNew ? <p className="model-selection-next-step" role="status">
             右侧“整理此模型”有未保存修改。请先保存或放弃，再选择其他文件、切换文件夹或刷新目录。
           </p> : null}
-          {root && (models.length > 0 || currentFolders.length > 0 || folderPath) ? <div className="model-folder-toolbar">
+          <div className="model-folder-toolbar">
             {filterActive ? <div className="model-folder-results">
               <strong>全部文件夹的筛选结果</strong>
               <small>{filteredModels.length} 个模型 · 清除筛选后返回当前文件夹</small>
             </div> : <nav className="model-folder-breadcrumb" aria-label="模型文件夹路径">
-              <button aria-current={folderParts.length === 0 ? "page" : undefined} disabled={metadataDirty || pendingTagIsNew} onClick={() => chooseFolder("")} type="button">全部文件夹</button>
+              <button aria-current={folderParts.length === 0 ? "page" : undefined} disabled={root === null || metadataDirty || pendingTagIsNew} onClick={() => chooseFolder("")} type="button">全部文件夹</button>
               {folderParts.map((part, index) => (
                 <span key={folderParts.slice(0, index + 1).join("/")}>
                   <span aria-hidden="true">/</span>
@@ -464,7 +471,7 @@ export function ModelSelectionPanel({
             </nav>}
             <label className="model-sort-control">
               <span>排序</span>
-              <select aria-label="模型排序" onChange={(event) => setSortOrder(event.target.value as ModelSortOrder)} value={sortOrder}>
+              <select aria-label="模型排序" disabled={root === null} onChange={(event) => setSortOrder(event.target.value as ModelSortOrder)} value={sortOrder}>
                 <option value="name_asc">名称 A–Z</option>
                 <option value="name_desc">名称 Z–A</option>
                 <option value="size_desc">文件大小：大到小</option>
@@ -472,17 +479,18 @@ export function ModelSelectionPanel({
                 <option value="active_first">已部署优先</option>
               </select>
             </label>
-          </div> : null}
+          </div>
           {root && catalogError ? <div className="model-catalog-stale" role="alert">
             <strong>刷新失败 · 显示上次读取的文件</strong>
             <p>{catalogError}</p><small>重新读取成功前，暂不允许切换模型。</small>
           </div> : null}
-          {loading && root === null ? (
-            <div className="model-catalog-placeholder">正在读取 models 目录...</div>
+          <div className="model-catalog-columns" aria-hidden="true"><span>文件名称与位置</span><span>使用状态</span></div>
+          {initialLoading ? (
+            <ListSkeleton label="正在读取模型文件" rows={5} />
           ) : root === null ? (
             <div className="model-catalog-placeholder" role="alert">
               <p>无法读取设备模型目录。{catalogError || "请检查服务连接。"}</p>
-              <button className="console-button" onClick={onRefresh} type="button">重试读取</button>
+              <button className="console-button" disabled={reading} onClick={onRefresh} type="button">重试读取</button>
             </div>
           ) : displayedModels.length > 0 || displayedFolders.length > 0 ? (
             <ModelCatalogTree
@@ -508,7 +516,7 @@ export function ModelSelectionPanel({
           )}
         </div>
 
-        {models.length > 0 ? <aside className="model-selection-preview" aria-live="polite">
+        <aside className="model-selection-preview">
           <div className="model-selection-preview-heading">
             <span className="model-selection-preview-icon" aria-hidden="true">
               <NovaIcon name="engine" size={20} />
@@ -526,6 +534,7 @@ export function ModelSelectionPanel({
           </div>
 
 
+          {selectedModel || selectedArtifact ? <>
           <p className="model-selection-next-step">
             {selectionHiddenByFilter
               ? "当前筛选隐藏了已选模型；清除筛选或重新选择后才能切换。"
@@ -716,7 +725,8 @@ export function ModelSelectionPanel({
                 </button>
               </div>
           </section>
-        </aside> : null}
+          </> : <div className="model-selection-prompt"><NovaIcon name="models" size={28} /><strong>{initialLoading ? "正在读取模型" : "选择一个模型文件"}</strong><p>在左侧选择文件，查看详情并部署。</p></div>}
+        </aside>
       </div>
 
       {switchMessage ? <div className="model-switch-note good">{switchMessage}</div> : null}

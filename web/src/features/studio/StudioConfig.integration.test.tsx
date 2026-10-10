@@ -165,14 +165,25 @@ describe("Capture selection and saved versus running evidence", () => {
     expect(screen.getByLabelText("分辨率与帧率")).toHaveTextContent("尚未查询设备规格");
   });
 
-  it("keeps failed capability detection visible beside capture controls", async () => {
+  it.each([false, true])("keeps capability failure visible and blocks old choices when previous data exists: %s", async (previouslyRead) => {
     history.replaceState(null, "", "/?page=capture");
     const stopped = { ...runtime, running: false, presentation: stoppedPresentation, semantic: { ...runtime.semantic, phase: "stopped" }, pipeline: { ...runtime.pipeline, state: "stopped" } } as RuntimeState;
-    vi.stubGlobal("fetch", vi.fn((url) => String(url).includes("/capture/capabilities")
-      ? Promise.reject(new Error("camera unplugged")) : new Promise(() => {})));
+    let available = previouslyRead;
+    vi.stubGlobal("fetch", vi.fn((url) => {
+      if (!String(url).includes("/capture/capabilities")) return new Promise(() => {});
+      return available ? Promise.resolve(new Response(JSON.stringify({ available: true, device: "/dev/video0", capabilities: [{ pixel_format: "MJPG", width: 1920, height: 1080, fps_list: [240] }], reason: "" }), { headers: { "content-type": "application/json" } })) : Promise.reject(new Error("camera unplugged"));
+    }));
     render(<SafetyOperationProvider><StudioConsoleView {...props} health={{ ok: true }} runtime={stopped} /></SafetyOperationProvider>);
     await userEvent.click(screen.getByText("输入其他设备路径"));
     await userEvent.click(screen.getByRole("button", { name: "读取设备规格" }));
+    if (previouslyRead) {
+      const fps = await screen.findByRole("button", { name: "240 FPS" });
+      expect(fps).toBeEnabled();
+      available = false;
+      await userEvent.click(screen.getByRole("button", { name: "读取设备规格" }));
+      await waitFor(() => expect(fps).toBeDisabled());
+      expect(screen.getByRole("button", { name: "240 FPS" })).toBe(fps);
+    }
     expect(await screen.findByText(/设备能力检测失败：camera unplugged/)).toBeVisible();
   });
 });

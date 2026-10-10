@@ -191,6 +191,7 @@
 .capture-device-picker > header small { color: var(--text-tertiary); font-size: 11px; line-height: 1.4; }
 
 .capture-device-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 10px; }
+.capture-device-options > .list-skeleton { grid-column: 1 / -1; }
 .capture-device-options > button {
   min-width: 0;
   min-height: 58px;
@@ -242,6 +243,7 @@
 .capture-quality-browser > header > div { display: grid; gap: 3px; }
 .capture-quality-browser > header b { color: var(--text-primary); font-size: 13px; }
 .capture-quality-browser > header small { color: var(--text-tertiary); font-size: 11px; line-height: 1.45; }
+.capture-quality-browser > header > div > small { min-height: 32px; }
 .capture-quality-browser > header > span { color: var(--status-success-fg); font-size: 11px; font-weight: 700; text-align: right; }
 
 .capture-format-group { display: grid; grid-template-columns: 110px minmax(0, 1fr); border-bottom: 1px solid var(--border-subtle); }
@@ -257,6 +259,7 @@
 .capture-resolution-row button:hover:not(:disabled) { border-color: var(--brand-primary); color: var(--brand-primary); }
 .capture-resolution-row button.active { border-color: var(--status-success-border); background: var(--status-success-bg); color: var(--status-success-fg); }
 .capture-quality-empty { min-height: 96px; display: grid; place-items: center; color: var(--text-tertiary); font-size: 12px; }
+.capture-quality-browser { min-height: 320px; }
 .capture-save-hint { margin: 0; padding: 9px 14px; border-top: 1px solid var(--border-subtle); color: var(--text-tertiary); font-size: 11px; }
 
 .capture-roi-visual {

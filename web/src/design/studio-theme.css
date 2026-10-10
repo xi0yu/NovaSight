@@ -3,6 +3,9 @@
 [data-theme="nova-daylight"] .console-main {
   background: radial-gradient(circle, #bfd4df55 .7px, transparent .9px) 0 0 / 16px 16px, var(--bg-app);
 }
+[data-theme="nova-daylight"] .console-main:is([data-page="capture"], [data-page="models"], [data-page="activity"], [data-page="params"]) { background: var(--bg-app); }
+[data-theme="nova-daylight"] .console-main:is([data-page="capture"], [data-page="models"], [data-page="activity"], [data-page="params"]) :is(.capture-command-header, .capture-source-setup, .capture-roi-stage, .activity-summary, .activity-list, .model-workspace-header, .model-selection-action) { border-radius: var(--radius-3); box-shadow: none; }
+[data-theme="nova-daylight"] .console-main:is([data-page="capture"], [data-page="models"], [data-page="activity"], [data-page="params"]) .console-button { border-radius: var(--radius-3); box-shadow: none; }
 .studio-kicker { font-size: 10px; font-weight: 800; letter-spacing: .14em; color: var(--signal-info); }
 .home-room { max-width: 1100px; margin: 0 auto; }
 .home-room-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 22px; }

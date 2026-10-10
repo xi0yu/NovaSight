@@ -28,6 +28,7 @@ export function useActivityStream() {
   const [state, setState] = useState<ActivityConnectionState>("loading");
   const [error, setError] = useState("");
   const [retryIndex, setRetryIndex] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(true);
 
   useEffect(() => {
     if (!authorized) { setState("paused"); return; }
@@ -37,17 +38,29 @@ export function useActivityStream() {
     let connectTimer: number | null = null;
     let reconnectAttempt = 0;
     let historyFailed = false;
+    let historyPending = true;
+    let pendingEvents: ServerActivityEvent[] = [];
     setState("loading");
     setError("");
+    setHistoryLoading(true);
 
     void getActivityHistory().then((history) => {
       if (!active) return;
-      setEvents((current) => history.events.reduce(mergeActivityEvent, current));
+      const received = [...history.events, ...pendingEvents];
+      setEvents((current) => received.reduce(mergeActivityEvent, current));
+      historyPending = false;
+      pendingEvents = [];
     }).catch((error: unknown) => {
       if (!active) return;
       historyFailed = true;
+      const received = pendingEvents;
+      setEvents((current) => received.reduce(mergeActivityEvent, current));
+      historyPending = false;
+      pendingEvents = [];
       setState("error");
       setError(error instanceof Error ? error.message : "日志历史未读取成功。");
+    }).finally(() => {
+      if (active) setHistoryLoading(false);
     });
 
     const connect = () => {
@@ -78,7 +91,8 @@ export function useActivityStream() {
         if (!active || socket !== nextSocket || typeof message.data !== "string") return;
         try {
           const frame = decodeActivityEventFrame(JSON.parse(message.data));
-          setEvents((current) => mergeActivityEvent(current, frame.event));
+          if (historyPending) pendingEvents = mergeActivityEvent(pendingEvents, frame.event);
+          else setEvents((current) => mergeActivityEvent(current, frame.event));
           setState("connected");
           setError("");
         } catch {
@@ -112,5 +126,5 @@ export function useActivityStream() {
   }, []);
 
   const retry = useCallback(() => setRetryIndex((index) => index + 1), []);
-  return { events, clear, state, error, retry };
+  return { events, clear, state, error, retry, historyLoading };
 }

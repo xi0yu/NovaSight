@@ -4,6 +4,22 @@ import { expect, it, vi } from "vitest";
 
 import { ActivityView } from "./ActivityView";
 
+it("keeps the list frame and search control through initial reading, data and reconnecting", () => {
+  const props = { onClear: vi.fn(), onOpenDetails: vi.fn() };
+  const view = render(<ActivityView {...props} items={[]} loading connectionState="connected" />);
+  const search = screen.getByRole("searchbox", { name: "搜索日志" });
+  const list = screen.getByRole("region", { name: "实时日志列表" });
+  expect(screen.getByRole("status", { name: "正在读取日志记录" })).toBeVisible();
+  expect(screen.queryByText("暂无运行记录")).not.toBeInTheDocument();
+  const items = [{ key: "event", title: "已读取", detail: "记录内容", tone: "info" as const }];
+  view.rerender(<ActivityView {...props} items={items} connectionState="connected" />);
+  view.rerender(<ActivityView {...props} items={items} loading connectionState="disconnected" />);
+  expect(screen.getByText("已读取")).toBeVisible();
+  expect(screen.getByRole("button", { name: "清理历史" })).toBeDisabled();
+  expect(screen.getByRole("searchbox", { name: "搜索日志" })).toBe(search);
+  expect(screen.getByRole("region", { name: "实时日志列表" })).toBe(list);
+});
+
 it("separates completed operations from items that need attention", () => {
   const { rerender } = render(<ActivityView items={[{
     key: "success-1",

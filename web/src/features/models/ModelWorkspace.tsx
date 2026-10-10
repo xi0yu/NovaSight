@@ -1,6 +1,4 @@
-import { NovaIcon } from "../../components/visual";
 import { ModelSelectionPanel, type ModelSelectionPanelProps } from "./ModelSelectionPanel";
-import { StudioTaskIntro } from "../studio/StudioTaskIntro";
 
 export function ModelWorkspace({
   activeModelName,
@@ -19,19 +17,10 @@ export function ModelWorkspace({
     : "empty";
   return (
     <section className="model-workspace" aria-labelledby="model-workspace-title">
-      <StudioTaskIntro label="模型管理" title="找到模型，选好就用" description="搜索或浏览设备文件，选中后验证并部署。" />
       <header className="model-workspace-header">
-        <div className="model-workspace-title">
-          <span className="model-manager-dialog-icon" aria-hidden="true">
-            <NovaIcon name="models" size={22} strokeWidth={1.7} />
-          </span>
-          <div>
-            <h2 id="model-workspace-title">当前使用的模型</h2>
-          </div>
-        </div>
         <div className={`model-production-slot ${deploymentState}`}>
           <div className="model-production-slot-heading">
-            <span><i aria-hidden="true" /> 当前使用的模型</span>
+            <h2 id="model-workspace-title"><i aria-hidden="true" /> 当前使用的模型</h2>
             <strong>{activeFile ? panelProps.activeLoaded ? "运行已装载" : "已部署，待装载" : "尚未选择"}</strong>
           </div>
           <b title={panelProps.activeArtifactPath}>{activeFile || "尚未部署模型"}</b>

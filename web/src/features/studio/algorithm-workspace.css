@@ -15,9 +15,8 @@
 .algorithm-tabs button:nth-of-type(4) { --tab-accent: var(--signal-attention); }
 .algorithm-tabs button small { display: block; margin-top: 4px; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
 .algorithm-workspace button:focus-visible, .algorithm-workspace summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }
-.algorithm-workspace .parameter-workspace { display: block; min-width: 0; animation: parameter-reveal 180ms ease-out; }
+.algorithm-workspace .parameter-workspace { display: block; min-width: 0; }
 .algorithm-workspace .parameter-workspace:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 4px; }
-@keyframes parameter-reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 .algorithm-workspace .parameter-group { display: block; padding: 0; border: 0; background: transparent; box-shadow: none; }
 .algorithm-workspace .parameter-group-heading { position: static; border: 0; background: transparent; padding: 4px 0 18px; }
 .algorithm-workspace .parameter-group-heading > span, .algorithm-workspace .parameter-group-heading h2::before { display: none; }
@@ -209,5 +208,4 @@
 @media (prefers-reduced-motion: reduce) {
   .algorithm-workspace .module-switch, .algorithm-workspace .module-switch i::before { transition: none; }
   .algorithm-tab-indicator, .algorithm-tabs button, .search-range-presets button { transition: none; }
-  .algorithm-workspace .parameter-workspace { animation: none; }
 }

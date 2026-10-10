@@ -60,7 +60,8 @@ import { useStableSemanticValue } from "../shared/useStableSemanticValue";
 import { NovaIcon } from "../../components/visual";
 import { moduleOrderForPage, modulesForPage } from "../../contracts/studioLayout";
 import { CurrentModelSummary } from "../models/CurrentModelSummary";
-import { StudioTaskIntro } from "./StudioTaskIntro";
+import { ModelWorkspace } from "../models/ModelWorkspace";
+import { ListSkeleton } from "../../components/ui";
 import { ModelSwitchDialog } from "../models/ModelSwitchDialog";
 import {
   runtimeDeliveryDescription,
@@ -173,9 +174,6 @@ const ModelManagerDialog = lazy(() =>
   loadModelManagerDialog().then((module) => ({
     default: module.ModelManagerDialog
   }))
-);
-const ModelWorkspace = lazy(() =>
-  import("../models/ModelWorkspace").then((module) => ({ default: module.ModelWorkspace }))
 );
 
 function ModelManagerLoadingDialog({ onClose }: { onClose: () => void }) {
@@ -711,7 +709,7 @@ export function StudioConsoleView({
   const authorized = useWorkspaceAuthorization();
   const [activePage, setActivePage] = useState<ConsoleWorkspacePage>(() => pageFromUrl());
   const [utilityDialog, setUtilityDialog] = useState<ConsoleUtility | null>(utilityFromUrl);
-  const { events: serverActivityEvents, clear: clearServerActivity, state: activityConnectionState, error: activityConnectionError, retry: retryActivity } = useActivityStream();
+  const { events: serverActivityEvents, clear: clearServerActivity, state: activityConnectionState, error: activityConnectionError, retry: retryActivity, historyLoading: activityHistoryLoading } = useActivityStream();
   const studioLayout = useStudioLayout();
   const overviewModules = modulesForPage(studioLayout, "overview");
   const captureModules = modulesForPage(studioLayout, "capture");
@@ -741,6 +739,7 @@ export function StudioConsoleView({
   );
 
   const [caps, setCaps] = useState<CaptureCapabilitiesResponse | null>(null);
+  const [capsReadFailed, setCapsReadFailed] = useState(false);
   const [captureDevices, setCaptureDevices] = useState<string[]>([]);
   const [deviceDiscoveryStatus, setDeviceDiscoveryStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [deviceDiscoveryError, setDeviceDiscoveryError] = useState<string | null>(null);
@@ -2118,7 +2117,8 @@ export function StudioConsoleView({
     setBusy("caps");
     setLocalError(null);
     setCaptureActionError(null);
-    setCaps(null);
+    setCapsReadFailed(false);
+    setCaps((current) => current?.device === selectedDevice ? current : null);
     try {
       const result = await getCaptureCapabilities(selectedDevice);
       setCaps(result);
@@ -2128,6 +2128,7 @@ export function StudioConsoleView({
         reportError(new Error(reason), { source: "capture-caps", title: "采集设备不可用" });
       }
     } catch (err) {
+      setCapsReadFailed(true);
       const message = `设备能力检测失败：${getErrorMessage(err)}`;
       setLocalError(message);
       setCaptureActionError(message);
@@ -2157,7 +2158,6 @@ export function StudioConsoleView({
   const chooseCaptureDevice = useCallback((selectedDevice: string) => {
     if (busy !== null) return;
     if (selectedDevice !== device) setDevice(selectedDevice);
-    setCaps(null);
     setCaptureActionError(null);
     void loadCaptureCapabilities(selectedDevice);
   }, [busy, device, loadCaptureCapabilities]);
@@ -3511,6 +3511,7 @@ export function StudioConsoleView({
         {activePage === "activity" ? (
           <ActivityView
             items={activityItems}
+            loading={!previewOnly && activityHistoryLoading}
             connectionState={previewOnly ? undefined : activityConnectionState}
             connectionError={activityConnectionError}
             onRetry={retryActivity}
@@ -3530,7 +3531,6 @@ export function StudioConsoleView({
         ) : null}
 
         {activePage === "models" ? (
-          <Suspense fallback={<div className="console-info" role="status">正在加载模型管理工作区…</div>}>
             <ModelWorkspace
               activeModelName={activeModelName}
               activeArtifactStatus={artifact?.status ?? null}
@@ -3565,7 +3565,6 @@ export function StudioConsoleView({
                 onSwitch: modelSwitch.switchModel,
               }}
             />
-          </Suspense>
         ) : null}
 
         {activePage === "management" ? (
@@ -3595,7 +3594,6 @@ export function StudioConsoleView({
 
         {activePage === "capture" ? (
           <section className="console-page capture-workspace">
-          <StudioTaskIntro label="设备配置" title="接好画面，选好模型" description="先选择采集设备和画质，再调整模型看的范围。修改会自动保存，运行状态会单独核对。" />
           {captureModules.has("source") ? (
           <header className="capture-command-header" data-state={captureProfileState} aria-labelledby="capture-profile-check-title">
             <div className="capture-command-copy">
@@ -3632,14 +3630,14 @@ export function StudioConsoleView({
                 </header>
                 <div className="capture-device-picker">
                   <header>
-                    <div><b>选择采集设备</b><small>显示当前设备上的可用输入，选择后读取支持的画质。</small></div>
+                    <div><b>选择采集设备</b><small role={deviceDiscoveryStatus === "error" ? "alert" : "status"}>{deviceDiscoveryStatus === "loading" ? "正在扫描，已有设备保持显示" : deviceDiscoveryStatus === "error" ? "扫描失败，保留上次结果；请重新扫描" : "选择后读取支持的画质"}</small></div>
                     <button className="console-button secondary" disabled={deviceDiscoveryStatus === "loading" || busy !== null} onClick={() => void refreshCaptureDevices()} type="button">
                       <NovaIcon name="refresh" size={15} />
                       {deviceDiscoveryStatus === "loading" ? "正在扫描…" : "重新扫描"}
                     </button>
                   </header>
                   <div className="capture-device-options" role="listbox" aria-label="可用采集设备">
-                    {deviceDiscoveryStatus === "loading" ? <p className="capture-device-empty" role="status">正在扫描可用输入…</p> : null}
+                    {(deviceDiscoveryStatus === "loading" || (!previewOnly && deviceDiscoveryStatus === "idle")) && captureDeviceChoices.length === 0 ? <ListSkeleton label="正在扫描可用输入" rows={2} /> : null}
                     {previewOnly && deviceDiscoveryStatus === "idle" && captureDeviceChoices.length === 0 ? <p className="capture-device-empty">预览未连接采集设备；可点击重新扫描，查看模拟的配置流程。</p> : null}
                     {captureDeviceChoices.map((captureDevice) => {
                       const saved = captureDevice === configuredCaptureDevice;
@@ -3664,7 +3662,7 @@ export function StudioConsoleView({
                     {deviceDiscoveryStatus === "ready" && captureDeviceChoices.length === 0 ? (
                       <div className="capture-device-empty"><b>没有发现采集设备</b><small>连接采集卡后重新扫描，或在下方输入其他设备路径。</small></div>
                     ) : null}
-                    {deviceDiscoveryStatus === "error" ? (
+                    {deviceDiscoveryStatus === "error" && captureDeviceChoices.length === 0 ? (
                       <div className="capture-device-empty error" role="alert">
                         <b>无法扫描设备</b><small>请确认服务在线、采集设备已连接，再重新扫描。</small>
                         <details><summary>查看错误详情</summary><small>{deviceDiscoveryError}</small></details>
@@ -3674,7 +3672,7 @@ export function StudioConsoleView({
                 </div>
                 <div className="capture-quality-browser" aria-label="分辨率与帧率">
                   <header>
-                    <div><b>设备支持的画面规格</b><small>{caps ? `按格式分类，共 ${detectedChoices.length} 个组合；分辨率和帧率从高到低排列。` : "先查询设备，结果会按格式、分辨率和帧率分类。"}</small></div>
+                    <div><b>设备支持的画面规格</b><small role="status">{busy === "caps" ? caps ? "正在刷新，保留上次读取的规格" : "正在读取设备规格…" : capsReadFailed ? caps ? "读取失败，显示上次规格；重新读取后可选择" : "读取失败，请重新读取设备规格" : caps ? `按格式分类，共 ${detectedChoices.length} 个组合；分辨率和帧率从高到低排列。` : "选择设备后读取规格"}</small></div>
                     {configuredCaptureProfile ? <span>当前：{choiceLabel(configuredCaptureProfile)}</span> : null}
                   </header>
                   {capabilityGroups.length > 0 ? capabilityGroups.map((group) => (
@@ -3691,7 +3689,7 @@ export function StudioConsoleView({
                                   <button
                                     aria-pressed={active}
                                     className={active ? "active" : ""}
-                                    disabled={busy !== null || runtimeLifecycleActive || runtimeControlUnavailable}
+                                    disabled={busy !== null || capsReadFailed || runtimeLifecycleActive || runtimeControlUnavailable}
                                     key={choice.fps}
                                     onClick={() => void applyCapture(choice)}
                                     type="button"
@@ -3706,7 +3704,7 @@ export function StudioConsoleView({
                       </div>
                     </section>
                   )) : (
-                    <div className="capture-quality-empty">
+                    busy === "caps" ? <ListSkeleton label="正在读取设备规格" rows={3} /> : <div className="capture-quality-empty">
                       {caps?.available === false ? "当前设备不可用" : "尚未查询设备规格"}
                     </div>
                   )}
@@ -3724,6 +3722,7 @@ export function StudioConsoleView({
                       onCommit={(value) => {
                         setDevice(value);
                         setCaps(null);
+                        setCapsReadFailed(false);
                         setCaptureActionError(null);
                       }}
                     />
@@ -4207,7 +4206,6 @@ export function StudioConsoleView({
             </div> : null}
             {dialogSaveError ? <p className="operation-inline-error" role="alert">参数保存失败：{dialogSaveError}</p> : null}
             <div className="algorithm-workspace" data-section={algorithmSection}>
-              <StudioTaskIntro label="算法调校" title="把跟随手感调到顺手" description="调整范围、目标与跟随手感。" />
               <nav className="algorithm-model-link" aria-label="算法使用的模型"><span><NovaIcon name="models" size={18} /><small>当前模型</small><b>{activeModelName}</b></span><button className="console-button" type="button" onClick={() => navigatePage("models")}>管理模型</button></nav>
               <AlgorithmTabs value={algorithmSection} onChange={setAlgorithmSection} />
             <div className="parameter-workspace" id="algorithm-parameter-panel" role="tabpanel" aria-labelledby={`algorithm-tab-${algorithmSection}`} tabIndex={0} key={algorithmSection}>

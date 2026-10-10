@@ -1,0 +1,8 @@
+.list-skeleton { width: 100%; min-width: 0; }
+.list-skeleton-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) 64px; align-items: center; gap: 16px; min-height: 72px; padding: 16px; border-bottom: 1px solid var(--border-subtle); }
+.list-skeleton-row:last-child { border-bottom: 0; }
+.list-skeleton-row > span { display: grid; gap: 8px; }
+.list-skeleton-row i, .list-skeleton-row b, .list-skeleton-row small, .list-skeleton-row em { display: block; height: 12px; border-radius: var(--radius-2); background: var(--bg-subtle); }
+.list-skeleton-row i { height: 24px; }
+.list-skeleton-row b { width: 64%; }
+.list-skeleton-row small { width: 40%; height: 8px; }
