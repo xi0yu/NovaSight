@@ -137,7 +137,7 @@ S1 连续超过一小时；S2 休眠两小时恢复；S3 断线重连；S4 服�
 | 工单 | 命令 / 可复查的测试文件 | 结果与范围 |
 | --- | --- | --- |
 | P0-1 | `cargo test -p novasight-web -p novasight-store -p novasight -p novasight-api`；`apps/novasight-web/src/auth.rs`、`main.rs` 的行为测试 | 73 项通过；覆盖续期、原期限截断、私有持久化、重新打开服务、撤销、响应丢失后恢复和存储异常。S1/S2 时间推进，S4 存储重开及 HTTP 服务故障恢复 |
-| P0-2 | `cd web && pnpm test:ci`；`src/contracts/authRecovery.integration.test.ts` | 前端共 238 项通过；20 个并发 401 只刷新一次，最多重试一次，刷新不递归，真实请求计时超时不重放，退出后的迟到授权/刷新被拒绝。S6/S8 |
+| P0-2 | `cd web && pnpm test:ci`；`src/contracts/authRecovery.integration.test.ts` | 前端共 239 项通过；20 个并发 401 只刷新一次，最多重试一次，刷新不递归，真实请求计时超时不重放，退出后的迟到授权/刷新被拒绝。S6/S8 |
 | P0-3 | `cargo test -p novasightd license_expiry_tests`；`AuthGate.test.tsx`、`authStateMachine.test.ts`、`LicensePanel.test.tsx` | 3 项 daemon 到期测试通过；真实短期限触发模拟资源停止，控制服务保留。前端终态权限、原页面保留、关于只核验本地到期在上述前端测试中通过。S3/S5 |
 | P1 与跨层回归 | `cd web && pnpm build && pnpm exec playwright test --config playwright.auth-static.config.ts` | 8 项通过；真实 Rust 静态文件入口 + 模拟业务接口，覆盖 S1/S2/S3/S4/S5/S7/S8 和版本提示保护草稿。服务/网络故障注入及受控浏览器时钟，不是真实 OS 休眠或实体硬件试验 |
 | 既有页面回归 | `cd web && pnpm exec playwright test` | 79 项通过，1 项静态版本测试在开发入口按设计跳过；该项已在静态入口实际通过 |
@@ -145,3 +145,15 @@ S1 连续超过一小时；S2 休眠两小时恢复；S3 断线重连；S4 服�
 后端、鉴权层、状态 UI、静态部署按顺序分别验证；收尾改动后完成上述完整回归。原有浏览器夹具默认运行状态接口不可用却断言写成功，已改用真实停机响应结构；故障用例显式注入 503，避免虚假覆盖。
 
 S1–S8 的自动化证据齐全；真实一小时等待、真实电脑休眠和实体硬件停机不在本次证据范围。静态构建保留旧 hash 文件，缺失资源 404、入口/版本文件不缓存由网关测试覆盖。首次从旧版仅内存会话迁移的例外见修订记录；不得把首次迁移包装成正常新版本重启。
+
+
+### 远程实际部署验收
+
+机器 `nvidia@100.106.210.36`，项目 `/home/nvidia/NovaSight`，静态入口 `http://100.106.210.36:7351/`。
+
+- 首次旧版迁移先读取 daemon 确认的原授予，再以 0600 原子落盘 `data/license.test-grant.json`（仅原时间与代码摘要）。保留原绝对期限 `1791686054.5591877`，即 2026-10-11 10:34:14 +08:00。
+- 发现 `data/license.json` 是已移除的 `built_in_test` 占位文档。原文件完整保留为 `data/license.pre-auth-contract-20261010.json`，权限 0600；有效测试授予由专用持久化文件恢复，没有放宽正式授权解析或发新一天。
+- 静态入口没有 `@vite/client`，匿名请求不能凭机器授权自动获取身份。实际 HTTP 授权签发两个 HttpOnly Cookie；刷新成功。
+- 实际安全停止并重新启动源代码栈，原 Cookie 身份自动恢复；删除访问 Cookie 后 GET 返回 checking，仍能用续期 Cookie 恢复身份。期限保持原值。
+- 第二次构建后旧 hash JS 仍返回成功，版本文件更新；后台采集/推理保持 stopped，未启用物理输出。测试凭证族验收后撤销，不撤销机器授权。
+- 远程证明为真实网关/daemon、持久文件与 HTTP CookieJar 检查；网页草稿和多标签页交互证据来自上述浏览器回归，不能混称为实体硬件验证。

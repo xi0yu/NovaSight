@@ -5,7 +5,11 @@ const active = { authenticated: true, auth_state: "authorized", principal: "oper
 const checking = { ...active, authenticated: false, auth_state: "checking", principal: null, role: null, csrf_token: null, expires_at: null };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-beforeEach(() => { vi.resetModules(); window.localStorage.removeItem("novasight.signed-out"); });
+beforeEach(() => {
+  vi.resetModules();
+  window.localStorage.removeItem("novasight.signed-out");
+  vi.stubGlobal("BroadcastChannel", class { onmessage = null; postMessage() {} });
+});
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); window.localStorage.removeItem("novasight.signed-out"); });
 
 describe("auth-session-contract A06/A07", () => {
@@ -88,6 +92,27 @@ describe("auth-session-contract A06/A07", () => {
     expect(error).toBeInstanceOf(DOMException);
     expect((error as DOMException).name).toBe("AbortError");
     expect((await api.recoverAuthSession()).auth_state).toBe("signed_out");
+  });
+
+  it("a new authorization in another tab supersedes an in-flight old identity result", async () => {
+    let channel!: { onmessage: ((event: MessageEvent) => void) | null };
+    vi.stubGlobal("BroadcastChannel", class {
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor() { channel = this; }
+      postMessage() {}
+    });
+    let finish!: (response: Response) => void;
+    let reads = 0;
+    vi.stubGlobal("fetch", vi.fn(() => ++reads === 1
+      ? new Promise<Response>((resolve) => { finish = resolve; })
+      : Promise.resolve(json(active))));
+    const api = await import("../api");
+    const pending = api.recoverAuthSession().catch((error: unknown) => error);
+    channel.onmessage!(new MessageEvent("message", { data: { kind: "signed_in" } }));
+    finish(json({ ...checking, auth_state: "revoked" }));
+    expect((await pending as DOMException).name).toBe("AbortError");
+    await vi.waitFor(() => expect(reads).toBe(2));
+    expect((await api.recoverAuthSession()).authenticated).toBe(true);
   });
 
 });

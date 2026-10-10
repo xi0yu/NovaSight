@@ -292,9 +292,11 @@ function connectAuthTabs() {
       authEpoch += 1;
       synchronizeAuthSession({ authenticated: false, auth_state: "signed_out", principal: null, role: null, permissions: [], csrf_token: null, expires_at: null, session_lifetime_seconds: 3600 });
     } else if (event.data?.kind === "signed_in" || event.data?.kind === "renewed") {
-      if (event.data.kind === "signed_in") { authPaused = false; rememberSignedOut(false); currentAuthSession = null; authEvent("novasight:auth-user-authorization"); }
+      if (event.data.kind === "signed_in") { authEpoch += 1; authPaused = false; rememberSignedOut(false); currentAuthSession = null; authEvent("novasight:auth-user-authorization"); }
       else if (authPaused || currentAuthSession?.authenticated === false) return;
-      void recoverAuthSession().catch(() => undefined);
+      if (event.data.kind === "signed_in" && refreshPromise) {
+        void refreshPromise.catch(() => undefined).then(() => recoverAuthSession()).catch(() => undefined);
+      } else void recoverAuthSession().catch(() => undefined);
     }
   };
 }
